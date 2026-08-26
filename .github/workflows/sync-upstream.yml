@@ -1,0 +1,48 @@
+name: Sync fork with upstream
+
+# Solo sincroniza la rama `main` del fork con el upstream oficial (rmyndharis/OpenWA).
+# NO despliega a producción: prod construye desde la rama `stable`, que solo avanza
+# de forma deliberada vía scripts/openwa/promote.sh tras pasar el canary.
+# El pin de WhatsApp Web (WWEBJS_WEB_VERSION) se mantiene al día aparte (scripts/openwa/pin.sh).
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config user.name "openwa-sync[bot]"
+          git config user.email "openwa-sync[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/rmyndharis/OpenWA.git
+          git fetch upstream main
+
+      - name: Sync fork with upstream (fast-forward only)
+        id: sync
+        run: |
+          git checkout main
+          BEFORE=$(git rev-parse HEAD)
+          git merge upstream/main --ff-only
+          AFTER=$(git rev-parse HEAD)
+          echo "before=$BEFORE" >> "$GITHUB_OUTPUT"
+          echo "after=$AFTER" >> "$GITHUB_OUTPUT"
+
+      - name: Push to fork
+        if: steps.sync.outputs.before != steps.sync.outputs.after
+        run: |
+          git remote set-url origin "https://x-access-token:${{ secrets.OPENWA_SYNC_PAT }}@github.com/RicardoRios07/OpenWA.git"
+          git push origin main
