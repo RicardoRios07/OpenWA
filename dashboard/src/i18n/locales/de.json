@@ -682,6 +682,7 @@
     "forwardMessageId": "Nachrichten-ID",
     "forwardMessageIdHint": "ID der weiterzuleitenden Nachricht",
     "bulkRecipients": "Empfänger",
+    "bulkRecipientsUpload": "CSV/TXT hochladen",
     "bulkRecipientsPlaceholder": "+491701234567",
     "bulkRecipientsHint": "Eine Telefonnummer oder Chat-ID pro Zeile (max. 100)",
     "bulkRecipientsCount": "Empfänger: {{count}}",

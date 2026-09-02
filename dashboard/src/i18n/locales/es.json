@@ -636,6 +636,7 @@
     "forwardMessageId": "ID del mensaje",
     "forwardMessageIdHint": "ID del mensaje que se va a reenviar",
     "bulkRecipients": "Destinatarios",
+    "bulkRecipientsUpload": "Subir CSV/TXT",
     "bulkRecipientsPlaceholder": "+62812345678",
     "bulkRecipientsHint": "Un número de teléfono o ID de chat por línea (máx. 100)",
     "bulkRecipientsCount": "Destinatarios: {{count}}",

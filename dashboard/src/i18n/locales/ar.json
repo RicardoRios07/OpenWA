@@ -697,6 +697,7 @@
     "forwardMessageId": "معرّف الرسالة",
     "forwardMessageIdHint": "معرّف الرسالة المراد إعادة توجيهها",
     "bulkRecipients": "المستلمون",
+    "bulkRecipientsUpload": "رفع CSV/TXT",
     "bulkRecipientsPlaceholder": "+62812345678",
     "bulkRecipientsHint": "رقم هاتف أو معرّف دردشة واحد في كل سطر (100 كحد أقصى)",
     "bulkRecipientsCount": "المستلمون: {{count}}",

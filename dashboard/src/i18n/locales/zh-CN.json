@@ -682,6 +682,7 @@
     "forwardMessageId": "消息 ID",
     "forwardMessageIdHint": "要转发的消息 ID",
     "bulkRecipients": "接收者",
+    "bulkRecipientsUpload": "上传 CSV/TXT",
     "bulkRecipientsPlaceholder": "+62812345678",
     "bulkRecipientsHint": "每行一个电话号码或聊天 ID（最多 100 个）",
     "bulkRecipientsCount": "接收者：{{count}}",

@@ -103,6 +103,7 @@ export function MessageTester() {
   // exclusive with mediaUrl: picking a file clears the URL field; typing a URL drops the file.
   const [mediaFile, setMediaFile] = useState<{ base64: string; mimetype: string; filename: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const bulkFileInputRef = useRef<HTMLInputElement>(null);
   // Monotonic token invalidating an in-flight FileReader: a second pick, a URL edit, a removal,
   // or an unmount before `onload` fires must win over the late-arriving bytes — otherwise the
   // slower read overwrites the newer state (and re-clears a URL the user just typed).
@@ -187,6 +188,23 @@ export function MessageTester() {
         // A transient poll failure (network blip, backend restart) must not kill progress tracking.
       }
     }, 2000);
+  };
+
+  const handleBulkFileChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = reader.result;
+      if (typeof text !== 'string' || !text.trim()) return;
+      setBulkRecipients(prev => (prev.trim() ? `${prev.trimEnd()}\n` : '') + text.trim());
+    };
+    reader.onerror = () => {
+      setResponse({ success: false, timestamp: new Date().toISOString(), error: t('messageTester.fileReadError') });
+    };
+    reader.readAsText(file);
   };
 
   const handleCancelBatch = async () => {
@@ -805,7 +823,28 @@ export function MessageTester() {
           {messageType === 'bulk' && (
             <>
               <div className="form-group">
-                <label htmlFor="mt-11">{t('messageTester.bulkRecipients')}</label>
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    marginBottom: '0.5rem',
+                  }}
+                >
+                  <label htmlFor="mt-11" style={{ marginBottom: 0 }}>
+                    {t('messageTester.bulkRecipients')}
+                  </label>
+                  <button type="button" className="browse-btn" onClick={() => bulkFileInputRef.current?.click()}>
+                    <Upload size={14} /> {t('messageTester.bulkRecipientsUpload')}
+                  </button>
+                  <input
+                    ref={bulkFileInputRef}
+                    type="file"
+                    accept=".txt,.csv"
+                    style={{ display: 'none' }}
+                    onChange={handleBulkFileChange}
+                  />
+                </div>
                 <textarea
                   id="mt-11"
                   value={bulkRecipients}

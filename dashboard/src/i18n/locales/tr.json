@@ -682,6 +682,7 @@
     "forwardMessageId": "Mesaj ID'si",
     "forwardMessageIdHint": "İletilecek mesajın ID'si",
     "bulkRecipients": "Alıcılar",
+    "bulkRecipientsUpload": "CSV/TXT Yükle",
     "bulkRecipientsPlaceholder": "+905XXXXXXXXX",
     "bulkRecipientsHint": "Her satıra bir telefon numarası veya sohbet ID'si (maks 100)",
     "bulkRecipientsCount": "Alıcılar: {{count}}",

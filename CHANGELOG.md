@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The dashboard's Message Tester can load bulk recipients from a `.txt` or `.csv` file, appending the
+  file's lines to whatever the Recipients box already holds. One entry per line, which is what the
+  box itself expects. Thanks @harry0x.
 - `GET /sessions/{sessionId}/messages` accepts `inlineMedia=false`, which omits every inline media
   payload and leaves each row's `{ omitted, sizeBytes }` marker plus the media endpoint. The budget
   bounds one response, so a paged walk pulls up to 8 MiB of base64 per page; a client reading many
