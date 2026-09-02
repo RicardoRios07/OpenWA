@@ -53,6 +53,45 @@ updates:
       # with the base-image Node bump.
       - dependency-name: "@types/node"
         versions: [">=23.0.0"]
+      # The NestJS 12 line cannot be adopted yet. @bull-board/nestjs (9.6.1) and @nestjs/throttler
+      # (6.5.0) both cap @nestjs/common and @nestjs/core at ^11.0.0, and neither publishes a
+      # prerelease that accepts 12, so the bump fails npm's peer resolution with ERESOLVE before a
+      # single CI job compiles anything. Two in-repo blockers sit behind that wall: @nestjs/common@12
+      # is ESM-only and neither jest lane can load it under the current transform config (271
+      # @nestjs/common and 35 @nestjs/testing import sites), and @nestjs/swagger 12 spells
+      # nullability per document version, which moves the committed openapi.json snapshot and
+      # cascades into check:contract-shapes across five SDK clients.
+      #
+      # Pinned on the version rather than update-types so the 11.x line keeps flowing. Lift when
+      # both peers admit ^12.0.0; the upgrade itself belongs on a dedicated branch, since the
+      # README framework rows and the jest ESM config have to move in the same commit.
+      - dependency-name: "@nestjs/*"
+        versions: [">=12.0.0"]
+      # tar-stream 3.2.1 is a types-only release: index.js, extract.js, pack.js, headers.js and
+      # constants.js are byte-identical to 3.2.0. What it adds is an `exports` map with a `types`
+      # condition, so under moduleResolution nodenext with resolvePackageJsonExports its bundled
+      # declarations shadow @types/tar-stream. Those declarations do `import { Writable } from
+      # 'streamx'`, but tar-stream still asks for streamx ^2.15.0 while the tree resolves 2.25.0,
+      # which ships no declarations at all. `Extract` and `Pack` then inherit no members and both
+      # src/common/storage/storage-transfer.ts and storage.service.spec.ts stop compiling: 8 type
+      # errors in the build and 23 no-unsafe errors in lint. Proven twice, by #1489 and #1504.
+      #
+      # Dependabot cannot resolve this on its own, because streamx 2.25.0 satisfies every declared
+      # range in the tree, so it bumps tar-stream and leaves streamx alone. Adopting 3.2.1 for real
+      # is three coordinated moves rather than a version bump: an `overrides` entry forcing streamx
+      # to ^2.28.1 (2.28.0 is not enough, its `write()` returns `unknown` where 2.28.1 returns
+      # `boolean`, so a gunzip cannot pipe into an Extract), dropping the then-inert
+      # @types/tar-stream, and widening the entry-stream chunk type. That carries streamx three
+      # minors under archiver and Puppeteer's browser fetch for no runtime change at all.
+      #
+      # Pinned on the version rather than update-types because the defect rides the bundled
+      # declarations, not the semver channel: a 3.3.0 would carry the same index.d.ts and the same
+      # streamx range. Unlike the ignores above, this one freezes the line in use rather than a
+      # major line, so re-check on every tar-stream release, not only when its streamx range
+      # widens. An advisory in the frozen line still fails CI through check:audit. package.json
+      # pins tar-stream exactly at 3.2.0, so npm holds the line even while this entry is silent.
+      - dependency-name: "tar-stream"
+        versions: [">=3.2.1"]
 
   - package-ecosystem: npm
     directory: /dashboard

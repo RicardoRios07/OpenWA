@@ -3,11 +3,11 @@ import type { IncomingMessage } from '../../engine/interfaces/whatsapp-engine.in
 /**
  * Message types whose rows must show a media placeholder even when the payload carried none.
  *
- * A wwjs own-send echo whose media download failed carries no media field at all, and the history
- * sync maps messages media-free to keep its footprint down. Without the marker such a row renders
+ * The history sync maps messages media-free to keep its footprint down, so a media-typed message can
+ * still reach persistence with no media field at all. Without the marker such a row renders
  * as an empty bubble — the DB copy wins over the engine-history placeholder in the dashboard
- * merge — and the by-type stats filter would skip it. (The Baileys API-send echo needs no synthesis:
- * it emits the omitted marker itself.)
+ * merge — and the by-type stats filter would skip it. (Neither engine's live path needs synthesis:
+ * both emit the omitted marker whenever they have one to build.)
  */
 export const MEDIA_MESSAGE_TYPES = new Set(['image', 'video', 'audio', 'voice', 'sticker', 'document']);
 

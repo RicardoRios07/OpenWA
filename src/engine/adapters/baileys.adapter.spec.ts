@@ -2532,7 +2532,7 @@ describe('BaileysAdapter inbound fan-out', () => {
     expect(event.senderId).toBe('628111@c.us'); // canonicalized to the neutral dialect
   });
 
-  it('media download failure: logs the error and emits the message without media (no throw)', async () => {
+  it('media download failure: logs the error and emits the omitted marker (no throw)', async () => {
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
     const baileys = jest.requireMock('@whiskeysockets/baileys') as {
       getContentType: jest.Mock;
@@ -2540,26 +2540,38 @@ describe('BaileysAdapter inbound fan-out', () => {
     };
     baileys.getContentType.mockReturnValue('imageMessage');
     baileys.downloadMediaMessage.mockRejectedValue(new Error('download failed'));
+    // The skip exit builds a marker identical to the one this asserts, so an ambient 'false' would
+    // otherwise let the test pass having never reached the download at all.
+    const prev = process.env.MEDIA_DOWNLOAD_ENABLED;
+    process.env.MEDIA_DOWNLOAD_ENABLED = 'true';
 
-    const onMessage = jest.fn();
-    const adapter = newAdapter();
-    await adapter.initialize({ onMessage });
-    fakeSock.fire('messages.upsert', {
-      type: 'notify',
-      messages: [
-        {
-          key: { remoteJid: '628111@s.whatsapp.net', fromMe: false, id: 'IMGFAIL' },
-          message: { imageMessage: { mimetype: 'image/jpeg', caption: 'broken' } },
-          messageTimestamp: 1700000025,
-        },
-      ],
-    });
-    await new Promise(r => setImmediate(r));
-    // message is still emitted, just without media
-    expect(onMessage).toHaveBeenCalledTimes(1);
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-    const msg = onMessage.mock.calls[0][0] as { media?: unknown };
-    expect(msg.media).toBeUndefined();
+    try {
+      const onMessage = jest.fn();
+      const adapter = newAdapter();
+      await adapter.initialize({ onMessage });
+      fakeSock.fire('messages.upsert', {
+        type: 'notify',
+        messages: [
+          {
+            key: { remoteJid: '628111@s.whatsapp.net', fromMe: false, id: 'IMGFAIL' },
+            message: { imageMessage: { mimetype: 'image/jpeg', caption: 'broken', fileLength: 4096 } },
+            messageTimestamp: 1700000025,
+          },
+        ],
+      });
+      await new Promise(r => setImmediate(r));
+      // The message is still emitted, and it still says it carried an image. sizeBytes is the DECLARED
+      // size: nothing was downloaded, so reporting the cap (as the streaming abort does) would lie.
+      expect(onMessage).toHaveBeenCalledTimes(1);
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      const msg = onMessage.mock.calls[0][0] as { media?: unknown; body?: string };
+      expect(msg.media).toEqual({ mimetype: 'image/jpeg', omitted: true, sizeBytes: 4096 });
+      expect(msg.body).toBe('broken');
+      expect(baileys.downloadMediaMessage).toHaveBeenCalled();
+    } finally {
+      if (prev === undefined) delete process.env.MEDIA_DOWNLOAD_ENABLED;
+      else process.env.MEDIA_DOWNLOAD_ENABLED = prev;
+    }
   });
 });
 

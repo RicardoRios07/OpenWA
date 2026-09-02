@@ -233,14 +233,20 @@ jobs:
           DATABASE_NAME: openwa
 
       # Runtime-proves BuiltInFtsProvider on Postgres (websearch_to_tsquery + ts_headline against the
-      # STORED body_ts tsvector) and the boot-migration advisory lock (two concurrent migrators on
-      # one database). Both specs self-skip unless DATABASE_TYPE=postgres, so they are a no-op
-      # in the default test job and only execute here against the postgres:16 service.
-      - name: Postgres specs (FTS provider + boot-migration lock)
-        # --runInBand: both specs issue DDL against the one shared service database, and jest's
+      # STORED body_ts tsvector), the boot-migration advisory lock (two concurrent migrators on one
+      # database), that a paged message list has a total order (Postgres sorts a tie group
+      # differently between two statements, so an unstable order drops rows from a page walk), and
+      # that the data entities can build their own schema (raw SQL the ORM passes through verbatim,
+      # such as a partial index predicate, only case-folds on a real server). All four self-skip
+      # unless DATABASE_TYPE=postgres, so they are a no-op in the default test job and only execute
+      # here against the postgres:16 service.
+      - name: Postgres specs (FTS provider + boot-migration lock + list ordering + entity synchronize)
+        # --runInBand: the specs issue DDL against the one shared service database, and jest's
         # default file-parallelism races their catalog writes (pg_type duplicate-key). The lock
-        # spec's own two-migrator race is in-file (Promise.all) and unaffected by runInBand.
-        run: npx jest --runInBand src/database/migrations/__tests__/1782400000000-AddMessagesFts.pg.spec.ts src/database/migrations/__tests__/pg-boot-migrations.pg.spec.ts
+        # spec's own two-migrator race is in-file (Promise.all) and unaffected by runInBand. The
+        # synchronize spec additionally CREATEs and DROPs a scratch database of its own, which is
+        # only safe serialized.
+        run: npx jest --runInBand src/database/migrations/__tests__/1782400000000-AddMessagesFts.pg.spec.ts src/database/migrations/__tests__/pg-boot-migrations.pg.spec.ts src/modules/message/message-list-ordering.pg.spec.ts src/database/migrations/__tests__/pg-entity-synchronize.pg.spec.ts
         env:
           DATABASE_TYPE: postgres
           DATABASE_HOST: localhost
@@ -412,7 +418,7 @@ jobs:
         uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
       - name: Login to GitHub Container Registry
         if: github.event_name == 'push'

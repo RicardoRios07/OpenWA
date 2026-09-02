@@ -235,6 +235,21 @@ class SessionResponse(TypedDict):
     engineLoaded: bool
 
 
+class SessionProxy(TypedDict):
+    """Masked per-session proxy configuration — credentials are never returned."""
+
+    enabled: bool
+    proxyType: Literal['http', 'https', 'socks4', 'socks5'] | None
+    proxyHost: str | None
+    hasCredentials: bool
+
+
+class UpdateSessionProxyRequest(TypedDict, total=False):
+    """Update per-session proxy settings. Send proxyUrl=null to clear. Applies on the next start."""
+
+    proxyUrl: str | None
+
+
 class SessionConfig(TypedDict):
     """A session's effective runtime configuration.
 
@@ -439,7 +454,8 @@ class SendPollRequest(TypedDict):
 # ``from`` is a Python keyword, so use the functional TypedDict form.
 ListMessagesQuery = TypedDict(
     "ListMessagesQuery",
-    {"chatId": Jid, "from": Jid, "limit": int, "offset": int},
+    # ``after`` is a keyset cursor: the id of the last message of the previous page.
+    {"chatId": Jid, "from": Jid, "limit": int, "offset": int, "after": str, "inlineMedia": bool},
     total=False,
 )
 
@@ -834,6 +850,8 @@ class WebhookFilters(TypedDict):
 class CreateWebhookRequest(TypedDict):
     url: str
     events: NotRequired[list[WebhookEvent]]
+    # HMAC secret, signed as ``X-OpenWA-Signature: sha256=<hex>``. At least 16 characters; the
+    # gateway answers 400 below that. Omit for unsigned deliveries. Never returned by a read.
     secret: NotRequired[str]
     headers: NotRequired[dict[str, str]]
     filters: NotRequired[WebhookFilters | None]
@@ -847,6 +865,8 @@ class UpdateWebhookRequest(TypedDict, total=False):
     # optional. Every field here is a partial update.
     url: str
     events: list[WebhookEvent]
+    # Same 16-character minimum as the create request, with one exception: the empty string is the
+    # documented "clear the secret" value and is accepted.
     secret: str
     headers: dict[str, str]
     filters: WebhookFilters | None

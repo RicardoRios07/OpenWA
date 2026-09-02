@@ -30,6 +30,20 @@ const resources = Object.fromEntries(
 const i18n = i18next.createInstance();
 await i18n.init({ lng: 'en', resources, fallbackLng: false, interpolation: { escapeValue: false } });
 
+const SESSION_SCOPE_KEYS = [
+  'apiKeys.columns.sessions',
+  'apiKeys.sessions.label',
+  'apiKeys.sessions.hint',
+  'apiKeys.sessions.all',
+  'apiKeys.sessions.empty',
+  'apiKeys.sessions.restricted',
+  'apiKeys.sessions.editTitle',
+  'apiKeys.sessions.save',
+  'apiKeys.sessions.choose',
+  'apiKeys.sessions.leaveAll',
+  'apiKeys.actions.editSessions',
+];
+
 const NEW_PLUGIN_KEYS = [
   'plugins.catalog.empty',
   'plugins.catalog.install',
@@ -84,6 +98,22 @@ test('Hebrew dual + Arabic plural categories resolve for the filter badge', () =
   assert.equal(i18n.t('webhooks.filters.badge', { lng: 'he', count: 2 }), 'שני מסננים');
   assert.equal(i18n.t('webhooks.filters.badge', { lng: 'he', count: 5 }), '5 מסננים');
   assert.equal(i18n.t('webhooks.filters.badge', { lng: 'ar', count: 3 }), '3 عوامل تصفية');
+});
+
+test('every session-scope API key string resolves in every locale', () => {
+  for (const lng of LOCALE_IDS) {
+    for (const key of SESSION_SCOPE_KEYS) {
+      const value = i18n.t(key, { lng, count: 2 });
+      assert.ok(value && value !== key, `${lng}: ${key} missing from catalog (component would show a raw fallback)`);
+    }
+  }
+});
+
+test('English session-scope copy explains the empty-allowlist default', () => {
+  assert.equal(i18n.t('apiKeys.sessions.all'), 'All sessions');
+  assert.equal(i18n.t('apiKeys.sessions.choose'), 'Choose sessions');
+  assert.equal(i18n.t('apiKeys.sessions.leaveAll'), 'Leave for all sessions');
+  assert.match(i18n.t('apiKeys.sessions.restricted', { count: 3 }), /3/);
 });
 
 test('every new plugins.* key resolves in every locale', () => {

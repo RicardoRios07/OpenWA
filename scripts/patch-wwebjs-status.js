@@ -120,6 +120,23 @@ function occurrences(source, needle) {
   return source.split(needle).length - 1;
 }
 
+/**
+ * Every group's stand-down branch as one predicate, for the startup guard
+ * (engine-patch-status.ts). The groups apply independently, so a tree carrying one and not the
+ * other is a reachable state and reads as NOT applied: half the repair is still a broken send.
+ * Unreadable reads as applied, since a tree we cannot inspect is not evidence of a broken one.
+ */
+function isApplied(wwjsDir = DEFAULT_WWJS) {
+  try {
+    const source = fs.readFileSync(path.join(wwjsDir, UTILS_PATH), 'utf8');
+    return GROUPS.every((group) =>
+      group.edits.every((edit) => occurrences(source, edit.find) === 0 && occurrences(source, edit.replace) === 1),
+    );
+  } catch {
+    return true;
+  }
+}
+
 function applyStatusPatches(wwjsDir = DEFAULT_WWJS) {
   const utilsFile = path.join(wwjsDir, UTILS_PATH);
   if (!fs.existsSync(utilsFile)) {
@@ -181,6 +198,7 @@ if (require.main === module) run();
 
 module.exports = {
   applyStatusPatches,
+  isApplied,
   GROUPS,
   GATING_FIND,
   GATING_REPLACE,

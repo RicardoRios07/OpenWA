@@ -8,6 +8,7 @@ const path = require('path');
 
 const {
   applyParticipantArityPatches,
+  isApplied,
   GROUPS,
   ACTIONS,
   findFor,
@@ -109,6 +110,16 @@ test('applies every group to the installed upstream shape', () => {
   }
   // The bare `{ status: 200 }` return must be gone from all three, or one of them still lies.
   assert.equal(out.split('return { status: 200 };').length - 1, 0);
+});
+
+test('isApplied is false on a pristine tree and true once the patch lands', () => {
+  // All three groups must carry their replacement: a tree left by the legacy shape scores one of
+  // three, and it still answers 500 when promoting an existing admin.
+  const { dir } = fakeWwjs(readInstalled());
+
+  assert.equal(isApplied(dir), false);
+  applyParticipantArityPatches(dir);
+  assert.equal(isApplied(dir), true);
 });
 
 test('never calls the WA Web action with an empty list', () => {

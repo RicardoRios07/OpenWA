@@ -466,6 +466,9 @@ SESSION_DATA_PATH=./data/sessions
 PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 PUPPETEER_HEADLESS=true
 PUPPETEER_ARGS=--no-sandbox,--disable-setuid-sandbox
+# Optional per-browser-command budget, ms. Unset = Puppeteer's own budget. Raise only after seeing
+# "Runtime.callFunctionOn timed out"; positive integer, max 2147483647 (cost: see docs/12).
+# PUPPETEER_PROTOCOL_TIMEOUT_MS=300000
 
 # ===========================================
 # SECURITY

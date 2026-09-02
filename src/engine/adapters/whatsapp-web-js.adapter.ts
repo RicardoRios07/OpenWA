@@ -68,6 +68,7 @@ import {
   withInboundDownloadTimeout,
 } from './inbound-media-cap';
 import { ConcurrencyLimiter } from '../../common/utils/concurrency-limiter';
+import { readWid } from '../types/whatsapp-web-js.types';
 
 export interface WhatsAppWebJsConfig {
   sessionId: string;
@@ -76,6 +77,8 @@ export interface WhatsAppWebJsConfig {
     headless?: boolean;
     args?: string[];
     executablePath?: string;
+    /** Per-CDP-command budget handed to Puppeteer. Must be positive — see wwebjs-lifecycle. */
+    protocolTimeoutMs?: number;
   };
   // Phase 3: Proxy per session
   proxy?: {
@@ -278,7 +281,8 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
   /**
    * Download inbound media safely. downloadMedia() can't be size-bounded at the source, so (1) pre-gate
    * on the sender-declared size and skip the download entirely when it exceeds the cap, and (2) run the
-   * download through the concurrency limiter for backpressure. Returns undefined when there's no media.
+   * download through the concurrency limiter for backpressure. Resolves an envelope whenever it has one
+   * to build: the payload, or the declared-only marker when no blob is available.
    */
   private async capInboundMediaFor(
     msg: Message,
@@ -287,12 +291,16 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
     if (!isMediaDownloadEnabled()) {
       return declaredOnlyMedia(msg);
     }
+    // Read the id once, through readWid: a bare `_serialized` read yields undefined on the WA Web build
+    // that renamed it to `$1` (#747), which is the same build whose page-side rename makes these
+    // downloads fail. The warnings below are the diagnostic for it, so they must carry a real id.
+    const msgId = readWid(msg.id);
     const maxBytes = maxBytesOverride ?? inboundMediaMaxBytes();
     const data = (msg as unknown as { _data?: { size?: number; mimetype?: string; filename?: string } })._data;
     const declared = coerceDeclaredSize(data?.size);
     if (declared > maxBytes) {
       this.logger.warn('Inbound media declared size exceeds the cap; skipped download', {
-        msgId: msg.id._serialized,
+        msgId,
         sizeBytes: declared,
         maxBytes,
       });
@@ -310,13 +318,23 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
       resolveBounded = resolve;
     });
     const slotHeld = this.inboundLimiter.run(() => {
-      const download = msg.downloadMedia();
+      // downloadMedia() is async, so a page-side throw (a detached target, a WA Web field rename) arrives
+      // as a rejection, which boundedReady adopts and rethrows past the only exit that builds the marker,
+      // leaving every call site to emit with no media field at all. It is the same "no usable media"
+      // outcome as the timeout below, so it takes the same null sentinel.
+      const download = msg.downloadMedia().catch((error: unknown) => {
+        this.logger.warn('Inbound media download failed; emitting the omitted marker', {
+          msgId,
+          error: String(error),
+        });
+        return null;
+      });
       resolveBounded(
         withInboundDownloadTimeout(download, inboundMediaTimeoutMs(), () =>
           this.logger.warn(
             'Inbound media download timed out (MEDIA_DOWNLOAD_TIMEOUT_MS); emitting message without media',
             {
-              msgId: msg.id._serialized,
+              msgId,
             },
           ),
         ),
@@ -333,7 +351,7 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
     // fire-and-forget promise is not an acceptable way to find that out.
     void slotHeld.catch((error: unknown) => {
       this.logger.warn('Inbound media slot holder rejected unexpectedly; emitting message without media', {
-        msgId: msg.id._serialized,
+        msgId,
         error: String(error),
       });
       resolveBounded(null);
@@ -349,7 +367,7 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
       this.logger.warn(
         'Inbound media did not arrive within MEDIA_DOWNLOAD_TIMEOUT_MS; emitting message without media',
         {
-          msgId: msg.id._serialized,
+          msgId,
         },
       ),
     );
@@ -364,7 +382,7 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
     });
     if (capped.omitted) {
       this.logger.warn('Inbound media exceeds MEDIA_DOWNLOAD_MAX_BYTES; dropped payload, kept envelope', {
-        msgId: msg.id._serialized,
+        msgId,
         sizeBytes: capped.sizeBytes,
       });
     }

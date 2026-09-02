@@ -198,6 +198,28 @@ export function useCreateApiKeyMutation() {
   });
 }
 
+export function useUpdateApiKeyMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      data,
+    }: {
+      id: string;
+      data: {
+        name?: string;
+        role?: string;
+        allowedIps?: string[];
+        allowedSessions?: string[];
+        expiresAt?: string;
+      };
+    }) => apiKeyApi.update(id, data),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.apiKeys });
+    },
+  });
+}
+
 export function useDeleteApiKeyMutation() {
   const queryClient = useQueryClient();
   return useMutation({

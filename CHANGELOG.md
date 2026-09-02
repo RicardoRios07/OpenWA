@@ -5,6 +5,86 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `GET /sessions/{sessionId}/messages` accepts `inlineMedia=false`, which omits every inline media
+  payload and leaves each row's `{ omitted, sizeBytes }` marker plus the media endpoint. The budget
+  bounds one response, so a paged walk pulls up to 8 MiB of base64 per page; a client reading many
+  pages can now ask for the rows without the bytes
+  ([#1516](https://github.com/rmyndharis/OpenWA/issues/1516)).
+- `GET /sessions/{sessionId}/messages` accepts `after`, a keyset cursor holding the `id` of the last
+  message of the previous page. It anchors the window to a row instead of a count, so a message
+  arriving mid-walk can no longer shift it and make a page repeat or skip rows. `offset` keeps
+  working unchanged; an `after` that names no row in the session gives `400`
+  ([#1479](https://github.com/rmyndharis/OpenWA/issues/1479)).
+- Each engine now names the install-time patches its library is missing as it starts, rather than
+  only the message-id backport. A source install applies them with `--best-effort`, so a patch that
+  could not apply left one line in the `npm install` transcript and nothing afterwards; the
+  capability it repairs then failed with an error that named no cause. Diagnostic only, startup
+  continues. See docs/12 for the procedure.
+- The dashboard's API Keys page can limit an operator or viewer key to chosen sessions, on creation
+  and on a key that already exists. Leaving the picker empty keeps access to every session, including
+  ones created later, and the keys table shows each key's scope. `allowedSessions` was already
+  accepted by the REST API; this is the UI for it. Thanks @sebathi.
+- `PUPPETEER_PROTOCOL_TIMEOUT_MS` raises the per-browser-command budget on the whatsapp-web.js
+  engine, for large accounts whose reads fail with `Runtime.callFunctionOn timed out`. Unset keeps
+  Puppeteer's own budget, so nothing changes for a deployment that does not set it. The gateway
+  refuses to boot on `0` or on a value above 2147483647; see docs/12 for when to reach for it.
+  Thanks @JuanGalzerano.
+- `GET` and `PATCH /api/sessions/{sessionId}/proxy` read and update a session's egress proxy;
+  credentials are never returned, and changes apply on the next session start
+  ([#1474](https://github.com/rmyndharis/OpenWA/issues/1474)). Thanks @vitusan.
+- Sessions dashboard: set a proxy when creating a session, and view, change or clear it afterwards.
+  Thanks @vitusan.
+
+### Changed
+
+- A whatsapp-web.js protocol timeout is no longer eligible to be classified as a dead page.
+  Behaviour is unchanged on the current Puppeteer; the guard keeps a future bump from reporting a
+  slow command as a transport death.
+- `GET /sessions/{sessionId}/contacts` declares `503` in the contract and answers it when the
+  whatsapp-web.js page dies mid-read, instead of a bare `500`. Thanks @Deyvis17GY.
+- All five clients now document the 16-character minimum on a webhook `secret`, and that an empty
+  string clears it on update. The constraint is unchanged; until now only the gateway named it, in a
+  `400`.
+
+### Fixed
+
+- Paged lists now tiebreak on `id`, so a walk returns every row exactly once. Neither `createdAt` nor
+  a search relevance score is unique, and on PostgreSQL two identical statements could sort one tie
+  group differently, silently repeating some rows and omitting others: a 5000-row message list lost
+  23 rows per walk, and an ordinary search repeated a row by the third page. Affects the message,
+  session, webhook and webhook delivery-failure lists and `GET /search`. `offset` still addresses a
+  position by count, so a list taking concurrent writes can still shift under a walk.
+
+- `PUT /sessions/{sessionId}/groups/{groupId}/description` no longer fails with a bare `500` on
+  whatsapp-web.js. `WAWebGroupModifyInfoJob.setGroupDescription` now takes a single options object
+  and the library still calls it positionally, so `widToGroupJid` threw inside the page. A new
+  install-time patch (🔧⁹, docs/29) sends the options object; an empty description still clears.
+  `setGroupSubject` was never affected and Baileys is unchanged. Thanks @purnamcommunity.
+- whatsapp-web.js contact reads resolve the renamed `$1` serialized-id field, so contacts keep their
+  `id` on a WhatsApp Web build that renamed it; an entry with no readable id is skipped and counted
+  in the log. Thanks @Deyvis17GY.
+- Inbound media whose download fails now keeps the `media` envelope with `omitted: true` and the declared
+  size, on both engines, instead of dropping the field and looking like a message that never had media.
+- Webhook filters and automation rules gated on `hasMedia` now match those messages.
+- Baileys logs a failed inbound media download at `warn` instead of `debug`, so it is visible by default.
+- The webhook `secret` example in Swagger and the API reference was shorter than the 16-character floor
+  the route enforces, so pasting it back answered `400`. The example now passes, and both webhook routes
+  publish the length rule they enforce ([#1491](https://github.com/rmyndharis/OpenWA/issues/1491)).
+  Thanks @onepay-ye.
+- `STORAGE_TYPE=s3` missing `S3_ACCESS_KEY_ID` or `S3_SECRET_ACCESS_KEY` now warns at startup and names
+  the one that is unset, instead of silently writing every file to local disk and leaving the bucket
+  empty. Thanks @onepay-ye.
+
+### Dependencies
+
+- `browserslist` 4.28.2 to 4.28.8 in both dependency trees, closing two high-severity advisories
+  (unbounded cache growth, and a crash on untrusted custom stats). Dev-only and transitive in each,
+  so nothing that ships changes.
+
 ## [0.23.3] - 2026-08-24
 
 ### Added

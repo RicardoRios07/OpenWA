@@ -36,7 +36,7 @@ const gateCommands = (file: string, job: string): string[] => {
 };
 
 describe('release gate parity (the tag path runs every branch gate)', () => {
-  it.each(['lint', 'test'])('%s: every ci.yml gate command also runs in release.yml', job => {
+  it.each(['lint', 'test', 'test-postgres'])('%s: every ci.yml gate command also runs in release.yml', job => {
     const ci = gateCommands('ci.yml', job);
     const release = gateCommands('release.yml', job);
     // Non-vacuity: both parsers must find real gate lanes, or the subset assertion below binds nothing.
@@ -49,5 +49,8 @@ describe('release gate parity (the tag path runs every branch gate)', () => {
   it('the two gates this spec was born from still run on the tag path', () => {
     expect(gateCommands('release.yml', 'lint')).toContain('npm run check:contract-shapes');
     expect(gateCommands('release.yml', 'test')).toContain('npm run test:docs');
+    // The postgres lane names its specs inline, so a spec added to ci.yml alone would otherwise
+    // leave the tag path running a strictly weaker suite than the branch it was cut from.
+    expect(gateCommands('release.yml', 'test-postgres').join(' ')).toContain('message-list-ordering.pg.spec.ts');
   });
 });

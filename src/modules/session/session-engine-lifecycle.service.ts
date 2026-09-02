@@ -41,9 +41,8 @@ const isStatusSeedOnReadyEnabled = (): boolean => process.env.STATUS_SEED_ON_REA
 
 // Message types that carry downloadable media. Any persisted row of these types must have a media
 // marker in metadata — never NULL — or the dashboard renders an empty bubble (no placeholder) and the
-// by-type stats filter skips the row. Sources that arrive without a media field (media-free history
-// sync, a wwjs own-send echo whose download failed) get the omitted marker synthesized at the
-// persistence chokepoints.
+// by-type stats filter skips the row. Sources that arrive without a media field (the media-free
+// history sync) get the omitted marker synthesized at the persistence chokepoints.
 
 export interface ReconnectState extends ReconnectAttemptState {
   /** The pending attempt's timer. Lives here, not in the policy, which stays free of side effects. */

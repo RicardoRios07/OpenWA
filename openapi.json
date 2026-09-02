@@ -562,6 +562,88 @@
         ]
       }
     },
+    "/api/sessions/{sessionId}/proxy": {
+      "get": {
+        "operationId": "SessionController_getProxy",
+        "parameters": [
+          {
+            "name": "sessionId",
+            "required": true,
+            "in": "path",
+            "description": "Session ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Effective proxy configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionProxyResponseDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found"
+          }
+        },
+        "summary": "Get the per-session egress proxy configuration (credentials masked)",
+        "tags": [
+          "sessions"
+        ]
+      },
+      "patch": {
+        "description": "Sets or clears the proxy URL. Credentials in `proxyUrl` are stored but never returned by GET. No restart is performed — changes apply on the next session start.",
+        "operationId": "SessionController_updateProxy",
+        "parameters": [
+          {
+            "name": "sessionId",
+            "required": true,
+            "in": "path",
+            "description": "Session ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateSessionProxyDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated proxy configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionProxyResponseDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid proxyUrl"
+          },
+          "404": {
+            "description": "Session not found"
+          }
+        },
+        "summary": "Update the per-session egress proxy configuration",
+        "tags": [
+          "sessions"
+        ]
+      }
+    },
     "/api/sessions/{sessionId}/start": {
       "post": {
         "operationId": "SessionController_start",
@@ -2214,6 +2296,24 @@
             "description": "Offset for pagination",
             "schema": {
               "type": "number"
+            }
+          },
+          {
+            "name": "after",
+            "required": false,
+            "in": "query",
+            "description": "Keyset cursor: the id of the last message of the previous page. Anchors the window to a row rather than a count, so a message arriving mid-walk cannot shift it. Takes precedence over offset.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "inlineMedia",
+            "required": false,
+            "in": "query",
+            "description": "Set false to omit inline media payloads, leaving each row's { omitted, sizeBytes } marker and the media endpoint. The inline-media budget is per response, so a paged walk pulls it afresh on every page; default true.",
+            "schema": {
+              "type": "boolean"
             }
           }
         ],
@@ -4316,6 +4416,9 @@
           },
           "409": {
             "description": "The session is not connected — an engine exists for it but is not `ready`: disconnected, reconnecting, or still initializing, so the request never reached WhatsApp. Wait for `ready` and retry. A session that was never started answers `400` instead, and the session lifecycle routes answer `409` for a conflicting state rather than this. One window answers this while the session still reads `ready`: WhatsApp Web periodically reloads its own page and the engine re-injects into it — for those few seconds the answer is a `409` naming the reload; retry shortly."
+          },
+          "503": {
+            "description": "The WhatsApp page died while reading contacts, retry shortly"
           }
         },
         "summary": "Get all contacts for a session",
@@ -10120,6 +10223,56 @@
           }
         }
       },
+      "SessionProxyResponseDto": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether a proxy URL is configured for this session",
+            "example": true
+          },
+          "proxyType": {
+            "type": "string",
+            "description": "Proxy protocol derived from the stored URL scheme",
+            "enum": [
+              "http",
+              "https",
+              "socks4",
+              "socks5"
+            ],
+            "nullable": true,
+            "example": "http"
+          },
+          "proxyHost": {
+            "type": "string",
+            "description": "Proxy host:port parsed from the stored URL — credentials are never returned",
+            "nullable": true,
+            "example": "proxy.example.com:8080"
+          },
+          "hasCredentials": {
+            "type": "boolean",
+            "description": "Whether the stored proxy URL embeds username/password credentials",
+            "example": false
+          }
+        },
+        "required": [
+          "enabled",
+          "proxyType",
+          "proxyHost",
+          "hasCredentials"
+        ]
+      },
+      "UpdateSessionProxyDto": {
+        "type": "object",
+        "properties": {
+          "proxyUrl": {
+            "type": "string",
+            "description": "Per-session egress proxy URL (http/https/socks4/socks5; credentialed form allowed). Send `null` to clear the proxy. Must be a real, reachable proxy — an unreachable value blocks the WhatsApp WebSocket and session start times out (~30s).",
+            "nullable": true,
+            "example": "http://user:pass@proxy.example.com:8080"
+          }
+        }
+      },
       "QRCodeResponseDto": {
         "type": "object",
         "properties": {
@@ -10680,12 +10833,14 @@
           },
           "secret": {
             "type": "string",
-            "description": "Secret key for HMAC signature verification",
-            "example": "your-secret-key"
+            "description": "Secret key for HMAC signature verification. Never returned by any webhook route; it is used to compute the `X-OpenWA-Signature: sha256=<hex>` header on every delivery.",
+            "minLength": 16,
+            "maxLength": 255,
+            "example": "your-webhook-signing-secret"
           },
           "headers": {
             "type": "object",
-            "description": "Custom headers to include in webhook requests",
+            "description": "Custom headers to include in webhook requests. Never returned by any webhook route. At delivery, `content-type` and `x-openwa-*` names are stripped so a custom header cannot shadow a system one.",
             "example": {
               "X-Custom-Header": "value"
             }
@@ -10872,11 +11027,15 @@
           },
           "secret": {
             "type": "string",
-            "description": "Secret key for HMAC signature"
+            "description": "Secret key for HMAC signature. At least 16 characters, or an empty string to clear it. Never returned by any webhook route.",
+            "maxLength": 255
           },
           "headers": {
             "type": "object",
-            "description": "Custom headers"
+            "description": "Custom headers. Replaces the stored map wholesale. Never returned by any webhook route.",
+            "example": {
+              "X-Custom-Header": "value"
+            }
           },
           "filters": {
             "description": "Optional smart pre-filter. When set, every condition must match (AND) for the webhook to fire. Omit or null to fire on every subscribed event.",

@@ -100,6 +100,21 @@ const GROUPS = [
   },
 ];
 
+/**
+ * Both groups' stand-down branch as one predicate, for the startup guard
+ * (engine-patch-status.ts). A half-patched tree is a reachable, supported state here, and it reads
+ * as NOT applied: whichever half is missing still answers an opaque 500 on every id.
+ * Unreadable reads as applied, since a tree we cannot inspect is not evidence of a broken one.
+ */
+function isApplied(wwjsDir = DEFAULT_WWJS) {
+  try {
+    const source = fs.readFileSync(path.join(wwjsDir, CONTACT_PATH), 'utf8');
+    return GROUPS.every((group) => source.includes(group.replace));
+  } catch {
+    return true;
+  }
+}
+
 function applyBlockPatches({ wwjsDir = DEFAULT_WWJS } = {}) {
   const contactFile = path.join(wwjsDir, CONTACT_PATH);
   if (!fs.existsSync(contactFile)) {
@@ -148,4 +163,4 @@ function run() {
 
 if (require.main === module) run();
 
-module.exports = { applyBlockPatches, GROUPS, findFor, replaceFor, CONTACT_PATH };
+module.exports = { applyBlockPatches, isApplied, GROUPS, findFor, replaceFor, CONTACT_PATH };

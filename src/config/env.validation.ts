@@ -9,6 +9,10 @@ type EnvConfig = Record<string, unknown>;
 // DATABASE_NAME still points at the (now unused) default file.
 const MAIN_DB_DEFAULT_PATH = './data/main.sqlite';
 
+// Duplicated rather than imported from configuration.ts (see MAIN_DB_DEFAULT_PATH above); the spec
+// asserts the two agree.
+const MAX_TIMER_MS = 2147483647;
+
 /**
  * Collision guard shared by boot validation (validateEnv below) and the migration CLI
  * (src/database/data-source.ts / data-source-main.ts — the TypeORM CLI never runs ConfigModule's
@@ -284,8 +288,25 @@ export function validateEnv(config: EnvConfig): EnvConfig {
     'SESSION_LEASE_HEARTBEAT_MS',
     'SESSION_TAKEOVER_SWEEP_MS',
     'SESSION_PROXY_TIMEOUT_MS',
+    // Positive-only is the POINT here, not a convention: 0 arms no Puppeteer timer at all, so a
+    // wedged renderer holds the request forever (see wwebjs-lifecycle.ts).
+    'PUPPETEER_PROTOCOL_TIMEOUT_MS',
   ]) {
     checkPositiveInt(key);
+  }
+
+  // The ceiling matters for the same reason from the other side: the docs forbid 0, so an operator
+  // who wants an effectively unlimited budget reaches for a row of nines. Rejected at boot rather
+  // than clamped, so they learn the value they wrote is not the value they would have got.
+  {
+    const raw = str('PUPPETEER_PROTOCOL_TIMEOUT_MS');
+    const n = raw !== undefined && DECIMAL_INTEGER.test(raw) ? Number(raw) : NaN;
+    if (Number.isInteger(n) && n > MAX_TIMER_MS) {
+      errors.push(
+        `PUPPETEER_PROTOCOL_TIMEOUT_MS must not exceed ${MAX_TIMER_MS} ms (got "${raw}"): Node's ` +
+          `timers overflow above that and fire after 1 ms, so the browser never finishes launching`,
+      );
+    }
   }
 
   // A heartbeat that does not fit inside the lease renews too late to matter: the claim lapses

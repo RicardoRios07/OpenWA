@@ -6,7 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { applyBlockPatches, GROUPS, findFor, replaceFor } = require('./patch-wwebjs-block');
+const { applyBlockPatches, isApplied, GROUPS, findFor, replaceFor } = require('./patch-wwebjs-block');
 
 /**
  * The patcher rewrites a file this repository does not own, so what has to hold is that it fires on
@@ -77,6 +77,14 @@ test('patches block and unblock, and is idempotent', () => {
   assert.deepEqual(second.skipped, ['block', 'unblock']);
   assert.equal(fs.readFileSync(file, 'utf8'), patched, 'a second run must not change the file');
 
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('isApplied tracks the transform, false before it runs and true after', () => {
+  const { dir } = fakeWwjs(pristineSource());
+  assert.equal(isApplied(dir), false);
+  applyBlockPatches({ wwjsDir: dir });
+  assert.equal(isApplied(dir), true);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

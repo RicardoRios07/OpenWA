@@ -119,6 +119,7 @@ const MAPPINGS = {
     SendVideoStatusRequest: 'SendVideoStatusDto',
     SendVoiceStatusRequest: 'SendVoiceStatusDto',
     SessionResponse: 'SessionResponseDto',
+    SessionProxy: 'SessionProxyResponseDto',
     SetGroupPictureRequest: 'SetGroupPictureDto',
     SetOwnPresenceRequest: 'SetOwnPresenceDto',
     SetProfileNameRequest: 'SetProfileNameDto',
@@ -129,6 +130,7 @@ const MAPPINGS = {
     TransferChannelOwnershipRequest: 'TransferChannelOwnershipDto',
     UnpinMessageRequest: 'UnpinMessageDto',
     UpdateSessionConfigRequest: 'UpdateSessionConfigDto',
+    UpdateSessionProxyRequest: 'UpdateSessionProxyDto',
     UpsertContactRequest: 'UpsertContactDto',
     UpsertLabelRequest: 'UpsertLabelDto',
     VotePollRequest: 'VotePollDto',
@@ -155,6 +157,7 @@ const MAPPINGS = {
     SearchHit: 'SearchHitDto',
     Session: 'SessionResponseDto',
     SessionConfig: 'SessionConfigResponseDto',
+    SessionProxy: 'SessionProxyResponseDto',
     Webhook: 'WebhookResponseDto',
   },
 };
@@ -166,11 +169,11 @@ const MAPPINGS = {
  * these floors as pairs are added makes the shrink loud.
  */
 const MINIMUM_MAPPED = {
-  'sdk/javascript/src/types.ts': 80,
-  'dashboard/src/services/api.ts': 20,
-  'sdk/python/openwa/types.py': 75,
-  'sdk/go': 76,
-  'sdk/java': 80,
+  'sdk/javascript/src/types.ts': 82,
+  'dashboard/src/services/api.ts': 21,
+  'sdk/python/openwa/types.py': 77,
+  'sdk/go': 78,
+  'sdk/java': 82,
 };
 
 /** Known drift, deliberately not gated yet — each line is a to-adjudicate follow-up. */
@@ -184,6 +187,8 @@ const EXCLUDED = {
       'BY DESIGN: `events` carries no omitempty so the key is always on the wire, which is what lets an empty slice mean "subscribe to nothing": the server keeps [] and only defaults when the key is absent. Adding omitempty would silently turn that into the default subscription',
     UpdateSessionConfigRequest:
       'BY DESIGN: every component is `json:"-"` and MarshalJSON writes the body by hand, because the three fields need an explicit null to reset and Go cannot express "null" and "absent" through one pointer, so the harvester sees no wire fields at all',
+    UpdateSessionProxyRequest:
+      'BY DESIGN, same shape as UpdateSessionConfigRequest above: clearing a proxy needs an explicit null and `omitempty` on a nil pointer omits the key instead, so ProxyURL is `json:"-"` with a ClearProxyURL flag and MarshalJSON writes the body, leaving no wire fields for the harvester to see',
   },
   'sdk/java': {
     UpdateSessionConfigRequest:
@@ -264,6 +269,7 @@ const PYTHON_MAPPING = {
   SendVideoStatusRequest: 'SendVideoStatusDto',
   SendVoiceStatusRequest: 'SendVoiceStatusDto',
   SessionResponse: 'SessionResponseDto',
+  SessionProxy: 'SessionProxyResponseDto',
   SetGroupPictureRequest: 'SetGroupPictureDto',
   SetOwnPresenceRequest: 'SetOwnPresenceDto',
   SetProfileNameRequest: 'SetProfileNameDto',
@@ -274,6 +280,7 @@ const PYTHON_MAPPING = {
   TransferChannelOwnershipRequest: 'TransferChannelOwnershipDto',
   UnpinMessageRequest: 'UnpinMessageDto',
   UpdateSessionConfigRequest: 'UpdateSessionConfigDto',
+  UpdateSessionProxyRequest: 'UpdateSessionProxyDto',
   UpdateWebhookRequest: 'UpdateWebhookDto',
   UpsertContactRequest: 'UpsertContactDto',
   UpsertLabelRequest: 'UpsertLabelDto',
@@ -344,6 +351,7 @@ const GO_MAPPING = {
   SendVideoStatusRequest: 'SendVideoStatusDto',
   SendVoiceStatusRequest: 'SendVoiceStatusDto',
   SessionResponse: 'SessionResponseDto',
+  SessionProxy: 'SessionProxyResponseDto',
   SetGroupPictureRequest: 'SetGroupPictureDto',
   SetOwnPresenceRequest: 'SetOwnPresenceDto',
   SetProfileNameRequest: 'SetProfileNameDto',
@@ -354,6 +362,7 @@ const GO_MAPPING = {
   TransferChannelOwnershipRequest: 'TransferChannelOwnershipDto',
   UnpinMessageRequest: 'UnpinMessageDto',
   UpdateSessionConfigRequest: 'UpdateSessionConfigDto',
+  UpdateSessionProxyRequest: 'UpdateSessionProxyDto',
   UpdateWebhookRequest: 'UpdateWebhookDto',
   UpsertContactRequest: 'UpsertContactDto',
   UpsertLabelRequest: 'UpsertLabelDto',
@@ -428,6 +437,7 @@ const JAVA_MAPPING = {
   SendVideoStatusRequest: 'SendVideoStatusDto',
   SendVoiceStatusRequest: 'SendVoiceStatusDto',
   SessionResponse: 'SessionResponseDto',
+  SessionProxy: 'SessionProxyResponseDto',
   SetGroupPictureRequest: 'SetGroupPictureDto',
   SetOwnPresenceRequest: 'SetOwnPresenceDto',
   SetProfileNameRequest: 'SetProfileNameDto',
@@ -438,6 +448,7 @@ const JAVA_MAPPING = {
   TransferChannelOwnershipRequest: 'TransferChannelOwnershipDto',
   UnpinMessageRequest: 'UnpinMessageDto',
   UpdateSessionConfigRequest: 'UpdateSessionConfigDto',
+  UpdateSessionProxyRequest: 'UpdateSessionProxyDto',
   UpdateWebhookRequest: 'UpdateWebhookDto',
   UpsertContactRequest: 'UpsertContactDto',
   UpsertLabelRequest: 'UpsertLabelDto',

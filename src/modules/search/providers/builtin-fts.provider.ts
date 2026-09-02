@@ -290,6 +290,13 @@ export class BuiltInFtsProvider implements SearchProvider, OnModuleInit {
 
   // --- SQLite FTS5 -----------------------------------------------------------
   // SQL appearance order: MATCH term -> filters -> LIMIT -> OFFSET. Params pushed in that order.
+  // Both dialects tiebreak on `m."id"`: neither `rank`/`score` nor the whole-second `timestamp` is
+  // unique (a one-word query can score every hit identically), and without a total order a paged
+  // walk repeats some hits and never returns others. Measured on Postgres, which sorts a tie group
+  // differently per LIMIT/OFFSET: an ordinary search repeated a row by the third page. SQLite was
+  // already self-consistent, but it keeps the term so the two dialects page alike; its plan is
+  // unchanged (the ORDER BY already needed a temp b-tree) and the extra column costs about a
+  // millisecond a page.
   private buildSqlite(q: SearchQuery, limit: number, offset: number) {
     const ph = BuiltInFtsProvider.sqlitePlaceholder;
     const params: unknown[] = [];
@@ -297,7 +304,7 @@ export class BuiltInFtsProvider implements SearchProvider, OnModuleInit {
     params.push(BuiltInFtsProvider.toFts5Query(q.q));
     this.applyFilters(where, params, q, 'm.', ph);
     const cols = `m."id", m."waMessageId" AS wa_message_id, m."sessionId" AS session_id, m."chatId" AS chat_id, m."from" AS "from", m."body", m."timestamp", m."type", m."direction", snippet(messages_fts, 0, '<mark>', '</mark>', '…', ${MAX_SNIPPET_WORDS}) AS snippet, rank AS score`;
-    const sql = `SELECT ${cols} FROM messages_fts JOIN messages m ON m."rowid" = messages_fts."rowid" WHERE ${where.join(' AND ')} ORDER BY rank, m."timestamp" DESC LIMIT ${ph()} OFFSET ${ph()}`;
+    const sql = `SELECT ${cols} FROM messages_fts JOIN messages m ON m."rowid" = messages_fts."rowid" WHERE ${where.join(' AND ')} ORDER BY rank, m."timestamp" DESC, m."id" DESC LIMIT ${ph()} OFFSET ${ph()}`;
     params.push(limit, offset);
     return { sql, params };
   }
@@ -317,7 +324,7 @@ export class BuiltInFtsProvider implements SearchProvider, OnModuleInit {
     // StartSel/StopSel are pinned to <mark>/</mark> to match the SQLite FTS5 snippet() output, so the
     // SearchHit.snippet contract stays dialect-agnostic (PG's ts_headline defaults to <b>/</b>).
     const cols = `m."id", m."waMessageId" AS wa_message_id, m."sessionId" AS session_id, m."chatId" AS chat_id, m."from", m."body", m."timestamp", m."type", m."direction", ts_headline('simple', m."body", q.query, 'MaxFragments=1, MaxWords=${MAX_SNIPPET_WORDS}, StartSel=<mark>, StopSel=</mark>') AS snippet, ts_rank(m.body_ts, q.query) AS score`;
-    const sql = `SELECT ${cols} FROM messages m, ${ftsTerm} WHERE ${where.join(' AND ')} ORDER BY score DESC, m."timestamp" DESC LIMIT ${ph()} OFFSET ${ph()}`;
+    const sql = `SELECT ${cols} FROM messages m, ${ftsTerm} WHERE ${where.join(' AND ')} ORDER BY score DESC, m."timestamp" DESC, m."id" DESC LIMIT ${ph()} OFFSET ${ph()}`;
     params.push(limit, offset);
     return { sql, params };
   }

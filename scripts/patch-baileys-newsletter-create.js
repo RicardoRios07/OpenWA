@@ -116,4 +116,17 @@ function run() {
 
 if (require.main === module) run();
 
-module.exports = { applyNewsletterCreatePatch, PARSE_FIND, PARSE_REPLACE, MARKER };
+/**
+ * The stand-down branch above as a predicate, for the startup guard (engine-patch-status.ts).
+ * Unreadable reads as applied: a tree we cannot inspect is not evidence of a broken one, and the
+ * apply function treats a missing newsletter.js as nothing to patch rather than a fault.
+ */
+function isApplied(baileysDir = DEFAULT_BAILEYS) {
+  try {
+    return fs.readFileSync(path.join(baileysDir, NEWSLETTER_PATH), 'utf8').includes(MARKER);
+  } catch {
+    return true;
+  }
+}
+
+module.exports = { applyNewsletterCreatePatch, isApplied, PARSE_FIND, PARSE_REPLACE, MARKER };

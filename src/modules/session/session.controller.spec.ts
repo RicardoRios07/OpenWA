@@ -51,7 +51,6 @@ describe('SessionController — create() response contract', () => {
 
     expect(result).not.toHaveProperty('config');
     expect(result).not.toHaveProperty('proxyUrl');
-    expect(result).not.toHaveProperty('proxyType');
     expect(result).not.toHaveProperty('lastActiveAt');
   });
 
@@ -340,5 +339,55 @@ describe('SessionController — pinChat', () => {
     await controller.pinChat('sess-uuid-1', { chatId: '628123@c.us', pin: false });
 
     expect(sessionService.pinChat).toHaveBeenCalledWith('sess-uuid-1', '628123@c.us', false);
+  });
+});
+
+describe('SessionController — proxy() response contract', () => {
+  const proxyProjection = {
+    enabled: true,
+    proxyType: 'http' as const,
+    proxyHost: 'proxy.internal:8080',
+    hasCredentials: true,
+  };
+
+  let sessionService: { getProxy: jest.Mock; updateProxy: jest.Mock };
+  let auditService: { logInfo: jest.Mock };
+  let controller: SessionController;
+
+  beforeEach(() => {
+    sessionService = {
+      getProxy: jest.fn().mockResolvedValue(proxyProjection),
+      updateProxy: jest.fn().mockResolvedValue(proxyProjection),
+    };
+    auditService = { logInfo: jest.fn().mockResolvedValue(undefined) };
+    controller = new SessionControllerClass(
+      sessionService as unknown as SessionService,
+      auditService as unknown as AuditService,
+    );
+  });
+
+  it('getProxy returns the masked projection without proxyUrl', async () => {
+    const result = await controller.getProxy('sess-uuid-1');
+
+    expect(result).toEqual(proxyProjection);
+    expect(result).not.toHaveProperty('proxyUrl');
+  });
+
+  it('updateProxy audits the masked state, not the request body', async () => {
+    await controller.updateProxy('sess-uuid-1', {
+      proxyUrl: 'http://user:secret@proxy.internal:8080',
+    });
+
+    expect(auditService.logInfo).toHaveBeenCalledWith(
+      AuditAction.SESSION_CONFIG_UPDATED,
+      expect.objectContaining({
+        sessionId: 'sess-uuid-1',
+        metadata: {
+          proxyEnabled: true,
+          proxyType: 'http',
+          proxyHost: 'proxy.internal:8080',
+        },
+      }),
+    );
   });
 });

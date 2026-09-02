@@ -247,3 +247,57 @@ describe('every JSON request body publishes an object schema', () => {
     expect(primitives).toEqual([]);
   });
 });
+
+/**
+ * A published `example` is what a reader pastes into Swagger's "Try it out", so an example its own
+ * route rejects is worse than no example at all: the first request against a new endpoint answers
+ * `400`, and the schema that caused it says nothing about why. `CreateWebhookDto.secret` offered a
+ * 15-character example under a 16-character floor, which is exactly how it was found
+ * ([#1491](https://github.com/rmyndharis/OpenWA/issues/1491)).
+ *
+ * Only length is checked here. It is the constraint a hand-written example actually drifts past, and
+ * it needs no validator: the bound and the example sit in the same schema object. The sweep covers
+ * the top-level string properties of each component schema, which is where a hand-written
+ * `@ApiProperty` example lives; nested and composed schemas are out of its reach.
+ */
+describe('every published string example fits its own schema', () => {
+  type Example = { where: string; example: string; min?: number; max?: number };
+
+  const examples = (): Example[] => {
+    const schemas = (snapshot().components?.schemas ?? {}) as Record<
+      string,
+      { properties?: Record<string, { type?: string; example?: unknown; minLength?: number; maxLength?: number }> }
+    >;
+    const out: Example[] = [];
+    for (const [name, schema] of Object.entries(schemas)) {
+      for (const [property, spec] of Object.entries(schema.properties ?? {})) {
+        if (spec.type === 'string' && typeof spec.example === 'string') {
+          out.push({ where: `${name}.${property}`, example: spec.example, min: spec.minLength, max: spec.maxLength });
+        }
+      }
+    }
+    return out;
+  };
+
+  const bounded = (): Example[] => examples().filter(({ min, max }) => min !== undefined || max !== undefined);
+
+  // Guards the assertion below twice over: an extractor that found no examples would pass it
+  // vacuously, and so would one that found examples but never a schema that bounds their length.
+  it('finds the document’s string examples, and the bounded ones among them', () => {
+    expect(examples().length).toBeGreaterThan(200);
+    expect(bounded().length).toBeGreaterThan(9);
+  });
+
+  it('publishes none of them outside its own minLength/maxLength', () => {
+    const violations = bounded()
+      .filter(
+        ({ example, min, max }) =>
+          (min !== undefined && example.length < min) || (max !== undefined && example.length > max),
+      )
+      .map(
+        ({ where, example, min, max }) =>
+          `${where}: ${JSON.stringify(example)} is ${example.length} chars, bounds [${min ?? '-'}, ${max ?? '-'}]`,
+      );
+    expect(violations).toEqual([]);
+  });
+});

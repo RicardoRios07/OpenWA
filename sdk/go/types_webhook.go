@@ -87,6 +87,9 @@ type WebhookFilters struct {
 }
 
 // CreateWebhookRequest registers a webhook. RetryCount is 0–5 (default 3).
+//
+// Secret is optional and signs every delivery as X-OpenWA-Signature: sha256=<hex>. The gateway
+// enforces a 16-character minimum and answers 400 below it; omit Secret for unsigned deliveries.
 type CreateWebhookRequest struct {
 	URL        string            `json:"url"`
 	Events     []string          `json:"events"`
@@ -106,6 +109,9 @@ type CreateWebhookRequest struct {
 // Filters cannot use the same trick — a nil pointer marshals away under omitempty, and dropping
 // omitempty would send "filters": null on EVERY update, clearing filters nobody asked to touch. Set
 // ClearFilters instead; MarshalJSON turns it into the explicit null the server reads.
+//
+// The gateway's 16-character minimum on Secret applies here too, with one exception: the empty
+// string is the documented "clear the secret" value and is accepted.
 type UpdateWebhookRequest struct {
 	URL        string             `json:"url,omitempty"`
 	Events     []string           `json:"events,omitempty"`

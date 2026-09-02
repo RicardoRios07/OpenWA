@@ -76,6 +76,22 @@ export class MessageController {
   })
   @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Max messages to return (default 50)' })
   @ApiQuery({ name: 'offset', required: false, type: Number, description: 'Offset for pagination' })
+  @ApiQuery({
+    name: 'inlineMedia',
+    required: false,
+    type: Boolean,
+    description:
+      "Set false to omit inline media payloads, leaving each row's { omitted, sizeBytes } marker and " +
+      'the media endpoint. The inline-media budget is per response, so a paged walk pulls it afresh on ' +
+      'every page; default true.',
+  })
+  @ApiQuery({
+    name: 'after',
+    required: false,
+    description:
+      'Keyset cursor: the id of the last message of the previous page. Anchors the window to a row ' +
+      'rather than a count, so a message arriving mid-walk cannot shift it. Takes precedence over offset.',
+  })
   @ApiResponse({
     status: 200,
     description: 'Message history',
@@ -87,12 +103,18 @@ export class MessageController {
     @Query('from') from?: string,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
+    @Query('after') after?: string,
+    @Query('inlineMedia') inlineMedia?: string,
   ) {
     return this.messageService.getMessages(sessionId, {
       chatId,
       from,
       limit: limit ? parseInt(limit, 10) : undefined,
       offset: offset ? parseInt(offset, 10) : undefined,
+      after,
+      // Opt-out, so anything but an explicit false keeps today's behaviour. Same string pair the
+      // opt-in flags on this controller accept, read the other way round.
+      inlineMedia: inlineMedia !== 'false' && inlineMedia !== '0',
     });
   }
 

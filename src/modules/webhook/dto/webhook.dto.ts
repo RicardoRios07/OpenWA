@@ -124,8 +124,16 @@ export class CreateWebhookDto {
   events?: string[];
 
   @ApiPropertyOptional({
-    description: 'Secret key for HMAC signature verification',
-    example: 'your-secret-key',
+    description:
+      'Secret key for HMAC signature verification. Never returned by any webhook route; it is used to ' +
+      'compute the `X-OpenWA-Signature: sha256=<hex>` header on every delivery.',
+    // Both bounds are spelled out because @MinLength/@MaxLength do not reach the published schema on
+    // their own, and the example must satisfy them: the previous 15-character one was rejected by the
+    // very route that offered it, so pasting it back from Swagger answered 400
+    // ([#1491](https://github.com/rmyndharis/OpenWA/issues/1491)).
+    minLength: 16,
+    maxLength: 255,
+    example: 'your-webhook-signing-secret',
   })
   @IsOptional()
   @IsString()
@@ -136,7 +144,9 @@ export class CreateWebhookDto {
   secret?: string;
 
   @ApiPropertyOptional({
-    description: 'Custom headers to include in webhook requests',
+    description:
+      'Custom headers to include in webhook requests. Never returned by any webhook route. At delivery, ' +
+      '`content-type` and `x-openwa-*` names are stripped so a custom header cannot shadow a system one.',
     example: { 'X-Custom-Header': 'value' },
   })
   @IsOptional()
@@ -190,7 +200,20 @@ export class UpdateWebhookDto {
   @IsIn([...WEBHOOK_EVENTS, '*'], { each: true })
   events?: string[];
 
-  @ApiPropertyOptional({ description: 'Secret key for HMAC signature' })
+  @ApiPropertyOptional({
+    // No `minLength` here, unlike create: this route also accepts the empty string as "clear the
+    // secret", so a 16 in the schema would reject a value the route honours. The floor still applies
+    // to every other value, which only the description can say.
+    description:
+      'Secret key for HMAC signature. At least 16 characters, or an empty string to clear it. ' +
+      'Never returned by any webhook route.',
+    maxLength: 255,
+    // Deliberately no `example`, unlike create. This route patches a webhook that is already
+    // signing deliveries, and a prefilled secret submitted whole would replace a working key with
+    // a published one: every later delivery still verifies, so nothing looks broken while the
+    // signature is forgeable by anyone reading these docs. The floor belongs in the description
+    // here, where it costs a `400` to ignore rather than a silent downgrade.
+  })
   @IsOptional()
   @IsString()
   // Same floor as create: a short secret is brute-forcible from one observed signature. The
@@ -201,7 +224,10 @@ export class UpdateWebhookDto {
   @MaxLength(255)
   secret?: string;
 
-  @ApiPropertyOptional({ description: 'Custom headers' })
+  @ApiPropertyOptional({
+    description: 'Custom headers. Replaces the stored map wholesale. Never returned by any webhook route.',
+    example: { 'X-Custom-Header': 'value' },
+  })
   @IsOptional()
   @IsHeaderMap()
   headers?: Record<string, string>;

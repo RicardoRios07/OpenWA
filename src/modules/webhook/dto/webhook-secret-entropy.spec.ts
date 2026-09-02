@@ -68,3 +68,39 @@ describe('UpdateWebhookDto secret entropy', () => {
     expect(errors.some(e => e.property === 'secret')).toBe(true);
   });
 });
+
+/**
+ * The example Swagger renders is the body most readers send first, so the floor above has to hold for
+ * it too. It did not: the published example was 15 characters, and pasting it back through "Try it
+ * out" answered `400` naming a `minLength` the schema never declared, which reads as the API dropping
+ * the field rather than refusing it ([#1491](https://github.com/rmyndharis/OpenWA/issues/1491)).
+ *
+ * Read straight off the decorator rather than restating the value, so an example edited in the DTO is
+ * still the one under test.
+ */
+describe('the documented secret example', () => {
+  const exampleOf = (target: object, property: string): unknown =>
+    (Reflect.getMetadata('swagger/apiModelProperties', target, property) as { example?: unknown } | undefined)?.example;
+
+  it('is published on the create route', () => {
+    expect(typeof exampleOf(CreateWebhookDto.prototype, 'secret')).toBe('string');
+  });
+
+  // Scoped to `secret` like the suites above: a required field added to this DTO later would fail a
+  // whole-object assertion here for a reason that has nothing to do with the example under test.
+  it('passes the validation the create route applies to it', async () => {
+    const dto = new CreateWebhookDto();
+    dto.url = 'https://receiver.example.com/hook';
+    dto.events = ['message.received'];
+    dto.secret = exampleOf(CreateWebhookDto.prototype, 'secret') as string;
+    const errors = await validate(dto);
+    expect(errors.filter(e => e.property === 'secret')).toEqual([]);
+  });
+
+  // The update route publishes no example on purpose (see the DTO), so Swagger renders the generic
+  // `"string"` there. That is a `400`, which is the safe way to be wrong on a route that patches a
+  // key already in use.
+  it('is deliberately absent from the update route', () => {
+    expect(exampleOf(UpdateWebhookDto.prototype, 'secret')).toBeUndefined();
+  });
+});

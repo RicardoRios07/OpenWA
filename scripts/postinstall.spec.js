@@ -17,9 +17,29 @@ const { sanitizeEnv, planSteps, failureReason, run } = require('./postinstall.js
 
 const OK = { status: 0, signal: null, error: null };
 
+/** Every patcher that actually ships, so the order test below cannot be told a stale list. */
+const PATCHERS_ON_DISK = fs
+  .readdirSync(__dirname)
+  .filter(f => f.startsWith('patch-') && f.endsWith('.js') && !f.endsWith('.spec.js'))
+  .sort();
+
+/** The sequence planSteps must keep. Every patcher on disk has to appear here; asserted below. */
+const EXPECTED_PATCHER_ORDER = [
+  'patch-wwebjs-201832.js',
+  'patch-wwebjs-newsletter-preview.js',
+  'patch-wwebjs-status.js',
+  'patch-wwebjs-ready-sync.js',
+  'patch-wwebjs-participant-arity.js',
+  'patch-wwebjs-block.js',
+  'patch-wwebjs-group-description.js',
+  'patch-baileys-appstate.js',
+  'patch-baileys-newsletter-create.js',
+];
+
 /** Bare temp dir optionally holding a dashboard/ and/or the patch scripts. */
 function makeRoot({
   dashboard = false,
+  patchers = [],
   patcher = false,
   previewPatcher = false,
   statusPatcher = false,
@@ -31,6 +51,7 @@ function makeRoot({
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'openwa-postinstall-'));
   if (dashboard) fs.mkdirSync(path.join(root, 'dashboard'));
   if (
+    patchers.length ||
     patcher ||
     previewPatcher ||
     statusPatcher ||
@@ -40,6 +61,9 @@ function makeRoot({
     baileysNewsletterPatcher
   ) {
     fs.mkdirSync(path.join(root, 'scripts'));
+  }
+  for (const name of patchers) {
+    fs.writeFileSync(path.join(root, 'scripts', name), '// stub\n');
   }
   if (patcher) {
     fs.writeFileSync(path.join(root, 'scripts', 'patch-wwebjs-201832.js'), '// stub\n');
@@ -138,29 +162,28 @@ test('planSteps: participant-arity patcher plans its own best-effort repair', ()
 });
 
 test('planSteps: dashboard and all patchers run in stable order', () => {
-  const steps = planSteps(
-    makeRoot({
-      dashboard: true,
-      patcher: true,
-      previewPatcher: true,
-      statusPatcher: true,
-      readySyncPatcher: true,
-      participantArityPatcher: true,
-      baileysPatcher: true,
-      baileysNewsletterPatcher: true,
-    }),
+  // The fixture is derived rather than hand-listed. A hand-listed one never creates the file for a
+  // patcher added later, so planSteps never plans it, the count assertion stays green, and the test
+  // quietly stops covering what it is named for. The block and group-description patchers both
+  // reached that state.
+  assert.deepEqual(
+    [...EXPECTED_PATCHER_ORDER].sort(),
+    PATCHERS_ON_DISK,
+    'a patcher was added or removed: update EXPECTED_PATCHER_ORDER at the position planSteps runs it',
   );
-  // One assertion per patcher on disk: the test is named for ALL of them, so a patcher that is
-  // planned but never named here would leave the claim false while the suite stayed green.
-  assert.equal(steps.length, 8);
+
+  const steps = planSteps(makeRoot({ dashboard: true, patchers: PATCHERS_ON_DISK }));
+
+  assert.equal(steps.length, EXPECTED_PATCHER_ORDER.length + 1);
   assert.equal(steps[0].command, 'npm ci');
-  assert.match(steps[1].args[0], /patch-wwebjs-201832\.js$/);
-  assert.match(steps[2].args[0], /patch-wwebjs-newsletter-preview\.js$/);
-  assert.match(steps[3].args[0], /patch-wwebjs-status\.js$/);
-  assert.match(steps[4].args[0], /patch-wwebjs-ready-sync\.js$/);
-  assert.match(steps[5].args[0], /patch-wwebjs-participant-arity\.js$/);
-  assert.match(steps[6].args[0], /patch-baileys-appstate\.js$/);
-  assert.match(steps[7].args[0], /patch-baileys-newsletter-create\.js$/);
+  assert.deepEqual(
+    steps.slice(1).map(step => path.basename(step.args[0])),
+    EXPECTED_PATCHER_ORDER,
+  );
+  for (const step of steps.slice(1)) {
+    assert.equal(step.command, process.execPath);
+    assert.deepEqual(step.args.slice(1), ['--best-effort']);
+  }
 });
 
 test('run: nothing to do exits 0 and never spawns', () => {

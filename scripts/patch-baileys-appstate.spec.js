@@ -6,7 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { applyAppStatePatch, LOOP_FIND } = require('./patch-baileys-appstate');
+const { applyAppStatePatch, isApplied, LOOP_FIND } = require('./patch-baileys-appstate');
 
 /**
  * Same contract as the sibling patcher specs: the patcher rewrites a file this repository does not
@@ -37,6 +37,13 @@ test('bounds the loop on an empty decode', () => {
   assert.match(patched, /if \(!Object\.keys\(decoded\)\.length\) \{\n\s+break;/);
   // The original walk is preserved, not replaced.
   assert.ok(patched.includes('for (const key in decoded) {'));
+});
+
+test('isApplied tracks the transform', () => {
+  const { dir } = fakeBaileys(REAL_SHAPE);
+  assert.equal(isApplied(dir), false);
+  applyAppStatePatch(dir);
+  assert.equal(isApplied(dir), true);
 });
 
 test('is idempotent — a second run does not double-patch', () => {

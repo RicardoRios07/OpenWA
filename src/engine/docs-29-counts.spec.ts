@@ -150,9 +150,12 @@ describe('docs/29 counts match the capability matrix', () => {
       wrong.push(`not-available span: 29.8 says ${spanning[1]}, 29.4 says ${across[1]}`);
 
     // 29.8's wwjs patch-dependency count must match the ✅🔧ⁿ marks 29.4 actually carries. 🔧⁶ is the
-    // one baileys row-level mark, so it is excluded from the wwjs figure.
+    // one baileys row-level mark, so it is excluded from the wwjs figure. The class spans every
+    // superscript a patcher can carry rather than the ones that happen to be row-marked today: a
+    // narrower class makes a NEW mark invisible here, so adding a patcher and marking its row would
+    // read as drift in the claim rather than agreement.
     const contract = section(/^## 29\.4 /m, /^## 29\.5 /m);
-    const marks = [...contract.matchAll(/✅🔧([¹²³⁴⁵⁶⁷])/g)].map(m => m[1]);
+    const marks = [...contract.matchAll(/✅🔧([¹²³⁴⁵⁶⁷⁸⁹])/g)].map(m => m[1]);
     const wwjsMarks = marks.filter(m => m !== '⁶').length;
     const claimed = doc.match(/\*\*(\d+) wwjs cells carry an explicit patch dependency\*\*/);
     if (!claimed) wrong.push('patch dependency count: phrasing no longer found');

@@ -40,6 +40,17 @@ export function isValidPairingPhone(phone: string): boolean {
   return /^[0-9]{6,15}$/.test(phone.trim());
 }
 
+const PROXY_PROTOCOLS = new Set(['http:', 'https:', 'socks4:', 'socks5:']);
+
+/** Matches the gateway's accepted per-session proxy URL schemes. */
+export function isValidProxyUrl(url: string): boolean {
+  try {
+    return PROXY_PROTOCOLS.has(new URL(url.trim()).protocol);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The status filter's groups do not map one-to-one onto engine statuses — they are the operator's
  * mental model, not the engine's. `connecting` covers the three transient states, and `inactive`

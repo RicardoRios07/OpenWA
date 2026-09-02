@@ -3033,7 +3033,11 @@ describe('WhatsAppWebJsAdapter inbound media (MEDIA_DOWNLOAD_ENABLED=false)', ()
     expect(msg.media?.omitted).toBeUndefined();
   });
 
-  it('still emits the echo (without media) when the own-send media download fails', async () => {
+  it('emits the echo with the omitted marker when the own-send media download fails', async () => {
+    // Pinned on: the disabled exit builds an identical marker, so an ambient 'false' would let this
+    // pass without ever attempting a download. The describe's afterEach restores it.
+    process.env[ENV] = 'true';
+
     const adapter = new WhatsAppWebJsAdapter({
       sessionId: 'sess-echo-media-fail',
       sessionDataPath: './data/sessions',
@@ -3071,9 +3075,58 @@ describe('WhatsAppWebJsAdapter inbound media (MEDIA_DOWNLOAD_ENABLED=false)', ()
     expect(onMessageCreate).toHaveBeenCalledTimes(1);
     // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     const msg = onMessageCreate.mock.calls[0][0] as { media?: unknown };
-    // The failure is contained at the call site: the echo still fires, just without the media field
-    // (the omitted marker is synthesized downstream, in SessionService's persistence).
-    expect(msg.media).toBeUndefined();
+    // The failure is contained in capInboundMediaFor: the echo still fires, carrying the declared-only
+    // marker so a consumer can tell "the image was lost" from "there was no image".
+    expect(msg.media).toEqual({ mimetype: 'image/png', omitted: true, sizeBytes: 3 });
+    expect(mockMsg.downloadMedia).toHaveBeenCalled(); // the disabled exit builds the same marker
+  });
+
+  it('emits the omitted marker when an inbound media download fails', async () => {
+    // The received path guards its assignment with `if (capped)`, so it drops the field on its own if the
+    // adapter ever stops returning an envelope. A webhook consumer filtering on hasMedia sees nothing then.
+    process.env[ENV] = 'true';
+
+    const adapter = new WhatsAppWebJsAdapter({
+      sessionId: 'sess-inbound-media-fail',
+      sessionDataPath: './data/sessions',
+      puppeteer: {},
+    });
+    const client = Object.assign(new EventEmitter(), {
+      info: { wid: { user: '628123' }, pushname: 'Tester' },
+      getState: jest.fn().mockResolvedValue(WAState.CONNECTED),
+      pupPage: { evaluate: jest.fn().mockResolvedValue(true) },
+    });
+    (adapter as unknown as { client: unknown }).client = client;
+    const onMessage = jest.fn();
+    (adapter as unknown as { callbacks: unknown }).callbacks = { onMessage };
+    (adapter as unknown as { setupEventHandlers: () => void }).setupEventHandlers();
+
+    const mockMsg = {
+      id: { _serialized: 'IN_MEDIA_FAIL_1' },
+      from: '628111@c.us',
+      to: '628123@c.us',
+      body: '',
+      type: 'image',
+      timestamp: 1700000080,
+      fromMe: false,
+      hasMedia: true,
+      _data: { mimetype: 'image/jpeg', size: 2048 },
+      // The minified page-side throw a WhatsApp Web build surfaces through Puppeteer.
+      downloadMedia: jest.fn().mockRejectedValue(new Error('t: t')),
+      getContact: jest.fn().mockResolvedValue(null),
+      hasQuotedMsg: false,
+    };
+
+    client.emit('message', mockMsg);
+    await new Promise(r => setImmediate(r));
+    await new Promise(r => setImmediate(r));
+
+    expect(onMessage).toHaveBeenCalledTimes(1);
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    const msg = onMessage.mock.calls[0][0] as { media?: unknown; type?: string };
+    expect(msg.type).toBe('image');
+    expect(msg.media).toEqual({ mimetype: 'image/jpeg', omitted: true, sizeBytes: 2048 });
+    expect(mockMsg.downloadMedia).toHaveBeenCalled(); // the disabled exit builds the same marker
   });
 });
 
@@ -4698,7 +4751,7 @@ describe('WhatsAppWebJsAdapter inbound media concurrency (slot held until the re
     expect(maxInFlight).toBe(1);
   });
 
-  it('propagates a rejecting download to the caller and releases the slot for the next download', async () => {
+  it('returns the omitted marker for a rejecting download and releases the slot for the next one', async () => {
     process.env.INBOUND_MEDIA_CONCURRENCY = '1';
     process.env.MEDIA_DOWNLOAD_TIMEOUT_MS = '10000'; // long: we want the reject, not the timeout
     process.env.MEDIA_DOWNLOAD_MAX_BYTES = String(10 * 1024 * 1024);
@@ -4720,7 +4773,12 @@ describe('WhatsAppWebJsAdapter inbound media concurrency (slot held until the re
     const cap = (m: unknown): Promise<unknown> =>
       (adapter as unknown as { capInboundMediaFor: (msg: unknown) => Promise<unknown> }).capInboundMediaFor(m);
 
-    await expect(cap(makeMsg('bad', 'reject'))).rejects.toThrow('download blew up');
+    // A rejection is the same "no usable media" outcome as the disabled, pre-gate and timeout exits, and
+    // reports it the same way. It used to be the one download outcome with no exit of its own: the caller's
+    // race adopted it and rethrew, so every call site dropped the media field entirely.
+    await expect(cap(makeMsg('bad', 'reject'))).resolves.toEqual(
+      expect.objectContaining({ mimetype: 'image/png', omitted: true, sizeBytes: 100 }),
+    );
     // Slot must have been released despite the rejection — the next download proceeds and resolves.
     const media = (await cap(makeMsg('good', 'resolve'))) as { mimetype: string; data: string };
     expect(media.data).toBe(Buffer.from('ok').toString('base64'));
@@ -5566,15 +5624,92 @@ describe('WhatsAppWebJsAdapter page transport error detection (wedged page fast-
     },
   );
 
-  it('detects a transport error from a getter too (getContacts)', async () => {
+  it('converts a transport error from a getter into a 503 (getContacts)', async () => {
     const getContacts = jest.fn().mockRejectedValue(new Error('Protocol error: Target closed'));
     const { adapter, onDisconnected } = readyAdapter({ getContacts });
 
-    await expect(adapter.getContacts()).rejects.toThrow('Protocol error: Target closed');
-
-    expect(onDisconnected).toHaveBeenCalledTimes(1);
+    await expect(adapter.getContacts()).rejects.toBeInstanceOf(EngineTransportError);
     expect(onDisconnected).toHaveBeenCalledWith('Page transport error during getContacts');
-    expect(adapter.getStatus()).toBe(EngineStatus.DISCONNECTED);
+  });
+
+  // #1476: a raw wwebjs contact carries its wid under `_serialized` or, on a renamed WA Web build,
+  // under `$1` (see readWid). Both shapes must map to the same library-agnostic Contact.
+  it('maps both the `_serialized` and the renamed `$1` id shapes in getContacts', async () => {
+    const raw = [
+      {
+        id: { _serialized: '111@c.us' },
+        name: 'Alice',
+        pushname: 'Ally',
+        number: '111',
+        isMyContact: true,
+        isBlocked: false,
+      },
+      { id: { $1: '222@c.us' }, name: 'Bob', pushname: 'Bobby', number: '222', isMyContact: false, isBlocked: true },
+    ];
+    const getContacts = jest.fn().mockResolvedValue(raw);
+    const { adapter } = readyAdapter({ getContacts });
+
+    await expect(adapter.getContacts()).resolves.toEqual([
+      { id: '111@c.us', name: 'Alice', pushName: 'Ally', number: '111', isMyContact: true, isBlocked: false },
+      { id: '222@c.us', name: 'Bob', pushName: 'Bobby', number: '222', isMyContact: false, isBlocked: true },
+    ]);
+  });
+
+  // #1476: an entry with no readable wid under either name (a shape wwebjs itself sometimes returns)
+  // must not reject the whole address book — it is dropped and counted instead.
+  it('skips a contact with no readable id and counts it in the warn log, keeping the rest', async () => {
+    const good1 = { id: { _serialized: '111@c.us' }, name: 'Alice', number: '111' };
+    const unreadable = { id: {}, name: 'Ghost', number: '000' };
+    const good2 = { id: { $1: '222@c.us' }, name: 'Bob', number: '222' };
+    const getContacts = jest.fn().mockResolvedValue([good1, unreadable, good2]);
+    const { adapter } = readyAdapter({ getContacts });
+    const logger = (adapter as unknown as { logger: { warn: (m: string) => void } }).logger;
+    const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => undefined);
+
+    const contacts = await adapter.getContacts();
+
+    expect(contacts.map(c => c.id)).toEqual(['111@c.us', '222@c.us']);
+    expect(warnSpy).toHaveBeenCalledWith('Skipped 1 contact(s) without a serialized id');
+  });
+
+  // A rejection that carries no transport-death signature is an ordinary failure, not a dead page —
+  // it must reach the caller unchanged and leave the session READY, unlike the 503 case above.
+  it('propagates a non-transport rejection from getContacts untouched and leaves the session READY', async () => {
+    const getContacts = jest.fn().mockRejectedValue(new Error('Evaluation failed: TypeError: x is not a function'));
+    const { adapter, onDisconnected } = readyAdapter({ getContacts });
+
+    await expect(adapter.getContacts()).rejects.toThrow('Evaluation failed: TypeError: x is not a function');
+
+    expect(onDisconnected).not.toHaveBeenCalled();
+    expect(adapter.getStatus()).toBe(EngineStatus.READY);
+  });
+
+  it('getContactById maps the renamed `$1` id shape too', async () => {
+    const getContactById = jest.fn().mockResolvedValue({
+      id: { $1: '333@c.us' },
+      name: 'Cara',
+      pushname: 'C',
+      number: '333',
+      isMyContact: true,
+      isBlocked: false,
+    });
+    const { adapter } = readyAdapter({ getContactById });
+
+    await expect(adapter.getContactById('333@c.us')).resolves.toEqual({
+      id: '333@c.us',
+      name: 'Cara',
+      pushName: 'C',
+      number: '333',
+      isMyContact: true,
+      isBlocked: false,
+    });
+  });
+
+  it('getContactById returns null for an entry with no readable id', async () => {
+    const getContactById = jest.fn().mockResolvedValue({ id: {}, name: 'Ghost', number: '000' });
+    const { adapter } = readyAdapter({ getContactById });
+
+    await expect(adapter.getContactById('000@c.us')).resolves.toBeNull();
   });
 
   // joinGroupViaInviteCode answers 503 for a transport failure (a refused invite is no longer

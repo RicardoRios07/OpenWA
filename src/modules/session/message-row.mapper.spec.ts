@@ -40,9 +40,8 @@ describe('buildMessageMetadata', () => {
   });
 
   describe('omitted-media synthesis', () => {
-    // A wwjs own-send echo whose media download failed and the history backfill both arrive without
-    // the payload; without a marker the row renders as an empty bubble and drops out of the by-type
-    // stats.
+    // The history backfill arrives without the payload; without a marker the row renders as an empty
+    // bubble and drops out of the by-type stats.
     it.each([...MEDIA_MESSAGE_TYPES])('synthesizes a placeholder for a media-typed %s when asked', type => {
       expect(buildMessageMetadata(msg({ type: type as MessageType }), true)).toEqual({
         media: { mimetype: '', omitted: true },
