@@ -682,6 +682,7 @@
     "forwardMessageId": "Message ID",
     "forwardMessageIdHint": "ID of the message to forward",
     "bulkRecipients": "Recipients",
+    "bulkRecipientsUpload": "Upload CSV/TXT",
     "bulkRecipientsPlaceholder": "+62812345678",
     "bulkRecipientsHint": "One phone number or chat ID per line (max 100)",
     "bulkRecipientsCount": "Recipients: {{count}}",

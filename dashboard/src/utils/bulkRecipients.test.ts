@@ -15,6 +15,12 @@ test('passes full chat IDs through untouched', () => {
   assert.deepEqual(parseBulkRecipients('123@lid\n4567890-1234@g.us'), ['123@lid', '4567890-1234@g.us']);
 });
 
+test('splits on CRLF and on bare CR, which an uploaded file can carry', () => {
+  const expected = ['628111222333@c.us', '628222333444@c.us'];
+  assert.deepEqual(parseBulkRecipients('628111222333\r\n628222333444'), expected);
+  assert.deepEqual(parseBulkRecipients('628111222333\r628222333444'), expected);
+});
+
 test('de-dupes entries that normalize to the same chat ID', () => {
   const text = '+62 812 3456 78\n62812345678\n62812345678@c.us';
   assert.deepEqual(parseBulkRecipients(text), ['62812345678@c.us']);

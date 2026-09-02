@@ -691,6 +691,7 @@
     "forwardMessageId": "מזהה הודעה",
     "forwardMessageIdHint": "מזהה ההודעה להעברה",
     "bulkRecipients": "נמענים",
+    "bulkRecipientsUpload": "העלאת CSV/TXT",
     "bulkRecipientsPlaceholder": "+62812345678",
     "bulkRecipientsHint": "מספר טלפון או מזהה צ'אט אחד בכל שורה (עד 100)",
     "bulkRecipientsCount": "נמענים: {{count}}",
