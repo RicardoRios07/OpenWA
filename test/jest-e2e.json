@@ -7,5 +7,9 @@
   "transform": {
     "^.+\\.(t|j)s$": "ts-jest"
   },
-  "transformIgnorePatterns": ["node_modules/(?!(archiver|compress-commons|crc32-stream|zip-stream|archiver-utils)/)"]
+  "transformIgnorePatterns": [
+    "node_modules/(?!(archiver|compress-commons|crc32-stream|zip-stream|archiver-utils|https-proxy-agent|socks-proxy-agent|agent-base|proxy-agent-negotiate)/)"
+  ],
+  "maxWorkers": 1,
+  "globalTeardown": "<rootDir>/teardown-e2e.ts"
 }

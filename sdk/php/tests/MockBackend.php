@@ -46,6 +46,16 @@ class MockBackend
         return $this;
     }
 
+    /**
+     * Queue a raw (non-JSON) response body for the next matching call — e.g.
+     * the binary stream of a stored status media.
+     */
+    public function onRaw(int $status, string $body, array $headers = []): self
+    {
+        $this->mock->append(new Response($status, $headers, $body));
+        return $this;
+    }
+
     public function httpClient(): GuzzleClient
     {
         // Record at the handler layer (innermost). The handler always sees the
@@ -69,6 +79,20 @@ class MockBackend
             'apiKey' => $apiKey,
             'httpClient' => $this->httpClient(),
         ]);
+    }
+
+    /**
+     * The raw request body string, for assertions that must distinguish JSON {} from []
+     * (callAt() decodes associatively, which collapses both to an empty PHP array).
+     *
+     * @return string
+     */
+    public function rawBody(int $index): string
+    {
+        if (!isset($this->recorded[$index])) {
+            return '';
+        }
+        return (string) $this->recorded[$index]->getBody();
     }
 
     /** @return array<string,mixed> */

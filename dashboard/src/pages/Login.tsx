@@ -8,7 +8,7 @@ import { API_BASE_URL } from '../services/api';
 import './Login.css';
 
 interface LoginProps {
-  onLogin: (apiKey: string) => void;
+  onLogin: (apiKey: string, role?: string) => void;
 }
 
 export function Login({ onLogin }: LoginProps) {
@@ -42,7 +42,10 @@ export function Login({ onLogin }: LoginProps) {
       });
 
       if (response.ok) {
-        onLogin(apiKey);
+        // The validate body already carries the key's role — hand it up so the app can set it
+        // directly instead of re-validating the same key a second time.
+        const data: { role?: string } = await response.json().catch(() => ({}));
+        onLogin(apiKey, data.role);
       } else {
         const errorData = await response.json().catch(() => ({}));
         setError(errorData.message || t('login.invalidKey'));

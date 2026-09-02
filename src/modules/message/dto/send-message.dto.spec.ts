@@ -1,6 +1,20 @@
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
-import { SendTextMessageDto, SendMediaMessageDto } from './send-message.dto';
+import {
+  SendTextMessageDto,
+  SendMediaMessageDto,
+  SendAudioMessageDto,
+  SEND_TEXT_BODY_EXAMPLES,
+  SEND_IMAGE_BODY_EXAMPLES,
+  SEND_VIDEO_BODY_EXAMPLES,
+  SEND_AUDIO_BODY_EXAMPLES,
+  SEND_DOCUMENT_BODY_EXAMPLES,
+  SEND_STICKER_BODY_EXAMPLES,
+  SEND_LOCATION_BODY_EXAMPLES,
+  SEND_CONTACT_BODY_EXAMPLES,
+  SEND_POLL_BODY_EXAMPLES,
+} from './send-message.dto';
+import { SendLocationDto, SendContactDto, SendPollDto } from './message-actions.dto';
 
 // Mirror the global ValidationPipe (main.ts): whitelist + forbidNonWhitelisted strip/reject unknown props.
 const validateDto = (cls: new () => object, obj: unknown) =>
@@ -21,6 +35,16 @@ describe('SendTextMessageDto mentions', () => {
     expect(errors).toHaveLength(0);
   });
 
+  it.each([['NOT A USER@c.us'], ['abc@c.us'], ['@c.us'], ['abc@lid'], ['0@c.us']])(
+    'rejects %s — a recognised domain is not enough on its own',
+    async mention => {
+      // These satisfied the original domain-only check and still reached the page-side createWid,
+      // which is the throw #1068 was filed for.
+      const errors = await validateDto(SendTextMessageDto, { chatId: 'g@g.us', text: 'hi', mentions: [mention] });
+      expect(errors.length).toBeGreaterThan(0);
+    },
+  );
+
   it('rejects a non-string element in mentions', async () => {
     const errors = await validateDto(SendTextMessageDto, {
       chatId: 'g@g.us',
@@ -34,7 +58,9 @@ describe('SendTextMessageDto mentions', () => {
     const errors = await validateDto(SendTextMessageDto, {
       chatId: 'g@g.us',
       text: 'hi',
-      mentions: Array.from({ length: 1025 }, (_, i) => `${i}@c.us`),
+      // Each entry must be individually VALID, or the array-size rule is not what fails and the
+      // test passes for the wrong reason: `0@c.us` is rejected on shape.
+      mentions: Array.from({ length: 1025 }, (_, i) => `${628000000000 + i}@c.us`),
     });
     expect(errors.length).toBeGreaterThan(0);
   });
@@ -46,6 +72,144 @@ describe('SendTextMessageDto mentions', () => {
       mentions: ['a'.repeat(65) + '@c.us'],
     });
     expect(errors.length).toBeGreaterThan(0);
+  });
+});
+
+// These examples are what Swagger UI pre-fills into "Try it out", so a caller who changes nothing
+// submits them verbatim. Left to the schema sampler the body paired `linkPreview: false` with a
+// `customLinkPreview` and every Try-it click 400'd (#1068); these assertions are what keeps a new
+// optional field from quietly recreating an unusable default.
+describe('SEND_TEXT_BODY_EXAMPLES', () => {
+  const entries = Object.entries(SEND_TEXT_BODY_EXAMPLES);
+
+  it('declares at least one example', () => {
+    expect(entries.length).toBeGreaterThan(0);
+  });
+
+  it.each(entries)('%s passes DTO validation', async (_name, example) => {
+    const errors = await validateDto(SendTextMessageDto, example.value);
+    expect(errors).toHaveLength(0);
+  });
+
+  it.each(entries)('%s does not combine linkPreview:false with customLinkPreview', (_name, example) => {
+    const value = example.value as { linkPreview?: boolean; customLinkPreview?: unknown };
+    expect(value.linkPreview === false && value.customLinkPreview !== undefined).toBe(false);
+  });
+});
+
+// These are what Swagger UI pre-fills into "Try it out", so a caller who changes nothing submits them
+// verbatim. Left to the schema sampler the body carried `url` and `base64: "string"` together, and
+// base64 wins in buildMediaInput — so Execute uploaded four characters of garbage (#1068). Every
+// example must stay submittable as-is, which is what stops a new optional field from recreating that.
+describe('media route body examples', () => {
+  const suites: Array<[string, new () => object, Record<string, { value: unknown }>]> = [
+    ['send-image', SendMediaMessageDto, SEND_IMAGE_BODY_EXAMPLES],
+    ['send-video', SendMediaMessageDto, SEND_VIDEO_BODY_EXAMPLES],
+    ['send-audio', SendAudioMessageDto, SEND_AUDIO_BODY_EXAMPLES],
+    ['send-document', SendMediaMessageDto, SEND_DOCUMENT_BODY_EXAMPLES],
+    ['send-sticker', SendMediaMessageDto, SEND_STICKER_BODY_EXAMPLES],
+  ];
+
+  it.each(suites)('%s declares at least one example', (_route, _cls, examples) => {
+    expect(Object.keys(examples).length).toBeGreaterThan(0);
+  });
+
+  it.each(suites)('%s examples all pass DTO validation', async (_route, cls, examples) => {
+    for (const [name, example] of Object.entries(examples)) {
+      const errors = await validateDto(cls, example.value);
+      expect({ name, errors: errors.map(e => e.property) }).toEqual({ name, errors: [] });
+    }
+  });
+
+  // buildMediaInput prefers base64 over url, so an example carrying both would send the base64 —
+  // and no short placeholder is real media. Exactly one source per example, never both.
+  it.each(suites)('%s examples carry exactly one media source', (_route, _cls, examples) => {
+    for (const [name, example] of Object.entries(examples)) {
+      const v = example.value as { url?: string; base64?: string };
+      expect({ name, sources: [v.url, v.base64].filter(Boolean).length }).toEqual({ name, sources: 1 });
+    }
+  });
+});
+
+// send-location, send-contact and send-poll were sampler-driven until quotedMessageId gave them an
+// optional property whose sampled value the send path REFUSES (an unresolvable quote fails rather
+// than delivering unquoted), which would have made every unedited Execute an error. Same trap as
+// #1068, so the same contract: each example must validate, and must not carry a quotedMessageId.
+describe('location / contact / poll body examples', () => {
+  const suites: Array<[string, new () => object, Record<string, { value: unknown }>]> = [
+    ['send-location', SendLocationDto, SEND_LOCATION_BODY_EXAMPLES],
+    ['send-contact', SendContactDto, SEND_CONTACT_BODY_EXAMPLES],
+    ['send-poll', SendPollDto, SEND_POLL_BODY_EXAMPLES],
+  ];
+
+  it.each(suites)('%s declares at least one example', (_route, _cls, examples) => {
+    expect(Object.keys(examples).length).toBeGreaterThan(0);
+  });
+
+  it.each(suites)('%s examples all pass DTO validation', async (_route, cls, examples) => {
+    for (const [name, example] of Object.entries(examples)) {
+      const errors = await validateDto(cls, example.value);
+      expect({ name, errors: errors.map(e => e.property) }).toEqual({ name, errors: [] });
+    }
+  });
+
+  // The whole reason these examples exist: a pre-filled quoted id points at no real message.
+  it.each(suites)('%s examples carry no quotedMessageId', (_route, _cls, examples) => {
+    for (const [name, example] of Object.entries(examples)) {
+      expect({ name, quoted: (example.value as { quotedMessageId?: string }).quotedMessageId }).toEqual({
+        name,
+        quoted: undefined,
+      });
+    }
+  });
+});
+
+// Nothing checked the shape before, so a malformed entry reached WhatsApp Web's createWid and threw
+// from the minified bundle as `Error: t: t` — the caller got a 500 that named neither the field nor
+// the value (#1068). These cases are the contract: what an individual WID looks like, and what does not.
+describe('mentions WID shape', () => {
+  const accepted: Array<[string, string]> = [
+    ['phone @c.us (the documented form)', '628123456789@c.us'],
+    ['raw protocol @s.whatsapp.net (the #156 workaround)', '628123456789@s.whatsapp.net'],
+    ['privacy id @lid (phone genuinely unknown)', '100000000000000@lid'],
+    ['multi-device suffix', '628123456789:12@c.us'],
+  ];
+
+  const rejected: Array<[string, string]> = [
+    ['bare number, no domain', '628123456789'],
+    ['garbage', 'not-a-wid!!'],
+    ['empty string', ''],
+    ['group id (mentions is the participant list, not groupMentions)', '120363000000000000@g.us'],
+    ['status pseudo-JID', 'status@broadcast'],
+    ['unknown domain', '628123456789@example.com'],
+  ];
+
+  it.each(accepted)('accepts %s', async (_label, wid) => {
+    const errors = await validateDto(SendTextMessageDto, { chatId: 'g@g.us', text: 'hi', mentions: [wid] });
+    expect(errors).toHaveLength(0);
+  });
+
+  it.each(rejected)('rejects %s', async (_label, wid) => {
+    const errors = await validateDto(SendTextMessageDto, { chatId: 'g@g.us', text: 'hi', mentions: [wid] });
+    expect(errors.map(e => e.property)).toEqual(['mentions']);
+  });
+
+  it('rejects a bad entry even when another entry is valid', async () => {
+    const errors = await validateDto(SendTextMessageDto, {
+      chatId: 'g@g.us',
+      text: 'hi',
+      mentions: ['628123456789@c.us', 'not-a-wid!!'],
+    });
+    expect(errors.map(e => e.property)).toEqual(['mentions']);
+  });
+
+  it('applies to media captions too', async () => {
+    const errors = await validateDto(SendMediaMessageDto, {
+      chatId: 'g@g.us',
+      url: 'https://example.com/a.jpg',
+      mentions: ['not-a-wid!!'],
+    });
+    expect(errors.map(e => e.property)).toEqual(['mentions']);
   });
 });
 

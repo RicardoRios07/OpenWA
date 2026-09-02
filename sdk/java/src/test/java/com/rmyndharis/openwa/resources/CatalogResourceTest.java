@@ -7,7 +7,6 @@ import com.rmyndharis.openwa.ClientConfig;
 import com.rmyndharis.openwa.OpenWAClient;
 import com.rmyndharis.openwa.http.HttpMethod;
 import com.rmyndharis.openwa.model.CatalogProductsQuery;
-import com.rmyndharis.openwa.model.SendCatalogRequest;
 import com.rmyndharis.openwa.model.SendProductRequest;
 import com.rmyndharis.openwa.support.MockTransport;
 import org.junit.jupiter.api.Test;
@@ -60,14 +59,5 @@ class CatalogResourceTest {
         assertEquals("http://h/api/sessions/s/messages/send-product", tx.lastRequest().url());
         assertEquals(HttpMethod.POST, tx.lastRequest().method());
         assertTrue(tx.lastRequest().body().contains("prod-9"));
-    }
-
-    @Test
-    void sendCatalogSendsBody() {
-        tx.respond(200, "{\"messageId\":\"m2\",\"timestamp\":456}");
-        catalog.sendCatalog("s", SendCatalogRequest.builder().chatId("628123@c.us").body("Check this out").build());
-        assertEquals("http://h/api/sessions/s/messages/send-catalog", tx.lastRequest().url());
-        assertEquals(HttpMethod.POST, tx.lastRequest().method());
-        assertTrue(tx.lastRequest().body().contains("Check this out"));
     }
 }

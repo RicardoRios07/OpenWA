@@ -1,0 +1,92 @@
+# Vulnerabilities accepted for the release image scan, with an expiry review note each.
+# Everything else — anything in the application's own dependency tree, and every OS package —
+# still blocks promotion (see the image-scan job in .github/workflows/release.yml).
+
+# CVE-2026-14257 and CVE-2026-69152 — brace-expansion ReDoS, and the follow-up that bypasses the
+# first one's mitigation. Fixed upstream in 5.0.8 and 5.0.9 respectively.
+#
+# The only copies left in the image are the ones bundled inside the npm CLI
+# (/usr/local/lib/node_modules/npm/node_modules/brace-expansion, currently 5.0.7). npm is never on
+# the request path: the entrypoint runs `node dist/main`, and npm is present only for the
+# documented operator runbooks (`docker exec openwa npm run cli …`). Reaching this code requires an
+# operator to run an npm command with an attacker-chosen glob inside the container.
+#
+# npm 12 — the newest release, already installed by the Dockerfile — still bundles 5.0.7, so there
+# is currently no npm version that clears either finding. Drop both entries once npm ships a bundle
+# with brace-expansion >= 5.0.9.
+#
+# These are ID-level ignores, so they would also silence the same CVEs in the APPLICATION tree,
+# which this file otherwise refuses to do. What keeps that honest is the root `overrides` entry
+# pinning brace-expansion to ^5.0.9: npm cannot resolve the application tree below the fixed
+# version, so there is no app-tree finding for these ids to hide. Raise that floor alongside any
+# future brace-expansion advisory rather than widening this list.
+CVE-2026-14257
+CVE-2026-69152
+
+# CVE-2026-69192 — ip-address SSRF-adjacent parsing flaw, fixed upstream in 10.3.1.
+#
+# Same shape as the two above: the only copy in the image is the one bundled inside the npm CLI
+# (/usr/local/lib/node_modules/npm/node_modules/ip-address, 10.2.0 in npm 12.0.2 — the newest
+# release, and what the Dockerfile installs). npm is not on the request path, so reaching it means
+# an operator running an npm command inside the container.
+#
+# The application tree is independently above the fix: package-lock.json resolves the sole
+# node_modules/ip-address at 10.4.0, and the root `overrides` entry pins `ip-address` to ^10.4.0 so
+# it cannot regress below it — the same invariant the brace-expansion note describes, which is what
+# keeps an ID-level ignore honest. Drop this entry once npm ships a bundle with ip-address >= 10.3.1.
+CVE-2026-69192
+# CVE-2026-76033 / -76036 / -76037 / -76038 / -76039 / -76040 / -76041 / -76043 / -76044 / -76045 /
+# -76047: Chromium, arm64 image ONLY. Eleven ids, 33 findings.
+#
+# Each lands on `chromium`, `chromium-common` and `chromium-sandbox`, which is why eleven ids produce
+# thirty-three findings. They are arm64-only by construction: Chrome for Testing publishes no
+# linux-arm64 build, so amd64 uses CfT while arm64 installs Debian's chromium (Dockerfile, TARGETARCH
+# branch). Only the arm64 image carries the Debian package, and the amd64 scan is clean.
+#
+# THE FIX EXISTS UPSTREAM BUT NOT IN DEBIAN YET. The image has 151.0.7922.137-1~deb12u1 and Trivy
+# names 151.0.7922.169-1~deb12u1 as fixed. Checked against the security mirror's own package index at
+# the time of writing: bookworm-security still serves .137 for both arm64 and amd64. The release build
+# is not stale; it fetched from bookworm-security with no cached apt layer (`no-cache-filters:
+# production`) and installed the newest version that exists. Rebuilding today changes nothing.
+#
+# Exposure, stated honestly rather than talked down. Unlike the earlier chromium batch, where two of
+# the four were sandbox escapes that `--no-sandbox` made irrelevant, NONE of these are neutralised by
+# how the container runs:
+#  - Eight are arbitrary or remote code execution in the renderer: v8 type confusion (-76038, -76047),
+#    v8 miscalculation (-76043), Dawn (-76036), WebGL use-after-free (-76045), a use-after-free
+#    (-76040), a race condition (-76044) and link following (-76037).
+#  - One is a site isolation bypass (-76033) and two are information disclosure (-76039, -76041).
+# Chromium renders content the sender controls (message bodies, link previews, images), so a crafted
+# message is a plausible path to code execution as the `openwa` user inside the arm64 container. The
+# container is the confinement boundary (cap_drop ALL, no-new-privileges, read_only rootfs), and that
+# is all that stands behind it. This is accepted deliberately so the release can ship while Debian has
+# no fixed build, NOT because it is harmless.
+#
+# Drop all eleven the moment bookworm ships chromium >= 151.0.7922.169 (watch
+# https://security-tracker.debian.org/tracker/source-package/chromium) and re-run the release scan
+# with them removed before assuming they are gone.
+CVE-2026-76033
+CVE-2026-76036
+CVE-2026-76037
+CVE-2026-76038
+CVE-2026-76039
+CVE-2026-76040
+CVE-2026-76041
+CVE-2026-76043
+CVE-2026-76044
+CVE-2026-76045
+CVE-2026-76047
+
+# CVE-2026-73566 — node-tar denial of service via a crafted long-path archive entry, fixed
+# upstream in 7.5.21.
+#
+# Same shape as the entries above: the only copy in the image is the one bundled inside the npm CLI
+# (/usr/local/lib/node_modules/npm/node_modules/tar, 7.5.19 in the npm release the Dockerfile
+# installs). The application tree carries no tar at all, and npm is not on the request path — the
+# entrypoint runs `node dist/main`, so reaching this code means an operator running an npm command
+# against an attacker-chosen archive inside the container.
+#
+# Drop this entry once npm ships a bundle with tar >= 7.5.21. As with brace-expansion above, the
+# root `overrides` entry pins `tar` to ^7.5.21 so this ID-level ignore cannot hide an app-tree
+# finding: npm cannot resolve the application tree below the fixed version.
+CVE-2026-73566

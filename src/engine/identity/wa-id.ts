@@ -25,8 +25,30 @@
 
 export type WaIdKind = 'user' | 'group' | 'lid' | 'status' | 'newsletter' | 'broadcast' | 'unknown';
 
-/** Domains that denote a phone-addressed user (the two are the same entity, different dialects). */
-const USER_DOMAINS = new Set(['c.us', 's.whatsapp.net']);
+/**
+ * Domain to kind. `c.us` and `s.whatsapp.net` are one entity in two dialects.
+ *
+ * `hosted` and `hosted.lid` are two more dialects of the same two entities, not entities of their
+ * own: they are the Meta-hosted forms WhatsApp issues and Baileys decodes off the wire
+ * (`WAJIDDomains.HOSTED` = 128, `HOSTED_LID` = 129). The user-part is the SAME account either way,
+ * which the library states by folding them itself on every inbound message (`cleanMessage`:
+ * `<n>@hosted` becomes `<n>@s.whatsapp.net`, `<lid>@hosted.lid` becomes `<lid>@lid`) and by treating
+ * `isHostedPnUser` as `isPnUser` throughout its history handling.
+ *
+ * So they fold here too. A separate kind would split one person's history in two: rows arrive under
+ * the plain dialect (Baileys already rewrote them) while a caller filtering by the hosted id we
+ * published would match none of them.
+ */
+const DOMAIN_KINDS = new Map<string, WaIdKind>([
+  ['c.us', 'user'],
+  ['s.whatsapp.net', 'user'],
+  ['lid', 'lid'],
+  ['hosted', 'user'],
+  ['hosted.lid', 'lid'],
+  ['g.us', 'group'],
+  ['newsletter', 'newsletter'],
+  ['broadcast', 'broadcast'],
+]);
 
 export interface ParsedWaId {
   kind: WaIdKind;
@@ -56,18 +78,51 @@ export function parseWaId(jid: string): ParsedWaId {
   }
   const domain = lower.slice(at + 1);
   const [local, device] = lower.slice(0, at).split(':');
-  const kind: WaIdKind = USER_DOMAINS.has(domain)
-    ? 'user'
-    : domain === 'g.us'
-      ? 'group'
-      : domain === 'lid'
-        ? 'lid'
-        : domain === 'newsletter'
-          ? 'newsletter'
-          : domain === 'broadcast'
-            ? 'broadcast'
-            : 'unknown';
+  const kind: WaIdKind = DOMAIN_KINDS.get(domain) ?? 'unknown';
   return { kind, userPart: local, device, raw };
+}
+
+/**
+ * The user-part of every id that names a person: a phone number or a lid, both digits-only. The
+ * floor rules out `0`, `-1` and the empty string, none of which is a WhatsApp id.
+ */
+const NUMERIC_ID = /^\d{5,}$/;
+
+/**
+ * Whether a string names an individual in a qualified dialect: `<phone>@c.us` (and its raw-protocol
+ * twin `@s.whatsapp.net`), `<lid>@lid`, or the Meta-hosted dialect of either. A `:<device>` suffix is fine — {@link parseWaId} strips it.
+ *
+ * **The domain alone is not enough.** `parseWaId` classifies anything ending in `@c.us` as a user, so
+ * a check that stops at the kind accepts `NOT A USER@c.us` and `@c.us`. Those still reach WhatsApp
+ * Web's page-side `createWid`, which throws an error the minified bundle reports without a name, and
+ * the caller gets the undiagnosable 500 this check exists to prevent — reproduced against a live
+ * session. The user-part has to look like a WhatsApp id too (#1220, and #1068 before it).
+ */
+export function isIndividualWid(value: string): boolean {
+  const { kind, userPart } = parseWaId(value.trim());
+  return (kind === 'user' || kind === 'lid') && NUMERIC_ID.test(userPart);
+}
+
+/**
+ * Whether a string can address an individual participant of a group: an individual WID, or a bare
+ * phone number accepted for convenience and qualified by {@link toParticipantWid}. A group id is
+ * rejected — a group cannot be a member of a group — as is anything else.
+ */
+export function isAddressableParticipant(value: string): boolean {
+  const trimmed = value.trim();
+  return isIndividualWid(trimmed) || NUMERIC_ID.test(trimmed);
+}
+
+/**
+ * Qualify a bare number to the neutral `@c.us` dialect. Anything else passes through verbatim.
+ *
+ * Deliberately keyed on the bare-number shape rather than on the absence of `@`: the old rule
+ * (`p.includes('@') ? p : p + '@c.us'`) minted an id out of ANY un-domained string, so `abc` became
+ * `abc@c.us` — a well-formed id naming nobody.
+ */
+export function toParticipantWid(value: string): string {
+  const trimmed = value.trim();
+  return NUMERIC_ID.test(trimmed) ? `${trimmed}@c.us` : trimmed;
 }
 
 /**

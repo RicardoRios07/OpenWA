@@ -1,6 +1,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { createSwaggerConfig, exemptPublicOperations, PUBLIC_PATHS } from './swagger.config';
+import {
+  createSwaggerConfig,
+  dropUnexpressibleOperations,
+  exemptPublicOperations,
+  PUBLIC_PATHS,
+  METRICS_BEARER_SCHEME,
+} from './swagger.config';
 import type { OpenAPIObject } from '@nestjs/swagger';
 
 describe('createSwaggerConfig', () => {
@@ -11,6 +17,40 @@ describe('createSwaggerConfig', () => {
     const config = createSwaggerConfig();
 
     expect(config.security).toContainEqual({ 'X-API-Key': [] });
+  });
+
+  it('defines the METRICS_TOKEN bearer scheme without applying it globally', () => {
+    const config = createSwaggerConfig();
+
+    expect(config.components?.securitySchemes?.[METRICS_BEARER_SCHEME]).toMatchObject({
+      type: 'http',
+      scheme: 'bearer',
+    });
+    // Only the scrape endpoint uses it (per-operation @ApiSecurity) — a global bearer
+    // requirement would falsely claim every route accepts it.
+    expect(config.security).not.toContainEqual({ [METRICS_BEARER_SCHEME]: [] });
+  });
+
+  // Swagger UI aims "Try it" at servers[0]. A relative URL resolves against whatever origin served
+  // the docs, so it works on localhost, a LAN address and behind a TLS proxy alike; anything
+  // absolute here would send the reader's browser somewhere else entirely (#1068).
+  it('lists a relative server FIRST so Try-it targets the origin serving the docs', () => {
+    const config = createSwaggerConfig();
+
+    const [first] = config.servers ?? [];
+    expect(first.url).toBe('/');
+    expect(first.url.startsWith('http')).toBe(false);
+  });
+
+  it('keeps the templated absolute server so published specs still carry a concrete base URL', () => {
+    const config = createSwaggerConfig();
+
+    expect(config.servers).toHaveLength(2);
+    const templated = (config.servers ?? []).find(s => s.url.includes('{host}'));
+    expect(templated).toBeDefined();
+    expect(templated?.url).toBe('http://{host}:{port}');
+    expect(templated?.variables?.host.default).toBe('localhost');
+    expect(templated?.variables?.port.default).toBe('2785');
   });
 });
 
@@ -54,12 +94,13 @@ describe('exemptPublicOperations', () => {
 //   (1) the set of files with a real @Public() decorator must match EXPECTED_PUBLIC_CONTROLLERS —
 //       add a controller here AND its path(s) to PUBLIC_PATHS when you mark a new route @Public();
 //   (2) PUBLIC_PATHS must contain the expected entries (catches a typo or accidental removal).
-// MetricsController is @Public() but uses @ApiExcludeEndpoint, so it never appears in the spec and
-// is intentionally exempt from PUBLIC_PATHS.
+// MetricsController is @Public() but gates scrapes on the METRICS_TOKEN bearer instead, so its
+// operation carries the metrics-bearer security scheme (which overrides the global API-key
+// requirement) rather than a PUBLIC_PATHS security: [] exemption.
 describe('PUBLIC_PATHS drift guard', () => {
   const EXPECTED_PUBLIC_CONTROLLERS = [
     'src/modules/health/health.controller.ts',
-    'src/modules/infra/infra.controller.ts',
+    'src/modules/infra/infra-status.controller.ts',
     'src/modules/integration/ingress.controller.ts',
     'src/modules/metrics/metrics.controller.ts',
   ];
@@ -76,8 +117,11 @@ describe('PUBLIC_PATHS drift guard', () => {
   it('every controller using @Public() is accounted for in EXPECTED_PUBLIC_CONTROLLERS', () => {
     const srcRoot = path.resolve(__dirname, '..').replace(/\\/g, '/');
     // Match only a line that is exactly `@Public()` — ignores the decorator's doc comment
-    // (`@example @Public()`) and test/string occurrences.
+    // (`@example @Public()`) and test/string occurrences. *.spec.ts files are excluded: a real
+    // @Public() decorator only attaches to a controller class, while a spec may legitimately spell
+    // the decorator out as a string fixture (e.g. the global-route-fence structural guard).
     const usingPublic = listTsFiles(srcRoot)
+      .filter(f => !f.endsWith('.spec.ts'))
       .filter(f => /^\s*@Public\(\)\s*$/m.test(fs.readFileSync(f, 'utf8')))
       .map(f => f.replace(/^.*\/src\//, 'src/'))
       .sort();
@@ -85,15 +129,90 @@ describe('PUBLIC_PATHS drift guard', () => {
     expect(usingPublic).toEqual([...EXPECTED_PUBLIC_CONTROLLERS].sort());
   });
 
-  it('PUBLIC_PATHS contains the expected @Public route paths', () => {
-    expect(PUBLIC_PATHS).toEqual(
-      expect.arrayContaining([
+  // Exact, not arrayContaining: the file-set test above catches a new @Public CONTROLLER, but a
+  // new @Public ROUTE on an already-listed controller (a fourth @Get on HealthController, say)
+  // changes neither the file set nor a superset assertion — it would just be missing from
+  // PUBLIC_PATHS, and the published document would claim the route needs an API key it does not.
+  it('PUBLIC_PATHS is exactly the expected @Public route paths', () => {
+    expect([...PUBLIC_PATHS].sort()).toEqual(
+      [
         '/api/health',
         '/api/health/live',
         '/api/health/ready',
         '/api/infra/health',
         '/api/ingress/{pluginId}/{instanceId}/{path}',
-      ]),
+      ].sort(),
     );
+  });
+});
+
+describe('dropUnexpressibleOperations', () => {
+  const docWith = (item: Record<string, unknown>): OpenAPIObject =>
+    ({ paths: { '/api/thing': item } }) as unknown as OpenAPIObject;
+
+  it('removes an operation OpenAPI 3.0 has no field for', () => {
+    // `@nestjs/swagger` expands `@All()` over its own method list, which includes `search`. Nest routes
+    // SEARCH at runtime; the 3.0 Path Item Object simply cannot describe it.
+    const doc = docWith({ get: { operationId: 'a' }, search: { operationId: 'b' } });
+
+    dropUnexpressibleOperations(doc);
+
+    expect(Object.keys(doc.paths['/api/thing'])).toEqual(['get']);
+  });
+
+  it('keeps every field the 3.0 Path Item Object defines', () => {
+    const item = {
+      summary: 's',
+      description: 'd',
+      parameters: [],
+      servers: [],
+      get: {},
+      put: {},
+      post: {},
+      delete: {},
+      options: {},
+      head: {},
+      patch: {},
+      trace: {},
+    };
+
+    const doc = docWith({ ...item });
+    dropUnexpressibleOperations(doc);
+
+    expect(Object.keys(doc.paths['/api/thing']).sort()).toEqual(Object.keys(item).sort());
+  });
+
+  it('keeps specification extensions', () => {
+    const doc = docWith({ get: {}, 'x-internal': true });
+
+    dropUnexpressibleOperations(doc);
+
+    expect(Object.keys(doc.paths['/api/thing']).sort()).toEqual(['get', 'x-internal']);
+  });
+
+  it('removes a method upstream has not added yet', () => {
+    // The allowlist is the point: a denylist naming `search` would pass the next WebDAV verb straight
+    // through. RequestMethod already defines PROPFIND, MKCOL, COPY, MOVE, LOCK and UNLOCK.
+    const doc = docWith({ get: {}, propfind: {}, mkcol: {} });
+
+    dropUnexpressibleOperations(doc);
+
+    expect(Object.keys(doc.paths['/api/thing'])).toEqual(['get']);
+  });
+
+  it('leaves the committed snapshot with no unexpressible operation', () => {
+    const snapshot = JSON.parse(
+      fs.readFileSync(path.join(__dirname, '..', '..', 'openapi.json'), 'utf8'),
+    ) as OpenAPIObject;
+
+    const offenders = Object.entries(snapshot.paths).flatMap(([route, item]) => {
+      const before = Object.keys(item);
+      const after = Object.keys(
+        dropUnexpressibleOperations({ paths: { [route]: { ...item } } } as OpenAPIObject).paths[route],
+      );
+      return before.length === after.length ? [] : [route];
+    });
+
+    expect(offenders).toEqual([]);
   });
 });

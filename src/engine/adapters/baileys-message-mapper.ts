@@ -76,14 +76,32 @@ export interface BaileysBodyContent {
     hydratedFourRowTemplate?: { hydratedContentText?: string | null } | null;
   } | null;
   interactiveResponseMessage?: { body?: { text?: string | null } | null } | null;
+  /** A poll's question; the wire bumps the content key across versions, all carry `name`. */
+  pollCreationMessage?: { name?: string | null } | null;
+  pollCreationMessageV2?: { name?: string | null } | null;
+  pollCreationMessageV3?: { name?: string | null } | null;
+  /** A shared WhatsApp event; only its display name is surfaced as text. */
+  eventMessage?: { name?: string | null } | null;
+  /** The user tapping a business message button: which visible label they pressed. */
+  buttonsResponseMessage?: { selectedDisplayText?: string | null } | null;
+  templateButtonReplyMessage?: { selectedDisplayText?: string | null } | null;
+  /** A single shared contact card. */
+  contactMessage?: { vcard?: string | null } | null;
+  /** Several contact cards shared together; each carries its own vCard. */
+  contactsArrayMessage?: { contacts?: Array<{ vcard?: string | null }> | null } | null;
 }
 
 /**
  * Extract the display text of an inbound Baileys message: plain text first, then a media caption,
  * then the WhatsApp Business interactive shapes (interactive / buttons / template / interactive-
  * response) whose text was previously dropped — the OTP/verification text businesses send via these
- * shapes (#562). Returns `''` when the message carries no extractable text. Pass the NORMALIZED
- * content (ephemeral/viewOnce/documentWithCaption wrappers already unwrapped), as the adapter does.
+ * shapes (#562), then the text-shaped non-conversation content whose display text whatsapp-web.js
+ * already exposes as `body` and Baileys used to drop silently: a poll's question, a shared event's
+ * name, which button label the user tapped, and a shared contact card's vCard(s). Multiple vCards
+ * from a `contactsArrayMessage` are newline-joined; RFC 6350 allows concatenated vCards in one
+ * stream, so this is a single valid multi-card body, not string mangling. Returns `''` when the
+ * message carries no extractable text. Pass the NORMALIZED content (ephemeral/viewOnce/
+ * documentWithCaption wrappers already unwrapped), as the adapter does.
  */
 export function extractBaileysBody(content: BaileysBodyContent): string {
   return (
@@ -97,8 +115,156 @@ export function extractBaileysBody(content: BaileysBodyContent): string {
     content.templateMessage?.hydratedTemplate?.hydratedContentText ??
     content.templateMessage?.hydratedFourRowTemplate?.hydratedContentText ??
     content.interactiveResponseMessage?.body?.text ??
+    content.pollCreationMessage?.name ??
+    content.pollCreationMessageV2?.name ??
+    content.pollCreationMessageV3?.name ??
+    content.eventMessage?.name ??
+    content.buttonsResponseMessage?.selectedDisplayText ??
+    content.templateButtonReplyMessage?.selectedDisplayText ??
+    content.contactMessage?.vcard ??
+    extractContactsArrayVcards(content.contactsArrayMessage) ??
     ''
   );
+}
+
+/**
+ * Joins the vCards of a `contactsArrayMessage` into one string, in the order they were shared.
+ * Returns `undefined` (not `''`) when there are no vCards to join, so it composes with `??` in
+ * {@link extractBaileysBody} the same way every other optional-field lookup there does.
+ */
+function extractContactsArrayVcards(
+  contactsArrayMessage: BaileysBodyContent['contactsArrayMessage'],
+): string | undefined {
+  const vcards = (contactsArrayMessage?.contacts ?? [])
+    .map(contact => contact.vcard)
+    .filter((vcard): vcard is string => !!vcard);
+
+  return vcards.length > 0 ? vcards.join('\n') : undefined;
+}
+
+/**
+ * The inbound message-content subset the location extractor reads. Declared structurally (not
+ * `proto.IMessage`) for the same reason as {@link BaileysBodyContent}. The live variant carries
+ * only the two coordinates on purpose: `proto.Message.ILiveLocationMessage` has no `name`/`address`
+ * — only `ILocationMessage` does — which is why those two are sourced from the static variant.
+ */
+export interface BaileysLocationContent {
+  locationMessage?: {
+    degreesLatitude?: number | null;
+    degreesLongitude?: number | null;
+    name?: string | null;
+    address?: string | null;
+  } | null;
+  liveLocationMessage?: { degreesLatitude?: number | null; degreesLongitude?: number | null } | null;
+}
+
+/**
+ * Extract the coordinates of a location message, static or live. Returns `undefined` for any other
+ * content type, and for a location content type whose sub-message is absent. Pass the NORMALIZED
+ * content (an ephemeral/disappearing-chat location nests under the wrapper, so the raw
+ * `content.locationMessage` is undefined and the coordinates would be silently dropped).
+ */
+export function extractBaileysLocation(
+  content: BaileysLocationContent,
+  contentType: string | undefined,
+): IncomingMessage['location'] {
+  if (contentType !== 'locationMessage' && contentType !== 'liveLocationMessage') {
+    return undefined;
+  }
+  const lm = content.locationMessage ?? content.liveLocationMessage;
+  if (!lm) {
+    return undefined;
+  }
+  const staticLm = content.locationMessage; // only ILocationMessage has name/address
+  return {
+    latitude: lm.degreesLatitude ?? 0,
+    longitude: lm.degreesLongitude ?? 0,
+    description: staticLm?.name ?? undefined,
+    address: staticLm?.address ?? undefined,
+  };
+}
+
+/**
+ * A content sub-message that may carry a `contextInfo` — the quote, the disappearing-messages timer
+ * and the mention list all ride there, on whichever sub-message the payload happens to be.
+ * `quotedMessage` is `unknown` rather than `Record<string, unknown>`: `proto.IContextInfo.quotedMessage`
+ * is `proto.IMessage | null`, an interface with no index signature, so it is not assignable to a
+ * record type.
+ */
+interface BaileysContextCarrier {
+  contextInfo?: {
+    stanzaId?: string | null;
+    quotedMessage?: unknown;
+    expiration?: number | null;
+    mentionedJid?: string[] | null;
+  } | null;
+}
+
+/**
+ * The inbound message-content subset the context extractor reads: every sub-message that can carry a
+ * `contextInfo`, plus the extended-text styling fields. Declared structurally, as {@link BaileysBodyContent} is.
+ */
+export interface BaileysContextContent {
+  extendedTextMessage?: (BaileysContextCarrier & { backgroundArgb?: number | null; font?: number | null }) | null;
+  imageMessage?: BaileysContextCarrier | null;
+  videoMessage?: BaileysContextCarrier | null;
+  audioMessage?: BaileysContextCarrier | null;
+  documentMessage?: BaileysContextCarrier | null;
+  stickerMessage?: BaileysContextCarrier | null;
+  locationMessage?: BaileysContextCarrier | null;
+}
+
+/** Everything the context region of an inbound message yields — not just the quote. */
+export interface BaileysMessageContext {
+  /** The quoted (replied-to) message, when `contextInfo` carries both a quote and its stanza id. */
+  quotedMessage?: IncomingMessage['quotedMessage'];
+  /** Disappearing-messages timer from `contextInfo.expiration`. */
+  ephemeralDuration?: number;
+  /** @mentioned JIDs from `contextInfo.mentionedJid`. */
+  mentionedJids?: string[];
+  /** Styling of an extended-text (status) message: proto `backgroundArgb` (fixed32 ARGB). */
+  backgroundArgb?: number;
+  /** Styling of an extended-text (status) message: proto `font` (WhatsApp font index). */
+  font?: number;
+}
+
+/**
+ * Extract the quoted message, the disappearing-messages timer, the mention list and the extended-text
+ * styling from an inbound message's content. Pass the NORMALIZED content: a live disappearing message
+ * arrives wrapped in `ephemeralMessage` (also viewOnce / documentWithCaption), whose inner content
+ * carries the `contextInfo`. The raw wrapper exposes none at top level, so both the quote and the
+ * timer (`contextInfo.expiration`) would be missed if the raw content were passed here.
+ */
+export function extractBaileysContext(content: BaileysContextContent): BaileysMessageContext {
+  const subForContext =
+    content.extendedTextMessage ??
+    content.imageMessage ??
+    content.videoMessage ??
+    content.audioMessage ??
+    content.documentMessage ??
+    content.stickerMessage ??
+    content.locationMessage;
+  // A text status's styling rides on the extended-text content (proto backgroundArgb/font) —
+  // surface it so the store/viewer can render the story the way it was posted.
+  const extText = content.extendedTextMessage;
+  const contextInfo = subForContext?.contextInfo;
+
+  const context: BaileysMessageContext = {
+    ephemeralDuration: contextInfo?.expiration ?? undefined,
+    mentionedJids: contextInfo?.mentionedJid ?? undefined,
+    backgroundArgb: typeof extText?.backgroundArgb === 'number' ? extText.backgroundArgb : undefined,
+    font: typeof extText?.font === 'number' ? extText.font : undefined,
+  };
+
+  if (contextInfo?.quotedMessage && contextInfo.stanzaId) {
+    // The quote's body comes from the SAME extractor as the live message, so a quoted contact card,
+    // poll or interactive shape carries its text instead of an empty string — matching wwjs, whose
+    // quote is a full Message and therefore shows the same body it would show unquoted.
+    const qm = contextInfo.quotedMessage as BaileysBodyContent;
+    context.quotedMessage = { id: contextInfo.stanzaId, body: extractBaileysBody(qm) };
+  }
+
+  return context;
 }
 
 /**

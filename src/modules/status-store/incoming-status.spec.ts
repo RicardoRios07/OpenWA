@@ -59,3 +59,25 @@ it('returns null when there is no resolvable poster (author/from both the broadc
 it('returns null when the message has no id', () => {
   expect(buildIncomingStatus({ ...base, id: '' })).toBeNull();
 });
+
+/**
+ * Both engines map a PTT message to `voice`, and everything that was not an image or a video used to
+ * collapse into `text`. That silently turned an incoming voice status into a text one — a status with
+ * audio attached but a type saying otherwise.
+ */
+it('keeps a voice status as voice rather than collapsing it to text', () => {
+  const s = buildIncomingStatus({
+    ...base,
+    type: 'voice',
+    body: '',
+    media: { mimetype: 'audio/ogg; codecs=opus', data: 'AAAA' },
+  })!;
+
+  expect(s.type).toBe('voice');
+  expect(s.media?.mimetype).toBe('audio/ogg; codecs=opus');
+});
+
+it('still collapses a type the status union does not model', () => {
+  expect(buildIncomingStatus({ ...base, type: 'document' })!.type).toBe('text');
+  expect(buildIncomingStatus({ ...base, type: 'audio' })!.type).toBe('text');
+});

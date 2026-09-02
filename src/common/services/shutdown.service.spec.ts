@@ -86,9 +86,9 @@ describe('ShutdownService.shutdown (idempotent, bounded grace)', () => {
     expect(cb).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps the 3s drain window when NODE_ENV is UNSET (a bare `docker run` / k8s pod)', async () => {
-    // Regression guard: the runtime image does not set NODE_ENV, so an unset env must NOT collapse the
-    // drain to 0 — only an explicit dev/test does. Otherwise a rolling deploy loses its readiness window.
+  it('keeps the 3s drain window when NODE_ENV is UNSET (an ad-hoc run outside the packaged runtimes)', async () => {
+    // Regression guard: an unset NODE_ENV must NOT collapse the drain to 0 — only an explicit
+    // dev/test does. Otherwise a rolling deploy loses its readiness window.
     delete process.env.NODE_ENV;
     delete process.env.SHUTDOWN_DELAY_MS;
     const { svc, cb } = svcWithCb();
@@ -108,5 +108,53 @@ describe('ShutdownService.shutdown (idempotent, bounded grace)', () => {
     expect(cb).not.toHaveBeenCalled();
     await jest.advanceTimersByTimeAsync(2000);
     expect(cb).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ShutdownService exit status (teardown outcome)', () => {
+  let exitSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    exitSpy = jest.spyOn(process, 'exit').mockImplementation((): never => undefined as never);
+    process.env.SHUTDOWN_DELAY_MS = '0';
+  });
+
+  afterEach(() => {
+    jest.clearAllTimers();
+    jest.useRealTimers();
+    exitSpy.mockRestore();
+    delete process.env.SHUTDOWN_DELAY_MS;
+  });
+
+  it('exits 0 after a clean teardown', async () => {
+    const svc = new ShutdownService();
+    svc.setShutdownCallback(jest.fn().mockResolvedValue(undefined));
+    svc.shutdown();
+    await jest.advanceTimersByTimeAsync(0);
+    expect(exitSpy).toHaveBeenCalledTimes(1);
+    expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+
+  it('exits non-zero when the teardown callback rejects (a failed drain is not a clean shutdown)', async () => {
+    const svc = new ShutdownService();
+    svc.setShutdownCallback(jest.fn().mockRejectedValue(new Error('engine disconnect wedged')));
+    svc.shutdown();
+    await jest.advanceTimersByTimeAsync(0);
+    expect(exitSpy).toHaveBeenCalledTimes(1);
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it('exits non-zero when the teardown callback throws synchronously', async () => {
+    const svc = new ShutdownService();
+    svc.setShutdownCallback(
+      jest.fn().mockImplementation(() => {
+        throw new Error('sync failure');
+      }),
+    );
+    svc.shutdown();
+    await jest.advanceTimersByTimeAsync(0);
+    expect(exitSpy).toHaveBeenCalledTimes(1);
+    expect(exitSpy).toHaveBeenCalledWith(1);
   });
 });

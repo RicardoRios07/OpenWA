@@ -1,5 +1,5 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
-import { SessionService } from '../session/session.service';
+import { EngineRegistry } from '../../engine/engine-registry.service';
 import { IWhatsAppEngine, MediaInput } from '../../engine/interfaces/whatsapp-engine.interface';
 import { assertBase64WithinMediaCap, stripBase64DataUri } from '../message/media-cap.util';
 import { SetProfilePictureDto } from './dto/profile.dto';
@@ -10,14 +10,11 @@ import { SetProfilePictureDto } from './dto/profile.dto';
  */
 @Injectable()
 export class ProfileService {
-  constructor(private readonly sessionService: SessionService) {}
+  constructor(private readonly engines: EngineRegistry) {}
 
   private getEngine(sessionId: string): IWhatsAppEngine {
-    const engine = this.sessionService.getEngine(sessionId);
-    if (!engine) {
-      throw new BadRequestException('Session is not started');
-    }
-    return engine;
+    // EngineRegistry.require()'s default is this exact 400 "Session is not started".
+    return this.engines.require(sessionId);
   }
 
   setProfileName(sessionId: string, name: string) {
@@ -26,6 +23,11 @@ export class ProfileService {
 
   setProfileStatus(sessionId: string, status: string) {
     return this.getEngine(sessionId).setProfileStatus(status);
+  }
+
+  /** Remove the account's own picture. Idempotent: no picture to remove is a no-op, not an error. */
+  deleteProfilePicture(sessionId: string) {
+    return this.getEngine(sessionId).deleteProfilePicture();
   }
 
   /** Map the JSON media body to a MediaInput exactly like the message module's media sends do. */

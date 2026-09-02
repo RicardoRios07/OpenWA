@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { ConfigService } from '@nestjs/config';
 import { ModuleRef } from '@nestjs/core';
 import { PluginLoaderService } from './plugin-loader.service';
@@ -11,8 +13,7 @@ import {
   PluginStatus,
   PluginType,
 } from './plugin.interfaces';
-import { MessageService } from '../../modules/message/message.service';
-import { SessionService } from '../../modules/session/session.service';
+import { PLUGIN_CONVERSATION_MAPPING_PORT, PLUGIN_MESSAGE_PORT, PLUGIN_SESSION_PORT } from './plugin-host-ports';
 
 function makePlugin(
   sessions?: string[],
@@ -48,7 +49,7 @@ describe('PluginLoaderService capability facade — ctx.messages', () => {
     moduleRef = {
       get: jest
         .fn()
-        .mockImplementation((token: unknown) => (token === SessionService ? sessionService : messageService)),
+        .mockImplementation((token: unknown) => (token === PLUGIN_SESSION_PORT ? sessionService : messageService)),
     };
     const configService = { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService;
     const pluginStorage = {
@@ -63,22 +64,24 @@ describe('PluginLoaderService capability facade — ctx.messages', () => {
   });
 
   function contextFor(plugin: PluginInstance): PluginContext {
-    return (loader as unknown as { createPluginContext: (p: PluginInstance) => PluginContext }).createPluginContext(
-      plugin,
-    );
+    // The capability surface moved to PluginCapabilityContext; the loader holds one. Every assertion
+    // below is unchanged — only the reach-in points at the object that owns the surface now.
+    return (
+      loader as unknown as { capabilities: { createPluginContext: (p: PluginInstance) => PluginContext } }
+    ).capabilities.createPluginContext(plugin);
   }
 
   it('messages.sendText delegates to MessageService.sendText with a wrapped dto', async () => {
     const ctx = contextFor(makePlugin(['*']));
     await ctx.messages.sendText('sess-1', '628@c.us', 'hi');
-    expect(moduleRef.get).toHaveBeenCalledWith(MessageService, { strict: false });
+    expect(moduleRef.get).toHaveBeenCalledWith(PLUGIN_MESSAGE_PORT, { strict: false });
     expect(messageService.sendText).toHaveBeenCalledWith('sess-1', { chatId: '628@c.us', text: 'hi' });
   });
 
   it('messages.reply delegates to MessageService.reply', async () => {
     const ctx = contextFor(makePlugin(['*']));
     await ctx.messages.reply('sess-1', '628@c.us', 'quoted-id', 'pong');
-    expect(moduleRef.get).toHaveBeenCalledWith(MessageService, { strict: false });
+    expect(moduleRef.get).toHaveBeenCalledWith(PLUGIN_MESSAGE_PORT, { strict: false });
     expect(messageService.reply).toHaveBeenCalledWith('sess-1', {
       chatId: '628@c.us',
       quotedMessageId: 'quoted-id',
@@ -142,6 +145,51 @@ describe('PluginLoaderService capability facade — ctx.messages', () => {
     expect(messageService.sendText).not.toHaveBeenCalled();
   });
 
+  it('the denial names the fix — the permission, the array and the manifest file', async () => {
+    // The whole value of this message is that it reaches the operator at the same time as the
+    // symptom: a capability is checked when the verb is CALLED, so a denial lands mid-run as a log
+    // line detached from the upgrade that caused it. Naming the fault without the fix leaves the
+    // operator with "why is this plugin broken"; one template serves all seven permissions, so a
+    // trim here silently degrades every one of them.
+    // Asserted on the three carriers of the information — which permission, which field, which file —
+    // rather than on the sentence. Pinning the whole string would redden on a punctuation edit
+    // without being any stricter about what the operator is actually told.
+    const ctx = contextFor(makePlugin(['*'], []));
+    const error = await ctx.messages.sendText('sess-1', '628@c.us', 'hi').catch((e: unknown) => e);
+    const message = (error as Error).message;
+    expect(message).toContain('messages:send'); // the permission that is missing
+    expect(message).toContain('permissions'); // the manifest field to add it to
+    expect(message).toContain('manifest.json'); // the file that field lives in
+  });
+
+  it('docs/19 quotes the same message the code throws', () => {
+    // §19.9 reproduces assertPermission verbatim. A quoted string in prose is an UNGATED COPY of a
+    // code string: it rots in silence, which is exactly the failure this repo has paid for more than
+    // once. The fragments are derived from the source rather than restated here, so the two cannot
+    // drift — restating them would just add a third copy to keep in step.
+    //
+    // EVERY literal in the throw, not just the one naming the fix. Binding the second half alone
+    // left the first — the sentence that names the FAULT, and the one an operator greps for — free
+    // to be reworded with docs/19 still asserting the old text, which is the exact rot this test
+    // exists to prevent. Deriving them from the function body catches a third sentence too, via the
+    // count assertion below.
+    const norm = (s: string): string => s.replace(/\s+/g, ' ').trim();
+    const source = readFileSync(join(__dirname, 'plugin-capability-context.ts'), 'utf8');
+    const docs = readFileSync(join(__dirname, '..', '..', '..', 'docs', '19-plugin-architecture.md'), 'utf8');
+
+    // Start at the signature: the method's own docblock also backticks `permissions` and
+    // manifest.json, and must not be mistaken for part of the thrown string.
+    const body = source.match(/private assertPermission\([\s\S]*?\n {2}\}/)?.[0] ?? '';
+    expect(body).not.toBe(''); // non-vacuous: a rename would otherwise make this pass on nothing
+
+    const fragments = [...body.matchAll(/`[^`]*`/g)].map(m => norm(m[0]));
+    // Pins the count: a literal added to the throw has to be documented too, not silently skipped.
+    expect(fragments).toHaveLength(2);
+    for (const fragment of fragments) {
+      expect(norm(docs)).toContain(fragment);
+    }
+  });
+
   it('denies reply when the plugin does not declare the messages:send permission', async () => {
     const ctx = contextFor(makePlugin(['*'], []));
     await expect(ctx.messages.reply('sess-1', '628@c.us', 'q', 'hi')).rejects.toBeInstanceOf(PluginCapabilityError);
@@ -170,9 +218,11 @@ describe('PluginLoaderService capability facade — ctx.engine', () => {
   }
 
   function contextFor(plugin: PluginInstance): PluginContext {
-    return (loader as unknown as { createPluginContext: (p: PluginInstance) => PluginContext }).createPluginContext(
-      plugin,
-    );
+    // The capability surface moved to PluginCapabilityContext; the loader holds one. Every assertion
+    // below is unchanged — only the reach-in points at the object that owns the surface now.
+    return (
+      loader as unknown as { capabilities: { createPluginContext: (p: PluginInstance) => PluginContext } }
+    ).capabilities.createPluginContext(plugin);
   }
 
   it('engine.getGroupInfo delegates to SessionService.getEngine(id).getGroupInfo', async () => {
@@ -180,7 +230,7 @@ describe('PluginLoaderService capability facade — ctx.engine', () => {
     const { sessionService } = build(engine);
     const ctx = contextFor(makePlugin(['*']));
     await ctx.engine.getGroupInfo('sess-1', 'g@g.us');
-    expect(moduleRef.get).toHaveBeenCalledWith(SessionService, { strict: false });
+    expect(moduleRef.get).toHaveBeenCalledWith(PLUGIN_SESSION_PORT, { strict: false });
     expect(sessionService.getEngine).toHaveBeenCalledWith('sess-1');
     expect(engine.getGroupInfo).toHaveBeenCalledWith('g@g.us');
   });
@@ -267,9 +317,11 @@ describe('PluginLoaderService capability facade — ctx.net', () => {
     return { manifest, status: PluginStatus.INSTALLED, config: {}, instance: null };
   }
   function contextFor(loader: PluginLoaderService, plugin: PluginInstance): PluginContext {
-    return (loader as unknown as { createPluginContext: (p: PluginInstance) => PluginContext }).createPluginContext(
-      plugin,
-    );
+    // The capability surface moved to PluginCapabilityContext; the loader holds one. Every assertion
+    // below is unchanged — only the reach-in points at the object that owns the surface now.
+    return (
+      loader as unknown as { capabilities: { createPluginContext: (p: PluginInstance) => PluginContext } }
+    ).capabilities.createPluginContext(plugin);
   }
 
   it('denies net.fetch when the plugin does not declare net:fetch', async () => {
@@ -280,5 +332,167 @@ describe('PluginLoaderService capability facade — ctx.net', () => {
   it('denies net.fetch when the host is not in the manifest net.allow list', async () => {
     const ctx = contextFor(loaderWith(), netPlugin(['net:fetch'], ['only.example.com:443']));
     await expect(ctx.net.fetch('https://api.example.com/x')).rejects.toBeInstanceOf(PluginCapabilityError);
+  });
+});
+
+describe('PluginLoaderService capability facade — ctx.conversations', () => {
+  let loader: PluginLoaderService;
+  let mappingService: { getByProvider: jest.Mock };
+  let messageService: { sendText: jest.Mock; reply: jest.Mock };
+
+  beforeEach(() => {
+    mappingService = { getByProvider: jest.fn() };
+    messageService = {
+      sendText: jest.fn().mockResolvedValue({ messageId: 'wamid', timestamp: 1 }),
+      reply: jest.fn().mockResolvedValue({ messageId: 'wamid', timestamp: 1 }),
+    };
+    const moduleRef = {
+      get: jest
+        .fn()
+        .mockImplementation((token: unknown) =>
+          token === PLUGIN_CONVERSATION_MAPPING_PORT ? mappingService : messageService,
+        ),
+    };
+    const configService = { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService;
+    const pluginStorage = {
+      createPluginStorage: jest.fn().mockReturnValue({}),
+    } as unknown as PluginStorageService;
+    loader = new PluginLoaderService(
+      configService,
+      new HookManager(),
+      pluginStorage,
+      moduleRef as unknown as ModuleRef,
+    );
+  });
+
+  function contextFor(plugin: PluginInstance): PluginContext {
+    // The capability surface moved to PluginCapabilityContext; the loader holds one. Every assertion
+    // below is unchanged — only the reach-in points at the object that owns the surface now.
+    return (
+      loader as unknown as { capabilities: { createPluginContext: (p: PluginInstance) => PluginContext } }
+    ).capabilities.createPluginContext(plugin);
+  }
+
+  const sendEnv = {
+    type: 'text' as const,
+    text: 'hi',
+    instanceId: 'inst-1',
+    source: { provider: 'chatwoot', externalConversationId: 'conv-42' },
+  };
+  const mapping = (sessionId: string) => ({
+    id: 'm-1',
+    sessionId,
+    chatId: '628@c.us',
+    pluginId: 'test-ext',
+    instanceId: 'inst-1',
+    providerConversationId: 'conv-42',
+  });
+
+  it('resolves chatId from a mapping on the SAME session as the envelope, then sends', async () => {
+    mappingService.getByProvider.mockResolvedValue(mapping('sess-1'));
+    const ctx = contextFor(makePlugin(['*'], ['conversation:send']));
+    await ctx.conversations.send({ ...sendEnv, sessionId: 'sess-1' });
+    expect(mappingService.getByProvider).toHaveBeenCalledWith('test-ext', 'inst-1', 'conv-42');
+    expect(messageService.sendText).toHaveBeenCalledWith('sess-1', { chatId: '628@c.us', text: 'hi' });
+  });
+
+  it('rejects a mapping owned by ANOTHER session and never sends (wrong-session send)', async () => {
+    // The plugin is activated for BOTH sessions, so the per-session activation gate passes — only the
+    // mapping's own sessionId stops a stale mapping (e.g. left over after a scope move) from routing
+    // sess-1's envelope out through sess-2's chat.
+    mappingService.getByProvider.mockResolvedValue(mapping('sess-2'));
+    const ctx = contextFor(makePlugin(['*'], ['conversation:send'], ['sess-1', 'sess-2']));
+    await expect(ctx.conversations.send({ ...sendEnv, sessionId: 'sess-1' })).rejects.toThrow(
+      /belongs to session sess-2, not sess-1/,
+    );
+    expect(messageService.sendText).not.toHaveBeenCalled();
+    expect(messageService.reply).not.toHaveBeenCalled();
+  });
+
+  it('sends with an explicit chatId without consulting the mapping service', async () => {
+    const ctx = contextFor(makePlugin(['*'], ['conversation:send']));
+    await ctx.conversations.send({ type: 'text', text: 'hi', sessionId: 'sess-1', chatId: '628@c.us' });
+    expect(mappingService.getByProvider).not.toHaveBeenCalled();
+    expect(messageService.sendText).toHaveBeenCalledWith('sess-1', { chatId: '628@c.us', text: 'hi' });
+  });
+});
+
+describe('PluginLoaderService capability facade — ctx.storage', () => {
+  let loader: PluginLoaderService;
+  let backing: { get: jest.Mock; set: jest.Mock; delete: jest.Mock; list: jest.Mock };
+
+  beforeEach(() => {
+    backing = {
+      get: jest.fn().mockResolvedValue(null),
+      set: jest.fn().mockResolvedValue(undefined),
+      delete: jest.fn().mockResolvedValue(undefined),
+      list: jest.fn().mockResolvedValue([]),
+    };
+    const pluginStorage = {
+      createPluginStorage: jest.fn().mockReturnValue(backing),
+    } as unknown as PluginStorageService;
+    loader = new PluginLoaderService(
+      { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService,
+      new HookManager(),
+      pluginStorage,
+      { get: jest.fn() } as unknown as ModuleRef,
+    );
+  });
+
+  function contextFor(plugin: PluginInstance): PluginContext {
+    return (
+      loader as unknown as { capabilities: { createPluginContext: (p: PluginInstance) => PluginContext } }
+    ).capabilities.createPluginContext(plugin);
+  }
+
+  // Every verb, not just the write ones: `list` alone enumerates whatever a previous version of the
+  // plugin persisted, and `get` reads it back.
+  const VERBS: Array<[string, (ctx: PluginContext) => Promise<unknown>]> = [
+    ['get', ctx => ctx.storage.get('k')],
+    ['set', ctx => ctx.storage.set('k', { v: 1 })],
+    ['delete', ctx => ctx.storage.delete('k')],
+    ['list', ctx => ctx.storage.list('prefix')],
+  ];
+
+  it.each(VERBS)('denies storage.%s when the plugin does not declare storage:use', async (verb, call) => {
+    const ctx = contextFor(makePlugin(['*'], [])); // no permissions at all
+    await expect(call(ctx)).rejects.toBeInstanceOf(PluginCapabilityError);
+    expect(backing[verb as keyof typeof backing]).not.toHaveBeenCalled();
+  });
+
+  it.each(VERBS)('allows storage.%s once the manifest declares storage:use', async (verb, call) => {
+    const ctx = contextFor(makePlugin(['*'], ['storage:use']));
+    await expect(call(ctx)).resolves.not.toThrow();
+    expect(backing[verb as keyof typeof backing]).toHaveBeenCalled();
+  });
+
+  it('the storage denial names the fix too, from the same template', async () => {
+    // `storage:use` is the newest permission and the reason this message matters most right now: an
+    // operator who upgrades the gateway without upgrading a plugin meets THIS refusal, mid-run. One
+    // template with `${permission}` interpolated serves all seven, so this should hold for free —
+    // which is exactly why it is asserted rather than assumed.
+    const ctx = contextFor(makePlugin(['*'], []));
+    const error = await ctx.storage.get('k').catch((e: unknown) => e);
+    const message = (error as Error).message;
+    expect(message).toContain('storage:use');
+    expect(message).toContain('permissions');
+    expect(message).toContain('manifest.json');
+  });
+
+  it('passes the caller arguments through untouched', async () => {
+    const ctx = contextFor(makePlugin(['*'], ['storage:use']));
+    await ctx.storage.set('group:sess-1:12345@g.us', { seen: 2 });
+    await ctx.storage.list('group:');
+    expect(backing.set).toHaveBeenCalledWith('group:sess-1:12345@g.us', { seen: 2 });
+    expect(backing.list).toHaveBeenCalledWith('group:');
+  });
+
+  it('is not gated by session scope — storage is keyed by plugin, not by session', async () => {
+    // A plugin the operator activated for one session only still owns one storage namespace, so the
+    // permission is the whole gate here. Asserting it keeps a later "add assertSessionActive for
+    // symmetry" change from quietly bricking every stored key outside the active session.
+    const ctx = contextFor(makePlugin(['sess-1'], ['storage:use'], ['sess-1']));
+    await expect(ctx.storage.get('anything')).resolves.toBeNull();
+    expect(backing.get).toHaveBeenCalledWith('anything');
   });
 });

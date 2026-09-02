@@ -51,7 +51,48 @@ export function mergeChatMessages(db: ChatMessage[], history: ChatMessage[]): Ch
     // attribution run in the chat view.
     byId.set(key, hist?.author && !m.author ? { ...m, author: hist.author } : m);
   }
-  return [...byId.values()].sort((a, b) => msgTime(a) - msgTime(b) || a.createdAt.localeCompare(b.createdAt));
+  const sorted = [...byId.values()].sort((a, b) => msgTime(a) - msgTime(b) || a.createdAt.localeCompare(b.createdAt));
+  return capMediaPayloads(sorted);
+}
+
+/**
+ * Upper bound on base64 media payloads held in ONE chat slice at a time. A slice lives in the
+ * React Query cache with staleTime: Infinity, so every image/video/voice note that arrives while
+ * the chat is open would otherwise pin its full base64 string in heap for the whole session —
+ * scrolling through a media-rich chat grows the tab unboundedly. Past the cap the OLDEST
+ * payloads are stripped to the omitted marker ({data: undefined, omitted: true}), which renders
+ * the same 📎 placeholder as a history row fetched without media; the newest `keep` stay
+ * renderable (thread + lightbox). Count-based (not byte-based): payloads are bounded upstream
+ * by the backend's media size cap.
+ *
+ * The cap must cover the fetch window: useChatMessages loads a 100-message slice with media, so a
+ * smaller cap strips payloads INSIDE the window the user can scroll to — and with staleTime:
+ * Infinity there is no refetch path, leaving a dead-end 📎 placeholder for media that was fetched.
+ */
+export const MEDIA_PAYLOAD_CACHE_LIMIT = 100;
+
+/**
+ * Enforce MEDIA_PAYLOAD_CACHE_LIMIT on an ascending message list, stripping the oldest payloads
+ * first. Returns the input array untouched when already under the cap (stable reference — no
+ * downstream re-render), otherwise a new array; entries are copied, never mutated.
+ */
+export function capMediaPayloads(list: ChatMessageView[], keep = MEDIA_PAYLOAD_CACHE_LIMIT): ChatMessageView[] {
+  let payloadCount = 0;
+  for (const m of list) if (m.metadata?.media?.data) payloadCount++;
+  if (payloadCount <= keep) return list;
+
+  const next = list.slice();
+  let toStrip = payloadCount - keep;
+  for (let i = 0; i < next.length && toStrip > 0; i++) {
+    const media = next[i].metadata?.media;
+    if (!media?.data) continue;
+    next[i] = {
+      ...next[i],
+      metadata: { ...next[i].metadata, media: { ...media, data: undefined, omitted: true } },
+    };
+    toStrip--;
+  }
+  return next;
 }
 
 /**
@@ -64,7 +105,21 @@ export const senderKey = (m: Pick<ChatMessage, 'author' | 'chatName'>): string |
 
 // ChatMessageView extends ChatMessage with the view-only fields the chat page renders.
 // Lifted from Chats.tsx so hooks/utils can share the same shape.
-type MessageMedia = { mimetype: string; filename?: string; data?: string; omitted?: boolean; sizeBytes?: number };
+export type MessageMedia = {
+  mimetype: string;
+  filename?: string;
+  data?: string;
+  omitted?: boolean;
+  sizeBytes?: number;
+};
+
+export const getMediaSrc = (media?: MessageMedia): string => {
+  if (!media || !media.data) return '';
+  if (media.data.startsWith('data:') || media.data.startsWith('http://') || media.data.startsWith('https://')) {
+    return media.data;
+  }
+  return `data:${media.mimetype};base64,${media.data}`;
+};
 
 export interface ChatMessageView extends ChatMessage {
   metadata?: {
@@ -94,12 +149,30 @@ export function mergeDeliveryStatus(
 }
 
 /**
+ * The reaction map to store after a `message.reaction` event.
+ *
+ * The gateway OMITS `reactions` when it holds no stored copy of the message to snapshot from — an
+ * ephemeral message, or one that predates the session going live. Absent means "unknown", so the map
+ * already on screen survives, including the optimistic reaction the local user just added under the
+ * `me` key. An empty object is a different claim: every reaction was withdrawn, and that must clear
+ * the badge. `??` draws that line where `||` would not, which is the whole reason this is a named
+ * function rather than an inline expression — the socket layer carries the absence through
+ * deliberately (useWebSocket.ts) and flattening it anywhere in between makes this dead code.
+ */
+export function mergeReactionSnapshot(
+  existing: Record<string, string> | undefined,
+  incoming: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+  return incoming ?? existing;
+}
+
+/**
  * Merge two metadata bags field-by-field. The incoming copy wins per field only when it actually
  * carries a value — a live `message.sent` echo is built as `{media, quotedMessage, call}` with
  * undefined leaves, and a wholesale `incoming ?? existing` swap would wipe the optimistic bubble's
- * quote/call. Media has one extra rule: an incoming marker WITHOUT the payload (the engine's
- * own-send echo and the media-less history fetch both emit `{media: {omitted: true}}` with no
- * `data`) must not clobber an existing copy holding the real base64 — the optimistic send bubble is
+ * quote/call. Media has one extra rule: an incoming marker WITHOUT the payload (a Baileys API-send
+ * echo and the media-less history fetch both emit `{media: {omitted: true}}` with no `data`) must
+ * not clobber an existing copy holding the real base64 — the optimistic send bubble is
  * the only copy with the payload until a refetch, and the cache is staleTime: Infinity.
  */
 function mergeMessageMetadata(
@@ -131,12 +204,13 @@ function mergeMessageMetadata(
  * waMessageId=WA id) and a live WS message (id=WA id) for the same WhatsApp message must dedupe,
  * not double-add. On replace, the delivery status only advances (a replayed lower `sent` echo can't
  * downgrade a delivered/read row) and metadata is merged per field (a payload-less echo can't erase
- * the existing media/quote — see mergeMessageMetadata).
+ * the existing media/quote — see mergeMessageMetadata). The result is run through capMediaPayloads
+ * so a long session of incoming media can't grow the cached slice's base64 heap without bound.
  * Returns a new array — does not mutate the input.
  */
 export function mergeOrAppend(list: ChatMessageView[], incoming: ChatMessageView): ChatMessageView[] {
   const idx = list.findIndex(m => msgKey(m) === msgKey(incoming));
-  if (idx === -1) return [...list, incoming];
+  if (idx === -1) return capMediaPayloads([...list, incoming]);
   const existing = list[idx];
   const next = list.slice();
   next[idx] = {
@@ -146,7 +220,7 @@ export function mergeOrAppend(list: ChatMessageView[], incoming: ChatMessageView
     status: mergeDeliveryStatus(existing.status, incoming.status) ?? incoming.status,
     metadata: mergeMessageMetadata(existing.metadata, incoming.metadata),
   };
-  return next;
+  return capMediaPayloads(next);
 }
 
 /**

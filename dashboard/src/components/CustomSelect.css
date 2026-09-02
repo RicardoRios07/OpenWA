@@ -102,7 +102,7 @@
 
 .custom-select-option.selected {
   background: var(--primary-soft);
-  color: var(--primary);
+  color: var(--primary-text);
   font-weight: 600;
 }
 

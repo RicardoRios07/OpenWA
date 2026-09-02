@@ -1,12 +1,14 @@
-import { Injectable, Optional } from '@nestjs/common';
+import { Injectable, OnApplicationBootstrap, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
+import { createHash } from 'crypto';
 import { PluginLoaderService } from '../../core/plugins/plugin-loader.service';
 import { IngressJobData } from '../queue/processors/ingress.processor';
 import { IntegrationDeliveryFailure } from './entities/integration-delivery-failure.entity';
 import { QUEUE_NAMES } from '../queue/queue-names';
 import { createLogger } from '../../common/services/logger.service';
+import { resolveNonNegativeIntEnv } from '../../config/configuration';
 
 /**
  * Outcome of an enqueue attempt. 'queued' = handed to BullMQ; 'dispatched' = delivered inline; 'failed'
@@ -28,11 +30,39 @@ export type EnqueueOutcome = { outcome: 'queued' | 'dispatched' | 'failed'; erro
  */
 export function resolveIngressJobOptions(): { attempts: number; backoff: { type: 'exponential'; delay: number } } {
   const attempts = Number(process.env.INGRESS_MAX_ATTEMPTS);
-  const delay = Number(process.env.INGRESS_RETRY_DELAY_MS);
   return {
     attempts: Number.isInteger(attempts) && attempts >= 1 ? attempts : 3,
-    backoff: { type: 'exponential', delay: Number.isInteger(delay) && delay >= 0 ? delay : 5000 },
+    backoff: { type: 'exponential', delay: resolveNonNegativeIntEnv(process.env.INGRESS_RETRY_DELAY_MS, 5000) },
   };
+}
+
+/**
+ * BullMQ refuses several jobId shapes outright, at two validation sites: Job.validateOptions rejects
+ * an exact integer string ("Custom Id cannot be integers") and a colon id that does not split into
+ * exactly 3 parts ("Custom Id cannot contain :"); Queue.addJob additionally rejects '0' and any
+ * '0:'-prefixed id ("JobId cannot be '0' or start with '0:'"). Providers send numeric dedup headers
+ * (`svix-Id: 12345`), and the redrive path mints `redrive:<uuid>`, so these refusals happen in
+ * practice, and because enqueue()'s catch-all treats ANY add() throw as "Redis unreachable", the job
+ * silently degraded to inline dispatch with no retry, no backoff, and a blocked redrive loop. Map the
+ * refused shapes to a deterministic sha256 prefix: BullMQ's exactly-once dedup only needs the id
+ * STABLE per delivery, not recognizable, and the reconciler replays through this same function so
+ * its dedup against an earlier enqueue is preserved.
+ *
+ * The hash input is namespaced with the plugin/instance pair. BullMQ dedups jobIds across the WHOLE
+ * shared ingress queue, while the database dedup is (pluginId, instanceId, providerDeliveryId), and
+ * numeric provider ids are exactly the short, per-account sequence style that two instances of one
+ * provider can share. Without the namespace, the second instance's delivery would collide with the
+ * first's job id and BullMQ would silently discard it (resolved as the existing job, no DLQ row);
+ * with it, the queue-level dedup matches the database-level scope. A non-string id (a duplicated
+ * header can surface as string[]) is coerced rather than trusted to reach BullMQ's own checks.
+ */
+export function sanitizeIngressJobId(jobId: string, namespace = ''): string {
+  const raw = typeof jobId === 'string' ? jobId : String(jobId);
+  const looksInteger = `${parseInt(raw, 10)}` === raw;
+  const badColon = raw.includes(':') && raw.split(':').length !== 3;
+  const zeroPrefixed = raw === '0' || raw.startsWith('0:');
+  if (!looksInteger && !badColon && !zeroPrefixed) return raw;
+  return `ing-${createHash('sha256').update(`${namespace}\u0000${raw}`).digest('hex').slice(0, 40)}`;
 }
 
 /**
@@ -64,11 +94,15 @@ export function buildIngressDeadLetterRow(data: IngressJobData, error?: string):
  * Shared queue-or-inline enqueue for inbound ingress jobs. Extracted out of IngressService's DI
  * factory (integration.module.ts) so RedriveService can reuse the exact same behavior when replaying
  * DLQ rows: same queue.add args, same inline dispatch-after-persist fallback, same error swallow.
- * The ingress queue is OPTIONAL — it only exists as a provider under QUEUE_ENABLED (QueueModule) —
- * so a missing injection falls back to inline dispatch, mirroring WebhookService's direct fallback.
+ * The ingress queue stays @Optional so a queue-off boot (QUEUE_ENABLED unset/false) needs no
+ * QueueModule — and no Redis — at all; a missing injection then means inline dispatch, mirroring
+ * WebhookService's direct fallback. Under QUEUE_ENABLED=true, IntegrationModule imports QueueModule
+ * so the queue provider MUST resolve; onApplicationBootstrap below fails the boot if it did not, so
+ * a broken queue wiring crashes at startup instead of silently running inline forever (the queued
+ * dispatch contract — fast-ack, retries, ordered processing — would otherwise be dead with no signal).
  */
 @Injectable()
-export class IngressEnqueueService {
+export class IngressEnqueueService implements OnApplicationBootstrap {
   private readonly logger = createLogger('IngressEnqueueService');
 
   constructor(
@@ -77,6 +111,19 @@ export class IngressEnqueueService {
     @Optional() @InjectQueue(QUEUE_NAMES.INGRESS) private readonly ingressQueue?: Queue<IngressJobData>,
   ) {}
 
+  onApplicationBootstrap(): void {
+    // Reads the same module-eval signal as the conditional QueueModule imports (integration.module.ts /
+    // webhook.module.ts), not the runtime config, so the check guards exactly the wiring that should
+    // have happened at import time.
+    if (process.env.QUEUE_ENABLED === 'true' && !this.ingressQueue) {
+      throw new Error(
+        `QUEUE_ENABLED=true but the '${QUEUE_NAMES.INGRESS}' BullMQ queue did not resolve — ` +
+          'IntegrationModule must import QueueModule (see the QUEUE_ENABLED conditional in integration.module.ts). ' +
+          'Refusing to boot: ingress deliveries would silently dispatch inline, defeating the queued-dispatch contract.',
+      );
+    }
+  }
+
   async enqueue(data: IngressJobData, jobId: string): Promise<EnqueueOutcome> {
     const queueEnabled = this.config.get<boolean>('queue.enabled', false);
     const useQueue = queueEnabled && !!this.ingressQueue;
@@ -84,8 +131,13 @@ export class IngressEnqueueService {
     if (useQueue && this.ingressQueue) {
       try {
         // jobId = deliveryId gives BullMQ exactly-once enqueue semantics; the retry policy adds bounded
-        // exponential-backoff attempts so a transient failure retries before landing in the DLQ.
-        await this.ingressQueue.add('ingress', data, { jobId, ...resolveIngressJobOptions() });
+        // exponential-backoff attempts so a transient failure retries before landing in the DLQ. The id
+        // is sanitized because BullMQ refuses several id shapes at add() (see sanitizeIngressJobId),
+        // which would otherwise read as a Redis failure here and fall through to inline dispatch.
+        await this.ingressQueue.add('ingress', data, {
+          jobId: sanitizeIngressJobId(jobId, `${data.pluginId}\u0000${data.instanceId}`),
+          ...resolveIngressJobOptions(),
+        });
         return { outcome: 'queued' };
       } catch (err) {
         // Redis unreachable (enableOfflineQueue:false makes add() reject) — fall through to inline

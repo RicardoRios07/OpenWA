@@ -2,8 +2,44 @@ import { resolve } from 'path';
 
 type EnvConfig = Record<string, unknown>;
 
-// The 'main' (auth/audit) connection is always this fixed SQLite file (not env-overridable).
-const MAIN_DB_PATH = './data/main.sqlite';
+// Default SQLite file of the 'main' (auth/audit) connection. The runtime path is env-overridable via
+// MAIN_DATABASE_NAME (configuration.ts), so the collision guard below must resolve the EFFECTIVE
+// path — comparing against this constant alone would false-negative when MAIN_DATABASE_NAME moves
+// the main DB and DATABASE_NAME follows it, and false-positive when the main DB moved away but
+// DATABASE_NAME still points at the (now unused) default file.
+const MAIN_DB_DEFAULT_PATH = './data/main.sqlite';
+
+// Duplicated rather than imported from configuration.ts (see MAIN_DB_DEFAULT_PATH above); the spec
+// asserts the two agree.
+const MAX_TIMER_MS = 2147483647;
+
+/**
+ * Collision guard shared by boot validation (validateEnv below) and the migration CLI
+ * (src/database/data-source.ts / data-source-main.ts — the TypeORM CLI never runs ConfigModule's
+ * validate(), so both entry points apply this guard themselves). When the 'data' connection is
+ * SQLite (explicit or defaulted), its file must not BE the 'main' connection's file: two TypeORM
+ * connections on one SQLite file run separate migration ledgers + synchronize policies against the
+ * same tables. Both paths are resolved exactly like the runtime (MAIN_DATABASE_NAME / DATABASE_NAME
+ * overriding the defaults in configuration.ts) and normalized to absolute, so a relative spelling
+ * ('./data/../data/main.sqlite') or an absolute path naming the same file is caught. Returns the
+ * error message on collision, null otherwise.
+ */
+export function sqliteDataMainPathCollision(config: EnvConfig): string | null {
+  const read = (key: string): string | undefined => {
+    const value = config[key];
+    return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
+  };
+  // Postgres uses a bare database NAME, never a file path — no collision is possible there.
+  const dbType = read('DATABASE_TYPE');
+  if (dbType !== undefined && dbType !== 'sqlite') return null;
+  const dataDbName = read('DATABASE_NAME');
+  if (!dataDbName) return null;
+  const mainDbPath = read('MAIN_DATABASE_NAME') || MAIN_DB_DEFAULT_PATH;
+  if (resolve(dataDbName) === resolve(mainDbPath)) {
+    return `DATABASE_NAME must not point at the main database file (${mainDbPath}); use a separate file`;
+  }
+  return null;
+}
 
 /**
  * Fail-fast environment validation. Wired as ConfigModule's `validate`
@@ -38,6 +74,25 @@ export function validateEnv(config: EnvConfig): EnvConfig {
   };
   checkEnum('ENGINE_TYPE', ['whatsapp-web.js', 'baileys']);
   checkEnum('STORAGE_TYPE', ['local', 's3']);
+  // Every production hardening in the repo gates on the exact string 'production', so an
+  // unrecognised value silently selects the permissive branch of each one — CORS, Swagger, DTO
+  // error detail, the default-secret guard and the ALLOW_DEV_API_KEY rejection that stops the public
+  // `dev-admin-key` being seeded as ADMIN.
+  //
+  // Unset stays legal because it is the standard Node default for a plain `node dist/main` outside
+  // any packaged runtime — refusing it would break local runs. The packaged runtimes all set it (the
+  // runtime image carries `ENV NODE_ENV=production`, the chart sets it, and both compose files set it
+  // via `${NODE_ENV:-production}` and a hardcoded `development`); only a hand-rolled deployment that
+  // strips it still takes the permissive branch of every hardening listed above.
+  //
+  // Checked RAW rather than through `str()`: the readers compare `process.env.NODE_ENV` verbatim, so
+  // a padded ' production ' that only matches after trimming would validate clean here and still take
+  // the permissive branch at runtime — blessing the very downgrade this check exists to stop.
+  const nodeEnvAllowed = ['production', 'development', 'test'];
+  const rawNodeEnv = config.NODE_ENV;
+  if (typeof rawNodeEnv === 'string' && rawNodeEnv !== '' && !nodeEnvAllowed.includes(rawNodeEnv)) {
+    errors.push(`NODE_ENV must be one of ${nodeEnvAllowed.map(v => `"${v}"`).join(', ')} (got "${rawNodeEnv}")`);
+  }
 
   if (dbType === 'postgres') {
     for (const key of ['DATABASE_HOST', 'DATABASE_USERNAME', 'DATABASE_PASSWORD']) {
@@ -74,11 +129,14 @@ export function validateEnv(config: EnvConfig): EnvConfig {
     // SQLite (explicit or default): DATABASE_NAME is a file path for the 'data' connection. It must
     // not resolve to the 'main' DB file — two TypeORM connections on one SQLite file run separate
     // migration ledgers + synchronize policies against the same tables, risking schema divergence and
-    // lock contention. (Postgres DATABASE_NAME is a bare db name, so this never applies there.)
-    const dataDbName = str('DATABASE_NAME');
-    if (dataDbName && resolve(dataDbName) === resolve(MAIN_DB_PATH)) {
-      errors.push(`DATABASE_NAME must not point at the main database file (${MAIN_DB_PATH}); use a separate file`);
+    // lock contention. The main path is resolved like the runtime (MAIN_DATABASE_NAME || default),
+    // not assumed to be the default file. (Postgres DATABASE_NAME is a bare db name, so this never
+    // applies there.)
+    const collision = sqliteDataMainPathCollision(config);
+    if (collision) {
+      errors.push(collision);
     }
+    const dataDbName = str('DATABASE_NAME');
     // Reject a bare name with no path separator and no .sqlite/.db suffix — the exact signature of a
     // PostgreSQL DATABASE_NAME (e.g. 'openwa') leaking into a SQLite run (#677). That bare name becomes
     // the SQLite file PATH, opening a file named 'openwa' under the read-only app rootfs →
@@ -92,10 +150,16 @@ export function validateEnv(config: EnvConfig): EnvConfig {
     }
   }
 
+  // Plain decimal digits only: these numeric knobs are read downstream with parseInt(raw, 10),
+  // which silently truncates spellings Number() would accept (`1e6` → 1, `0x100` → 0) — the boot
+  // would validate one value and then configure another. Requiring digits keeps the validated
+  // value identical to the parsed one.
+  const DECIMAL_INTEGER = /^\d+$/;
+
   const checkPort = (key: string): void => {
     const raw = str(key);
     if (raw === undefined) return;
-    const n = Number(raw);
+    const n = DECIMAL_INTEGER.test(raw) ? Number(raw) : NaN;
     if (!Number.isInteger(n) || n < 1 || n > 65535) {
       errors.push(`${key} must be an integer port in [1, 65535] (got "${raw}")`);
     }
@@ -109,7 +173,7 @@ export function validateEnv(config: EnvConfig): EnvConfig {
   const checkNonNegativeInt = (key: string): void => {
     const raw = str(key);
     if (raw === undefined) return;
-    const n = Number(raw);
+    const n = DECIMAL_INTEGER.test(raw) ? Number(raw) : NaN;
     if (!Number.isInteger(n) || n < 0) {
       errors.push(`${key} must be a non-negative integer (got "${raw}")`);
     }
@@ -127,8 +191,59 @@ export function validateEnv(config: EnvConfig): EnvConfig {
     'MAX_CONCURRENT_SESSIONS', // 0 = unlimited
     'INGRESS_INSTANCE_TTL',
     'WEBHOOK_DISPATCH_MAX_QUEUED',
+    'STATS_CACHE_TTL_MS', // 0 = memo disabled
+    'WEBHOOK_MAX_PER_SESSION', // 0 = unlimited
+    'AUTOMATION_MAX_PER_SESSION', // 0 = unlimited
+    'WEBHOOK_MEDIA_INLINE_MAX_BYTES', // 0 = never inline media
+    'EXPORT_INLINE_MEDIA_BUDGET_BYTES', // 0 = a data export carries no inline media at all
+    'MESSAGE_LIST_INLINE_MEDIA_BUDGET_BYTES', // 0 = a message list carries no inline media at all
   ]) {
     checkNonNegativeInt(key);
+  }
+
+  // Retention knobs whose read site documents `<= 0` as the switch that disables pruning, so a
+  // negative value is a supported spelling of "off" rather than a typo — `audit.service.ts` clamps
+  // with Math.max(0, parsed) and `docs/05-database-design.md` advertises `≤ 0 disables`. The point of
+  // validating them is to reject `30d` / `ninety`, which parse to NaN and silently become the
+  // default; rejecting `-1` would instead refuse to boot a configuration this repo documents.
+  const SIGNED_DECIMAL_INTEGER = /^-?\d+$/;
+  const checkInt = (key: string): void => {
+    const raw = str(key);
+    if (raw === undefined) return;
+    const n = SIGNED_DECIMAL_INTEGER.test(raw) ? Number(raw) : NaN;
+    if (!Number.isInteger(n)) {
+      errors.push(`${key} must be an integer (got "${raw}")`);
+    }
+  };
+  // Keep this an ARRAY LITERAL even at one entry: docs-env-example.spec.ts derives the keys it
+  // requires `.env.example` to list by scanning `'KEY',` array elements in this file. Collapsing it
+  // into a bare checkInt('AUDIT_RETENTION_DAYS') call would silently drop the knob out of that gate.
+  for (const key of [
+    'AUDIT_RETENTION_DAYS', // <= 0 disables retention
+  ]) {
+    checkInt(key);
+  }
+
+  // BAILEYS_WA_VERSION: optional version pin for the Baileys engine (e.g. 2.3000.1045340097 or 2,3000,1045340097)
+  for (const key of ['BAILEYS_WA_VERSION']) {
+    const raw = str(key);
+    if (raw !== undefined) {
+      const match = raw.match(/^(\d+)[.,](\d+)[.,](\d+)$/);
+      if (!match) {
+        errors.push(
+          `${key} must be a valid WhatsApp Web version (e.g. "2.3000.1045340097"; got ${JSON.stringify(raw)})`,
+        );
+      } else {
+        const major = parseInt(match[1], 10);
+        const minor = parseInt(match[2], 10);
+        const patch = parseInt(match[3], 10);
+        if (major !== 2 || minor < 2000 || patch < 0) {
+          errors.push(
+            `${key} must be a valid WhatsApp Web version (e.g. "2.3000.1045340097"; got ${JSON.stringify(raw)})`,
+          );
+        }
+      }
+    }
   }
 
   // Some knobs are nonsensical at 0 and contradict the "non-negative" intent: a rate-limit LIMIT of 0
@@ -137,7 +252,7 @@ export function validateEnv(config: EnvConfig): EnvConfig {
   const checkPositiveInt = (key: string): void => {
     const raw = str(key);
     if (raw === undefined) return;
-    const n = Number(raw);
+    const n = DECIMAL_INTEGER.test(raw) ? Number(raw) : NaN;
     if (!Number.isInteger(n) || n < 1) {
       errors.push(`${key} must be a positive integer (got "${raw}")`);
     }
@@ -146,14 +261,89 @@ export function validateEnv(config: EnvConfig): EnvConfig {
     'RATE_LIMIT_SHORT_LIMIT',
     'RATE_LIMIT_MEDIUM_LIMIT',
     'RATE_LIMIT_LONG_LIMIT',
+    // WebSocket (/events) limits: 0 would disable a tier entirely (a self-DoS on the WS surface).
+    'WS_RATE_LIMIT_FRAME_PER_SECOND',
+    'WS_RATE_LIMIT_FRAME_BURST',
+    'WS_RATE_LIMIT_HANDSHAKE_MAX',
+    'WS_RATE_LIMIT_HANDSHAKE_WINDOW_MS',
+    'WS_MAX_SOCKETS_PER_KEY',
     'WEBHOOK_TIMEOUT',
     'INGRESS_INSTANCE_LIMIT',
+    'INGRESS_IP_LIMIT',
     'REQUEST_TIMEOUT_MS',
     'HEADERS_TIMEOUT_MS',
     'KEEPALIVE_TIMEOUT_MS',
     'WEBHOOK_DISPATCH_CONCURRENCY',
+    // 0 would reject every webhook dispatch (a total, silent webhook outage).
+    'WEBHOOK_MAX_PAYLOAD_BYTES',
+    // 0 would refuse every request carrying a body (a self-DoS), so the budget is positive-only.
+    'INFLIGHT_BODY_BUDGET_BYTES',
+    // Media conversion: each is read with a `> 0` guard that silently falls back to the default,
+    // so a typo or a 0 quietly means "the default" instead of what the operator wrote.
+    'MEDIA_CONVERSION_TIMEOUT_MS',
+    'MEDIA_CONVERSION_MAX_OUTPUT_BYTES',
+    'MEDIA_CONVERSION_CONCURRENCY',
+    // Session ownership leases, same fall-back-silently reasoning.
+    'SESSION_LEASE_TTL_MS',
+    'SESSION_LEASE_HEARTBEAT_MS',
+    'SESSION_TAKEOVER_SWEEP_MS',
+    'SESSION_PROXY_TIMEOUT_MS',
+    // Positive-only is the POINT here, not a convention: 0 arms no Puppeteer timer at all, so a
+    // wedged renderer holds the request forever (see wwebjs-lifecycle.ts).
+    'PUPPETEER_PROTOCOL_TIMEOUT_MS',
   ]) {
     checkPositiveInt(key);
+  }
+
+  // The ceiling matters for the same reason from the other side: the docs forbid 0, so an operator
+  // who wants an effectively unlimited budget reaches for a row of nines. Rejected at boot rather
+  // than clamped, so they learn the value they wrote is not the value they would have got.
+  {
+    const raw = str('PUPPETEER_PROTOCOL_TIMEOUT_MS');
+    const n = raw !== undefined && DECIMAL_INTEGER.test(raw) ? Number(raw) : NaN;
+    if (Number.isInteger(n) && n > MAX_TIMER_MS) {
+      errors.push(
+        `PUPPETEER_PROTOCOL_TIMEOUT_MS must not exceed ${MAX_TIMER_MS} ms (got "${raw}"): Node's ` +
+          `timers overflow above that and fire after 1 ms, so the browser never finishes launching`,
+      );
+    }
+  }
+
+  // A heartbeat that does not fit inside the lease renews too late to matter: the claim lapses
+  // between ticks, peers adopt sessions from a perfectly healthy node, and nothing in the logs says
+  // why. The defaults must be substituted for whatever is unset — validating only the key the
+  // operator happened to set would let a lone oversized heartbeat through.
+  const leaseTtlMs = Number(str('SESSION_LEASE_TTL_MS') ?? '60000');
+  const heartbeatMs = Number(str('SESSION_LEASE_HEARTBEAT_MS') ?? '20000');
+  // Strictly LESS than half: at exactly half, two renewals span the whole TTL, so a single missed
+  // renewal lands on the expiry instant — a tie that any scheduling jitter turns into a lapse. A
+  // margin below half is what lets one late or failed renewal still land inside the lease.
+  if (Number.isInteger(leaseTtlMs) && Number.isInteger(heartbeatMs) && heartbeatMs * 2 >= leaseTtlMs) {
+    errors.push(
+      `SESSION_LEASE_HEARTBEAT_MS (${heartbeatMs}) must be less than half of SESSION_LEASE_TTL_MS (${leaseTtlMs}) ` +
+        'so a renewal that is late or fails once still lands inside the lease',
+    );
+  }
+
+  // The forwarder builds an absolute URL from this; a value without a scheme parses as something
+  // unusable (`localhost:2785` reads as the scheme `localhost:`) and only fails at the first
+  // forward, as a 500 on a request that had nothing wrong with it. Embedded credentials
+  // (`http://user:pw@host`) parse fine here but undici's fetch rejects them outright — every
+  // forward would 503 permanently, with the credentials sitting in sessions.nodeUrl — so refuse
+  // those at boot too rather than let them reach the DB and the first forward.
+  const nodeUrl = str('NODE_URL');
+  if (nodeUrl) {
+    let parsed: URL | undefined;
+    try {
+      parsed = new URL(nodeUrl);
+    } catch {
+      parsed = undefined;
+    }
+    if (!parsed || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
+      errors.push(`NODE_URL must be an absolute http(s) URL (got "${nodeUrl}")`);
+    } else if (parsed.username || parsed.password) {
+      errors.push('NODE_URL must not embed credentials — the forwarder cannot send a URL with a userinfo component');
+    }
   }
 
   // Boolean feature flags read at module-eval time (app.module.ts) with a bare `=== 'true'` /
@@ -179,12 +369,91 @@ export function validateEnv(config: EnvConfig): EnvConfig {
     'MCP_ENABLED',
     'SERVE_DASHBOARD',
     'AUTO_START_SESSIONS',
+    'STATUS_SEED_ON_READY',
     'STORE_EPHEMERAL_MESSAGES',
     'RESOLVE_LID_TO_PHONE',
     'SIMULATE_TYPING',
     'SEARCH_ENABLED',
+    // Read at boot by the throttler factory (app.module.ts) and CacheService with `=== 'true'`: a
+    // typo like `ture` silently downgrades rate-limit storage + cache to per-process in-memory.
+    'REDIS_ENABLED',
+    // Read by the SSRF guard's redirect loop with `=== 'true'`: a typo silently keeps the secure
+    // default, but an accidental 'true'-ish string is not the flag the operator meant to audit.
+    'PLUGIN_DOWNLOAD_ALLOW_INSECURE_REDIRECTS',
+    // Read with `=== 'true'`, so a typo leaves sends unpaced — the silent failure this whole
+    // feature exists to avoid, and invisible without this check.
+    'SEND_PACING_ENABLED',
+    // Opt-in feature flags read with `=== 'true'`: a typo silently leaves the feature OFF, so the
+    // conversion/archive endpoints answer as if nothing was configured. Same class as the above.
+    'MEDIA_CONVERSION_ENABLED',
+    'CHAT_MEDIA_ARCHIVE_ENABLED',
+    'CHAT_MEDIA_ARCHIVE_OUTBOUND',
+    // Read with `=== 'true'` in BOTH configuration.ts and data-source.ts, and this is the one whose
+    // typo fails OPEN: `DATABASE_SSL=require` is the natural Postgres spelling and reads as OFF, so
+    // credentials and message bodies cross the wire in plaintext to a server the operator believed
+    // was TLS-protected. Nothing logs it.
+    'DATABASE_SSL',
+    // `!== 'false'`, so a typo keeps the SECURE value — but it is still not the flag the operator set,
+    // and it is only meaningful alongside DATABASE_SSL above.
+    'DATABASE_SSL_REJECT_UNAUTHORIZED',
+    // `!== 'false'`, so a typo keeps synchronize ON — and app.module.ts derives `migrationsRun` from
+    // its negation, so the main connection's migration ledger silently never advances for an operator
+    // who deliberately opted into migration-managed api_keys/audit_logs.
+    'MAIN_DATABASE_SYNCHRONIZE',
+    // Read with `=== 'true'` by the plugin ingress gate: a typo turns an intentional
+    // `ALLOW_UNSIGNED_INGRESS=true` back off, and a route the operator meant to open stops loading.
+    'ALLOW_UNSIGNED_INGRESS',
+    // `=== 'true'`; already refused outright in production, but a typo in development silently
+    // withholds the dev key the operator asked for.
+    'ALLOW_DEV_API_KEY',
+    // `!== 'false'`: a typo keeps SSRF protection on (safe) or contact enrichment off — either way
+    // the webhook payload an integrator receives is not the one the operator configured.
+    'WEBHOOK_SSRF_PROTECT',
+    'WEBHOOK_CONTACT_DETAILS',
+    // Engine behaviour flags: a typo leaves full-history sync off, or leaves the account marked
+    // online on connect (#871 — it suppresses notifications on the operator's own phone).
+    'BAILEYS_SYNC_FULL_HISTORY',
+    'BAILEYS_MARK_ONLINE_ON_CONNECT',
+    // Read with `=== 'true'` by DockerService. A typo does not fail silently here — it voids the
+    // built-in-datastore credential exemption and the production boot refuses with a confusing
+    // complaint about DATABASE_PASSWORD instead of naming the real cause.
+    'POSTGRES_BUILTIN',
+    'REDIS_BUILTIN',
+    'MINIO_BUILTIN',
+    // Perf/observability only, but same silent-typo class.
+    'CACHE_ENABLED',
+    'DATABASE_LOGGING',
+    // DELIBERATELY NOT LISTED. `MCP_READONLY` is read `!== 'false'` and mcp.server.spec.ts asserts
+    // that `yes` keeps it read-only — a tolerance the repo tests on purpose. `PUPPETEER_HEADLESS` is
+    // read `!== 'false'` and `new` is a real Puppeteer value that works today. Both fail toward the
+    // safe state, so strictness here would refuse working deployments to no benefit.
   ]) {
     checkBool(key);
+  }
+
+  // MEDIA_DOWNLOAD_ENABLED is the one boolean whose read site NORMALISES before comparing
+  // (`inbound-media-cap.ts` trims and lowercases, then treats 'false'/'0'/'no' as off), so the strict
+  // check above would reject spellings that demonstrably work — inbound-media-cap.spec.ts asserts
+  // 'FALSE' and ' false ' disable. What normalising cannot save it from is a MISSPELLING: every
+  // unrecognised value means ENABLED, so `fasle` leaves inbound media being decrypted and
+  // base64-inlined into every message row, up to MEDIA_DOWNLOAD_MAX_BYTES apiece — the most
+  // expensive behaviour the gateway has, chosen by an operator who asked for the opposite. So accept
+  // exactly the vocabulary the read site understands, and fail the boot on anything else.
+  const LENIENT_BOOL_VALUES = new Set(['true', '1', 'yes', 'false', '0', 'no']);
+  const lenientBoolKey = 'MEDIA_DOWNLOAD_ENABLED';
+  const lenientRaw = config[lenientBoolKey];
+  if (lenientRaw !== undefined) {
+    if (typeof lenientRaw !== 'string') {
+      errors.push(`${lenientBoolKey} must be one of true/false/1/0/yes/no`);
+    } else {
+      const normalized = lenientRaw.trim().toLowerCase();
+      if (normalized !== '' && !LENIENT_BOOL_VALUES.has(normalized)) {
+        errors.push(
+          `${lenientBoolKey} must be one of true/false/1/0/yes/no (got ${JSON.stringify(lenientRaw)}) — ` +
+            'an unrecognised value silently means ENABLED',
+        );
+      }
+    }
   }
 
   // SEARCH_PROVIDER enum: 'auto' selects the built-in DB full-text provider at runtime, 'builtin-fts'

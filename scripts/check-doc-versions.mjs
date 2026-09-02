@@ -15,6 +15,13 @@
  *      package.json. The NestJS/TypeScript badges track it themselves via the shields
  *      `dependency-version` endpoint, but the Tech Stack table and the Node badge are plain prose —
  *      shields cannot read `engines.node` — so they are gated here instead.
+ *   5. SECURITY.md must advertise the current `major.minor.x` line as supported in BOTH the
+ *      current-support prose ("currently X.Y.x") and the supported-versions table row
+ *      ("| X.Y.x | :white_check_mark: |"), plus the lower-bound row ("< X.Y"). Derived from
+ *      package.json so a release cannot ship with a stale supported-version.
+ *   6. charts/openwa/Chart.yaml `appVersion` must equal package.json — the chart defaults its image
+ *      tag to appVersion, so a stale one deploys a tag that does not exist yet. The chart's own
+ *      `version:` is intentionally left alone: it tracks packaging changes on its own cadence.
  *
  * Run locally: `npm run check:versions`. Runs in CI (lint job).
  */
@@ -61,6 +68,70 @@ for (const f of ['README.md', 'docs/README.md']) {
         errors.push(`${f}: advertises ${name} ${found} but package.json declares ${want} — update the doc (or the dependency).`);
       }
     }
+  }
+}
+
+// 5) SECURITY.md must advertise the current major.minor.x as the supported line.
+// Derived from package.json so a release cut cannot leave the supported-version stale.
+const minorMatch = version.match(/^(\d+)\.(\d+)\./);
+if (minorMatch) {
+  const [, major, minor] = minorMatch;
+  const supportedMinor = `${major}.${minor}.x`; // e.g. "0.12.x"
+  const security = read('SECURITY.md');
+
+  // 5a) Current-support prose: "...currently X.Y.x".
+  const proseRe = new RegExp(`currently ${major}\\.\\d+\\.x`);
+  if (!proseRe.test(security)) {
+    errors.push(
+      `SECURITY.md: current-support prose does not read "(currently ${supportedMinor})" — update it to match package.json.`,
+    );
+  } else if (!new RegExp(`currently ${supportedMinor.replace('.', '\\.')}`).test(security)) {
+    const found = security.match(new RegExp(`currently (${major}\\.\\d+\\.x)`))?.[1];
+    errors.push(
+      `SECURITY.md: current-support prose advertises ${found} but package.json is ${supportedMinor} — bump the supported line.`,
+    );
+  }
+
+  // 5b) Supported-versions table row: "| X.Y.x | :white_check_mark: |" (whitespace-flexible for alignment).
+  const tableRe = new RegExp(`^\\|\\s+${major}\\.\\d+\\.x\\s+\\|\\s+:white_check_mark:\\s+\\|`, 'm');
+  if (!tableRe.test(security)) {
+    errors.push(
+      `SECURITY.md: supported-versions table is missing a "| ${supportedMinor} | :white_check_mark: |" row — update it to match package.json.`,
+    );
+  } else if (!new RegExp(`^\\|\\s+${supportedMinor.replace('.', '\\.')}\\s+\\|\\s+:white_check_mark:\\s+\\|`, 'm').test(security)) {
+    const found = security.match(new RegExp(`^\\|\\s+(${major}\\.\\d+\\.x)\\s+\\|\\s+:white_check_mark:\\s+\\|`, 'm'))?.[1];
+    errors.push(
+      `SECURITY.md: supported-versions table row advertises ${found} but package.json is ${supportedMinor} — bump the supported line.`,
+    );
+  }
+
+  // 5c) Lower-bound row: "| < X.Y | :x: |" (whitespace-flexible for alignment).
+  const lowerBound = `${major}.${minor}`;
+  const lowerRe = new RegExp(`^\\|\\s+<\\s+\\d+\\.\\d+\\s+\\|\\s+:x:\\s+\\|`, 'm');
+  if (!lowerRe.test(security)) {
+    errors.push(
+      `SECURITY.md: supported-versions table is missing a "| < ${lowerBound} | :x: |" lower-bound row.`,
+    );
+  } else if (!new RegExp(`^\\|\\s+<\\s+${lowerBound.replace('.', '\\.')}\\s+\\|\\s+:x:\\s+\\|`, 'm').test(security)) {
+    const found = security.match(new RegExp(`^\\|\\s+<\\s+(\\d+\\.\\d+)\\s+\\|\\s+:x:\\s+\\|`, 'm'))?.[1];
+    errors.push(
+      `SECURITY.md: supported-versions lower-bound row advertises < ${found} but package.json is ${supportedMinor} — bump the bound.`,
+    );
+  }
+}
+
+// 6) The Helm chart's appVersion must name the shipped application version. The chart's own
+//    `version:` is deliberately NOT checked — it tracks packaging changes and bumps on its own
+//    cadence, so tying it to package.json would be wrong.
+{
+  const chart = read('charts/openwa/Chart.yaml');
+  const appVersion = chart.match(/^appVersion:\s*["']?([^"'\s]+)["']?\s*$/m)?.[1];
+  if (!appVersion) {
+    errors.push('charts/openwa/Chart.yaml: no appVersion line found — it must name the shipped application version.');
+  } else if (appVersion !== version) {
+    errors.push(
+      `charts/openwa/Chart.yaml: appVersion is ${appVersion} but package.json is ${version} — the chart would deploy an image tag that does not exist yet.`,
+    );
   }
 }
 

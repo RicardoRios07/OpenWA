@@ -26,7 +26,7 @@ export class StatusUpdate {
   waStatusId!: string;
 
   @Column()
-  type!: 'text' | 'image' | 'video';
+  type!: 'text' | 'image' | 'video' | 'voice';
 
   @Column({ type: 'text', nullable: true })
   caption?: string;

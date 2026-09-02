@@ -25,13 +25,13 @@
 
 OpenWA today is **multi-session, not multi-tenant**. What already exists and is reused by this design:
 
-| Primitive | Where | Reuse |
-|---|---|---|
-| Many WhatsApp sessions per deployment, engine-isolated | `session.service.ts` | Sessions become tenant-owned resources |
+| Primitive                                                                                                         | Where                                                                           | Reuse                                                                                                                            |
+| ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Many WhatsApp sessions per deployment, engine-isolated                                                            | `session.service.ts`                                                            | Sessions become tenant-owned resources                                                                                           |
 | API keys with roles (`ADMIN/OPERATOR/VIEWER`) and an `allowedSessions` scope; list + stats already scope-filtered | `api-key.entity.ts:37`, `api-key.guard.ts:64-77`, `session.controller.ts:68-70` | Evolves into tenant-scoped keys; the enforcement pattern (guard-level session resolution) is exactly where tenant checks plug in |
-| Per-session plugin activation and per-session config overrides | `sessionConfig` in the plugin loader | Per-tenant plugin policy on top |
-| All business data keyed by `sessionId` | messages, audit_log, webhooks, templates | Adding `tenantId` alongside is mechanical |
-| Per-request ALS actor stamping (audit attribution) | `request-context.ts` | Audit gains `tenantId` at the same point |
+| Per-session plugin activation and per-session config overrides                                                    | `sessionConfig` in the plugin loader                                            | Per-tenant plugin policy on top                                                                                                  |
+| All business data keyed by `sessionId`                                                                            | messages, audit_log, webhooks, templates                                        | Adding `tenantId` alongside is mechanical                                                                                        |
+| Per-request ALS actor stamping (audit attribution)                                                                | `request-context.ts`                                                            | Audit gains `tenantId` at the same point                                                                                         |
 
 **The gaps** (what makes it not multi-tenant today): no tenant entity, no named users or
 memberships, dashboard identity is the API key itself, all branding is global (engine device name,
@@ -46,8 +46,8 @@ boundary.
   quotas, and a data partition. Identified by `tenantId` (uuid) + a stable `slug`.
 - **Membership** — a named **user**'s relationship to a tenant, with a **tenant role**
   (`owner`, `admin`, `operator`, `viewer`). One user may belong to many tenants.
-- **Tenant role vs platform role** — today's global `ApiKeyRole` becomes the *platform* role; the
-  tenant role governs what a user/key may do *inside* one tenant. The full matrix is in 28.5.3.
+- **Tenant role vs platform role** — today's global `ApiKeyRole` becomes the _platform_ role; the
+  tenant role governs what a user/key may do _inside_ one tenant. The full matrix is in 28.5.3.
 
 Everything tenant-owned carries `tenantId`: sessions, API keys, users (via memberships), plugin
 activations, webhook endpoints, templates, and every row derived from sessions (messages, audit,
@@ -59,11 +59,11 @@ message tables is required).
 Chosen: **shared database, `tenantId` on every tenant-owned row, enforced at the service/guard
 boundary** — the same boundary that already enforces `allowedSessions` today.
 
-| Option | Verdict | Why |
-|---|---|---|
-| Row-level (`tenantId` columns, shared schema) | **Chosen** | Matches the existing `sessionId` pattern, zero-infra migration, per-tenant backup/filtering still possible, and PostgreSQL RLS remains a later hardening option |
-| Schema-per-tenant (Postgres) | Later option | Real isolation at the DB layer, but migrations × N tenants and cross-tenant platform tables get awkward; revisit if a customer contract demands it |
-| Database-per-tenant | Rejected for now | Operational complexity (migrations, pooling, backup orchestration) buys little at this scale |
+| Option                                        | Verdict          | Why                                                                                                                                                             |
+| --------------------------------------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Row-level (`tenantId` columns, shared schema) | **Chosen**       | Matches the existing `sessionId` pattern, zero-infra migration, per-tenant backup/filtering still possible, and PostgreSQL RLS remains a later hardening option |
+| Schema-per-tenant (Postgres)                  | Later option     | Real isolation at the DB layer, but migrations × N tenants and cross-tenant platform tables get awkward; revisit if a customer contract demands it              |
+| Database-per-tenant                           | Rejected for now | Operational complexity (migrations, pooling, backup orchestration) buys little at this scale                                                                    |
 
 Hard rule: **no query returns rows without a tenant predicate**. The guard resolves the tenant
 context once per request (from key/user + route session) and the service layer composes with it —
@@ -97,17 +97,17 @@ shared API keys already outgrew "one strong secret is enough".
 
 ### 28.5.3 Role matrix (target)
 
-| Capability | Platform admin | Tenant owner | Tenant admin | Tenant operator | Tenant viewer |
-|---|---|---|---|---|---|
-| Provision/suspend tenants | ✓ | – | – | – | – |
-| Manage tenant members & roles | – | ✓ | ✓ | – | – |
-| Manage tenant API keys | – | ✓ | ✓ | – | – |
-| Create/delete sessions | – | ✓ | ✓ | – | – |
-| Send messages, manage webhooks/templates | – | ✓ | ✓ | ✓ | – |
-| View sessions, messages, logs | – | ✓ | ✓ | ✓ | ✓ |
-| Configure tenant branding | – | ✓ | ✓ | – | – |
-| Manage own 2FA | every named user | | | | |
-| Reset members' 2FA | ✓ | ✓ | – | – | – |
+| Capability                               | Platform admin   | Tenant owner | Tenant admin | Tenant operator | Tenant viewer |
+| ---------------------------------------- | ---------------- | ------------ | ------------ | --------------- | ------------- |
+| Provision/suspend tenants                | ✓                | –            | –            | –               | –             |
+| Manage tenant members & roles            | –                | ✓            | ✓            | –               | –             |
+| Manage tenant API keys                   | –                | ✓            | ✓            | –               | –             |
+| Create/delete sessions                   | –                | ✓            | ✓            | –               | –             |
+| Send messages, manage webhooks/templates | –                | ✓            | ✓            | ✓               | –             |
+| View sessions, messages, logs            | –                | ✓            | ✓            | ✓               | ✓             |
+| Configure tenant branding                | –                | ✓            | ✓            | –               | –             |
+| Manage own 2FA                           | every named user |              |              |                 |               |
+| Reset members' 2FA                       | ✓                | ✓            | –            | –               | –             |
 
 ### 28.5.4 SSO / SCIM (phase 3 markers)
 
@@ -184,7 +184,7 @@ as today.
    (they become keys of the default tenant).
 2. Ship behind `MULTITENANCY_ENABLED=true` (default **off**): when off, the tenant layer is a
    no-op pass-through to the default tenant and behavior is byte-identical to today.
-3. Dashboard gains user login as an *additional* method; API-key login stays supported
+3. Dashboard gains user login as an _additional_ method; API-key login stays supported
    indefinitely.
 
 ## 28.14 Security model & test matrix
@@ -200,12 +200,12 @@ as today.
 
 ## 28.15 Phasing
 
-| Phase | Contents | Sizing note |
-|---|---|---|
-| **P0 — Foundations** | Tenant entity + `tenantId` everywhere, default-tenant migration, guard chokepoint, tenant-scoped keys, cross-tenant test matrix, `MULTITENANCY_ENABLED` flag | The platform everything hangs off; largest single block |
-| **P1 — Users & 2FA** | users/memberships, email+password login, TOTP enroll/challenge/backup codes, tenant roles matrix, dashboard login + tenant switcher | Independent of P0's data model but layered on it |
-| **P2 — Branding, quotas, observability** | per-tenant branding (device name, dashboard, UA), tenant quotas + counters, audit `tenantId`, per-tenant backup/export | Mostly small, parallelizable pieces |
-| **P3 — Enterprise extras** | OIDC/SSO, SCIM provisioning, schema-per-tenant evaluation, audit export, impersonation support flow | Only after P0–P2 prove out |
+| Phase                                    | Contents                                                                                                                                                     | Sizing note                                             |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------- |
+| **P0 — Foundations**                     | Tenant entity + `tenantId` everywhere, default-tenant migration, guard chokepoint, tenant-scoped keys, cross-tenant test matrix, `MULTITENANCY_ENABLED` flag | The platform everything hangs off; largest single block |
+| **P1 — Users & 2FA**                     | users/memberships, email+password login, TOTP enroll/challenge/backup codes, tenant roles matrix, dashboard login + tenant switcher                          | Independent of P0's data model but layered on it        |
+| **P2 — Branding, quotas, observability** | per-tenant branding (device name, dashboard, UA), tenant quotas + counters, audit `tenantId`, per-tenant backup/export                                       | Mostly small, parallelizable pieces                     |
+| **P3 — Enterprise extras**               | OIDC/SSO, SCIM provisioning, schema-per-tenant evaluation, audit export, impersonation support flow                                                          | Only after P0–P2 prove out                              |
 
 ## 28.16 Open questions
 
@@ -214,4 +214,4 @@ as today.
 2. Should tenant slug be immutable once sessions exist (webhook URLs may embed it later)?
 3. Is per-message-type or per-recipient rate limiting part of tenant quotas, or left to the
    existing anti-abuse layer?
-4. Does 2FA enforcement also cover API-key *management* actions (create/revoke), not just login?
+4. Does 2FA enforcement also cover API-key _management_ actions (create/revoke), not just login?

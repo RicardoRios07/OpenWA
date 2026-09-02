@@ -21,16 +21,10 @@
     // TypeScript 6 no longer auto-includes every node_modules/@types package: the globals the
     // project relies on must be listed. node covers src; jest covers the colocated *.spec.ts.
     "types": ["node", "jest"],
-    "strictNullChecks": true,
+    // The whole strict family, which is also TypeScript 6's own default. Entity and DTO properties
+    // the framework populates carry `!`, since no constructor assigns them.
+    "strict": true,
     "forceConsistentCasingInFileNames": true,
-    "noImplicitAny": true,
-    "strictBindCallApply": true,
-    // TypeScript 6 defaults the whole strict family ON. This project opts into strict flags
-    // selectively (see the explicit trues above); these three stay off pending their own migrations —
-    // strictPropertyInitialization alone flags ~260 TypeORM entity properties.
-    "strictPropertyInitialization": false,
-    "strictFunctionTypes": false,
-    "useUnknownInCatchVariables": false,
     "noFallthroughCasesInSwitch": true
   },
   "exclude": ["node_modules", "dist", "dashboard"],

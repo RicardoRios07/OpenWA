@@ -14,6 +14,7 @@ from .contacts import ContactsResource
 from .groups import GroupsResource
 from .health import HealthResource
 from .labels import LabelsResource
+from .media import MediaResource
 from .messages import MessagesResource
 from .profile import ProfileResource
 from .search import SearchResource
@@ -31,6 +32,7 @@ __all__ = [
     "GroupsResource",
     "HealthResource",
     "LabelsResource",
+    "MediaResource",
     "MessagesResource",
     "ProfileResource",
     "SearchResource",

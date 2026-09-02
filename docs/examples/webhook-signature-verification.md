@@ -6,13 +6,13 @@ OpenWA signs webhook deliveries when a webhook is configured with a secret. Rece
 
 OpenWA sends these system headers with webhook deliveries:
 
-| Header | Description |
-| ------ | ----------- |
-| `X-OpenWA-Signature` | HMAC-SHA256 signature, present only when the webhook has a secret |
-| `X-OpenWA-Event` | Event name, for example `message.received` |
-| `X-OpenWA-Idempotency-Key` | Stable key for duplicate detection |
-| `X-OpenWA-Delivery-Id` | Unique identifier for this delivery (stable across retry attempts) |
-| `X-OpenWA-Retry-Count` | Retry count for the current delivery |
+| Header                     | Description                                                        |
+| -------------------------- | ------------------------------------------------------------------ |
+| `X-OpenWA-Signature`       | HMAC-SHA256 signature, present only when the webhook has a secret  |
+| `X-OpenWA-Event`           | Event name, for example `message.received`                         |
+| `X-OpenWA-Idempotency-Key` | Stable key for duplicate detection                                 |
+| `X-OpenWA-Delivery-Id`     | Unique identifier for this delivery (stable across retry attempts) |
+| `X-OpenWA-Retry-Count`     | Retry count for the current delivery                               |
 
 The signature format is:
 
@@ -36,8 +36,7 @@ const WEBHOOK_SECRET = process.env.OPENWA_WEBHOOK_SECRET;
 function verifyOpenWASignature(rawBody, signature, secret) {
   if (!signature || !secret) return false;
 
-  const expected =
-    'sha256=' + crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+  const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
 
   const signatureBuffer = Buffer.from(signature);
   const expectedBuffer = Buffer.from(expected);

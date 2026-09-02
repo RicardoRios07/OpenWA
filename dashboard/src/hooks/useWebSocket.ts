@@ -37,7 +37,13 @@ interface MessageReactionEvent {
   chatId: string;
   reaction: string;
   senderId: string;
-  reactions: Record<string, string>;
+  /**
+   * The post-apply snapshot of every reaction on the message. ABSENT when the gateway holds no
+   * stored copy of the message to compute it from, which it says by omitting the key rather than
+   * sending an empty object — absent means "unknown", `{}` means "there are none left". Keep it
+   * optional: normalising the absence away here is what makes a consumer's own fallback dead code.
+   */
+  reactions?: Record<string, string>;
   timestamp: string;
 }
 
@@ -71,6 +77,24 @@ interface StatusReceivedEvent {
   timestamp: string;
 }
 
+/** A restriction imposed or lifted — the dashboard uses it purely as a refetch signal for the badge. */
+interface SessionRestrictionEvent {
+  sessionId: string;
+  timestamp: string;
+}
+
+/** Ack frame answering a client `subscribe` request (`{type: 'subscribed'}`). */
+interface SubscribedEvent {
+  sessionId: string;
+  events: string[];
+}
+
+/** Error frame answering a client request (`{type: 'error'}`), e.g. FORBIDDEN_SESSION. */
+interface ServerErrorEvent {
+  code: string;
+  message: string;
+}
+
 interface WebSocketEvents {
   onSessionStatus?: (event: SessionStatusEvent) => void;
   onQRCode?: (event: QRCodeEvent) => void;
@@ -80,17 +104,37 @@ interface WebSocketEvents {
   onMessageRevoked?: (event: MessageRevokedEvent) => void;
   onMessageEdited?: (event: MessageEditedEvent) => void;
   onStatusReceived?: (event: StatusReceivedEvent) => void;
+  onSessionRestriction?: (event: SessionRestrictionEvent) => void;
+  onSubscribed?: (event: SubscribedEvent) => void;
+  onServerError?: (event: ServerErrorEvent) => void;
 }
 
 // Shape of the server -> client event envelope produced by the NestJS gateway.
+// `type` is the 'event' literal so the frame union below narrows on it.
 interface ServerEventEnvelope {
-  type: string;
+  type: 'event';
   timestamp: string;
   payload?: {
     event: string;
     sessionId: string;
     data: Record<string, unknown>;
   };
+}
+
+// The gateway also answers client requests (subscribe/unsubscribe/ping) with ack frames
+// (`subscribed` / `unsubscribed` / `pong`) and error frames (`error`) on the same 'message'
+// channel. Routing them to the UI matters: a scoped key's rejected wildcard subscribe must be
+// visible so the caller can fall back to per-session rooms instead of waiting forever.
+interface ServerAckFrame {
+  type: 'subscribed' | 'unsubscribed' | 'pong';
+  sessionId?: string;
+  events?: string[];
+}
+
+interface ServerErrorFrame {
+  type: 'error';
+  code?: string;
+  message?: string;
 }
 
 // Use current origin for WebSocket (goes through nginx proxy in Docker)
@@ -102,9 +146,17 @@ warnIfInsecureHttpUrl(SOCKET_URL, 'VITE_WS_URL');
 export function useWebSocket(events: WebSocketEvents = {}) {
   const socketRef = useRef<Socket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
-  // True once Socket.IO exhausts its reconnection attempts and permanently gives up — lets the
-  // UI show a "connection lost" indicator + a manual retry instead of silently going stale.
+  // True when the connection is dead until the user retries: Socket.IO either exhausted its
+  // reconnection attempts, or the server itself closed the socket (rate limit, auth rejection,
+  // key eviction — a server-initiated close sets skipReconnect, so no auto-reconnect runs and
+  // `reconnect_failed` never fires). Lets the UI show a "connection lost" indicator + a manual
+  // retry instead of silently going stale.
   const [connectionFailed, setConnectionFailed] = useState(false);
+  // Bumped every time connect() creates a NEW socket instance. The envelope-handler effect below
+  // captures socketRef.current when it runs; without this epoch in its deps, a manual reconnect()
+  // (which swaps in a fresh socket) leaves the new socket with NO 'message' listener while
+  // isConnected still reports true - realtime events stop arriving with no signal anywhere.
+  const [socketEpoch, setSocketEpoch] = useState(0);
 
   const connect = useCallback(() => {
     if (socketRef.current?.connected) return;
@@ -117,6 +169,7 @@ export function useWebSocket(events: WebSocketEvents = {}) {
       return;
     }
 
+    setSocketEpoch(epoch => epoch + 1);
     socketRef.current = io(`${SOCKET_URL}/events`, {
       autoConnect: true,
       reconnection: true,
@@ -137,8 +190,16 @@ export function useWebSocket(events: WebSocketEvents = {}) {
       setConnectionFailed(false);
     });
 
-    socketRef.current.on('disconnect', () => {
+    socketRef.current.on('disconnect', reason => {
       setIsConnected(false);
+      // A server-initiated close (handshake rate limit, auth rejection, key eviction) sets
+      // Socket.IO's skipReconnect: no auto-reconnect runs, so `reconnect_failed` never fires
+      // and without this the tab would silently stop receiving events. Surface the same
+      // recoverable failure state — the banner's manual retry opens a fresh socket, which
+      // skipReconnect does not block.
+      if (reason === 'io server disconnect') {
+        setConnectionFailed(true);
+      }
     });
 
     socketRef.current.on('connect_error', error => {
@@ -198,8 +259,21 @@ export function useWebSocket(events: WebSocketEvents = {}) {
 
     const socket = socketRef.current;
 
-    const handleIncomingMessage = (msg: ServerEventEnvelope) => {
-      if (!msg || msg.type !== 'event' || !msg.payload) return;
+    const handleIncomingMessage = (msg: ServerEventEnvelope | ServerAckFrame | ServerErrorFrame) => {
+      if (!msg || typeof msg.type !== 'string') return;
+
+      if (msg.type === 'error') {
+        events.onServerError?.({ code: String(msg.code ?? ''), message: String(msg.message ?? '') });
+        return;
+      }
+      if (msg.type === 'subscribed') {
+        events.onSubscribed?.({
+          sessionId: String(msg.sessionId ?? ''),
+          events: Array.isArray(msg.events) ? msg.events : [],
+        });
+        return;
+      }
+      if (msg.type !== 'event' || !msg.payload) return;
 
       const { event, sessionId, data } = msg.payload;
 
@@ -216,6 +290,9 @@ export function useWebSocket(events: WebSocketEvents = {}) {
           break;
         case 'status.received':
           events.onStatusReceived?.({ sessionId, timestamp: msg.timestamp });
+          break;
+        case 'session.restriction':
+          events.onSessionRestriction?.({ sessionId, timestamp: msg.timestamp });
           break;
         case 'message.ack':
           events.onMessageAck?.({
@@ -234,7 +311,9 @@ export function useWebSocket(events: WebSocketEvents = {}) {
             chatId: String(data.chatId),
             reaction: String(data.reaction),
             senderId: String(data.senderId),
-            reactions: (data.reactions as Record<string, string>) || {},
+            // Carried through as-is, including absent: `|| {}` here would tell every consumer that
+            // the message has no reactions left, which is a different claim from "we do not know".
+            reactions: data.reactions as Record<string, string> | undefined,
             timestamp: msg.timestamp,
           });
           break;
@@ -282,7 +361,9 @@ export function useWebSocket(events: WebSocketEvents = {}) {
     return () => {
       socket.off('message', handleIncomingMessage);
     };
-  }, [events]);
+    // socketEpoch re-runs this effect for the socket a manual reconnect() swapped in; the cleanup
+    // above detaches the handler from the dead instance first.
+  }, [events, socketEpoch]);
 
   return { isConnected, connectionFailed, reconnect, subscribe, unsubscribe };
 }

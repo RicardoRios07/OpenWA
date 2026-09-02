@@ -7,6 +7,7 @@
  */
 
 import { encodeSegment } from '../http.js';
+import type { BinaryResponse } from '../http.js';
 import type { OpenWAClient } from '../client.js';
 import type {
   BatchStatusResponse,
@@ -19,6 +20,7 @@ import type {
   MessageHistoryQuery,
   MessageListResponse,
   MessageResponse,
+  PinMessageRequest,
   ReactionRecord,
   ReactMessageRequest,
   ReplyMessageRequest,
@@ -27,6 +29,10 @@ import type {
   SendLocationRequest,
   SendAudioRequest,
   SendMediaRequest,
+  StarMessageRequest,
+  UnpinMessageRequest,
+  VotePollRequest,
+  SendPollRequest,
   SendTemplateRequest,
   SendTextRequest,
   SuccessResult,
@@ -105,6 +111,15 @@ export class MessagesResource {
     });
   }
 
+  /** Send a native WhatsApp poll (2–12 options). */
+  sendPoll(sessionId: string, body: SendPollRequest): Promise<MessageResponse> {
+    return this.client.request<MessageResponse>({
+      method: 'POST',
+      path: `/api/sessions/${encodeSegment(sessionId)}/messages/send-poll`,
+      body,
+    });
+  }
+
   /** Reply to a specific message. */
   reply(sessionId: string, body: ReplyMessageRequest): Promise<MessageResponse> {
     return this.client.request<MessageResponse>({
@@ -164,6 +179,62 @@ export class MessagesResource {
     return this.client.request<ReactionRecord[]>({
       method: 'GET',
       path: `/api/sessions/${encodeSegment(sessionId)}/messages/${encodeSegment(chatId)}/${encodeSegment(messageId)}/reactions`,
+    });
+  }
+
+  /**
+   * Pin a message in its chat. `durationSeconds` must be 86400 (24h), 604800 (7d) or 2592000
+   * (30d); it defaults to 24h server-side. In a group only admins may pin.
+   */
+  pin(sessionId: string, body: PinMessageRequest): Promise<SuccessResult> {
+    return this.client.request<SuccessResult>({
+      method: 'POST',
+      path: `/api/sessions/${encodeSegment(sessionId)}/messages/pin`,
+      body,
+    });
+  }
+
+  /**
+   * Cast a vote on a poll. Not supported on the Baileys engine (501).
+   * `options` are the option texts, not ids.
+   */
+  votePoll(sessionId: string, body: VotePollRequest): Promise<SuccessResult> {
+    return this.client.request<SuccessResult>({
+      method: 'POST',
+      path: `/api/sessions/${encodeSegment(sessionId)}/messages/vote-poll`,
+      body,
+    });
+  }
+
+  /**
+   * Star or unstar a message. Best-effort on whatsapp-web.js: it silently ignores a message it
+   * will not star, so a resolved call is not proof the star is set.
+   */
+  star(sessionId: string, body: StarMessageRequest): Promise<SuccessResult> {
+    return this.client.request<SuccessResult>({
+      method: 'POST',
+      path: `/api/sessions/${encodeSegment(sessionId)}/messages/star`,
+      body,
+    });
+  }
+
+  /** Remove a message's pin. */
+  unpin(sessionId: string, body: UnpinMessageRequest): Promise<SuccessResult> {
+    return this.client.request<SuccessResult>({
+      method: 'POST',
+      path: `/api/sessions/${encodeSegment(sessionId)}/messages/unpin`,
+      body,
+    });
+  }
+
+  /**
+   * Fetch a message's stored media bytes: the archived file when one exists, else the inline copy
+   * on the message row — which covers media sent by this account; 404 when neither holds bytes.
+   */
+  media(sessionId: string, chatId: string, messageId: string): Promise<BinaryResponse> {
+    return this.client.requestBytes({
+      method: 'GET',
+      path: `/api/sessions/${encodeSegment(sessionId)}/messages/${encodeSegment(chatId)}/${encodeSegment(messageId)}/media`,
     });
   }
 

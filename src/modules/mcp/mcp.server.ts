@@ -1,6 +1,7 @@
 import { ForbiddenException, HttpException, Logger, UnauthorizedException } from '@nestjs/common';
 import type { HttpAdapterHost } from '@nestjs/core';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { AnySchema } from '@modelcontextprotocol/sdk/server/zod-compat.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import type { ServerNotification, ServerRequest } from '@modelcontextprotocol/sdk/types.js';
@@ -13,6 +14,7 @@ import { AuditAction } from '../audit/entities/audit-log.entity';
 import { handleToolError, jsonToolResult, smartToolResult } from './tool-result';
 import type { KeyRateLimiter } from './mcp-rate-limit';
 import { resolveClientIp } from '../../common/utils/ip';
+import { resolveBodyLimit } from '../../config/bootstrap-security';
 
 const logger = new Logger('McpServer');
 
@@ -106,8 +108,10 @@ function buildServer(
       tool.name,
       {
         description: tool.description,
-        // inputSchema accepts AnySchema (zod v4 $ZodType is compatible)
-        inputSchema: tool.inputSchema as Parameters<typeof server.registerTool>[1]['inputSchema'],
+        // The SDK's InputArgs is inferred from this property. Widening it to the whole
+        // `ZodRawShapeCompat | AnySchema` constraint would collapse the callback type it derives, so
+        // the cast names AnySchema exactly — which zod v4's $ZodType satisfies.
+        inputSchema: tool.inputSchema as AnySchema,
         annotations: {
           readOnlyHint: tool.tier === 'read',
           destructiveHint: tool.destructive ?? false,
@@ -241,5 +245,11 @@ export function mountMcpServer(
   // The route throttle gates the auth DB lookup and per-request MCP server/transport construction. The
   // process-wide capped json() in main.ts runs first for all routes; this route-level parser is a
   // defensive fallback and no-ops once the global parser has consumed the body.
-  adapter.post(basePath, createIpThrottle(ipRateLimiter), express.json(), handler);
+  // `inflate: false` matches the global parsers: a compressed body is refused by the budget
+  // middleware long before this runs, and this keeps the fallback from becoming the one parser that
+  // would still gunzip an unaccounted body if that ordering ever changed.
+  // `limit` mirrors the same global cap for the same reason: without it a middleware reorder would
+  // silently leave this mount uncapped.
+  const bodyLimit = resolveBodyLimit(process.env.BODY_SIZE_LIMIT);
+  adapter.post(basePath, createIpThrottle(ipRateLimiter), express.json({ limit: bodyLimit, inflate: false }), handler);
 }

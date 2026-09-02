@@ -5,7 +5,9 @@ import static com.rmyndharis.openwa.http.Http.encodeSegment;
 import com.rmyndharis.openwa.OpenWAClient;
 import com.rmyndharis.openwa.http.HttpMethod;
 import com.rmyndharis.openwa.model.AddLabelRequest;
+import com.rmyndharis.openwa.model.ChatSummary;
 import com.rmyndharis.openwa.model.LabelRecord;
+import com.rmyndharis.openwa.model.UpsertLabelRequest;
 import com.rmyndharis.openwa.model.SuccessResult;
 import java.util.List;
 
@@ -35,6 +37,47 @@ public final class LabelsResource {
             null,
             null,
             LabelRecord.class);
+    }
+
+    /**
+     * Every chat carrying a label. whatsapp-web.js only — Baileys has label writes but no label query
+     * of any kind, and answers {@code 501}.
+     */
+    public List<ChatSummary> chats(String sessionId, String labelId) {
+        return client.requestList(
+            HttpMethod.GET,
+            "/api/sessions/" + encodeSegment(sessionId) + "/labels/" + encodeSegment(labelId) + "/chats",
+            null,
+            null,
+            ChatSummary.class);
+    }
+
+    /**
+     * Create or update a label. Baileys only; whatsapp-web.js can read and assign labels but cannot
+     * edit one, and answers {@code 501}.
+     *
+     * <p>{@code PUT} rather than {@code POST} because you choose the id: WhatsApp carries one write
+     * keyed on it, so whether this creates or updates depends purely on whether that id already
+     * exists. Pick an unused id to create — reusing one rewrites that label rather than failing.
+     * Omitted fields are left alone.
+     */
+    public SuccessResult upsert(String sessionId, String labelId, UpsertLabelRequest body) {
+        return client.request(
+            HttpMethod.PUT,
+            "/api/sessions/" + encodeSegment(sessionId) + "/labels/" + encodeSegment(labelId),
+            null,
+            body,
+            SuccessResult.class);
+    }
+
+    /** Delete a label; it disappears from every chat it was on. Baileys only. */
+    public SuccessResult delete(String sessionId, String labelId) {
+        return client.request(
+            HttpMethod.DELETE,
+            "/api/sessions/" + encodeSegment(sessionId) + "/labels/" + encodeSegment(labelId),
+            null,
+            null,
+            SuccessResult.class);
     }
 
     /** Get the labels currently applied to a chat. */

@@ -1,19 +1,23 @@
-import { ConflictException, Injectable, NotFoundException, UnauthorizedException, OnModuleInit } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+  UnauthorizedException,
+  OnModuleInit,
+  OnModuleDestroy,
+} from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, MoreThan, Not, Repository } from 'typeorm';
+import { Repository, UpdateQueryBuilder, DeleteQueryBuilder, type QueryDeepPartialEntity } from 'typeorm';
 import { randomBytes } from 'crypto';
-import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
-import { writeSecretFile } from '../../common/utils/secret-file';
 import { ipMatches } from '../../common/utils/ip';
 import { hashApiKey } from './api-key-hash';
 import { ApiKey, ApiKeyRole } from './entities/api-key.entity';
 import { CreateApiKeyDto, UpdateApiKeyDto } from './dto';
 import { createLogger } from '../../common/services/logger.service';
+import { readBootstrapKey, removeBootstrapKey, writeBootstrapKey } from './bootstrap-key-file';
+import { ApiKeyUsageTracker } from './api-key-usage-tracker.service';
 import { EventsGateway, type ApiKeyEvictionReason } from '../events/events.gateway';
-
-const API_KEY_FILE = join(process.cwd(), 'data', '.api-key');
 
 /**
  * Resolves the API key to seed on first boot (when no keys exist yet).
@@ -46,17 +50,13 @@ export function bannerKeyLine(displayKey: string, isNewKey: boolean): string {
 }
 
 @Injectable()
-export class AuthService implements OnModuleInit {
+export class AuthService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = createLogger('AuthService');
-
-  /** Coalesce per-request usage-stat writes to at most one DB write per key per window. */
-  private static readonly STAT_FLUSH_INTERVAL_MS = 60_000;
-  /** keyId -> usage increments observed but not yet persisted (flushed on the next windowed write). */
-  private readonly pendingUsage = new Map<string, number>();
 
   constructor(
     @InjectRepository(ApiKey, 'main')
     private readonly apiKeyRepository: Repository<ApiKey>,
+    private readonly usageTracker: ApiKeyUsageTracker,
     private readonly moduleRef: ModuleRef,
   ) {}
 
@@ -74,22 +74,14 @@ export class AuthService implements OnModuleInit {
 
       // Save raw key to file for startup script to read (owner-only — it's the raw admin key).
       try {
-        writeSecretFile(API_KEY_FILE, displayKey);
+        writeBootstrapKey(displayKey);
       } catch (err) {
         this.logger.warn('Could not save API key file', { error: String(err) });
       }
     } else {
-      // Read saved API key from file if exists
-      if (existsSync(API_KEY_FILE)) {
-        try {
-          displayKey = readFileSync(API_KEY_FILE, 'utf-8').trim();
-        } catch (error) {
-          this.logger.warn(`Failed to read API key file: ${API_KEY_FILE}`, { error: String(error) });
-          displayKey = '(check dashboard for keys)';
-        }
-      } else {
-        displayKey = '(check dashboard for keys)';
-      }
+      // Read the saved bootstrap key from the file — but only while it still resolves to a LIVE
+      // key; a revoked/rotated/deleted key must not be advertised in the banner.
+      displayKey = (await this.readLiveBootstrapKey()) ?? '(check dashboard for keys)';
     }
 
     // Always show the welcome banner on startup
@@ -114,6 +106,55 @@ export class AuthService implements OnModuleInit {
     this.logger.log('');
     this.logger.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     this.logger.log('');
+  }
+
+  /** Flush the coalesced usage counters before the DB connection closes. See ApiKeyUsageTracker. */
+  async onModuleDestroy(): Promise<void> {
+    await this.usageTracker.flushOnShutdown();
+  }
+
+  /**
+   * Read the bootstrap key file for the startup banner — only while it still points at a LIVE key.
+   * The file is written once at first boot; when that key is later revoked, rotated, or deleted, the
+   * file (and the banner quoting it) would otherwise keep advertising a dead credential. A stale file
+   * is removed here too, so a backup restore that lost the key self-heals on the next boot.
+   * Returns null when the file is absent, unreadable, empty, or stale.
+   */
+  private async readLiveBootstrapKey(): Promise<string | null> {
+    const rawKey = readBootstrapKey(this.logger);
+    if (!rawKey) return null;
+    const stored = await this.apiKeyRepository.findOne({ where: { keyHash: this.hashKey(rawKey) } });
+    const live = Boolean(stored && stored.isActive && (!stored.expiresAt || stored.expiresAt > new Date()));
+    if (live) return rawKey;
+    if (!stored) {
+      // A hash miss alone does not prove the key is gone: the same raw key hashes differently under
+      // a changed API_KEY_PEPPER. The prefix is seeded unhashed alongside the key, so it still finds
+      // the row — when it resolves, the file holds the only copy of a still-live key and must
+      // survive. Delete only when nothing carries the prefix either (e.g. a backup restore that
+      // lost the key row), preserving the documented self-heal.
+      const byPrefix = await this.apiKeyRepository.findOne({ where: { keyPrefix: rawKey.substring(0, 12) } });
+      if (byPrefix) {
+        this.logger.warn(
+          'Bootstrap API key file does not match any stored key hash — API_KEY_PEPPER changed since the key was seeded? The key itself is still live, so the file is kept; restore the original pepper or rotate the key to repair.',
+          { keyPrefix: byPrefix.keyPrefix, action: 'bootstrap_key_pepper_mismatch' },
+        );
+        return null;
+      }
+    }
+    removeBootstrapKey('it no longer resolves to an active key', this.logger);
+    return null;
+  }
+
+  /**
+   * Remove the bootstrap key file when it still holds the key being revoked or deleted, so the next
+   * boot's banner cannot point the operator at a dead credential. The file is an operator
+   * convenience (banner + backup scripts); it is never read for seeding or authentication, so
+   * removing it cannot break first-boot seeding — seeding writes it only when no keys exist.
+   */
+  private removeBootstrapKeyFileIfMatching(apiKey: ApiKey): void {
+    const fileKey = readBootstrapKey(this.logger);
+    if (!fileKey || this.hashKey(fileKey) !== apiKey.keyHash) return;
+    removeBootstrapKey('its key was revoked or deleted', this.logger);
   }
 
   private async seedApiKey(rawKey: string, name: string, role: ApiKeyRole): Promise<ApiKey> {
@@ -173,12 +214,12 @@ export class AuthService implements OnModuleInit {
   async update(id: string, dto: UpdateApiKeyDto): Promise<ApiKey> {
     const apiKey = await this.findOne(id);
 
+    // Scoping the last unscoped admin (non-empty allowedSessions) strips key-management just as
+    // surely as demoting or expiring it: @RequireUnscopedKey would then 403 every lifecycle route.
     const removesOrSchedulesLastAdmin =
       (dto.role !== undefined && dto.role !== ApiKeyRole.ADMIN) ||
-      (dto.expiresAt !== undefined && dto.expiresAt !== null);
-    if (removesOrSchedulesLastAdmin) {
-      await this.assertNotLastUsableAdmin(apiKey);
-    }
+      (dto.expiresAt !== undefined && dto.expiresAt !== null) ||
+      (dto.allowedSessions !== undefined && dto.allowedSessions.length > 0);
 
     // Capture the authorization-relevant fields BEFORE applying the change. Only a change to role,
     // allowedIps, allowedSessions, or expiry can widen or restrict what an already-connected WebSocket
@@ -192,13 +233,30 @@ export class AuthService implements OnModuleInit {
       expiresAt: apiKey.expiresAt,
     };
 
-    if (dto.name) apiKey.name = dto.name;
-    if (dto.role) apiKey.role = dto.role;
-    if (dto.allowedIps !== undefined) apiKey.allowedIps = dto.allowedIps;
-    if (dto.allowedSessions !== undefined) apiKey.allowedSessions = dto.allowedSessions;
-    if (dto.expiresAt !== undefined) apiKey.expiresAt = dto.expiresAt ? new Date(dto.expiresAt) : null;
+    const patch: QueryDeepPartialEntity<ApiKey> = {};
+    if (dto.name) patch.name = dto.name;
+    if (dto.role) patch.role = dto.role;
+    if (dto.allowedIps !== undefined) patch.allowedIps = dto.allowedIps;
+    if (dto.allowedSessions !== undefined) patch.allowedSessions = dto.allowedSessions;
+    if (dto.expiresAt !== undefined) patch.expiresAt = dto.expiresAt ? new Date(dto.expiresAt) : null;
 
-    const saved = await this.apiKeyRepository.save(apiKey);
+    let saved: ApiKey;
+    if (removesOrSchedulesLastAdmin && apiKey.role === ApiKeyRole.ADMIN) {
+      // The guard's predicate is the target's ROLE, not its usability snapshot: usability also
+      // depends on isActive/expiry/scope, which the guarded statement itself evaluates against live
+      // row state. A non-admin target genuinely cannot strand the system, so it stays lock-free.
+      const result = await this.withLastAdminGuard(
+        this.apiKeyRepository.createQueryBuilder().update(ApiKey).set(patch),
+        id,
+      ).execute();
+      await this.assertMutationApplied(id, result.affected);
+      // The row's post-write state, for the eviction comparison below.
+      saved = await this.findOne(id);
+    } else {
+      await this.applyUnguardedUpdate(patch, id);
+      // The row's post-write state, for the eviction comparison below.
+      saved = await this.findOne(id);
+    }
 
     // Compare membership, not order: a pure reorder of allowedIps/allowedSessions is a no-op for the
     // .includes()-based enforcement, so sort before stringify to avoid a spurious eviction on a reorder.
@@ -216,10 +274,19 @@ export class AuthService implements OnModuleInit {
 
   async delete(id: string): Promise<void> {
     const apiKey = await this.findOne(id);
-    await this.assertNotLastUsableAdmin(apiKey);
+    if (apiKey.role === ApiKeyRole.ADMIN) {
+      const result = await this.withLastAdminGuard(
+        this.apiKeyRepository.createQueryBuilder().delete().from(ApiKey),
+        id,
+      ).execute();
+      await this.assertMutationApplied(id, result.affected);
+    } else {
+      // A non-admin target cannot strand the system — no guard needed.
+      await this.apiKeyRepository.remove(apiKey);
+    }
     // Drop any un-flushed usage accumulator so a deleted key leaves nothing behind in the Map.
-    this.pendingUsage.delete(id);
-    await this.apiKeyRepository.remove(apiKey);
+    this.usageTracker.forget(id);
+    this.removeBootstrapKeyFileIfMatching(apiKey);
     this.evictActiveSockets(id, 'deleted');
     this.logger.log(`API key deleted: ${apiKey.name}`, {
       keyId: id,
@@ -229,32 +296,109 @@ export class AuthService implements OnModuleInit {
 
   async revoke(id: string): Promise<ApiKey> {
     const apiKey = await this.findOne(id);
-    await this.assertNotLastUsableAdmin(apiKey);
+    let saved: ApiKey;
+    if (apiKey.role === ApiKeyRole.ADMIN) {
+      const result = await this.withLastAdminGuard(
+        this.apiKeyRepository.createQueryBuilder().update(ApiKey).set({ isActive: false }),
+        id,
+      ).execute();
+      await this.assertMutationApplied(id, result.affected);
+      saved = await this.findOne(id);
+    } else {
+      // A non-admin target cannot strand the system — no guard needed.
+      await this.applyUnguardedUpdate({ isActive: false }, id);
+      saved = await this.findOne(id);
+    }
     // A revoked key fails validation before its next flush, so its accumulator would orphan —
     // drop it here.
-    this.pendingUsage.delete(id);
-    apiKey.isActive = false;
-    const saved = await this.apiKeyRepository.save(apiKey);
+    this.usageTracker.forget(id);
+    this.removeBootstrapKeyFileIfMatching(apiKey);
     // Kick any WebSocket connections already authenticated with this key: without this, a revoked
     // key keeps receiving events on already-subscribed sockets until they happen to disconnect.
     this.evictActiveSockets(id, 'revoked');
     return saved;
   }
 
-  private async assertNotLastUsableAdmin(target: ApiKey): Promise<void> {
-    const now = new Date();
-    const targetIsUsableAdmin =
-      target.role === ApiKeyRole.ADMIN && target.isActive && (!target.expiresAt || target.expiresAt > now);
-    if (!targetIsUsableAdmin) return;
+  /**
+   * "Usable admin" — the SQL-level subject of the last-admin invariant: an active, unexpired ADMIN
+   * key with NO session scope. The key-lifecycle routes are fenced behind @RequireUnscopedKey
+   * (AuthController), so a session-scoped admin can authenticate but can never manage keys —
+   * counting it as a surviving admin would bless the removal of the last key that actually can, a
+   * permanent management lockout with no in-band recovery (the boot seed only fires on an EMPTY
+   * table, not on zero unscoped admins). The simple-array column stores an empty array as '' (rows
+   * updated with allowedSessions: [] hold exactly that), so "no session scope" is NULL or ''.
+   * Dates are stored as UTC "YYYY-MM-DD HH:mm:ss.SSS" strings, so :guardNow is bound in that exact
+   * format (see guardNowParam) and the string comparison is chronological. Parameterized by column
+   * prefix so one definition serves both the row being mutated (bare) and the EXISTS subquery's
+   * `other` row.
+   */
+  private static usableAdminCondition(prefix: string): string {
+    const col = (name: string) => (prefix ? `"${prefix}"."${name}"` : `"${name}"`);
+    return (
+      `${col('role')} = :adminRole AND ${col('isActive')} = 1 AND ` +
+      `(${col('expiresAt')} IS NULL OR ${col('expiresAt')} > :guardNow) AND ` +
+      `(${col('allowedSessions')} = '' OR ${col('allowedSessions')} IS NULL)`
+    );
+  }
 
-    const otherUsableAdmins = await this.apiKeyRepository.count({
-      where: [
-        { id: Not(target.id), role: ApiKeyRole.ADMIN, isActive: true, expiresAt: IsNull() },
-        { id: Not(target.id), role: ApiKeyRole.ADMIN, isActive: true, expiresAt: MoreThan(now) },
-      ],
-    });
-    if (otherUsableAdmins === 0) {
-      throw new ConflictException('Cannot remove the last active admin key');
+  /**
+   * The instant bound as :guardNow, formatted exactly as the SQLite driver persists datetime
+   * columns (UTC "YYYY-MM-DD HH:mm:ss.SSS" — what AbstractSqliteDriver writes for a Date), so the
+   * guard's comparison against stored expiresAt values is chronological.
+   */
+  private static guardNowParam(): string {
+    return new Date().toISOString().slice(0, 23).replace('T', ' ');
+  }
+
+  /**
+   * Bind the last-admin guard onto a single-row UPDATE/DELETE: the statement touches its target row
+   * ONLY when that row is not a usable admin, or another usable admin survives it. The guard runs
+   * inside the same statement as the write, so the database serializes concurrent last-admin
+   * mutations — including across processes sharing this database. The disjunct is parenthesized
+   * explicitly: without the outer parens, `id = :id AND NOT (…) OR EXISTS (…)` would parse as
+   * `(id = :id AND NOT …) OR EXISTS (…)` and the EXISTS branch would escape the row scope.
+   */
+  private withLastAdminGuard<T extends UpdateQueryBuilder<ApiKey> | DeleteQueryBuilder<ApiKey>>(qb: T, id: string): T {
+    // Cast: the chained this-types collapse to the union across a generic receiver.
+    return qb
+      .where('"id" = :id', { id })
+      .andWhere(
+        `(NOT (${AuthService.usableAdminCondition('')}) OR EXISTS (` +
+          `SELECT 1 FROM "api_keys" "other" WHERE "other"."id" <> :id AND ${AuthService.usableAdminCondition('other')}))`,
+      )
+      .setParameters({ adminRole: ApiKeyRole.ADMIN, guardNow: AuthService.guardNowParam() }) as T;
+  }
+
+  /**
+   * A guarded statement that affected zero rows either hit the guard (the target was the last
+   * usable admin) or lost a race with a concurrent delete (the row is gone). Distinguish by
+   * re-reading: findOne raises the same NotFoundException it does anywhere else, and a row that
+   * still exists was refused by the guard.
+   */
+  private async assertMutationApplied(id: string, affected: number | null | undefined): Promise<void> {
+    if (affected) return;
+    await this.findOne(id);
+    throw new ConflictException('Cannot remove the last active admin key');
+  }
+
+  /**
+   * Apply a single-row UPDATE with no last-admin guard — the caller has established the target
+   * cannot strand the system (non-admin target, or a non-stripping patch). The SET list is only
+   * the patch itself: saving the pre-read ENTITY instead would write every column from that
+   * snapshot, resurrecting a revoke or demote that committed between the read and the write (a
+   * rename writing isActive: true back over a concurrent false, for instance). There is no guard
+   * clause that can refuse, so zero affected rows can only mean a concurrent delete won the race;
+   * the re-read then raises the same NotFoundException the pre-read would have.
+   */
+  private async applyUnguardedUpdate(patch: QueryDeepPartialEntity<ApiKey>, id: string): Promise<void> {
+    const result = await this.apiKeyRepository
+      .createQueryBuilder()
+      .update(ApiKey)
+      .set(patch)
+      .where('"id" = :id', { id })
+      .execute();
+    if (!result.affected) {
+      await this.findOne(id);
     }
   }
 
@@ -280,7 +424,12 @@ export class AuthService implements OnModuleInit {
   }
 
   async validateApiKey(rawKey: string, clientIp?: string, sessionId?: string): Promise<ApiKey> {
-    const keyHash = this.hashKey(rawKey);
+    // Trim before hashing so every surface agrees on what the credential is. HTTP already strips
+    // surrounding whitespace from header values, so a pasted key with a stray space/newline
+    // authenticates over REST but fails on the WebSocket handshake (the CONNECT payload carries the
+    // literal string) — the dashboard then runs commands fine while never receiving events, and the
+    // session looks permanently disconnected. Whitespace is never part of a key.
+    const keyHash = this.hashKey(rawKey?.trim());
     const apiKey = await this.apiKeyRepository.findOne({ where: { keyHash } });
 
     if (!apiKey) {
@@ -317,23 +466,8 @@ export class AuthService implements OnModuleInit {
       }
     }
 
-    // Update usage stats — coalesced. Validation above is unchanged/synchronous; only
-    // the stat WRITE is throttled to at most once per key per window. usageCount stays
-    // accurate via an in-memory accumulator; the returned object reflects the true count.
-    const pending = (this.pendingUsage.get(apiKey.id) ?? 0) + 1;
-    const previousLastUsedAt = apiKey.lastUsedAt;
-    apiKey.lastUsedAt = new Date();
-    apiKey.usageCount += pending; // DB value + all not-yet-persisted increments (incl. this request)
-
-    const due =
-      !previousLastUsedAt ||
-      apiKey.lastUsedAt.getTime() - previousLastUsedAt.getTime() >= AuthService.STAT_FLUSH_INTERVAL_MS;
-    if (due) {
-      this.pendingUsage.delete(apiKey.id);
-      await this.apiKeyRepository.save(apiKey);
-    } else {
-      this.pendingUsage.set(apiKey.id, pending);
-    }
+    // Advisory stats only; the tracker coalesces the write and never throws.
+    await this.usageTracker.record(apiKey);
 
     return apiKey;
   }

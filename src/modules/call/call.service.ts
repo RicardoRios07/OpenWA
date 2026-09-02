@@ -1,6 +1,6 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
-import { SessionService } from '../session/session.service';
-import { IWhatsAppEngine } from '../../engine/interfaces/whatsapp-engine.interface';
+import { Injectable } from '@nestjs/common';
+import { EngineRegistry } from '../../engine/engine-registry.service';
+import { CallLinkType, IWhatsAppEngine } from '../../engine/interfaces/whatsapp-engine.interface';
 
 /**
  * Owns engine access for call operations. Controllers depend on this service instead of
@@ -9,14 +9,11 @@ import { IWhatsAppEngine } from '../../engine/interfaces/whatsapp-engine.interfa
  */
 @Injectable()
 export class CallService {
-  constructor(private readonly sessionService: SessionService) {}
+  constructor(private readonly engines: EngineRegistry) {}
 
   private getEngine(sessionId: string): IWhatsAppEngine {
-    const engine = this.sessionService.getEngine(sessionId);
-    if (!engine) {
-      throw new BadRequestException('Session is not started');
-    }
-    return engine;
+    // EngineRegistry.require()'s default is this exact 400 "Session is not started".
+    return this.engines.require(sessionId);
   }
 
   /**
@@ -26,5 +23,13 @@ export class CallService {
    */
   rejectCall(sessionId: string, callId: string): Promise<void> {
     return this.getEngine(sessionId).rejectCall(callId);
+  }
+
+  /**
+   * Generate a shareable call link. A WhatsApp-side refusal (no link generated) surfaces as 403 via
+   * the adapter's EngineRefusedError rather than as a success carrying an empty string.
+   */
+  createCallLink(sessionId: string, type: CallLinkType, startTime: number): Promise<string> {
+    return this.getEngine(sessionId).createCallLink(type, startTime);
   }
 }

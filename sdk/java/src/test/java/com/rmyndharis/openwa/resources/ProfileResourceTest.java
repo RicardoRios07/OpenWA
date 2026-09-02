@@ -2,6 +2,7 @@ package com.rmyndharis.openwa.resources;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rmyndharis.openwa.ClientConfig;
@@ -23,6 +24,15 @@ class ProfileResourceTest {
         assertEquals("http://h/api/sessions/s/profile/name", tx.lastRequest().url());
         assertEquals(HttpMethod.PUT, tx.lastRequest().method());
         assertTrue(tx.lastRequest().body().contains("New Display Name"));
+    }
+
+    @Test
+    void deleteProfilePictureSendsDeleteWithoutBody() {
+        tx.respond(200, "{\"success\":true,\"message\":\"Profile picture removed\"}");
+        client.profile.deleteProfilePicture("s");
+        assertEquals("http://h/api/sessions/s/profile/picture", tx.lastRequest().url());
+        assertEquals(HttpMethod.DELETE, tx.lastRequest().method());
+        assertNull(tx.lastRequest().body());
     }
 
     @Test

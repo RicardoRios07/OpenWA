@@ -9,7 +9,7 @@ public record StatusRecord(
     String id,
     /** Whose story this is. */
     StatusContact contact,
-    /** One of {@code text}, {@code image} or {@code video}. */
+    /** One of {@code text}, {@code image}, {@code video} or {@code voice}. */
     String type,
     /** Text body for a text status, caption for an image/video one. */
     String caption,

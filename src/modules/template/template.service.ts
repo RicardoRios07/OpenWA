@@ -4,7 +4,7 @@ import { Repository } from 'typeorm';
 import { Template } from './entities/template.entity';
 import { CreateTemplateDto, UpdateTemplateDto } from './dto';
 import { createLogger } from '../../common/services/logger.service';
-import { isUniqueConstraintError } from '../../common/utils/unique-constraint.util';
+import { isUniqueViolation } from '../../common/utils/db-errors';
 
 @Injectable()
 export class TemplateService {
@@ -29,7 +29,7 @@ export class TemplateService {
       this.logger.log('Template created', { sessionId, templateId: saved.id, name: saved.name });
       return saved;
     } catch (err) {
-      if (isUniqueConstraintError(err)) {
+      if (isUniqueViolation(err)) {
         throw new ConflictException(`A template named '${dto.name}' already exists for this session`);
       }
       throw err;
@@ -89,7 +89,7 @@ export class TemplateService {
     try {
       return await this.templateRepository.save(template);
     } catch (err) {
-      if (isUniqueConstraintError(err)) {
+      if (isUniqueViolation(err)) {
         throw new ConflictException(`A template named '${template.name}' already exists for this session`);
       }
       throw err;

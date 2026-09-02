@@ -1,6 +1,10 @@
 package openwa
 
-import "context"
+import (
+	"context"
+	"net/url"
+	"strings"
+)
 
 // ContactsService looks up and manages contacts.
 // Backed by src/modules/contact/contact.controller.ts.
@@ -47,6 +51,19 @@ func (s *ContactsService) ProfilePicture(ctx context.Context, sessionID, contact
 	return &out, nil
 }
 
+// ProfilePictures batch-resolves profile picture URLs for up to 50 contacts
+// in one request. The result maps each requested id to its URL (nil when the
+// lookup failed).
+func (s *ContactsService) ProfilePictures(ctx context.Context, sessionID string, ids []string) (*ProfilePicturesResponse, error) {
+	var out ProfilePicturesResponse
+	q := url.Values{"ids": []string{strings.Join(ids, ",")}}
+	err := s.client.do(ctx, "GET", s.base(sessionID)+"/profile-pictures", q, nil, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // Phone resolves a contact's phone number.
 func (s *ContactsService) Phone(ctx context.Context, sessionID, contactID string) (*ContactPhoneResponse, error) {
 	var out ContactPhoneResponse
@@ -58,6 +75,24 @@ func (s *ContactsService) Phone(ctx context.Context, sessionID, contactID string
 }
 
 // Block blocks a contact.
+// Upsert saves a contact to the addressbook, or edits an existing entry.
+func (s *ContactsService) Upsert(ctx context.Context, sessionID, contactID string, body UpsertContactRequest) (*SuccessResult, error) {
+	var out SuccessResult
+	if err := s.client.do(ctx, "PUT", s.base(sessionID)+"/"+pathEscape(contactID), nil, body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// Delete removes a contact from the addressbook.
+func (s *ContactsService) Delete(ctx context.Context, sessionID, contactID string) (*SuccessResult, error) {
+	var out SuccessResult
+	if err := s.client.do(ctx, "DELETE", s.base(sessionID)+"/"+pathEscape(contactID), nil, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 func (s *ContactsService) Block(ctx context.Context, sessionID, contactID string) (*SuccessResult, error) {
 	var out SuccessResult
 	err := s.client.do(ctx, "POST", s.base(sessionID)+"/"+pathEscape(contactID)+"/block", nil, nil, &out)
@@ -75,4 +110,12 @@ func (s *ContactsService) Unblock(ctx context.Context, sessionID, contactID stri
 		return nil, err
 	}
 	return &out, nil
+}
+
+// ListBlocked returns the JIDs this account has blocked. Session-wide, so it takes no contact ID —
+// unlike Block and Unblock, which act on one contact — and it returns bare IDs, not contact records.
+func (s *ContactsService) ListBlocked(ctx context.Context, sessionID string) ([]string, error) {
+	var out []string
+	err := s.client.do(ctx, "GET", s.base(sessionID)+"/blocked", nil, nil, &out)
+	return out, err
 }

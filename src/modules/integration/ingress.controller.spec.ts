@@ -7,8 +7,13 @@ import { IngressService } from './ingress.service';
 const RAW = '{\n  "event": "message_created",\n  "id": 42\n}\n';
 
 function fakeRes() {
-  const captured: { status?: number; body?: string; headers?: Record<string, string> } = {};
+  const captured: { status?: number; body?: string; headers?: Record<string, string>; contentType?: string } = {};
+  const type = jest.fn((contentType: string) => {
+    captured.contentType = contentType;
+    return res;
+  });
   const res = {
+    type,
     status: jest.fn((code: number) => {
       captured.status = code;
       return res;
@@ -24,6 +29,26 @@ function fakeRes() {
   } as unknown as Response;
   return { res, captured };
 }
+
+// Both reflections echo provider-controlled strings; Express types a bare send() as text/html,
+// which would make the echo XSS material on this origin. The route must force text/plain.
+describe('reflection content type', () => {
+  it('answers with Content-Type text/plain, never the Express default text/html', async () => {
+    const handle = jest.fn().mockResolvedValue({ status: 200, body: '<script>alert(1)</script>' });
+    const controller = new IngressController({ handle } as unknown as IngressService);
+    const { res, captured } = fakeRes();
+    const req = {
+      method: 'POST',
+      params: { path: ['chatwoot'] },
+      headers: { 'x-delivery': 'd1', 'content-type': 'application/json' },
+      rawBody: Buffer.from('{}', 'utf8'),
+    } as unknown as Request & { rawBody?: Buffer };
+
+    await controller.receive('chatwoot', 'acct1', {}, req, res);
+
+    expect(captured.contentType).toBe('text/plain');
+  });
+});
 
 describe('IngressController', () => {
   it('forwards the RAW request bytes byte-identically to the pipeline', async () => {

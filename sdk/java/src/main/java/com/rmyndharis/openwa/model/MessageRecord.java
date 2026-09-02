@@ -17,6 +17,14 @@ public record MessageRecord(
     String body,
     String type,
     MessageDirection direction,
+    /** Chat display name, when the session resolves one for the chat. */
+    String chatName,
+    /** Author display name for an inbound group message. */
+    String author,
+    /** Storage key of the archived media copy, when chat-media archiving wrote one. */
+    String mediaPath,
+    /** Mimetype of the archived media; null whenever mediaPath is. */
+    String mediaMimetype,
     /** Unix timestamp in seconds. */
     Long timestamp,
     Map<String, Object> metadata,

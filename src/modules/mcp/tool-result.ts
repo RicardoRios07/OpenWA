@@ -9,7 +9,9 @@ const logger = new Logger('Mcp');
  * ones (> 4 KB) to an embedded base64 resource so the response stays compact.
  */
 export function smartToolResult(data: string | object | object[]): CallToolResult {
-  const text = typeof data === 'string' ? data : JSON.stringify(data);
+  // JSON.stringify(undefined) is undefined, not a string — a handler that resolves void would turn
+  // a completed write into a thrown TypeError here, reported to the agent as a failure it retries.
+  const text = typeof data === 'string' ? data : (JSON.stringify(data) ?? 'null');
   const mimeType = typeof data === 'string' ? 'text/plain' : 'application/json';
   const ext = typeof data === 'string' ? 'txt' : 'json';
   if (text.length > 4096) {

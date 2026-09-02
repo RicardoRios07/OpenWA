@@ -5,6 +5,9 @@ import { IngressJobData } from '../queue/processors/ingress.processor';
 import type { EngineStatus } from '../../engine/interfaces/whatsapp-engine.interface';
 import { evaluatePreflight } from './ingress-preflight';
 import { renderAck } from './ingress-ack';
+import { parseBodyLimitBytes } from '../../config/inflight-body-budget';
+import { resolveBodyLimit } from '../../config/bootstrap-security';
+import { createLogger } from '../../common/services/logger.service';
 
 export interface IngressRequest {
   pluginId: string;
@@ -40,6 +43,7 @@ export interface IngressDeps {
       providerDeliveryId: string;
       route: string;
       payload: { headers: Record<string, string>; query: Record<string, string>; body: string; rawBody: string };
+      payloadHash: string;
       sessionId: string | null;
     }): Promise<boolean>;
   };
@@ -63,7 +67,27 @@ export interface IngressDeps {
  * body → dedup (persist-before-ack) → best-effort conversation id → enqueue (or inline) → 202.
  */
 export class IngressService {
+  private readonly logger = createLogger('IngressService');
+
   constructor(private readonly deps: IngressDeps) {}
+
+  /**
+   * The cap to apply when a manifest route declares none. Warned once per route so an incomplete
+   * manifest is visible to the operator rather than silently degrading to the global limit.
+   */
+  private readonly warnedMissingCap = new Set<string>();
+
+  private fallbackMaxBodyBytes(pluginId: string, route: string): number {
+    const key = `${pluginId}:${route}`;
+    if (!this.warnedMissingCap.has(key)) {
+      this.warnedMissingCap.add(key);
+      this.logger.warn(
+        `Ingress route ${key} declares no usable maxBodyBytes; falling back to the process body limit. ` +
+          'Set a per-route maxBodyBytes in the plugin manifest.',
+      );
+    }
+    return parseBodyLimitBytes(resolveBodyLimit(process.env.BODY_SIZE_LIMIT));
+  }
 
   async handle(req: IngressRequest): Promise<{ status: number; body?: string; headers?: Record<string, string> }> {
     const instance = await this.deps.instances.resolve(req.pluginId, req.instanceId);
@@ -84,7 +108,30 @@ export class IngressService {
       return { status: 403, body: 'challenge failed' };
     }
 
-    if (Buffer.byteLength(req.rawBody, 'utf8') > route.maxBodyBytes) return { status: 413, body: 'payload too large' };
+    // `n > undefined` is always false, so a manifest that omits maxBodyBytes — or carries a
+    // non-numeric or non-positive value — left this check inert: the 413 the published contract
+    // promises never fired, and every accepted delivery is persisted with the body stored twice
+    // (payload.body and payload.rawBody) and carried into the queue. A third-party adapter forgetting
+    // one field turned its route into a write amplifier with no load-time error and no runtime signal.
+    //
+    // The fallback is the process-wide body limit, which is what such a route was already bounded by
+    // in practice, so no delivery that is accepted today starts failing. What changes is that the
+    // check can no longer be vacuous, and the gap is now stated in the log instead of being silent.
+    // A manifest is third-party JSON with no runtime validation, so the field is only a `number` by
+    // declaration. The `>` this replaced COERCED, which means a quoted number ("1024") enforced a real
+    // cap — rejecting it as "unusable" would swap that for the far larger process-wide fallback. And
+    // 0 is a cap, not a missing value: it admits the empty body a verification callback sends and
+    // nothing else. Only a value that cannot express a limit at all falls back.
+    const declaredCap: unknown = route.maxBodyBytes;
+    const parsedCap =
+      typeof declaredCap === 'number'
+        ? declaredCap
+        : typeof declaredCap === 'string' && declaredCap.trim() !== ''
+          ? Number(declaredCap)
+          : Number.NaN;
+    const effectiveCap =
+      Number.isFinite(parsedCap) && parsedCap >= 0 ? parsedCap : this.fallbackMaxBodyBytes(req.pluginId, route.route);
+    if (Buffer.byteLength(req.rawBody, 'utf8') > effectiveCap) return { status: 413, body: 'payload too large' };
 
     const verdict = verifyIngressSignature(route.signature, {
       rawBody: req.rawBody,
@@ -116,13 +163,22 @@ export class IngressService {
     const defaultDedupHeader = route.signature.scheme === 'standard-webhooks' ? 'webhook-id' : 'x-delivery';
     const dedupHeader = (route.dedupHeader ?? route.signature.dedupHeader ?? defaultDedupHeader).toLowerCase();
     const deliveryId = req.headers[dedupHeader] ?? deriveDeliveryId(req);
-    const payload = { headers: req.headers, query: req.query, body: req.rawBody, rawBody: req.rawBody };
+    // Provider request headers persist with the event (redrive/debugging); credentials must not.
+    // Signature headers are re-derivable, auth material is not — redact before the first write.
+    const payload = {
+      headers: redactSensitiveHeaders(req.headers),
+      query: req.query,
+      body: req.rawBody,
+      rawBody: req.rawBody,
+    };
     const isNew = await this.deps.events.recordOrSkip({
       instanceId: req.instanceId,
       pluginId: req.pluginId,
       providerDeliveryId: deliveryId,
       route: req.route,
       payload,
+      // The slim content fingerprint kept after the payload is retired on dispatch (see the entity).
+      payloadHash: createHash('sha256').update(req.rawBody).digest('hex'),
       sessionId: instance.sessionScope,
     });
     if (!isNew) return { status: 200, body: 'duplicate' }; // already persisted/acked
@@ -208,4 +264,29 @@ export function extractConversationId(
     }
   }
   return undefined;
+}
+
+/**
+ * Header names whose VALUES must never reach the persisted event payload: bearer/basic
+ * credentials, cookies, and the provider signature headers (recomputable from the raw body, and
+ * useless for redrive — the retry re-signs). The names survive so operators can still see WHICH
+ * scheme the provider used.
+ */
+const SENSITIVE_INGRESS_HEADERS = new Set([
+  'authorization',
+  'proxy-authorization',
+  'cookie',
+  'x-hub-signature',
+  'x-hub-signature-256',
+  'x-signature',
+  'x-signature-ed25519',
+  'x-webhook-signature',
+]);
+
+export function redactSensitiveHeaders(headers: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    out[name] = SENSITIVE_INGRESS_HEADERS.has(name.toLowerCase()) ? '[redacted]' : value;
+  }
+  return out;
 }

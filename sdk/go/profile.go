@@ -42,3 +42,13 @@ func (s *ProfileService) SetProfilePicture(ctx context.Context, sessionID string
 	}
 	return &out, nil
 }
+
+// DeleteProfilePicture removes the account profile picture.
+func (s *ProfileService) DeleteProfilePicture(ctx context.Context, sessionID string) (*SuccessResult, error) {
+	var out SuccessResult
+	err := s.client.do(ctx, "DELETE", s.base(sessionID)+"/picture", nil, nil, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}

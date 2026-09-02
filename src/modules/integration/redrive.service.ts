@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { IntegrationDeliveryFailure } from './entities/integration-delivery-failure.entity';
+import { IngressEvent } from './entities/ingress-event.entity';
 import { IngressEnqueueService } from './ingress-enqueue.service';
 import { IngressJobData } from '../queue/processors/ingress.processor';
 import { KeyedAsyncLock } from './ordering-lock';
@@ -24,21 +25,32 @@ export class RedriveService {
 
   constructor(
     @InjectRepository(IntegrationDeliveryFailure, 'data') private readonly repo: Repository<IntegrationDeliveryFailure>,
+    @InjectRepository(IngressEvent, 'data') private readonly events: Repository<IngressEvent>,
     private readonly ingressEnqueue: IngressEnqueueService,
   ) {}
 
   redriveInstance(
     pluginId: string,
     instanceId: string,
+    sessionIdFilter: string | null,
   ): Promise<{ redriven: number; remaining: number; batchSize: number }> {
-    return this.lock.run(`redrive:${pluginId}:${instanceId}`, () => this.redriveBatch(pluginId, instanceId));
+    return this.lock.run(`redrive:${pluginId}:${instanceId}`, () =>
+      this.redriveBatch(pluginId, instanceId, sessionIdFilter),
+    );
   }
 
   private async redriveBatch(
     pluginId: string,
     instanceId: string,
+    sessionIdFilter: string | null,
   ): Promise<{ redriven: number; remaining: number; batchSize: number }> {
-    const where = { pluginId, instanceId, direction: 'inbound' as const, redriven: false };
+    const where = {
+      pluginId,
+      instanceId,
+      direction: 'inbound' as const,
+      redriven: false,
+      ...(sessionIdFilter === null ? {} : { sessionId: sessionIdFilter }),
+    };
     const rows = await this.repo.find({
       where,
       // Failed replays increment attempts and move behind never-retried rows, preventing one permanent
@@ -69,6 +81,17 @@ export class RedriveService {
       // inline-dispatch failure ('failed') leaves the row redriven=false so it stays redrivable, instead
       // of silently marking it handled and permanently losing the event.
       if (outcome !== 'failed') {
+        // Retire the matching ingress_events row FIRST (mirrors the reconciler's own ordering): a
+        // live-path inline failure leaves that row 'pending' next to this DLQ row, so without the mark
+        // the reconciler would sweep and replay the same delivery — a double delivery to the plugin.
+        // Conditional on 'pending' so a row the reconciler already closed is left alone; a legacy DLQ
+        // row (deliveryId null) predates persist-before-ack and has no event row to retire.
+        if (row.deliveryId) {
+          await this.events.update(
+            { pluginId, instanceId, providerDeliveryId: row.deliveryId, dispatchState: 'pending' },
+            { dispatchState: 'dispatched', lastDispatchAt: new Date(), payload: null },
+          );
+        }
         await this.repo.update({ id: row.id }, { redriven: true });
         redriven++;
       } else {

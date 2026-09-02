@@ -11,6 +11,10 @@ public record GroupInfo(
     /** Unix timestamp in seconds. */
     Long createdAt,
     List<GroupParticipant> participants,
+    Boolean announce,
+    Long ephemeralSeconds,
+    Boolean locked,
+    MemberAddMode memberAddMode,
     Boolean isReadOnly,
     Boolean isAnnounce,
     String linkedParentJID) {}

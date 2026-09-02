@@ -161,12 +161,12 @@
 
 .logs-page .severity-badge.warn {
   background: rgba(245, 158, 11, 0.15);
-  color: var(--warning);
+  color: var(--warning-text);
 }
 
 .logs-page .severity-badge.error {
   background: rgba(239, 68, 68, 0.12);
-  color: var(--error);
+  color: var(--error-text);
 }
 
 .logs-page .pagination {

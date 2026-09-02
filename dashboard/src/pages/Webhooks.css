@@ -79,7 +79,7 @@
 }
 
 .webhooks-page .webhook-url-icon {
-  color: var(--primary);
+  color: var(--primary-text);
   flex-shrink: 0;
 }
 
@@ -177,7 +177,7 @@
   font-size: 0.75rem;
   padding: 0.25rem 0.625rem;
   background: rgba(37, 211, 102, 0.15);
-  color: var(--primary);
+  color: var(--primary-text);
   border-radius: 6px;
   font-weight: 600;
   white-space: nowrap;
@@ -204,7 +204,7 @@
 
 .webhooks-page .modal-body .event-tag:hover {
   border-color: var(--primary);
-  color: var(--primary);
+  color: var(--primary-text);
 }
 
 .webhooks-page .modal-body .event-tag.selected {
@@ -229,7 +229,7 @@
 [data-theme='dark'] .webhooks-page .modal-body .event-tag:hover,
 :root:not([data-theme='light']) .webhooks-page .modal-body .event-tag:hover {
   border-color: var(--primary);
-  color: var(--primary);
+  color: var(--primary-text);
 }
 
 [data-theme='dark'] .webhooks-page .modal-body .event-tag.selected,
@@ -327,7 +327,7 @@
 
 .webhooks-page .status-badge.active {
   background: rgba(37, 211, 102, 0.15);
-  color: var(--primary);
+  color: var(--primary-text);
 }
 
 .webhooks-page .status-badge.inactive {
@@ -354,7 +354,7 @@
 .webhooks-page .icon-btn.danger:hover {
   background: rgba(239, 68, 68, 0.12);
   border-color: rgba(239, 68, 68, 0.3);
-  color: var(--error);
+  color: var(--error-text);
 }
 
 .webhooks-page .events-reference {
@@ -389,7 +389,7 @@
 
 .webhooks-page .event-item code {
   font-size: 0.8125rem;
-  color: var(--primary);
+  color: var(--primary-text);
   background: rgba(37, 211, 102, 0.1);
   padding: 0.25rem 0.5rem;
   border-radius: 4px;
@@ -522,59 +522,6 @@
   }
 }
 
-/* Toast Notification */
-.webhooks-page .toast {
-  position: fixed;
-  top: 1.5rem;
-  right: 1.5rem;
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 1rem 1.25rem;
-  border-radius: 10px;
-  font-size: 0.875rem;
-  font-weight: 500;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
-  z-index: 1000;
-  animation: slideIn 0.3s ease;
-}
-
-@keyframes slideIn {
-  from {
-    transform: translateX(100%);
-    opacity: 0;
-  }
-  to {
-    transform: translateX(0);
-    opacity: 1;
-  }
-}
-
-.webhooks-page .toast.success {
-  background: rgba(37, 211, 102, 0.12);
-  border: 1px solid rgba(37, 211, 102, 0.3);
-  color: var(--success);
-}
-
-.webhooks-page .toast.error {
-  background: rgba(239, 68, 68, 0.12);
-  border: 1px solid rgba(239, 68, 68, 0.3);
-  color: var(--error);
-}
-
-.webhooks-page .toast-close {
-  background: transparent;
-  border: none;
-  padding: 0.25rem;
-  cursor: pointer;
-  opacity: 0.6;
-  color: inherit;
-}
-
-.webhooks-page .toast-close:hover {
-  opacity: 1;
-}
-
 /* Danger Button */
 /* Small Modal Variant */
 .webhooks-page .modal.modal-sm {
@@ -669,7 +616,7 @@
 }
 
 .webhooks-page .toggle-status.active {
-  color: var(--primary);
+  color: var(--primary-text);
 }
 
 .webhooks-page .toggle-status.inactive {

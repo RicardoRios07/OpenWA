@@ -42,19 +42,19 @@ export interface BatchProgress {
 @Unique('UQ_message_batches_session_id_batch_id', ['sessionId', 'batchId'])
 export class MessageBatch {
   @PrimaryGeneratedColumn('uuid')
-  id: string;
+  id!: string;
 
   @Column({ name: 'batch_id' })
-  batchId: string;
+  batchId!: string;
 
   @Column({ name: 'session_id' })
-  sessionId: string;
+  sessionId!: string;
 
   @Column({ type: 'varchar', default: BatchStatus.PENDING })
-  status: BatchStatus;
+  status!: BatchStatus;
 
   @Column({ type: jsonColumnType() })
-  messages: Array<{
+  messages!: Array<{
     chatId: string;
     type: string;
     content: Record<string, unknown>;
@@ -62,30 +62,30 @@ export class MessageBatch {
   }>;
 
   @Column({ type: jsonColumnType(), nullable: true })
-  options: {
+  options!: {
     delayBetweenMessages: number;
     randomizeDelay: boolean;
     stopOnError: boolean;
   };
 
   @Column({ type: jsonColumnType(), nullable: true })
-  progress: BatchProgress;
+  progress!: BatchProgress;
 
   @Column({ type: jsonColumnType(), nullable: true })
-  results: BatchMessageResult[];
+  results!: BatchMessageResult[];
 
   @Column({ name: 'current_index', default: 0 })
-  currentIndex: number;
+  currentIndex!: number;
 
   @CreateDateColumn({ name: 'created_at' })
-  createdAt: Date;
+  createdAt!: Date;
 
   @UpdateDateColumn({ name: 'updated_at' })
-  updatedAt: Date;
+  updatedAt!: Date;
 
   @Column({ name: 'started_at', type: dateColumnType(), nullable: true, transformer: DateTransformer })
-  startedAt: Date | null;
+  startedAt!: Date | null;
 
   @Column({ name: 'completed_at', type: dateColumnType(), nullable: true, transformer: DateTransformer })
-  completedAt: Date | null;
+  completedAt!: Date | null;
 }

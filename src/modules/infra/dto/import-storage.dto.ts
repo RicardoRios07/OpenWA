@@ -10,5 +10,5 @@ export class ImportStorageDto {
   @ApiProperty({ description: 'Path to the tar.gz file to import (must be inside the data directory)' })
   @IsString()
   @IsNotEmpty()
-  filePath: string;
+  filePath!: string;
 }

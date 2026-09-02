@@ -36,7 +36,10 @@ public record CreateWebhookRequest(
             return this;
         }
 
-        /** HMAC secret; signed as {@code X-OpenWA-Signature: sha256=…}. */
+        /**
+         * HMAC secret; signed as {@code X-OpenWA-Signature: sha256=…}. At least 16 characters, or
+         * the gateway answers 400. Leave unset for unsigned deliveries. Never returned by a read.
+         */
         public Builder secret(String v) {
             this.secret = v;
             return this;

@@ -136,7 +136,7 @@
 
 .login-container .error-message {
   display: block;
-  color: var(--error);
+  color: var(--error-text);
   font-size: 0.875rem;
   margin-top: 0.5rem;
 }
@@ -170,7 +170,7 @@
 }
 
 .login-container .login-help a {
-  color: var(--primary);
+  color: var(--primary-text);
   text-decoration: none;
   font-weight: 500;
 }
@@ -196,7 +196,7 @@
 }
 
 .login-container .login-footer .github-link:hover {
-  color: var(--primary);
+  color: var(--primary-text);
 }
 
 .login-container .login-footer a {

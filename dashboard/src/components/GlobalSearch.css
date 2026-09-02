@@ -121,5 +121,5 @@
 
 .global-search-more:hover {
   background: var(--primary-soft);
-  color: var(--primary);
+  color: var(--primary-text);
 }

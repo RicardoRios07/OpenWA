@@ -76,17 +76,13 @@ describe('CatalogResource — exact paths (note: catalog controller is session-r
     expect(t.lastCall!.url).toBe('http://localhost:2785/api/sessions/s/catalog/products/p1');
   });
 
-  it('sendProduct / sendCatalog share the messages path', async () => {
+  it('sendProduct shares the messages path', async () => {
     const t = new MockTransport()
-      .on('POST', /\/messages\/send-product$/, { body: { messageId: 'm', timestamp: 1 } })
-      .on('POST', /\/messages\/send-catalog$/, { body: { messageId: 'm', timestamp: 1 } });
+      .on('POST', /\/messages\/send-product$/, { body: { messageId: 'm', timestamp: 1 } });
     const c = client(t);
     await c.catalog.sendProduct('s', { chatId: 'a@c.us', productId: 'p1', body: 'see this' });
     expect(t.lastCall!.url).toBe('http://localhost:2785/api/sessions/s/messages/send-product');
     expect(t.lastCall!.body).toEqual({ chatId: 'a@c.us', productId: 'p1', body: 'see this' });
-    await c.catalog.sendCatalog('s', { chatId: 'a@c.us', body: 'our catalog' });
-    expect(t.lastCall!.url).toBe('http://localhost:2785/api/sessions/s/messages/send-catalog');
-    expect(t.lastCall!.body).toEqual({ chatId: 'a@c.us', body: 'our catalog' });
   });
 });
 
@@ -134,5 +130,22 @@ describe('Client exposes all resources', () => {
     ]) {
       expect(c).toHaveProperty(r);
     }
+  });
+});
+
+describe('ChannelsResource — admin and ownership', () => {
+  it('demoteAdmin and transferOwnership post to their own paths', async () => {
+    const t = new MockTransport()
+      .on('POST', /\/admins\/demote$/, { body: { success: true } })
+      .on('POST', /\/owner\/transfer$/, { body: { success: true } });
+    const c = client(t);
+
+    await c.channels.demoteAdmin('s', 'c@newsletter', { userId: 'a@c.us' });
+    expect(t.lastCall!.url).toContain('/api/sessions/s/channels/c@newsletter/admins/demote');
+    expect(t.lastCall!.body).toEqual({ userId: 'a@c.us' });
+
+    await c.channels.transferOwnership('s', 'c@newsletter', { newOwnerId: 'b@c.us' });
+    expect(t.lastCall!.url).toContain('/api/sessions/s/channels/c@newsletter/owner/transfer');
+    expect(t.lastCall!.body).toEqual({ newOwnerId: 'b@c.us' });
   });
 });

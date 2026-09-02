@@ -34,14 +34,30 @@ export async function recordWebhookDeliveryFailure(
   repo: Repository<WebhookDeliveryFailure>,
   logger: ErrorLogger,
   input: WebhookDeliveryFailureInput,
-): Promise<void> {
+): Promise<boolean> {
   try {
+    // One row per lost delivery, not one per attempt. The reconciler replays a pending outbox row
+    // up to its budget and every failed replay arrives here, so without this guard a single lost
+    // event is reported to the operator as several and counted that many times in the failure
+    // metric. An absent idempotencyKey carries no identity to dedupe on, so it is always appended.
+    if (input.idempotencyKey) {
+      const existing = await repo.count({
+        where: { webhookId: input.webhookId, idempotencyKey: input.idempotencyKey },
+      });
+      if (existing > 0) {
+        return false;
+      }
+    }
     await repo.insert({ ...input, lastStatusCode: input.lastStatusCode ?? null });
+    return true;
   } catch (err) {
     logger.error(
       'Failed to persist webhook delivery-failure record',
       err instanceof Error ? err.message : String(err),
       { webhookId: input.webhookId, deliveryId: input.deliveryId, action: 'webhook_failure_record_error' },
     );
+    // The delivery really did fail; only the bookkeeping did. Report it as recorded so the metric
+    // still counts the loss rather than hiding it behind a database problem.
+    return true;
   }
 }

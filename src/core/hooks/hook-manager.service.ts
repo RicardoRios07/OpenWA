@@ -166,7 +166,9 @@ export class HookManager {
           throw result.error;
         }
       } catch (error) {
-        this.logger.error(`Hook error in ${registration.pluginId} for ${event}: ${error}`);
+        this.logger.error(
+          `Hook error in ${registration.pluginId} for ${event}: ${error instanceof Error ? error.message : String(error)}`,
+        );
         // Continue to next handler, don't break the chain on error
       }
     }

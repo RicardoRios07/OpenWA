@@ -1,7 +1,7 @@
 import { BadRequestException, ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { ZodError } from 'zod';
 import type { AuthService } from '../../modules/auth/auth.service';
-import type { ToolDescriptor } from './tool-descriptor';
+import type { AnyToolDescriptor } from './tool-descriptor';
 
 /**
  * Run one tool call with REST-equivalent guarantees, reusing core's own auth:
@@ -21,7 +21,7 @@ import type { ToolDescriptor } from './tool-descriptor';
  * thrown from a handler body is NOT surfaced here. Re-thrown after the callback.
  */
 export async function invokeTool(
-  tool: ToolDescriptor,
+  tool: AnyToolDescriptor,
   rawInput: unknown,
   rawKey: string | undefined,
   authService: AuthService,
@@ -71,5 +71,7 @@ export async function invokeTool(
     }
     throw e;
   }
-  return tool.handler(input, apiKey);
+  // The single cast the erasure needs, placed next to the parse that justifies it: `input` is
+  // whatever this tool's own `inputSchema` just accepted, which is exactly what its handler declares.
+  return tool.handler(input as never, apiKey);
 }

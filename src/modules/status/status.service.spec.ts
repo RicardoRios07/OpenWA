@@ -1,36 +1,66 @@
 import { BadRequestException, NotFoundException, PayloadTooLargeException } from '@nestjs/common';
 import { StatusService } from './status.service';
-import { SessionService } from '../session/session.service';
+import { StatusController } from './status.controller';
+import { EngineRegistry } from '../../engine/engine-registry.service';
+import { IWhatsAppEngine } from '../../engine/interfaces/whatsapp-engine.interface';
 import { StatusStoreService } from '../status-store/status-store.service';
 import { StorageService } from '../../common/storage/storage.service';
 import { HookManager } from '../../core/hooks';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
-import { SendImageStatusDto, SendVideoStatusDto } from './dto/send-media-status.dto';
+import { SendImageStatusDto, SendVideoStatusDto, SendVoiceStatusDto } from './dto/send-media-status.dto';
+import { SendPacingService } from '../message/send-pacing.service';
 
 describe('StatusService media validation and selection', () => {
   const engine = {
     postTextStatus: jest.fn().mockResolvedValue({ id: 'text-status' }),
     postImageStatus: jest.fn().mockResolvedValue({ id: 'image-status' }),
     postVideoStatus: jest.fn().mockResolvedValue({ id: 'video-status' }),
+    postVoiceStatus: jest.fn().mockResolvedValue({ id: 'voice-status' }),
   };
-  const sessionService = { getEngine: jest.fn().mockReturnValue(engine) };
+  const engines = new EngineRegistry();
+  // Both ids the tests below post from; the store-only paths ('sess') never reach the engine.
+  engines.set('s1', engine as unknown as IWhatsAppEngine);
+  engines.set('sess', engine as unknown as IWhatsAppEngine);
+  // Asserts the store-backed read paths never resolve an engine at all.
+  const requireSpy = jest.spyOn(engines, 'require');
   // Pass-through gate: continue, input unchanged. The blocking/rewriting behaviour has its own
   // tests below.
   const passThrough = (_event: string, data: unknown) => Promise.resolve({ continue: true, data });
   const hookManager = { execute: jest.fn(passThrough) };
   const store = { list: jest.fn(), listByContact: jest.fn(), getMedia: jest.fn() };
   const storageService = { getFile: jest.fn() };
+  const pacing = {
+    assertSendAllowed: jest.fn().mockResolvedValue(undefined),
+    recordSendFailure: jest.fn(),
+    recordSendSuccess: jest.fn(),
+  };
   const service = new StatusService(
-    sessionService as unknown as SessionService,
+    engines,
     hookManager as unknown as HookManager,
     store as unknown as StatusStoreService,
     storageService as unknown as StorageService,
+    pacing as unknown as SendPacingService,
   );
 
   beforeEach(() => {
     jest.clearAllMocks();
     hookManager.execute.mockImplementation(passThrough);
+  });
+
+  describe('pacing breaker feed', () => {
+    it('records success when the engine accepts a status post', async () => {
+      await service.postTextStatus('s1', 'hello', { recipients: [] });
+      expect(pacing.recordSendSuccess).toHaveBeenCalledWith('s1');
+      expect(pacing.recordSendFailure).not.toHaveBeenCalled();
+    });
+
+    it('records a failure when the engine refuses a status post', async () => {
+      engine.postTextStatus.mockRejectedValueOnce(new Error('refused'));
+      await expect(service.postTextStatus('s1', 'hello', { recipients: [] })).rejects.toThrow('refused');
+      expect(pacing.recordSendFailure).toHaveBeenCalledWith('s1');
+      expect(pacing.recordSendSuccess).not.toHaveBeenCalled();
+    });
   });
 
   describe('reading statuses', () => {
@@ -41,7 +71,7 @@ describe('StatusService media validation and selection', () => {
 
       expect(out).toEqual([{ id: 'w1' }]);
       expect(store.list).toHaveBeenCalledWith('sess');
-      expect(sessionService.getEngine).not.toHaveBeenCalled();
+      expect(requireSpy).not.toHaveBeenCalled();
     });
 
     it('reads a contact statuses from the store, not the engine', async () => {
@@ -51,7 +81,7 @@ describe('StatusService media validation and selection', () => {
 
       expect(out).toEqual([{ id: 'w2' }]);
       expect(store.listByContact).toHaveBeenCalledWith('sess', 'contact@c.us');
-      expect(sessionService.getEngine).not.toHaveBeenCalled();
+      expect(requireSpy).not.toHaveBeenCalled();
     });
   });
 
@@ -81,7 +111,17 @@ describe('StatusService media validation and selection', () => {
       await expect(service.getStatusMedia('sess', 'w1')).rejects.toBeInstanceOf(NotFoundException);
     });
 
-    it('rethrows non-ENOENT storage errors unchanged', async () => {
+    it('maps an S3 NoSuchKey (codeless, name-only) to NotFoundException like the local ENOENT', async () => {
+      // The S3 backend reports a miss with a `.name` and no `.code` at all — retention/lifecycle
+      // rules make the row-outlived-file race most likely exactly there.
+      store.getMedia.mockResolvedValue({ path: 'statuses/sess/gone.jpg', mimetype: 'image/jpeg' });
+      const noSuchKey = Object.assign(new Error('The specified key does not exist.'), { name: 'NoSuchKey' });
+      storageService.getFile.mockRejectedValue(noSuchKey);
+
+      await expect(service.getStatusMedia('sess', 'w1')).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('rethrows non-missing-object storage errors unchanged', async () => {
       store.getMedia.mockResolvedValue({ path: 'statuses/sess/x.jpg', mimetype: 'image/jpeg' });
       storageService.getFile.mockRejectedValue(new Error('S3 unavailable'));
 
@@ -98,6 +138,44 @@ describe('StatusService media validation and selection', () => {
 
       expect(media.mimetype).toBe('application/octet-stream');
     });
+
+    it('serves image/svg+xml as inert octet-stream despite the image/ prefix (scriptable)', async () => {
+      // SVG clears the (image|video|audio)/ family check yet is active content — a stored SVG
+      // status served with its declared Content-Type is stored-XSS material on the API origin.
+      // The chat-media path already excludes it; this closes the same hole for status media.
+      store.getMedia.mockResolvedValue({ path: 'statuses/sess/x.svg', mimetype: 'image/svg+xml' });
+      storageService.getFile.mockResolvedValue(Buffer.from('<svg/>'));
+
+      const media = await service.getStatusMedia('sess', 'w1');
+
+      expect(media.mimetype).toBe('application/octet-stream');
+    });
+
+    it.each(['image/svg+xml;charset=utf-8', 'image/svg+xml ', 'image/svg+xml ;charset=utf-8'])(
+      'serves the parameterized/spaced form %s as inert octet-stream too (browsers parse it as SVG)',
+      async mimetype => {
+        // The stored mimetype is engine-reported verbatim, so it can carry MIME parameters or
+        // trailing OWS; a browser strips both and renders `image/svg+xml` — the exclusion must match
+        // what the browser will see, not the exact byte string.
+        store.getMedia.mockResolvedValue({ path: 'statuses/sess/x.svg', mimetype });
+        storageService.getFile.mockResolvedValue(Buffer.from('<svg/>'));
+
+        const media = await service.getStatusMedia('sess', 'w1');
+
+        expect(media.mimetype).toBe('application/octet-stream');
+      },
+    );
+
+    it('still serves a parameterized NON-scriptable image with its declared mimetype', async () => {
+      // The exclusion is scoped to SVG: a perfectly ordinary `image/jpeg` with a charset parameter
+      // (or any other image/video/audio type) must not be dragged down to octet-stream by it.
+      store.getMedia.mockResolvedValue({ path: 'statuses/sess/x.jpg', mimetype: 'image/jpeg;charset=ISO-8859-1' });
+      storageService.getFile.mockResolvedValue(Buffer.from('x'));
+
+      const media = await service.getStatusMedia('sess', 'w1');
+
+      expect(media.mimetype).toBe('image/jpeg;charset=ISO-8859-1');
+    });
   });
 
   it('prefers explicit base64 over url for image and video status media', async () => {
@@ -107,6 +185,73 @@ describe('StatusService media validation and selection', () => {
 
     expect(engine.postImageStatus).toHaveBeenCalledWith(expect.objectContaining({ data: 'QUJD' }), expect.anything());
     expect(engine.postVideoStatus).toHaveBeenCalledWith(expect.objectContaining({ data: 'QUJD' }), expect.anything());
+  });
+
+  describe('voice status', () => {
+    // Ogg/Opus is the only thing WhatsApp plays as a status voice note, and neither engine
+    // transcodes — so the default has to be that, not a generic audio type.
+    it('defaults the mimetype to Ogg/Opus when the caller omits it', async () => {
+      await service.postVoiceStatus('s1', { base64: 'QUJD' }, { recipients: ['1@c.us'] });
+
+      expect(engine.postVoiceStatus).toHaveBeenCalledWith(
+        expect.objectContaining({ mimetype: 'audio/ogg; codecs=opus', data: 'QUJD' }),
+        expect.anything(),
+      );
+    });
+
+    it('takes a caller-supplied mimetype at its word', async () => {
+      await service.postVoiceStatus('s1', { base64: 'QUJD', mimetype: 'audio/mpeg' }, { recipients: ['1@c.us'] });
+
+      expect(engine.postVoiceStatus).toHaveBeenCalledWith(
+        expect.objectContaining({ mimetype: 'audio/mpeg' }),
+        expect.anything(),
+      );
+    });
+
+    it('rejects a body carrying neither url nor base64', async () => {
+      await expect(service.postVoiceStatus('s1', {}, { recipients: ['1@c.us'] })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+    });
+
+    /**
+     * `guardGatedMedia` re-checks the cap after the plugin gate, so an oversized payload is refused
+     * either way. What the early check buys is that it is refused BEFORE plugins run — so the
+     * assertion is that no plugin was handed 50 MiB of audio, not merely that a 413 came back.
+     */
+    it('refuses oversized base64 before the plugin gate sees it', async () => {
+      const oversized = Buffer.alloc(51 * 1024 * 1024).toString('base64');
+      hookManager.execute.mockClear();
+
+      await expect(
+        service.postVoiceStatus('s1', { base64: oversized }, { recipients: ['1@c.us'] }),
+      ).rejects.toBeInstanceOf(PayloadTooLargeException);
+
+      expect(hookManager.execute).not.toHaveBeenCalled();
+    });
+
+    /**
+     * WhatsApp has nowhere to render a caption on a status voice note, so the request body carries
+     * none — and the controller must not invent one. This matters on whatsapp-web.js specifically:
+     * its status path forwards `caption` whenever it is defined, so a caption arriving here would be
+     * sent rather than ignored.
+     */
+    it('forwards no caption, even when the body carries an unmodelled one', async () => {
+      const controller = new StatusController(service);
+
+      await controller.sendVoiceStatus(
+        's1',
+        plainToInstance(SendVoiceStatusDto, {
+          audio: { base64: 'QUJD' },
+          recipients: ['1@c.us'],
+          caption: 'not part of the contract',
+        } as object),
+      );
+
+      const [, options] = engine.postVoiceStatus.mock.calls.at(-1) as [unknown, { caption?: string }];
+      expect(options.caption).toBeUndefined();
+      expect(options).toMatchObject({ recipients: ['1@c.us'] });
+    });
   });
 
   it('strips a data-URI prefix before handing base64 bytes to either engine path', async () => {

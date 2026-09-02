@@ -1,5 +1,19 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsNotEmpty, IsOptional, IsObject, ValidateIf } from 'class-validator';
+import {
+  IsString,
+  IsNotEmpty,
+  IsOptional,
+  IsObject,
+  ValidateIf,
+  IsArray,
+  ArrayMaxSize,
+  MaxLength,
+  IsBoolean,
+  Validate,
+} from 'class-validator';
+import { ToStrictBoolean } from '../../../common/utils/strict-boolean';
+import { MENTIONS_DESCRIPTION, MENTIONS_MAX, MENTION_WID_MAX_LENGTH } from './send-message.dto';
+import { IsMentionWidConstraint } from './is-mention-wid.validator';
 
 export class SendTemplateMessageDto {
   @ApiProperty({
@@ -8,7 +22,7 @@ export class SendTemplateMessageDto {
   })
   @IsString()
   @IsNotEmpty()
-  chatId: string;
+  chatId!: string;
 
   @ApiPropertyOptional({
     description: 'Template ID to render. Provide either templateId or templateName.',
@@ -37,4 +51,29 @@ export class SendTemplateMessageDto {
   @IsOptional()
   @IsObject()
   vars?: Record<string, string>;
+
+  // The rendered body is dispatched through the same path as send-text, so it carries the same two
+  // optionals. `quotedMessageId` is deliberately NOT among them: docs/06 publishes this route as one
+  // that rejects it.
+  @ApiPropertyOptional({ description: MENTIONS_DESCRIPTION, example: ['628123456789@c.us'], type: [String] })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(MENTIONS_MAX)
+  @IsString({ each: true })
+  @MaxLength(MENTION_WID_MAX_LENGTH, { each: true })
+  @Validate(IsMentionWidConstraint, { each: true })
+  mentions?: string[];
+
+  @ApiPropertyOptional({
+    description:
+      'Controls the URL preview on the rendered body, with the same engine split as send-text: ' +
+      'whatsapp-web.js builds one by default and `false` suppresses it, while on Baileys previews ' +
+      'are opt-in and only `true` attaches one.',
+    example: false,
+  })
+  // Same guard as send-text: implicit conversion would turn the string "false" into true.
+  @ToStrictBoolean()
+  @IsOptional()
+  @IsBoolean()
+  linkPreview?: boolean;
 }

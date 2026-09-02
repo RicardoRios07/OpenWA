@@ -11,6 +11,7 @@
     "cancel": "రద్దు చేయి",
     "delete": "తొలగించు",
     "create": "సృష్టించు",
+    "save": "Save",
     "close": "మూసివేయి",
     "showApiKey": "API కీని చూపు",
     "hideApiKey": "API కీని దాచు",
@@ -84,7 +85,8 @@
     "loadingChats": "చాట్‌లను లోడ్ చేస్తోంది...",
     "empty": "చాట్‌లు లేవు",
     "noMessageYet": "ఇంకా సందేశాలు లేవు",
-    "unreadBadge": "{{count}} చదవని సందేశాలు",
+    "unreadBadge": "{{count}} చదవని సందేశం",
+    "unreadBadge_other": "{{count}} చదవని సందేశాలు",
     "loadingMessages": "సందేశాలను లోడ్ చేస్తోంది...",
     "noMessagesInChat": "ఇంకా సందేశాలు లేవు. ప్రారంభించడానికి మొదటి సందేశాన్ని పంపండి!",
     "downloadDocument": "డాక్యుమెంట్‌ను డౌన్‌లోడ్ చేయి",
@@ -141,13 +143,15 @@
       "orLabel": "or",
       "post": "Post",
       "posted": "Status posted",
-      "postFailed": "Could not post the status"
+      "postFailed": "Could not post the status",
+      "imageFile": "స్టేటస్ చిత్రం"
     },
     "channels": {
       "notSupported": "Channels are not supported on the Baileys engine.",
       "empty": "You are not subscribed to any channels yet.",
       "notReady": "సెషన్ ఇంకా సిద్ధంగా లేదు.",
-      "subscribers": "{{count}} సబ్‌స్క్రైబర్‌లు"
+      "subscribers": "{{count}} సబ్‌స్క్రైబర్",
+      "subscribers_other": "{{count}} సబ్‌స్క్రైబర్‌లు"
     },
     "errors": {
       "loadSessions": "సెషన్లను లోడ్ చేయడం విఫలమైంది",
@@ -155,9 +159,17 @@
       "markRead": "చాట్‌ను చదివినట్లుగా గుర్తించడం విఫలమైంది",
       "send": "సందేశాన్ని పంపడం విఫలమైంది",
       "react": "సందేశానికి ప్రతిస్పందించడం విఫలమైంది",
-      "delete": "సందేశాన్ని తొలగించడం విఫలమైంది"
+      "delete": "సందేశాన్ని తొలగించడం విఫలమైంది",
+      "fileTooLarge": "ఫైల్ చాలా పెద్దది (గరిష్టం 18 MB)"
     },
-    "loadMessagesError": "సందేశాలను లోడ్ చేయడం సాధ్యం కాలేదు. సర్వర్ లాగ్‌లను తనిఖీ చేయండి."
+    "loadMessagesError": "సందేశాలను లోడ్ చేయడం సాధ్యం కాలేదు. సర్వర్ లాగ్‌లను తనిఖీ చేయండి.",
+    "messageStatus": {
+      "pending": "పెండింగ్‌లో",
+      "sent": "పంపబడింది",
+      "delivered": "డెలివరీ అయింది",
+      "read": "చదవబడింది",
+      "failed": "విఫలమైంది"
+    }
   },
   "errorBoundary": {
     "title": "ఏదో తప్పు జరిగింది",
@@ -225,7 +237,10 @@
     "connecting": "కనెక్ట్ అవుతోంది...",
     "qr_ready": "QR స్కాన్ చేయండి",
     "ready": "కనెక్ట్ అయింది",
-    "disconnected": "డిస్‌కనెక్ట్ అయింది"
+    "disconnected": "డిస్‌కనెక్ట్ అయింది",
+    "action_required": "చర్య అవసరం",
+    "failed": "విఫలమైంది",
+    "authenticating": "ప్రామాణీకరిస్తోంది..."
   },
   "sessions": {
     "title": "సెషన్స్",
@@ -285,13 +300,34 @@
       "phone": "ఫోన్ నంబర్",
       "phoneNone": "కనెక్ట్ కాలేదు",
       "created": "సృష్టించబడింది",
-      "lastActive": "చివరిసారి యాక్టివ్"
+      "lastActive": "చివరిసారి యాక్టివ్",
+      "autoRejectCalls": "కాల్‌లను ఆటోమేటిక్‌గా తిరస్కరించు",
+      "autoRejectCallsHint": "ఇన్‌కమింగ్ కాల్‌లు మోగిన వెంటనే తిరస్కరించబడతాయి. call.received వెబ్‌హుక్ మాత్రం ముందుగా పంపబడుతుంది. తదుపరి కాల్ నుండి వర్తిస్తుంది — పునఃప్రారంభం అవసరం లేదు."
+    },
+    "proxy": {
+      "title": "Proxy Configuration",
+      "status": "Current",
+      "enabled": "Use proxy",
+      "url": "Proxy URL",
+      "urlPlaceholder": "http://user:pass@proxy.example.com:8080",
+      "urlKeepPlaceholder": "Enter new URL to replace {{host}} (credentials not shown)",
+      "configured": "{{host}} ({{type}})",
+      "noProxy": "No proxy configured",
+      "hasCredentials": "Credentials are stored but not shown. Enter a full URL to change them.",
+      "hint": "Changes apply on the next session start, not to a running connection. The proxy must be real and reachable — an unreachable value blocks QR delivery and start returns 504.",
+      "createHint": "Only needed when your network cannot reach WhatsApp directly. Must be a real, reachable proxy.",
+      "invalidUrl": "Enter a valid http, https, socks4, or socks5 proxy URL.",
+      "saveSuccessTitle": "Proxy Saved",
+      "saveSuccess": "Proxy settings saved. They apply on the next session start.",
+      "saveError": "Failed to save proxy settings"
     },
     "actions": {
       "view": "చూడు",
+      "proxy": "Proxy",
       "start": "ప్రారంభించు",
       "stop": "ఆపివేయి",
       "reconnect": "మళ్లీ కనెక్ట్ చేయి",
+      "unlink": "అన్‌లింక్",
       "delete": "తొలగించు",
       "killStuck": "నిలిచిపోయినదాన్ని ఆపండి"
     },
@@ -300,6 +336,8 @@
       "readyDesc": "వాట్సాప్ సెషన్ ఇప్పుడు కనెక్ట్ అయింది",
       "disconnectedTitle": "సెషన్ డిస్‌కనెక్ట్ అయింది",
       "disconnectedDesc": "వాట్సాప్ సెషన్ డిస్‌కనెక్ట్ చేయబడింది",
+      "actionRequiredTitle": "చర్య అవసరం",
+      "actionRequiredDesc": "ఈ సెషన్‌కు మీ శ్రద్ధ అవసరం. ఏమి చేయాలో చూడటానికి సెషన్‌ను తెరవండి.",
       "failedTitle": "సెషన్ విఫలమైంది",
       "failedDesc": "వాట్సాప్ సెషన్ ప్రారంభం కావడం విఫలమైంది. కారణాన్ని చూడటానికి సెషన్‌ను తెరవండి."
     },
@@ -307,7 +345,8 @@
       "phone": "ఫోన్",
       "sessionId": "సెషన్ ID",
       "lastActive": "చివరిసారి యాక్టివ్",
-      "error": "లోపం"
+      "error": "లోపం",
+      "restriction": "ఆంక్ష"
     },
     "forceKill": {
       "title": "నిలిచిపోయిన సెషన్‌ను ఆపండి",
@@ -318,6 +357,18 @@
       "success": "సెషన్ బలవంతంగా ఆపబడింది. మీరు ఇప్పుడు దాన్ని పునఃప్రారంభించవచ్చు.",
       "failedTitle": "బలవంతంగా ఆపడం విఫలమైంది",
       "failed": "సెషన్‌ను బలవంతంగా ఆపడం విఫలమైంది."
+    },
+    "unlink": {
+      "title": "పరికరాన్ని అన్‌లింక్ చేయండి",
+      "message": "సెషన్ <strong>\"{{name}}\"</strong>ని WhatsApp ఖాతా నుండి అన్‌లింక్ చేయాలా?",
+      "warning": "WhatsApp ఈ పరికరాన్ని ఖాతా యొక్క లింక్ చేసిన పరికరాల నుండి తొలగిస్తుంది మరియు సెషన్ ఆగిపోతుంది. మళ్లీ కనెక్ట్ చేయడానికి కొత్త QR స్కాన్ లేదా పెయిరింగ్ కోడ్ అవసరం. స్థానిక డేటాను కూడా తొలగించాలంటే, తర్వాత సెషన్‌ను తొలగించండి.",
+      "confirm": "అన్‌లింక్",
+      "successTitle": "పరికరం అన్‌లింక్ చేయబడింది",
+      "success": "అన్‌లింక్ పూర్తయింది: పరికరం లాగ్ అవుట్ చేయబడింది మరియు స్థానిక సెషన్ ఆధారాలు క్లియర్ చేయబడ్డాయి. మళ్లీ కనెక్ట్ అవ్వడానికి కొత్త QR స్కాన్ లేదా జతచేసే కోడ్ అవసరం.",
+      "failedTitle": "అన్‌లింక్ విఫలమైంది",
+      "failed": "సెషన్‌ను అన్‌లింక్ చేయడం విఫలమైంది.",
+      "incompleteTitle": "అన్‌లింక్ అసంపూర్ణం",
+      "incomplete": "సెషన్ స్థానికంగా ఆగిపోయింది, కానీ లాగ్అవుట్ ఆపరేషన్ పూర్తి కాలేదు — పరికరం ఇంకా లింక్ అయి ఉండవచ్చు. సెషన్‌ను ప్రారంభించి అన్‌లింక్‌ను మళ్లీ ప్రయత్నించండి."
     },
     "pairing": {
       "tabQr": "QR కోడ్",
@@ -336,6 +387,16 @@
       "step3": "<strong>3.</strong> <strong>Link a Device</strong> పై నొక్కి, ఆపై <strong>Link with phone number instead</strong> పై నొక్కండి",
       "step4": "<strong>4.</strong> పైన చూపిన 8-అక్షరాల కోడ్‌ను మీ ఫోన్‌లో నమోదు చేయండి",
       "waitingConnection": "మీ ఫోన్ లింక్ అయ్యే వరకు వేచి ఉంది…"
+    },
+    "start": {
+      "teardownPendingTitle": "సెషన్ ప్రారంభం",
+      "teardownPending": "ఈ సెషన్ యొక్క ఆధారాల విచ్ఛిన్నం ఇంకా స్థిరపడుతోంది. కొద్దిసేపు ఆగి మళ్లీ ప్రయత్నించండి."
+    },
+    "restriction": {
+      "reachout_timelock": "కొత్త చాట్‌లు నిరోధించబడ్డాయి",
+      "tos_block": "WhatsApp ద్వారా నిరోధించబడింది",
+      "proxy_block": "కనెక్షన్ నిరోధించబడింది",
+      "until": "{{date}} వరకు"
     }
   },
   "webhooks": {
@@ -355,6 +416,7 @@
       "title": "ఫిల్టర్‌లు (ఐచ్ఛికం)",
       "hint": "అన్ని షరతులు సరిపోలినప్పుడు మాత్రమే ట్రిగ్గర్ అవుతుంది. సందేశ ఈవెంట్‌లకు వర్తిస్తుంది.",
       "badge": "{{count}} ఫిల్టర్",
+      "badge_other": "{{count}} ఫిల్టర్‌లు",
       "addCondition": "షరతును జోడించు",
       "removeCondition": "షరతును తొలగించు",
       "caseSensitive": "కేస్ సెన్సిటివ్",
@@ -378,7 +440,10 @@
         "isNot": "కాదు",
         "contains": "కలిగి ఉంది",
         "equals": "సమానం"
-      }
+      },
+      "fieldLabel": "ఫిల్టర్ ఫీల్డ్",
+      "operatorLabel": "ఫిల్టర్ ఆపరేటర్",
+      "valueLabel": "ఫిల్టర్ విలువ"
     },
     "columns": {
       "url": "URL",
@@ -459,7 +524,8 @@
       "deleted": "టెంప్లేట్ విజయవంతంగా తొలగించబడింది",
       "deleteFailed": "టెంప్లేట్ తొలగించడం విఫలమైంది: {{message}}",
       "copied": "టెంప్లేట్ పేరు కాపీ చేయబడింది"
-    }
+    },
+    "sessionSelect": "సెషన్"
   },
   "apiKeys": {
     "title": "API కీలు",
@@ -486,7 +552,8 @@
       "role": "పాత్ర",
       "status": "స్థితి",
       "lastUsed": "చివరిగా ఉపయోగించినది",
-      "actions": "చర్యలు"
+      "actions": "చర్యలు",
+      "sessions": "సెషన్లు"
     },
     "statuses": {
       "active": "యాక్టివ్",
@@ -507,7 +574,19 @@
     "actions": {
       "copy": "కాపీ",
       "revoke": "రద్దు చేయి",
-      "delete": "తొలగించు"
+      "delete": "తొలగించు",
+      "editSessions": "సెషన్లను సవరించు"
+    },
+    "sessions": {
+      "label": "సెషన్ యాక్సెస్",
+      "hint": "ఈ కీ ఉపయోగించగల సెషన్లను ఎంచుకోండి.",
+      "all": "అన్ని సెషన్లు",
+      "empty": "ఇంకా సెషన్లు లేవు. సెషన్లు ఉన్న తర్వాత ఈ కీ అన్నింటికీ యాక్సెస్ పొందుతుంది.",
+      "restricted": "{{count}} ఎంచుకున్నారు",
+      "editTitle": "సెషన్ యాక్సెస్‌ను సవరించు",
+      "save": "సేవ్",
+      "choose": "సెషన్లను ఎంచుకోండి",
+      "leaveAll": "అన్ని సెషన్లకు వదిలేయండి"
     }
   },
   "logs": {
@@ -531,7 +610,10 @@
     },
     "empty": {
       "title": "ఎలాంటి లాగ్‌లు కనుగొనబడలేదు",
-      "description": "చర్యలు జరిగినప్పుడు ఆడిట్ లాగ్‌లు ఇక్కడ కనిపిస్తాయి"
+      "description": "చర్యలు జరిగినప్పుడు ఆడిట్ లాగ్‌లు ఇక్కడ కనిపిస్తాయి",
+      "filteredTitle": "ఈ పేజీలో సరిపోలినవి లేవు",
+      "filteredDescription": "శోధన ప్రస్తుత పేజీని మాత్రమే ఫిల్టర్ చేస్తుంది. దాన్ని క్లియర్ చేయండి, పేజీల మధ్య మారండి లేదా సర్వర్ వైపు తీవ్రత ఫిల్టర్‌ను ఉపయోగించండి.",
+      "filteredServerDescription": "ఈ ఫిల్టర్‌లకు సరిపోయే లాగ్‌లు లేవు. వెతుకులను విస్తరించడానికి తీవ్రత ఫిల్టర్‌ను సర్దుబాటు చేయండి."
     }
   },
   "messageTester": {
@@ -600,6 +682,7 @@
     "forwardMessageId": "సందేశ ID",
     "forwardMessageIdHint": "ఫార్వార్డ్ చేయాల్సిన సందేశం యొక్క ID",
     "bulkRecipients": "గ్రహీతలు",
+    "bulkRecipientsUpload": "CSV/TXT అప్‌లోడ్ చేయండి",
     "bulkRecipientsPlaceholder": "+62812345678",
     "bulkRecipientsHint": "ఒక్కో లైన్‌లో ఒక ఫోన్ నంబర్ లేదా చాట్ ID (గరిష్టంగా 100)",
     "bulkRecipientsCount": "గ్రహీతలు: {{count}}",
@@ -735,7 +818,8 @@
     "toasts": {
       "saveFailed": "సేవ్ చేయడం విఫలమైంది"
     },
-    "envPinNote": "ఒక ఎన్విరాన్‌మెంట్ వేరియబుల్ ద్వారా పిన్ చేయబడింది — ఇది ప్రస్తుతం అమలులో ఉన్న విలువ; ఆ వేరియబుల్‌ను తీసివేసే వరకు డ్యాష్‌బోర్డ్ మార్పులు వర్తించవు.",
+    "envPinNote": "{{name}} ఎన్విరాన్‌మెంట్ వేరియబుల్ ద్వారా పిన్ చేయబడింది — ఇది ప్రస్తుతం అమలులో ఉన్న విలువ; ఆ వేరియబుల్‌ను తొలగించే వరకు డాష్‌బోర్డ్ మార్పులు వర్తించవు.",
+    "pendingRestartNote": "సేవ్ చేయబడింది, కానీ ఇంకా వర్తించలేదు — ఈ మార్పు అమలులోకి రావడానికి సర్వర్‌ను పునఃప్రారంభించండి.",
     "migration": {
       "title": "గమనిక — ఇది డేటా బ్యాకెండ్‌ను మారుస్తుంది",
       "dbWarning": "కొత్త డేటాబేస్ ఖాళీగా ప్రారంభమవుతుంది. ఇప్పుడే (ఇంకా పాత డేటాబేస్‌లో ఉన్నప్పుడే) మీ ప్రస్తుత డేటా బ్యాకప్‌ను డౌన్‌లోడ్ చేయండి, ఆపై రీస్టార్ట్ తర్వాత దాన్ని పునరుద్ధరించండి.",
@@ -746,6 +830,8 @@
       "export": "డేటాను ఎక్స్‌పోర్ట్ చేయండి",
       "import": "డేటాను ఇంపోర్ట్ చేయండి",
       "exportFailed": "డేటాను ఎక్స్‌పోర్ట్ చేయలేకపోయాం",
+      "exportPartialTitle": "Backup is missing some media",
+      "exportPartial": "{{count}} attachment payload(s) exceeded the export media budget and were saved as placeholders. The messages restore; their media does not.",
       "importFailed": "డేటాను ఇంపోర్ట్ చేయలేకపోయాం",
       "importOk": "డేటా ఇంపోర్ట్ చేయబడింది",
       "importConfirm": "ఇంపోర్ట్ చేయడం వల్ల ప్రస్తుత డేటా మొత్తం బ్యాకప్‌తో ({{rows}} వరుసలు) భర్తీ చేయబడుతుంది. దీన్ని వెనక్కి తీసుకోలేరు. కొనసాగించాలా?",
@@ -789,8 +875,14 @@
     "installModal": {
       "title": "ఒక ప్లగిన్‌ను ఇన్‌స్టాల్ చేయి",
       "hint": "ఒక .zip గా ప్యాక్ చేయబడిన ప్లగిన్‌ను అప్‌లోడ్ చేయండి (manifest.json తో). ప్రారంభించిన తర్వాత ఇది శాండ్‌బాక్స్‌లో రన్ అవుతుంది.",
+      "trustWarning": "ప్లగిన్లు గేట్‌వే ప్రాసెస్ యొక్క పూర్తి అధికారాలతో నడుస్తాయి — శాండ్‌బాక్స్ క్రాష్‌లను మాత్రమే అడ్డుకుంటుంది, హానికరమైన కోడ్‌ను కాదు. మీరు విశ్వసించే ప్లగిన్‌లను మాత్రమే ఇన్‌స్టాల్ చేయండి.",
       "choose": "ఒక .zip ఫైల్‌ను ఎంచుకోండి…",
-      "tooLarge": "ఫైల్ 5 MB పరిమితిని మించిపోయింది."
+      "tooLarge": "ఫైల్ 5 MB పరిమితిని మించిపోయింది.",
+      "catalogHint": "OpenWA ప్లగిన్ కేటలాగ్ నుండి నేరుగా ఇన్‌స్టాల్ చేయండి. .zip సర్వర్‌లో SSRF గార్డ్ ద్వారా పొందబడి, ఆపై ధృవీకరించబడి శాండ్‌బాక్స్‌లో అమలవుతుంది.",
+      "catalogTeaser": "ప్లగిన్‌ల కోసం చూస్తున్నారా?",
+      "catalogTeaserSuffix": "అధికారిక మార్కెట్‌ప్లేస్‌ను బ్రౌజ్ చేస్తుంది.",
+      "tabCatalog": "కేటలాగ్",
+      "tabUpload": ".zip అప్‌లోడ్ చేయండి"
     },
     "toasts": {
       "errorTitle": "ప్లగిన్ లోపం",
@@ -808,7 +900,8 @@
       "enableFailedTitle": "ప్రారంభించడం విఫలమైంది",
       "disableFailedTitle": "నిలిపివేయడం విఫలమైంది",
       "configRequiredTitle": "కాన్ఫిగరేషన్ అవసరం",
-      "configRequiredDesc": "ప్రారంభించే ముందు అవసరమైన ఫీల్డ్‌లను పూరించండి: {{fields}}"
+      "configRequiredDesc": "ప్రారంభించే ముందు అవసరమైన ఫీల్డ్‌లను పూరించండి: {{fields}}",
+      "updateFailed": "అప్‌డేట్ విఫలమైంది"
     },
     "sessions": {
       "activationTitle": "దీని కోసం రన్ చేయండి",
@@ -827,6 +920,7 @@
       "title": "ఇన్‌స్టాన్స్‌లు",
       "description": "ఈ ఇంటిగ్రేషన్ కోసం ఖాతా వారీగా ఇన్‌స్టాన్స్‌లను ప్రొవిజన్ చేయండి. ప్రతి ఇన్‌స్టాన్స్‌కు దాని స్వంత సైనింగ్ సీక్రెట్ మరియు ఇన్‌గ్రెస్ URL ఉంటుంది.",
       "create": "ఇన్‌స్టాన్స్‌ను సృష్టించండి",
+      "save": "Save",
       "empty": "ఇంకా ఇన్‌స్టాన్స్‌లు లేవు. ఇన్‌గ్రెస్ URL మరియు సీక్రెట్ పొందడానికి ఒకటి సృష్టించండి.",
       "loadError": "ఇన్‌స్టాన్స్‌లను లోడ్ చేయడం విఫలమైంది.",
       "allSessions": "అన్ని సెషన్‌లు",
@@ -887,6 +981,17 @@
         "secretRegenerated": "సీక్రెట్ రీజెనరేట్ చేయబడింది",
         "actionFailed": "చర్య విఫలమైంది"
       }
+    },
+    "catalog": {
+      "empty": "కేటలాగ్‌లో ప్లగిన్‌లు లేవు.",
+      "install": "ఇన్‌స్టాల్ చేయండి",
+      "installed": "ఇన్‌స్టాల్ చేయబడింది",
+      "noDownload": "ఈ కేటలాగ్ ఎంట్రీకి డౌన్‌లోడ్ URL లేదు.",
+      "noMatch": "మీ శోధనకు సరిపోలే ప్లగిన్‌లు లేవు.",
+      "searchPlaceholder": "ప్లగిన్‌లను శోధించండి…",
+      "update": "అప్‌డేట్ చేయండి",
+      "updateAvailable": "అప్‌డేట్ అందుబాటులో ఉంది",
+      "updated": "ప్లగిన్ అప్‌డేట్ చేయబడింది"
     }
   },
   "search": {

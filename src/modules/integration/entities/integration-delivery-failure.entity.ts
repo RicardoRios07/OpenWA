@@ -7,35 +7,35 @@ import { jsonColumnType } from '../../../common/utils/column-types';
 @Index('IDX_integration_delivery_failures_instance', ['pluginId', 'instanceId'])
 export class IntegrationDeliveryFailure {
   @PrimaryGeneratedColumn('uuid')
-  id: string;
+  id!: string;
 
   @Column()
-  direction: 'inbound' | 'outbound';
+  direction!: 'inbound' | 'outbound';
 
   @Column()
-  pluginId: string;
+  pluginId!: string;
 
   @Column()
-  instanceId: string;
+  instanceId!: string;
 
   @Column({ type: 'varchar', nullable: true })
-  sessionId: string | null;
+  sessionId!: string | null;
 
   @Column({ type: 'varchar', nullable: true })
-  deliveryId: string | null;
+  deliveryId!: string | null;
 
   @Column({ type: 'int' })
-  attempts: number;
+  attempts!: number;
 
   @Column({ type: 'text' })
-  lastError: string;
+  lastError!: string;
 
   @Column({ type: jsonColumnType(), nullable: true })
-  payload: Record<string, unknown> | null;
+  payload!: Record<string, unknown> | null;
 
   @Column({ default: false })
-  redriven: boolean;
+  redriven!: boolean;
 
   @CreateDateColumn()
-  createdAt: Date;
+  createdAt!: Date;
 }

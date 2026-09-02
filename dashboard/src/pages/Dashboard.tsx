@@ -59,7 +59,7 @@ export function Dashboard() {
     { label: t('dashboard.stats.totalMessages'), value: totalMessages, icon: Activity },
   ];
 
-  const formatLastActive = (date?: string) => {
+  const formatLastActive = (date?: string | null) => {
     if (!date) return t('common.never');
     const diff = Date.now() - new Date(date).getTime();
     if (diff < 60000) return t('common.justNow');
@@ -159,7 +159,7 @@ export function Dashboard() {
                   <button className="btn-sm" onClick={() => navigate('/sessions')}>
                     {t('dashboard.view')}
                   </button>
-                  {['ready', 'initializing', 'connecting', 'qr_ready'].includes(session.status) && (
+                  {['ready', 'initializing', 'qr_ready'].includes(session.status) && (
                     <button className="btn-sm danger" onClick={() => handleDisconnect(session.id)}>
                       {t('dashboard.disconnect')}
                     </button>

@@ -61,6 +61,12 @@ describe('evaluateFilters', () => {
     expect(evaluateFilters(f, 'message.received', msg({ type: 'text' }))).toBe(false);
   });
 
+  it('matches the poll type a webhook or automation rule may now name', () => {
+    const f = filters({ field: 'type', operator: 'isNot', value: ['poll'] });
+    expect(evaluateFilters(f, 'message.received', msg({ type: 'text' }))).toBe(true);
+    expect(evaluateFilters(f, 'message.received', msg({ type: 'poll' }))).toBe(false);
+  });
+
   it('body contains is case-insensitive by default and case-sensitive when set', () => {
     expect(
       evaluateFilters(filters({ field: 'body', operator: 'contains', value: 'hello' }), 'message.received', msg()),

@@ -6,5 +6,5 @@ export class AddLabelDto {
   @ApiProperty({ description: 'Label ID to add to the chat' })
   @IsString()
   @IsNotEmpty()
-  labelId: string;
+  labelId!: string;
 }

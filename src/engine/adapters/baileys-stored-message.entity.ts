@@ -14,21 +14,21 @@ import { Session } from '../../modules/session/entities/session.entity';
 @Index(['sessionId', 'createdAt']) // eviction ordering
 export class BaileysStoredMessage {
   @PrimaryGeneratedColumn('uuid')
-  id: string;
+  id!: string;
 
   @Column()
-  sessionId: string;
+  sessionId!: string;
 
   @ManyToOne(() => Session, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'sessionId' })
   session?: Session;
 
   @Column()
-  waMessageId: string;
+  waMessageId!: string;
 
   @Column({ type: 'text' })
-  serializedMessage: string;
+  serializedMessage!: string;
 
   @CreateDateColumn()
-  createdAt: Date;
+  createdAt!: Date;
 }

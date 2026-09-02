@@ -2,7 +2,7 @@
 
 ## 07.1 Overview
 
-This collection gives a runnable cURL for every OpenWA REST endpoint. The examples assume two environment variables — set them once and reuse them:
+This collection gives a runnable cURL for the primary OpenWA REST endpoints; the complete route list lives in `openapi.json` at the repository root. The Swagger UI at `/api/docs` serves the same schema, but it defaults off under `NODE_ENV=production` — set `ENABLE_SWAGGER=true` to serve it there. The examples assume two environment variables — set them once and reuse them:
 
 ```bash
 export BASE=http://localhost:2785
@@ -13,7 +13,7 @@ export API_KEY=owa_k1_your-api-key-here
 
 ### Authentication
 
-Every request carries the key in the `X-API-Key` header — REST auth is **header-only**, an `?apiKey=` query value is not accepted. Routes that mutate state need an `operator` key; API-key and settings management need an `admin` key; read-only routes accept any valid key. The metrics endpoint uses `Authorization: Bearer $METRICS_TOKEN` instead.
+Every request carries the key in the `X-API-Key` header — REST auth is **header-only**, an `?apiKey=` query value is not accepted. Routes that mutate state need an `operator` key; API-key and settings management need an `admin` key. Most read-only routes accept any valid key, but template and webhook reads need `operator`, plugin reads and infra reads need `admin` (except `GET /api/infra/health`, which is public), and the cross-session stats reads — `/api/stats/overview` and `/api/stats/messages` — need `admin` while per-session stats accept any role. Each section states its own requirement. The metrics endpoint uses `Authorization: Bearer $METRICS_TOKEN` instead.
 
 ```bash
 # the auth header that prefixes nearly every call below
@@ -26,11 +26,17 @@ Responses are the **raw payload** — no `{ success, data }` envelope. A resourc
 
 ### Sections
 
-Sessions · Messages · Webhooks · Groups · Contacts · Chats · Labels · Channels · Catalog · Templates · Plugins · Settings · Auth (API Keys) · Health · Infrastructure · Stats · Metrics · Events (WebSocket).
+Sessions · Messages · Webhooks · Groups · Contacts · Chats · Labels · Channels · Catalog · Templates · Plugins · Settings · Auth (API Keys) · Health · Infrastructure · Stats · Audit · Metrics · Profile · Search · Media conversion · Events (WebSocket).
 
 ## 07.2 Endpoints
 
 All examples assume `BASE` and `API_KEY` are exported (see 07.1). Paths are prefixed with `/api`.
+
+The `:sessionId` path segment is always the session **UUID** returned by `POST /api/sessions` — never the session name. Session routes (07.3) use `:id` for that same UUID; everywhere else `:id` is a different resource's id — a template, webhook, API key or plugin — and never a session. Export the session UUID once alongside the other variables:
+
+```bash
+export SESSION_ID=8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a
+```
 
 ### 07.3 Sessions
 
@@ -45,7 +51,7 @@ curl -X GET "$BASE/api/sessions?limit=100&offset=0" \
   -H "X-API-Key: $API_KEY"
 ```
 
-#### GET /api/sessions/:id
+#### GET /api/sessions/:sessionId
 
 Get a single session by ID.
 
@@ -54,16 +60,16 @@ curl -X GET "$BASE/api/sessions/8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a" \
   -H "X-API-Key: $API_KEY"
 ```
 
-#### GET /api/sessions/:id/qr
+#### GET /api/sessions/:sessionId/qr
 
-Get the QR code (PNG data URL) for authentication.
+Get the QR code (PNG data URL) for authentication (OPERATOR).
 
 ```bash
 curl -X GET "$BASE/api/sessions/8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a/qr" \
   -H "X-API-Key: $API_KEY"
 ```
 
-#### GET /api/sessions/:id/groups
+#### GET /api/sessions/:sessionId/groups
 
 List groups the session belongs to (paginated).
 
@@ -72,7 +78,7 @@ curl -X GET "$BASE/api/sessions/8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a/groups?limi
   -H "X-API-Key: $API_KEY"
 ```
 
-#### GET /api/sessions/:id/chats
+#### GET /api/sessions/:sessionId/chats
 
 List active chats, most-recent first (paginated).
 
@@ -103,7 +109,7 @@ curl -X POST "$BASE/api/sessions" \
 
 With an optional per-session egress proxy — only if your network can't reach WhatsApp directly. The
 proxy **must be a real, reachable host**; an unreachable value silently blocks the WhatsApp WebSocket
-(no QR is ever delivered) and `POST /api/sessions/:id/start` returns `504` after ~30s:
+(no QR is ever delivered) and `POST /api/sessions/:sessionId/start` returns `504` after ~30s:
 
 ```bash
 curl -X POST "$BASE/api/sessions" \
@@ -112,7 +118,27 @@ curl -X POST "$BASE/api/sessions" \
   -d '{ "name": "my-bot", "proxyUrl": "http://user:pass@your-real-proxy.host:8080", "proxyType": "http" }'
 ```
 
-#### POST /api/sessions/:id/start
+#### GET /api/sessions/:sessionId/proxy
+
+Read a session's masked proxy configuration (credentials never returned).
+
+```bash
+curl "$BASE/api/sessions/$SESSION_ID/proxy" \
+  -H "X-API-Key: $API_KEY"
+```
+
+#### PATCH /api/sessions/:sessionId/proxy
+
+Update per-session proxy settings (OPERATOR). No restart — changes apply on the next start. Send `"proxyUrl": null` to clear.
+
+```bash
+curl -X PATCH "$BASE/api/sessions/$SESSION_ID/proxy" \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "proxyUrl": "http://user:pass@your-real-proxy.host:8080" }'
+```
+
+#### POST /api/sessions/:sessionId/start
 
 Start a session and initialize the connection (OPERATOR).
 
@@ -121,7 +147,7 @@ curl -X POST "$BASE/api/sessions/8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a/start" \
   -H "X-API-Key: $API_KEY"
 ```
 
-#### POST /api/sessions/:id/stop
+#### POST /api/sessions/:sessionId/stop
 
 Stop a session and disconnect (OPERATOR).
 
@@ -130,16 +156,31 @@ curl -X POST "$BASE/api/sessions/8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a/stop" \
   -H "X-API-Key: $API_KEY"
 ```
 
-#### POST /api/sessions/:id/force-kill
+#### POST /api/sessions/:sessionId/logout
 
-Force-kill a stuck session (OPERATOR).
+Attempt an engine-native unlink of this device, then stop the session (OPERATOR). Requires a running
+session. A `200` means the unlink operation AND the required local cleanup completed — it is not an
+independent observation that the handset UI no longer shows the linked device, and a later start
+needs a fresh QR scan or pairing code. A `502` carries `code: 'SESSION_LOGOUT_INCOMPLETE'`: the
+session was stopped locally but the logout operation did not complete (no send / no acknowledgement
+/ timeout or transport error / local-cleanup failure); `phone` is cleared and no success audit is
+written, so start the session again and retry.
+
+```bash
+curl -X POST "$BASE/api/sessions/8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a/logout" \
+  -H "X-API-Key: $API_KEY"
+```
+
+#### POST /api/sessions/:sessionId/force-kill
+
+Force-kill a stuck session (OPERATOR). Returns `400` when the session is not started (there is no live engine to kill).
 
 ```bash
 curl -X POST "$BASE/api/sessions/8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a/force-kill" \
   -H "X-API-Key: $API_KEY"
 ```
 
-#### POST /api/sessions/:id/pairing-code
+#### POST /api/sessions/:sessionId/pairing-code
 
 Request an 8-char pairing code via phone number (OPERATOR).
 
@@ -150,7 +191,42 @@ curl -X POST "$BASE/api/sessions/8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a/pairing-co
   -d '{ "phoneNumber": "628123456789" }'
 ```
 
-#### POST /api/sessions/:id/chats/read
+#### POST /api/sessions/:sessionId/presence/subscribe
+
+Subscribe to presence updates (online/typing) for a chat (OPERATOR). Baileys only — whatsapp-web.js
+answers `501`. The subscription belongs to the connection: re-issue it after a restart or reconnect.
+Updates arrive as the `presence.update` webhook/socket event.
+
+```bash
+curl -X POST "$BASE/api/sessions/8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a/presence/subscribe" \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "chatId": "1234567890@c.us" }'
+```
+
+#### GET /api/sessions/:sessionId/presence/:chatId
+
+Read the last presence report received for a chat (any role). Returns `200` with a `null` body when
+nothing has been reported yet — presence is held in memory, never persisted.
+
+```bash
+curl "$BASE/api/sessions/8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a/presence/1234567890@c.us" \
+  -H "X-API-Key: $API_KEY"
+```
+
+#### PUT /api/sessions/:sessionId/presence
+
+Set the account's OWN global presence — appear online or offline (OPERATOR, both engines). The
+setting does not survive a restart or reconnect; re-issue it after `session.status` reports one.
+
+```bash
+curl -X PUT "$BASE/api/sessions/8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a/presence" \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "available": false }'
+```
+
+#### POST /api/sessions/:sessionId/chats/read
 
 Mark a chat as read/seen (OPERATOR).
 
@@ -158,10 +234,13 @@ Mark a chat as read/seen (OPERATOR).
 curl -X POST "$BASE/api/sessions/8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a/chats/read" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{ "chatId": "1234567890@c.us" }'
+  -d '{ "chatId": "1234567890@c.us", "messageIds": ["3EB0C767D26B8A3F1A2B"] }'
 ```
 
-#### POST /api/sessions/:id/chats/unread
+`messageIds` is optional and holds up to 100 ids. Omit it and only the newest message the engine still
+holds in memory is acknowledged, which on Baileys leaves the earlier messages of a burst unread.
+
+#### POST /api/sessions/:sessionId/chats/unread
 
 Mark a chat as unread (OPERATOR).
 
@@ -172,7 +251,46 @@ curl -X POST "$BASE/api/sessions/8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a/chats/unre
   -d '{ "chatId": "1234567890@c.us" }'
 ```
 
-#### POST /api/sessions/:id/chats/delete
+#### DELETE /api/sessions/:sessionId/chats/:chatId/messages
+
+Delete every message in a chat, keeping the chat.
+
+```bash
+curl -X DELETE "$BASE/api/sessions/8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a/chats/1234567890-123@g.us/messages" \
+  -H "X-API-Key: $API_KEY"
+```
+
+#### POST /api/sessions/:sessionId/chats/archive
+
+Archive or unarchive a chat.
+
+```bash
+curl -X POST "$BASE/api/sessions/8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a/chats/archive" \
+  -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"chatId":"1234567890-123@g.us","archive":true}'
+```
+
+#### POST /api/sessions/:sessionId/chats/mute
+
+Mute a chat until an epoch-**milliseconds** timestamp, or send `"muteUntil":null` to unmute (OPERATOR).
+
+```bash
+curl -X POST "$BASE/api/sessions/8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a/chats/mute" \
+  -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"chatId":"1234567890-123@g.us","muteUntil":1800000000000}'
+```
+
+#### POST /api/sessions/:sessionId/chats/pin
+
+Pin a chat to the top of the list, or unpin it (OPERATOR). WhatsApp allows at most three pinned chats.
+
+```bash
+curl -X POST "$BASE/api/sessions/8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a/chats/pin" \
+  -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"chatId":"1234567890-123@g.us","pin":true}'
+```
+
+#### POST /api/sessions/:sessionId/chats/delete
 
 Delete a chat from the chat list (OPERATOR).
 
@@ -183,7 +301,7 @@ curl -X POST "$BASE/api/sessions/8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a/chats/dele
   -d '{ "chatId": "1234567890-123@g.us" }'
 ```
 
-#### POST /api/sessions/:id/chats/typing
+#### POST /api/sessions/:sessionId/chats/typing
 
 Send a typing/recording presence indicator (or clear it with `paused`) (OPERATOR).
 
@@ -194,7 +312,7 @@ curl -X POST "$BASE/api/sessions/8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a/chats/typi
   -d '{ "chatId": "1234567890@c.us", "state": "typing" }'
 ```
 
-#### DELETE /api/sessions/:id
+#### DELETE /api/sessions/:sessionId
 
 Delete a session (OPERATOR). Returns `204` with no body.
 
@@ -212,7 +330,7 @@ All routes are under `/api/sessions/:sessionId/messages`. Reads accept any API k
 Get persisted message history from the local DB (paginated, filterable).
 
 ```bash
-curl "$BASE/api/sessions/my-session/messages?chatId=628123456789@c.us&limit=20&offset=0" \
+curl "$BASE/api/sessions/$SESSION_ID/messages?chatId=628123456789@c.us&limit=20&offset=0" \
   -H "X-API-Key: $API_KEY"
 ```
 
@@ -221,7 +339,7 @@ curl "$BASE/api/sessions/my-session/messages?chatId=628123456789@c.us&limit=20&o
 Fetch chat history live from WhatsApp, bypassing the DB.
 
 ```bash
-curl "$BASE/api/sessions/my-session/628123456789@c.us/history?limit=100&deep=true" \
+curl "$BASE/api/sessions/$SESSION_ID/messages/628123456789@c.us/history?limit=100&deep=true" \
   -H "X-API-Key: $API_KEY"
 ```
 
@@ -230,8 +348,57 @@ curl "$BASE/api/sessions/my-session/628123456789@c.us/history?limit=100&deep=tru
 Get reactions for a message, grouped by emoji.
 
 ```bash
-curl "$BASE/api/sessions/my-session/628123456789@c.us/true_628123456789@c.us_3EB0ABCD/reactions" \
+curl "$BASE/api/sessions/$SESSION_ID/messages/628123456789@c.us/true_628123456789@c.us_3EB0ABCD/reactions" \
   -H "X-API-Key: $API_KEY"
+```
+
+#### POST /api/sessions/:sessionId/messages/vote-poll
+
+Vote on a poll (whatsapp-web.js only).
+
+```bash
+curl -X POST "$BASE/api/sessions/$SESSION_ID/messages/vote-poll" \
+  -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"chatId":"628123456789@c.us","pollMessageId":"true_628123456789@c.us_3EB0ABCD","options":["Pizza"]}'
+```
+
+#### POST /api/sessions/:sessionId/messages/pin
+
+Pin a message for 24h (default), 7d or 30d.
+
+```bash
+curl -X POST "$BASE/api/sessions/$SESSION_ID/messages/pin" \
+  -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"chatId":"628123456789@c.us","messageId":"true_628123456789@c.us_3EB0ABCD","durationSeconds":604800}'
+```
+
+#### POST /api/sessions/:sessionId/messages/star
+
+Star or unstar a message.
+
+```bash
+curl -X POST "$BASE/api/sessions/$SESSION_ID/messages/star" \
+  -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"chatId":"628123456789@c.us","messageId":"true_628123456789@c.us_3EB0ABCD","star":true}'
+```
+
+#### POST /api/sessions/:sessionId/messages/unpin
+
+```bash
+curl -X POST "$BASE/api/sessions/$SESSION_ID/messages/unpin" \
+  -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"chatId":"628123456789@c.us","messageId":"true_628123456789@c.us_3EB0ABCD"}'
+```
+
+#### GET /api/sessions/:sessionId/messages/:chatId/:messageId/media
+
+Download a message's stored media: the archived file when one exists (`CHAT_MEDIA_ARCHIVE_ENABLED`,
+plus `CHAT_MEDIA_ARCHIVE_OUTBOUND` for media this account sent), else the inline copy on the message
+row — which covers media sent by this account either way; `404` when neither holds bytes.
+
+```bash
+curl "$BASE/api/sessions/$SESSION_ID/messages/628123456789@c.us/true_628123456789@c.us_3EB0ABCD/media" \
+  -H "X-API-Key: $API_KEY" -o media.bin
 ```
 
 #### GET /api/sessions/:sessionId/messages/batch/:batchId
@@ -239,7 +406,7 @@ curl "$BASE/api/sessions/my-session/628123456789@c.us/true_628123456789@c.us_3EB
 Get the status and progress of a bulk batch.
 
 ```bash
-curl "$BASE/api/sessions/my-session/messages/batch/batch_a1b2c3d4" \
+curl "$BASE/api/sessions/$SESSION_ID/messages/batch/batch_a1b2c3d4" \
   -H "X-API-Key: $API_KEY"
 ```
 
@@ -248,7 +415,7 @@ curl "$BASE/api/sessions/my-session/messages/batch/batch_a1b2c3d4" \
 Send a plain text message.
 
 ```bash
-curl -X POST "$BASE/api/sessions/my-session/messages/send-text" \
+curl -X POST "$BASE/api/sessions/$SESSION_ID/messages/send-text" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "chatId": "628123456789@c.us", "text": "Hello from OpenWA!" }'
@@ -259,7 +426,7 @@ curl -X POST "$BASE/api/sessions/my-session/messages/send-text" \
 Render a stored template (`{{vars}}` substituted) and send it as text.
 
 ```bash
-curl -X POST "$BASE/api/sessions/my-session/messages/send-template" \
+curl -X POST "$BASE/api/sessions/$SESSION_ID/messages/send-template" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "chatId": "628123456789@c.us", "templateName": "order-confirmation", "vars": { "customer": "Alice", "orderId": "1234" } }'
@@ -270,7 +437,7 @@ curl -X POST "$BASE/api/sessions/my-session/messages/send-template" \
 Send an image by URL or base64 with an optional caption.
 
 ```bash
-curl -X POST "$BASE/api/sessions/my-session/messages/send-image" \
+curl -X POST "$BASE/api/sessions/$SESSION_ID/messages/send-image" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "chatId": "628123456789@c.us", "url": "https://example.com/image.jpg", "caption": "Check out this image!" }'
@@ -281,7 +448,7 @@ curl -X POST "$BASE/api/sessions/my-session/messages/send-image" \
 Send a video by URL or base64 with an optional caption.
 
 ```bash
-curl -X POST "$BASE/api/sessions/my-session/messages/send-video" \
+curl -X POST "$BASE/api/sessions/$SESSION_ID/messages/send-video" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "chatId": "628123456789@c.us", "url": "https://example.com/clip.mp4", "caption": "video" }'
@@ -292,7 +459,7 @@ curl -X POST "$BASE/api/sessions/my-session/messages/send-video" \
 Send an audio message by URL or base64. Add `"ptt": true` to send a real WhatsApp voice note (mic bubble + waveform); the server defaults the mimetype to `audio/ogg; codecs=opus` when `ptt` is set without one.
 
 ```bash
-curl -X POST "$BASE/api/sessions/my-session/messages/send-audio" \
+curl -X POST "$BASE/api/sessions/$SESSION_ID/messages/send-audio" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "chatId": "628123456789@c.us", "url": "https://example.com/voice.ogg", "mimetype": "audio/ogg", "ptt": true }'
@@ -303,7 +470,7 @@ curl -X POST "$BASE/api/sessions/my-session/messages/send-audio" \
 Send a document/file by URL or base64.
 
 ```bash
-curl -X POST "$BASE/api/sessions/my-session/messages/send-document" \
+curl -X POST "$BASE/api/sessions/$SESSION_ID/messages/send-document" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "chatId": "628123456789@c.us", "url": "https://example.com/report.pdf", "filename": "report.pdf", "mimetype": "application/pdf" }'
@@ -314,7 +481,7 @@ curl -X POST "$BASE/api/sessions/my-session/messages/send-document" \
 Send a location pin.
 
 ```bash
-curl -X POST "$BASE/api/sessions/my-session/messages/send-location" \
+curl -X POST "$BASE/api/sessions/$SESSION_ID/messages/send-location" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "chatId": "628123456789@c.us", "latitude": -6.2088, "longitude": 106.8456, "description": "Jakarta", "address": "Central Jakarta" }'
@@ -325,7 +492,7 @@ curl -X POST "$BASE/api/sessions/my-session/messages/send-location" \
 Send a contact card (vCard).
 
 ```bash
-curl -X POST "$BASE/api/sessions/my-session/messages/send-contact" \
+curl -X POST "$BASE/api/sessions/$SESSION_ID/messages/send-contact" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "chatId": "628123456789@c.us", "contactName": "John Doe", "contactNumber": "628987654321" }'
@@ -336,7 +503,7 @@ curl -X POST "$BASE/api/sessions/my-session/messages/send-contact" \
 Send a sticker by URL or base64 (typically webp).
 
 ```bash
-curl -X POST "$BASE/api/sessions/my-session/messages/send-sticker" \
+curl -X POST "$BASE/api/sessions/$SESSION_ID/messages/send-sticker" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "chatId": "628123456789@c.us", "url": "https://example.com/sticker.webp", "mimetype": "image/webp" }'
@@ -347,7 +514,7 @@ curl -X POST "$BASE/api/sessions/my-session/messages/send-sticker" \
 Send a native WhatsApp poll (2–12 options; single choice unless `allowMultipleAnswers` is true).
 
 ```bash
-curl -X POST "$BASE/api/sessions/my-session/messages/send-poll" \
+curl -X POST "$BASE/api/sessions/$SESSION_ID/messages/send-poll" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "chatId": "1203630000@g.us", "name": "Where should we meet?", "options": ["Park", "Beach", "Downtown"] }'
@@ -358,7 +525,7 @@ curl -X POST "$BASE/api/sessions/my-session/messages/send-poll" \
 Reply to a message, quoting a prior one.
 
 ```bash
-curl -X POST "$BASE/api/sessions/my-session/messages/reply" \
+curl -X POST "$BASE/api/sessions/$SESSION_ID/messages/reply" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "chatId": "628123456789@c.us", "quotedMessageId": "true_628123456789@c.us_3EB0ABCD", "text": "Replying to you" }'
@@ -369,7 +536,7 @@ curl -X POST "$BASE/api/sessions/my-session/messages/reply" \
 Forward a message from one chat to another.
 
 ```bash
-curl -X POST "$BASE/api/sessions/my-session/messages/forward" \
+curl -X POST "$BASE/api/sessions/$SESSION_ID/messages/forward" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "fromChatId": "628111111111@c.us", "toChatId": "628222222222@c.us", "messageId": "true_628111111111@c.us_3EB0XYZ" }'
@@ -380,7 +547,7 @@ curl -X POST "$BASE/api/sessions/my-session/messages/forward" \
 Add a reaction (send an empty `emoji` to remove it).
 
 ```bash
-curl -X POST "$BASE/api/sessions/my-session/messages/react" \
+curl -X POST "$BASE/api/sessions/$SESSION_ID/messages/react" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "chatId": "628123456789@c.us", "messageId": "true_628123456789@c.us_3EB0ABCD", "emoji": "👍" }'
@@ -391,18 +558,29 @@ curl -X POST "$BASE/api/sessions/my-session/messages/react" \
 Delete a message (for everyone by default).
 
 ```bash
-curl -X POST "$BASE/api/sessions/my-session/messages/delete" \
+curl -X POST "$BASE/api/sessions/$SESSION_ID/messages/delete" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "chatId": "628123456789@c.us", "messageId": "true_628123456789@c.us_3EB0ABCD", "forEveryone": true }'
 ```
 
-#### POST /api/sessions/:sessionId/messages/send-bulk
+#### POST /api/sessions/:sessionId/messages/edit
 
-Send to multiple recipients as an async batch (max 100 messages).
+Edit the text of a message sent by this account (OPERATOR); the edited message keeps its original id.
 
 ```bash
-curl -X POST "$BASE/api/sessions/my-session/messages/send-bulk" \
+curl -X POST "$BASE/api/sessions/$SESSION_ID/messages/edit" \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "chatId": "628123456789@c.us", "messageId": "true_628123456789@c.us_3EB0ABCD", "body": "Corrected text" }'
+```
+
+#### POST /api/sessions/:sessionId/messages/send-bulk
+
+Send to multiple recipients as an async batch (max 100 messages; exact duplicate entries — same `chatId`, `type`, `content` and `variables` — are collapsed, first occurrence wins).
+
+```bash
+curl -X POST "$BASE/api/sessions/$SESSION_ID/messages/send-bulk" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -419,7 +597,7 @@ curl -X POST "$BASE/api/sessions/my-session/messages/send-bulk" \
 Cancel a running bulk batch (no body).
 
 ```bash
-curl -X POST "$BASE/api/sessions/my-session/messages/batch/batch_a1b2c3d4/cancel" \
+curl -X POST "$BASE/api/sessions/$SESSION_ID/messages/batch/batch_a1b2c3d4/cancel" \
   -H "X-API-Key: $API_KEY"
 ```
 
@@ -430,7 +608,7 @@ curl -X POST "$BASE/api/sessions/my-session/messages/batch/batch_a1b2c3d4/cancel
 List contacts for a session (paginated window).
 
 ```bash
-curl -X GET "$BASE/api/sessions/main/contacts?limit=100&offset=0" \
+curl -X GET "$BASE/api/sessions/$SESSION_ID/contacts?limit=100&offset=0" \
   -H "X-API-Key: $API_KEY"
 ```
 
@@ -439,7 +617,7 @@ curl -X GET "$BASE/api/sessions/main/contacts?limit=100&offset=0" \
 Check whether a phone number is on WhatsApp.
 
 ```bash
-curl -X GET "$BASE/api/sessions/main/contacts/check/628123456789" \
+curl -X GET "$BASE/api/sessions/$SESSION_ID/contacts/check/628123456789" \
   -H "X-API-Key: $API_KEY"
 ```
 
@@ -448,7 +626,7 @@ curl -X GET "$BASE/api/sessions/main/contacts/check/628123456789" \
 Get a single contact by its WhatsApp id.
 
 ```bash
-curl -X GET "$BASE/api/sessions/main/contacts/6281234567890@c.us" \
+curl -X GET "$BASE/api/sessions/$SESSION_ID/contacts/6281234567890@c.us" \
   -H "X-API-Key: $API_KEY"
 ```
 
@@ -457,7 +635,7 @@ curl -X GET "$BASE/api/sessions/main/contacts/6281234567890@c.us" \
 Get a contact's profile picture URL.
 
 ```bash
-curl -X GET "$BASE/api/sessions/main/contacts/6281234567890@c.us/profile-picture" \
+curl -X GET "$BASE/api/sessions/$SESSION_ID/contacts/6281234567890@c.us/profile-picture" \
   -H "X-API-Key: $API_KEY"
 ```
 
@@ -466,7 +644,26 @@ curl -X GET "$BASE/api/sessions/main/contacts/6281234567890@c.us/profile-picture
 Resolve a contact id (e.g. an @lid) to a phone number.
 
 ```bash
-curl -X GET "$BASE/api/sessions/main/contacts/12345678901234@lid/phone" \
+curl -X GET "$BASE/api/sessions/$SESSION_ID/contacts/12345678901234@lid/phone" \
+  -H "X-API-Key: $API_KEY"
+```
+
+#### PUT /api/sessions/:sessionId/contacts/:contactId
+
+Save or edit an addressbook contact.
+
+```bash
+curl -X PUT "$BASE/api/sessions/$SESSION_ID/contacts/628123456789@c.us" \
+  -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"firstName":"Ada","lastName":"Lovelace"}'
+```
+
+#### DELETE /api/sessions/:sessionId/contacts/:contactId
+
+Remove an addressbook contact.
+
+```bash
+curl -X DELETE "$BASE/api/sessions/$SESSION_ID/contacts/628123456789@c.us" \
   -H "X-API-Key: $API_KEY"
 ```
 
@@ -475,7 +672,7 @@ curl -X GET "$BASE/api/sessions/main/contacts/12345678901234@lid/phone" \
 Block a contact (requires an OPERATOR key). Send an empty body.
 
 ```bash
-curl -X POST "$BASE/api/sessions/main/contacts/6281234567890@c.us/block" \
+curl -X POST "$BASE/api/sessions/$SESSION_ID/contacts/6281234567890@c.us/block" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{}'
@@ -486,7 +683,7 @@ curl -X POST "$BASE/api/sessions/main/contacts/6281234567890@c.us/block" \
 Unblock a contact (requires an OPERATOR key).
 
 ```bash
-curl -X DELETE "$BASE/api/sessions/main/contacts/6281234567890@c.us/block" \
+curl -X DELETE "$BASE/api/sessions/$SESSION_ID/contacts/6281234567890@c.us/block" \
   -H "X-API-Key: $API_KEY"
 ```
 
@@ -497,7 +694,7 @@ curl -X DELETE "$BASE/api/sessions/main/contacts/6281234567890@c.us/block" \
 List all groups for a session (paginated).
 
 ```bash
-curl -X GET "$BASE/api/sessions/my-session/groups?limit=1000&offset=0" \
+curl -X GET "$BASE/api/sessions/$SESSION_ID/groups?limit=1000&offset=0" \
   -H "X-API-Key: $API_KEY"
 ```
 
@@ -506,7 +703,7 @@ curl -X GET "$BASE/api/sessions/my-session/groups?limit=1000&offset=0" \
 Get detailed group info including participants.
 
 ```bash
-curl -X GET "$BASE/api/sessions/my-session/groups/120363021234567890@g.us" \
+curl -X GET "$BASE/api/sessions/$SESSION_ID/groups/120363021234567890@g.us" \
   -H "X-API-Key: $API_KEY"
 ```
 
@@ -515,7 +712,7 @@ curl -X GET "$BASE/api/sessions/my-session/groups/120363021234567890@g.us" \
 Get the group invite code and full invite link.
 
 ```bash
-curl -X GET "$BASE/api/sessions/my-session/groups/120363021234567890@g.us/invite-code" \
+curl -X GET "$BASE/api/sessions/$SESSION_ID/groups/120363021234567890@g.us/invite-code" \
   -H "X-API-Key: $API_KEY"
 ```
 
@@ -524,7 +721,7 @@ curl -X GET "$BASE/api/sessions/my-session/groups/120363021234567890@g.us/invite
 Create a new group with an initial set of participants (OPERATOR).
 
 ```bash
-curl -X POST "$BASE/api/sessions/my-session/groups" \
+curl -X POST "$BASE/api/sessions/$SESSION_ID/groups" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "name": "Project Team", "participants": ["628123456789@c.us", "628987654321@c.us"] }'
@@ -535,7 +732,7 @@ curl -X POST "$BASE/api/sessions/my-session/groups" \
 Add participants to a group (OPERATOR).
 
 ```bash
-curl -X POST "$BASE/api/sessions/my-session/groups/120363021234567890@g.us/participants" \
+curl -X POST "$BASE/api/sessions/$SESSION_ID/groups/120363021234567890@g.us/participants" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "participants": ["628123456789@c.us"] }'
@@ -546,7 +743,7 @@ curl -X POST "$BASE/api/sessions/my-session/groups/120363021234567890@g.us/parti
 Remove participants from a group (OPERATOR). This DELETE takes a JSON body.
 
 ```bash
-curl -X DELETE "$BASE/api/sessions/my-session/groups/120363021234567890@g.us/participants" \
+curl -X DELETE "$BASE/api/sessions/$SESSION_ID/groups/120363021234567890@g.us/participants" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "participants": ["628123456789@c.us"] }'
@@ -557,7 +754,7 @@ curl -X DELETE "$BASE/api/sessions/my-session/groups/120363021234567890@g.us/par
 Promote participants to group admin (OPERATOR).
 
 ```bash
-curl -X POST "$BASE/api/sessions/my-session/groups/120363021234567890@g.us/participants/promote" \
+curl -X POST "$BASE/api/sessions/$SESSION_ID/groups/120363021234567890@g.us/participants/promote" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "participants": ["628123456789@c.us"] }'
@@ -568,7 +765,7 @@ curl -X POST "$BASE/api/sessions/my-session/groups/120363021234567890@g.us/parti
 Demote participants from group admin (OPERATOR).
 
 ```bash
-curl -X POST "$BASE/api/sessions/my-session/groups/120363021234567890@g.us/participants/demote" \
+curl -X POST "$BASE/api/sessions/$SESSION_ID/groups/120363021234567890@g.us/participants/demote" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "participants": ["628123456789@c.us"] }'
@@ -579,7 +776,7 @@ curl -X POST "$BASE/api/sessions/my-session/groups/120363021234567890@g.us/parti
 Change the group name/subject (OPERATOR).
 
 ```bash
-curl -X PUT "$BASE/api/sessions/my-session/groups/120363021234567890@g.us/subject" \
+curl -X PUT "$BASE/api/sessions/$SESSION_ID/groups/120363021234567890@g.us/subject" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "subject": "New Team Name" }'
@@ -590,7 +787,7 @@ curl -X PUT "$BASE/api/sessions/my-session/groups/120363021234567890@g.us/subjec
 Change the group description; an empty string clears it (OPERATOR).
 
 ```bash
-curl -X PUT "$BASE/api/sessions/my-session/groups/120363021234567890@g.us/description" \
+curl -X PUT "$BASE/api/sessions/$SESSION_ID/groups/120363021234567890@g.us/description" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "description": "Internal coordination group." }'
@@ -601,7 +798,7 @@ curl -X PUT "$BASE/api/sessions/my-session/groups/120363021234567890@g.us/descri
 Leave a group (OPERATOR).
 
 ```bash
-curl -X POST "$BASE/api/sessions/my-session/groups/120363021234567890@g.us/leave" \
+curl -X POST "$BASE/api/sessions/$SESSION_ID/groups/120363021234567890@g.us/leave" \
   -H "X-API-Key: $API_KEY"
 ```
 
@@ -610,8 +807,64 @@ curl -X POST "$BASE/api/sessions/my-session/groups/120363021234567890@g.us/leave
 Revoke the current invite code and generate a new one (OPERATOR).
 
 ```bash
-curl -X POST "$BASE/api/sessions/my-session/groups/120363021234567890@g.us/invite-code/revoke" \
+curl -X POST "$BASE/api/sessions/$SESSION_ID/groups/120363021234567890@g.us/invite-code/revoke" \
   -H "X-API-Key: $API_KEY"
+```
+
+#### GET /api/sessions/:sessionId/groups/join-info
+
+Preview a group from its invite code WITHOUT joining (both engines). Read-only, so it is safe to
+call on a code from an untrusted source. There is no participant list — only `participantCount`,
+and only when WhatsApp discloses one.
+
+```bash
+curl "$BASE/api/sessions/$SESSION_ID/groups/join-info?code=XyZ987654321" \
+  -H "X-API-Key: $API_KEY"
+```
+
+#### POST /api/sessions/:sessionId/groups/join
+
+Join a group via an invite code — the part after `https://chat.whatsapp.com/` (OPERATOR).
+
+```bash
+curl -X POST "$BASE/api/sessions/$SESSION_ID/groups/join" \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "inviteCode": "XyZ987654321" }'
+```
+
+#### GET /api/sessions/:sessionId/groups/:groupId/membership-requests
+
+List a group's pending join requests (the queue the `group.join_request` event announces). The
+account must be a group admin — WhatsApp refuses the read otherwise (`403`).
+
+```bash
+curl "$BASE/api/sessions/$SESSION_ID/groups/120363021234567890@g.us/membership-requests" \
+  -H "X-API-Key: $API_KEY"
+```
+
+#### POST /api/sessions/:sessionId/groups/:groupId/membership-requests/approve
+
+Approve pending join requests (OPERATOR) — the named requesters, or EVERY pending request when the
+body names none. The response carries a per-requester `results` list; a partial refusal does not
+fail the batch.
+
+```bash
+curl -X POST "$BASE/api/sessions/$SESSION_ID/groups/120363021234567890@g.us/membership-requests/approve" \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "participants": ["628123456789@c.us"] }'
+```
+
+#### POST /api/sessions/:sessionId/groups/:groupId/membership-requests/reject
+
+Reject pending join requests (OPERATOR). Same body, response shape and batch contract as `approve`.
+
+```bash
+curl -X POST "$BASE/api/sessions/$SESSION_ID/groups/120363021234567890@g.us/membership-requests/reject" \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "participants": ["628123456789@c.us"] }'
 ```
 
 ### 07.7 Message Templates
@@ -677,53 +930,44 @@ curl -X DELETE "$BASE/api/sessions/$SESSION_ID/templates/$TEMPLATE_ID" \
 
 ### 07.8 Catalog & Channels
 
+The catalog routes work on the **Baileys** engine (WhatsApp Business accounts) — `getCatalog`/`getProducts`/`getProduct` read the session's own catalog and `sendProduct` sends a native product card. On **whatsapp-web.js** they raise `EngineNotSupportedError` (`501 Not Implemented`) — the library has no catalog API at all; on that engine the readiness check runs first, so a session that exists but is not yet READY returns `409` instead. The per-engine gaps are listed in `docs/29-engine-capability-matrix.md`. The channel routes that follow are a separate group with real engine support.
+
 #### GET /api/sessions/:sessionId/catalog
 
-Get business catalog info for the session.
+Get business catalog info for the session. On Baileys returns the first catalog collection's metadata (`200`, or `null` when the business has no collections); on whatsapp-web.js returns `501`.
 
 ```bash
-curl -X GET "$BASE/api/sessions/my-session/catalog" \
+curl -X GET "$BASE/api/sessions/$SESSION_ID/catalog" \
   -H "X-API-Key: $API_KEY"
 ```
 
 #### GET /api/sessions/:sessionId/catalog/products
 
-List catalog products with pagination.
+List catalog products with pagination. Works on Baileys (page/limit over the full catalog walk); returns `501` on whatsapp-web.js.
 
 ```bash
-curl -X GET "$BASE/api/sessions/my-session/catalog/products?page=1&limit=20" \
+curl -X GET "$BASE/api/sessions/$SESSION_ID/catalog/products?page=1&limit=20" \
   -H "X-API-Key: $API_KEY"
 ```
 
 #### GET /api/sessions/:sessionId/catalog/products/:productId
 
-Get a specific catalog product by id (unknown id returns 200 with `null`).
+Get a specific catalog product by id. On Baileys returns the product (`200`) or `null` for an unknown id; on whatsapp-web.js returns `501`.
 
 ```bash
-curl -X GET "$BASE/api/sessions/my-session/catalog/products/PROD_12345" \
+curl -X GET "$BASE/api/sessions/$SESSION_ID/catalog/products/PROD_12345" \
   -H "X-API-Key: $API_KEY"
 ```
 
 #### POST /api/sessions/:sessionId/messages/send-product
 
-Send a product card to a chat (OPERATOR key required).
+Send a product card to a chat (OPERATOR key required). On Baileys returns `404` for an unknown product id and `400` when the product has no image; on whatsapp-web.js returns `501`.
 
 ```bash
-curl -X POST "$BASE/api/sessions/my-session/messages/send-product" \
+curl -X POST "$BASE/api/sessions/$SESSION_ID/messages/send-product" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "chatId": "6281234567890@c.us", "productId": "PROD_12345", "body": "Check out this item!" }'
-```
-
-#### POST /api/sessions/:sessionId/messages/send-catalog
-
-Send the business catalog link to a chat (OPERATOR key required).
-
-```bash
-curl -X POST "$BASE/api/sessions/my-session/messages/send-catalog" \
-  -H "X-API-Key: $API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{ "chatId": "6281234567890@c.us", "body": "Browse our full catalog here" }'
 ```
 
 #### GET /api/sessions/:sessionId/channels
@@ -731,7 +975,7 @@ curl -X POST "$BASE/api/sessions/my-session/messages/send-catalog" \
 List subscribed channels/newsletters.
 
 ```bash
-curl -X GET "$BASE/api/sessions/my-session/channels" \
+curl -X GET "$BASE/api/sessions/$SESSION_ID/channels" \
   -H "X-API-Key: $API_KEY"
 ```
 
@@ -740,7 +984,7 @@ curl -X GET "$BASE/api/sessions/my-session/channels" \
 Get a single channel by id.
 
 ```bash
-curl -X GET "$BASE/api/sessions/my-session/channels/120363000000000000@newsletter" \
+curl -X GET "$BASE/api/sessions/$SESSION_ID/channels/120363000000000000@newsletter" \
   -H "X-API-Key: $API_KEY"
 ```
 
@@ -749,7 +993,7 @@ curl -X GET "$BASE/api/sessions/my-session/channels/120363000000000000@newslette
 Get recent messages from a channel.
 
 ```bash
-curl -X GET "$BASE/api/sessions/my-session/channels/120363000000000000@newsletter/messages?limit=50" \
+curl -X GET "$BASE/api/sessions/$SESSION_ID/channels/120363000000000000@newsletter/messages?limit=50" \
   -H "X-API-Key: $API_KEY"
 ```
 
@@ -758,7 +1002,7 @@ curl -X GET "$BASE/api/sessions/my-session/channels/120363000000000000@newslette
 Subscribe to a channel by invite code (OPERATOR key required).
 
 ```bash
-curl -X POST "$BASE/api/sessions/my-session/channels/subscribe" \
+curl -X POST "$BASE/api/sessions/$SESSION_ID/channels/subscribe" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "inviteCode": "ABC123xyz" }'
@@ -769,7 +1013,7 @@ curl -X POST "$BASE/api/sessions/my-session/channels/subscribe" \
 Unsubscribe from a channel (OPERATOR key required).
 
 ```bash
-curl -X DELETE "$BASE/api/sessions/my-session/channels/120363000000000000@newsletter" \
+curl -X DELETE "$BASE/api/sessions/$SESSION_ID/channels/120363000000000000@newsletter" \
   -H "X-API-Key: $API_KEY"
 ```
 
@@ -844,6 +1088,16 @@ curl -X POST "$BASE/api/sessions/$SESSION_ID/status/send-video" \
 ```
 
 ```bash
+# Post a voice-note status (OPERATOR). WhatsApp only plays Ogg/Opus — neither engine
+# transcodes, so convert first via media/convert/voice and post the base64 it returns.
+# `recipients` (the viewer allow-list) is honored on Baileys only. There is no `caption`.
+curl -X POST "$BASE/api/sessions/$SESSION_ID/status/send-voice" \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "audio": { "base64": "T2dnUwACAAAA..." }, "recipients": ["6281234567890@c.us"] }'
+```
+
+```bash
 # Delete one of the session's own posted statuses (OPERATOR)
 curl -X DELETE "$BASE/api/sessions/$SESSION_ID/status/false_status@broadcast_3A1F" \
   -H "X-API-Key: $API_KEY"
@@ -851,14 +1105,14 @@ curl -X DELETE "$BASE/api/sessions/$SESSION_ID/status/false_status@broadcast_3A1
 
 ### 07.10 Webhooks (management)
 
-All routes require an API key with OPERATOR role or higher. `secret` and `headers` are write-only (never returned). The per-session routes live under `/api/sessions/:sessionId/webhooks`; the cross-session list is `/api/webhooks`.
+All routes require an API key with OPERATOR role or higher. `secret` and `headers` are write-only (never returned by these routes; `GET /api/infra/export-data` omits them from webhook rows too). The per-session routes live under `/api/sessions/:sessionId/webhooks`; the cross-session list is `/api/webhooks`.
 
 #### GET /api/sessions/:sessionId/webhooks
 
 List all webhooks for a session (newest first).
 
 ```bash
-curl -X GET "$BASE/api/sessions/my-session/webhooks" \
+curl -X GET "$BASE/api/sessions/$SESSION_ID/webhooks" \
   -H "X-API-Key: $API_KEY"
 ```
 
@@ -867,7 +1121,7 @@ curl -X GET "$BASE/api/sessions/my-session/webhooks" \
 Get a single webhook by ID, scoped to the session.
 
 ```bash
-curl -X GET "$BASE/api/sessions/my-session/webhooks/f1e2d3c4-b5a6-7890-1234-567890abcdef" \
+curl -X GET "$BASE/api/sessions/$SESSION_ID/webhooks/f1e2d3c4-b5a6-7890-1234-567890abcdef" \
   -H "X-API-Key: $API_KEY"
 ```
 
@@ -880,18 +1134,29 @@ curl -X GET "$BASE/api/webhooks?limit=100&offset=0" \
   -H "X-API-Key: $API_KEY"
 ```
 
+#### GET /api/webhooks/delivery-failures
+
+List webhook deliveries that exhausted every retry, most recent first (ADMIN; results stay confined
+to the key's allowed sessions). `lastStatusCode` is `null` when the failure was a
+network/timeout/SSRF error rather than a non-2xx response.
+
+```bash
+curl -X GET "$BASE/api/webhooks/delivery-failures?limit=100&offset=0" \
+  -H "X-API-Key: $API_KEY"
+```
+
 #### POST /api/sessions/:sessionId/webhooks
 
 Create a webhook for the session.
 
 ```bash
-curl -X POST "$BASE/api/sessions/my-session/webhooks" \
+curl -X POST "$BASE/api/sessions/$SESSION_ID/webhooks" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "url": "https://your-server.com/webhook",
     "events": ["message.received", "session.status"],
-    "secret": "your-secret-key",
+    "secret": "your-webhook-signing-secret",
     "headers": { "X-Custom-Header": "value" },
     "filters": {
       "conditions": [
@@ -908,7 +1173,7 @@ curl -X POST "$BASE/api/sessions/my-session/webhooks" \
 Update a webhook (partial; only provided fields change).
 
 ```bash
-curl -X PUT "$BASE/api/sessions/my-session/webhooks/f1e2d3c4-b5a6-7890-1234-567890abcdef" \
+curl -X PUT "$BASE/api/sessions/$SESSION_ID/webhooks/f1e2d3c4-b5a6-7890-1234-567890abcdef" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -924,7 +1189,7 @@ curl -X PUT "$BASE/api/sessions/my-session/webhooks/f1e2d3c4-b5a6-7890-1234-5678
 Send a synthetic test payload to the webhook URL and report the result (no request body).
 
 ```bash
-curl -X POST "$BASE/api/sessions/my-session/webhooks/f1e2d3c4-b5a6-7890-1234-567890abcdef/test" \
+curl -X POST "$BASE/api/sessions/$SESSION_ID/webhooks/f1e2d3c4-b5a6-7890-1234-567890abcdef/test" \
   -H "X-API-Key: $API_KEY"
 ```
 
@@ -933,7 +1198,7 @@ curl -X POST "$BASE/api/sessions/my-session/webhooks/f1e2d3c4-b5a6-7890-1234-567
 Delete a webhook (returns `204` no content).
 
 ```bash
-curl -X DELETE "$BASE/api/sessions/my-session/webhooks/f1e2d3c4-b5a6-7890-1234-567890abcdef" \
+curl -X DELETE "$BASE/api/sessions/$SESSION_ID/webhooks/f1e2d3c4-b5a6-7890-1234-567890abcdef" \
   -H "X-API-Key: $API_KEY"
 ```
 
@@ -1019,14 +1284,17 @@ curl -X POST "$BASE/api/auth/validate" \
   -H "X-API-Key: $API_KEY"
 ```
 
-### 07.12 System (Health, Metrics, Stats, Settings)
+### 07.12 System (Health, Metrics, Stats, Settings, Audit)
 
 #### GET /api/health
 
-Basic health check (status, timestamp, version). Public.
+Basic health check (status, timestamp). Public. The running `version` is added only when the request carries a valid API key, so an unauthenticated probe gets `status` and `timestamp` alone.
 
 ```bash
 curl "$BASE/api/health"
+
+# With the version field:
+curl -H "X-API-Key: $API_KEY" "$BASE/api/health"
 ```
 
 #### GET /api/health/live
@@ -1074,7 +1342,7 @@ curl "$BASE/api/stats/messages?period=7d" \
 
 #### GET /api/stats/sessions/:sessionId
 
-Per-session stats. Any valid API key (not session-scoped).
+Per-session stats. Any role; a session-restricted key can only read stats for its allowed sessions.
 
 ```bash
 curl "$BASE/api/stats/sessions/9f1c2d3e-…" \
@@ -1090,12 +1358,15 @@ curl "$BASE/api/settings" \
   -H "X-API-Key: $API_KEY"
 ```
 
-#### PUT /api/settings
+#### GET /api/audit
 
-Always returns `501` — settings are read-only at runtime. ADMIN key required (still `501`).
+List audit-log entries, newest first (ADMIN; rows stay confined to the key's allowed sessions).
+Unlike the other list routes the body is `{ "data", "total" }` — the page plus the unpaginated
+match count. Filters: `action`, `severity` (`info` | `warn` | `error`), `sessionId`, `apiKeyId`,
+plus `limit` (default 50, max 200) and `offset`.
 
 ```bash
-curl -X PUT "$BASE/api/settings" \
+curl -X GET "$BASE/api/audit?action=session_started&limit=50" \
   -H "X-API-Key: $API_KEY"
 ```
 
@@ -1140,7 +1411,7 @@ curl "$BASE/api/infra/engines/current" \
 
 #### GET /api/infra/config
 
-Read saved infrastructure config (secrets omitted).
+Read effective infrastructure config (secrets omitted) — each field resolves with the boot precedence (environment / `.env` over `data/.env.generated`).
 
 ```bash
 curl "$BASE/api/infra/config" \
@@ -1186,7 +1457,7 @@ curl "$BASE/api/infra/export-data" \
 
 #### POST /api/infra/import-data
 
-Replace all Data DB rows with a prior export (destructive, all-or-nothing).
+Replace all Data DB rows with a prior export (destructive, all-or-nothing). Every one of the 14 migration tables is emptied first, so a key you omit restores **empty** rather than untouched — send a body produced by `GET /api/infra/export-data`, not a hand-built subset. All 14 keys are shown below for that reason.
 
 ```bash
 curl -X POST "$BASE/api/infra/import-data" \
@@ -1194,8 +1465,10 @@ curl -X POST "$BASE/api/infra/import-data" \
   -H "Content-Type: application/json" \
   -d '{
     "tables": {
-      "sessions": [ { "id": "s1", "name": "main", "status": "READY", "phone": "15551234567", "pushName": "Me", "config": {}, "proxyUrl": null, "proxyType": null, "connectedAt": "2026-06-25T00:00:00.000Z", "lastActiveAt": "2026-06-25T00:00:00.000Z", "createdAt": "2026-06-25T00:00:00.000Z", "updatedAt": "2026-06-25T00:00:00.000Z" } ],
-      "webhooks": [], "messages": [], "messageBatches": [], "templates": [], "baileysStoredMessages": []
+      "sessions": [ { "id": "s1", "name": "main", "status": "ready", "phone": "15551234567", "pushName": "Me", "config": {}, "proxyUrl": null, "proxyType": null, "connectedAt": "2026-06-25T00:00:00.000Z", "lastActiveAt": "2026-06-25T00:00:00.000Z", "createdAt": "2026-06-25T00:00:00.000Z", "updatedAt": "2026-06-25T00:00:00.000Z" } ],
+      "webhooks": [], "messages": [], "messageBatches": [], "templates": [], "baileysStoredMessages": [],
+      "lidMappings": [], "pluginInstances": [], "conversationMappings": [], "ingressEvents": [],
+      "webhookDeliveryFailures": [], "integrationDeliveryFailures": [], "statusUpdates": [], "automationRules": []
     }
   }'
 ```
@@ -1327,10 +1600,10 @@ curl -X PUT "$BASE/api/plugins/chat-flow/config" \
 
 #### PUT /api/plugins/:id/config/:sessionId
 
-Set (or clear with `{}`) a per-session plugin config override.
+Set (or clear with `{}`) a per-session plugin config override. The override is stored under the session UUID and resolved against the UUID carried by each event, so an id that is not a live session's UUID never takes effect.
 
 ```bash
-curl -X PUT "$BASE/api/plugins/chat-flow/config/session-1" \
+curl -X PUT "$BASE/api/plugins/chat-flow/config/$SESSION_ID" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "config": { "replyDelayMs": 3000 } }'
@@ -1369,7 +1642,7 @@ curl -X DELETE "$BASE/api/plugins/chat-flow" \
 
 #### POST /mcp
 
-MCP JSON-RPC 2.0 transport (no `/api` prefix; gated by `MCP_ENABLED=true`). The API key goes via `X-Api-Key` or `Authorization: Bearer`; auth is enforced per tool call. See doc 24 for the tool catalog.
+MCP JSON-RPC 2.0 transport (no `/api` prefix; gated by `MCP_ENABLED=true`). The API key goes via `X-Api-Key` or `Authorization: Bearer`; auth is enforced per tool call. The server is **read-only by default** — write tools such as `MessageSendText` are only mounted when `MCP_READONLY=false`. See doc 24 for the tool catalog.
 
 ```bash
 # Initialize handshake
@@ -1384,14 +1657,123 @@ curl -X POST "$BASE/mcp" \
   -H "Content-Type: application/json" \
   -d '{ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} }'
 
-# Call a tool (arguments must match the tool's zod inputSchema)
+# Call a tool (arguments must match the tool's zod inputSchema; requires MCP_READONLY=false)
 curl -X POST "$BASE/mcp" \
   -H "X-Api-Key: $API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{ "jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": { "name": "session_send_text", "arguments": { "sessionId": "default", "to": "6281234567890", "text": "Hello from MCP" } } }'
+  -d '{ "jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": { "name": "MessageSendText", "arguments": { "sessionId": "'"$SESSION_ID"'", "chatId": "6281234567890@c.us", "text": "Hello from MCP" } } }'
 ```
 
-### 07.14 Real-time (WebSocket)
+### 07.14 Profile (own account)
+
+Manage the linked account's own profile. All routes are nested under a session and require an
+OPERATOR key.
+
+#### PUT /api/sessions/:sessionId/profile/name
+
+Set the account display name (max 25 chars).
+
+```bash
+curl -X PUT "$BASE/api/sessions/$SESSION_ID/profile/name" \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "name": "ACME Support" }'
+```
+
+#### PUT /api/sessions/:sessionId/profile/status
+
+Set the account about/status text (max 139 chars; empty string clears it).
+
+```bash
+curl -X PUT "$BASE/api/sessions/$SESSION_ID/profile/status" \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "status": "We reply within one business day" }'
+```
+
+#### PUT /api/sessions/:sessionId/profile/picture
+
+Set the account profile picture from a URL or base64 image (same media DTO conventions as message
+sends).
+
+```bash
+curl -X PUT "$BASE/api/sessions/$SESSION_ID/profile/picture" \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "url": "https://example.com/avatar.png" }'
+```
+
+#### DELETE /api/sessions/:sessionId/profile/picture
+
+Remove the account profile picture (WhatsApp's default avatar takes over). Removing a picture that
+is already absent is a no-op and also answers `200`.
+
+```bash
+curl -X DELETE "$BASE/api/sessions/$SESSION_ID/profile/picture" \
+  -H "X-API-Key: $API_KEY"
+```
+
+### 07.15 Search
+
+Cross-session full-text message search (OPERATOR or higher). On by default; `SEARCH_ENABLED=false`
+removes the route and module entirely. A scoped key's `allowedSessions` is applied server-side and
+cannot be widened via the query. See doc 26 for the provider contract.
+
+#### GET /api/search
+
+Search messages across sessions. `q` is required (non-empty after trim); optional filters are
+`sessionId`, `chatId`, `direction` (`incoming` | `outgoing`), `type`, `from`, `dateFrom`/`dateTo`
+(epoch ms), plus `limit` (default 50, clamped to `SEARCH_LIMIT_MAX` = 100) and `offset`. Hit
+`snippet` fields carry `<mark>` highlight markers — render them as text, never as HTML.
+
+```bash
+curl -X GET "$BASE/api/search?q=invoice&direction=incoming&limit=20" \
+  -H "X-API-Key: $API_KEY"
+```
+
+### 07.16 Media conversion (opt-in)
+
+Server-side transcoding into the shapes WhatsApp clients actually play. Disabled by default; set
+`MEDIA_CONVERSION_ENABLED=true`, and `ffmpeg` must be runnable (the official Docker image ships it)
+or the routes answer `503`. Nothing is converted implicitly — run media through here first, then
+post the result.
+
+#### GET /api/sessions/:sessionId/media/convert
+
+Report whether conversion is switched on and runnable here (`{ "available": true }`). Any role.
+
+```bash
+curl "$BASE/api/sessions/$SESSION_ID/media/convert" \
+  -H "X-API-Key: $API_KEY"
+```
+
+#### POST /api/sessions/:sessionId/media/convert/voice
+
+Convert audio (or a video's audio track) into a WhatsApp voice note — Ogg/Opus, mono, 48 kHz
+(OPERATOR). Exactly one of `url` / `base64`. Post the returned `base64` to `messages/send-audio`
+with `ptt: true` (or to `status/send-voice`).
+
+```bash
+curl -X POST "$BASE/api/sessions/$SESSION_ID/media/convert/voice" \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "url": "https://example.com/voice-memo.mp3" }'
+```
+
+#### POST /api/sessions/:sessionId/media/convert/video
+
+Convert video into a baseline H.264/AAC MP4 every WhatsApp client accepts (OPERATOR); same request
+body and errors as the voice endpoint. Both responses are bounded by
+`MEDIA_CONVERSION_MAX_OUTPUT_BYTES` (default 50 MiB).
+
+```bash
+curl -X POST "$BASE/api/sessions/$SESSION_ID/media/convert/video" \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "url": "https://example.com/clip.mov" }'
+```
+
+### 07.17 Real-time (WebSocket)
 
 Events are delivered over **Socket.IO** on the `/events` namespace (not a raw WebSocket). Use the `socket.io-client` package. Set `BASE_WS` (e.g. `ws://localhost:2785`) and `API_KEY`.
 
@@ -1400,15 +1782,15 @@ npm install socket.io-client
 ```
 
 ```js
-// realtime.mjs — run: BASE_WS=ws://localhost:2785 API_KEY=... SESSION_ID=main node realtime.mjs
+// realtime.mjs — run: BASE_WS=ws://localhost:2785 API_KEY=... SESSION_ID=<session-uuid> node realtime.mjs
 import { io } from 'socket.io-client';
 
 const BASE_WS = process.env.BASE_WS || 'ws://localhost:2785';
 const API_KEY = process.env.API_KEY;
-const SESSION_ID = process.env.SESSION_ID || 'main';
+const SESSION_ID = process.env.SESSION_ID; // the session UUID, or '*' (unrestricted keys only)
 
 const socket = io(`${BASE_WS}/events`, {
-  auth: { apiKey: API_KEY }, // or transport.headers / ?apiKey=
+  auth: { apiKey: API_KEY }, // or the x-api-key header
 });
 
 socket.on('connect', () => {
@@ -1421,7 +1803,7 @@ socket.on('connect', () => {
   });
 });
 
-socket.on('message', (msg) => {
+socket.on('message', msg => {
   if (msg.type === 'event') {
     console.log(`[${msg.payload.event}] ${msg.payload.sessionId}`, msg.payload.data);
   } else {
@@ -1429,6 +1811,6 @@ socket.on('message', (msg) => {
   }
 });
 
-socket.on('connect_error', (err) => console.error('connect_error:', err.message));
-socket.on('disconnect', (reason) => console.log('disconnected:', reason));
+socket.on('connect_error', err => console.error('connect_error:', err.message));
+socket.on('disconnect', reason => console.log('disconnected:', reason));
 ```

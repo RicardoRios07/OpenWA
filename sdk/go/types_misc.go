@@ -53,11 +53,15 @@ type CreateTemplateRequest struct {
 }
 
 // UpdateTemplateRequest updates a template; all fields optional.
+//
+// Header and Footer are pointers because an empty string is how the server is told to REMOVE them.
+// As value types with `omitempty` they marshalled away, so a Go caller could never clear a header
+// once set — every rendered message kept prepending the old text while the update reported success.
 type UpdateTemplateRequest struct {
-	Name   string `json:"name,omitempty"`
-	Body   string `json:"body,omitempty"`
-	Header string `json:"header,omitempty"`
-	Footer string `json:"footer,omitempty"`
+	Name   string  `json:"name,omitempty"`
+	Body   string  `json:"body,omitempty"`
+	Header *string `json:"header,omitempty"`
+	Footer *string `json:"footer,omitempty"`
 }
 
 // ── Label (WhatsApp Business) ────────────────────────────────

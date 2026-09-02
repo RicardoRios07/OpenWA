@@ -1,8 +1,44 @@
 import { BadRequestException, ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { auditMcpAuthFailure, createIpThrottle, resolveMcpReadOnly } from './mcp.server';
+import { z } from 'zod';
+import { auditMcpAuthFailure, createIpThrottle, mountMcpServer, resolveMcpReadOnly } from './mcp.server';
 import { KeyRateLimiter } from './mcp-rate-limit';
 import { AuditAction } from '../audit/entities/audit-log.entity';
+import type { AnyToolDescriptor } from '../../core/agent-tools/tool-descriptor';
+import type { ToolRegistryService } from '../../core/agent-tools/tool-registry.service';
+import type { AuthService } from '../auth/auth.service';
+import type { AuditService } from '../audit/audit.service';
+
+// The request-handling path news up an McpServer + StreamableHTTPServerTransport per POST. Both SDK
+// classes are mocked so tests can observe the per-request transport (handleRequest args) and invoke
+// the registered tool callbacks exactly as the SDK would — no sockets, no MCP protocol traffic.
+// The closures dereference the mock handles lazily, so the factories stay valid before module init.
+type ToolCallback = (input: Record<string, unknown>, extra: unknown) => Promise<unknown>;
+const mockRegisteredTools: Array<{ name: string; callback: ToolCallback }> = [];
+const mockServerConnect = jest.fn<Promise<void>, unknown[]>();
+const mockServerClose = jest.fn<Promise<void>, unknown[]>();
+jest.mock('@modelcontextprotocol/sdk/server/mcp.js', () => ({
+  McpServer: jest.fn().mockImplementation(() => ({
+    registerTool: (
+      name: string,
+      _config: unknown,
+      callback: (input: Record<string, unknown>, extra: unknown) => Promise<unknown>,
+    ) => {
+      mockRegisteredTools.push({ name, callback });
+    },
+    connect: (...args: unknown[]) => mockServerConnect(...args),
+    close: () => mockServerClose(),
+  })),
+}));
+
+const mockHandleRequest = jest.fn<Promise<void>, unknown[]>();
+const mockTransportClose = jest.fn<Promise<void>, unknown[]>();
+jest.mock('@modelcontextprotocol/sdk/server/streamableHttp.js', () => ({
+  StreamableHTTPServerTransport: jest.fn().mockImplementation(() => ({
+    handleRequest: (...args: unknown[]) => mockHandleRequest(...args),
+    close: () => mockTransportClose(),
+  })),
+}));
 
 describe('resolveMcpReadOnly (secure-by-default MCP read-only flag)', () => {
   const prev = process.env.MCP_READONLY;
@@ -133,5 +169,183 @@ describe('auditMcpAuthFailure (MCP auth-failure audit trail, mirrors REST ApiKey
     // a non-401/403 throw to confirm the success-equivalent (no auth failure) is not audited.
     auditMcpAuthFailure(auditService, new BadRequestException('not an auth failure'), reqContext);
     expect(auditService.logWarn).not.toHaveBeenCalled();
+  });
+});
+
+// mountMcpServer is raw Express: every POST builds a fresh McpServer + transport and dispatches via
+// transport.handleRequest(req, res, req.body). These tests drive that route handler directly with
+// mock req/res. Auth is NOT a mount gate — it runs per tool call inside invokeTool (via the callback
+// registered with the per-request server), so a bad key is refused as a tool error result during the
+// dispatch, not as a rejected POST: transport.handleRequest is always reached once the IP throttle
+// and body parser have passed the request through.
+// mcp.module.ts is pure Nest wiring (module registration + the raw-Express mount call), stays at 0%
+// coverage, and is intentionally not a target.
+describe('mountMcpServer (raw-Express request-handling path)', () => {
+  const prevTrustedProxies = process.env.TRUSTED_PROXIES;
+
+  beforeEach(() => {
+    delete process.env.TRUSTED_PROXIES; // resolveClientIp then uses the socket IP, deterministically
+    mockRegisteredTools.length = 0;
+    mockServerConnect.mockReset().mockResolvedValue(undefined);
+    mockServerClose.mockReset().mockResolvedValue(undefined);
+    mockHandleRequest.mockReset().mockResolvedValue(undefined);
+    mockTransportClose.mockReset().mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    if (prevTrustedProxies === undefined) delete process.env.TRUSTED_PROXIES;
+    else process.env.TRUSTED_PROXIES = prevTrustedProxies;
+  });
+
+  interface Harness {
+    routeHandler: (req: Request, res: Response) => Promise<void>;
+    tool: AnyToolDescriptor;
+    authService: { validateApiKey: jest.Mock; hasPermission: jest.Mock };
+    auditService: { logWarn: jest.Mock };
+  }
+
+  const mount = (): Harness => {
+    const tool = {
+      name: 'MessageSendText',
+      description: 'Send a text message (session-scoped write tool)',
+      inputSchema: z.object({ sessionId: z.string(), to: z.string(), text: z.string() }),
+      tier: 'write',
+      sessionScoped: true,
+      handler: jest.fn().mockResolvedValue({ sent: true }),
+    } as unknown as AnyToolDescriptor;
+    const registry = { list: jest.fn(() => [tool]) };
+    const authService = { validateApiKey: jest.fn(), hasPermission: jest.fn(() => true) };
+    const auditService = { logWarn: jest.fn() };
+    let routeHandlers: unknown[] = [];
+    const adapter = {
+      post: jest.fn((_path: string, ...handlers: unknown[]) => {
+        routeHandlers = handlers;
+      }),
+    };
+    mountMcpServer(
+      adapter as unknown as Parameters<typeof mountMcpServer>[0],
+      registry as unknown as ToolRegistryService,
+      authService as unknown as AuthService,
+      new KeyRateLimiter(1000, 60_000),
+      new KeyRateLimiter(1000, 60_000),
+      { readOnly: false },
+      auditService as unknown as AuditService,
+    );
+    // adapter.post received [createIpThrottle(...), express.json(...), mcpHandler]; the tests drive
+    // the terminal handler directly with a pre-parsed body, as the file's middleware harness does.
+    const routeHandler = routeHandlers[routeHandlers.length - 1] as Harness['routeHandler'];
+    return { routeHandler, tool, authService, auditService };
+  };
+
+  type ResMock = { on: jest.Mock; status: jest.Mock; json: jest.Mock; headersSent: boolean };
+  const makeRes = (): ResMock => {
+    const res: ResMock = { on: jest.fn(), status: jest.fn(), json: jest.fn(), headersSent: false };
+    res.status.mockReturnValue(res);
+    res.json.mockReturnValue(res);
+    return res;
+  };
+
+  const post = async (
+    h: Harness,
+    body: unknown,
+    headers: Record<string, string> = {},
+  ): Promise<{ req: Request; res: ResMock }> => {
+    const req = {
+      method: 'POST',
+      path: '/mcp',
+      headers,
+      body,
+      socket: { remoteAddress: '203.0.113.7' },
+    } as unknown as Request;
+    const res = makeRes();
+    await h.routeHandler(req, res as unknown as Response);
+    return { req, res };
+  };
+
+  // The single registered tool callback, captured when the driven POST built its per-request server.
+  const toolCallback = (): ToolCallback => {
+    expect(mockRegisteredTools).toHaveLength(1);
+    return mockRegisteredTools[0].callback;
+  };
+
+  it('dispatches the request to transport.handleRequest with the parsed body', async () => {
+    const h = mount();
+    const body = {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: { name: 'MessageSendText', arguments: { sessionId: 's1', to: '123', text: 'hi' } },
+    };
+    const { req, res } = await post(h, body, { 'x-api-key': 'good-key' });
+
+    expect(mockServerConnect).toHaveBeenCalledTimes(1); // fresh server+transport wired per request
+    expect(mockHandleRequest).toHaveBeenCalledWith(req, res, body);
+    expect(res.on).toHaveBeenCalledWith('close', expect.any(Function)); // per-request teardown wired
+    expect(res.status).not.toHaveBeenCalled(); // no error fallback
+  });
+
+  it('refuses an invalid API key inside the dispatch: tool error result, tool handler never runs', async () => {
+    const h = mount();
+    h.authService.validateApiKey.mockRejectedValue(new UnauthorizedException('API key is invalid'));
+    await post(h, { jsonrpc: '2.0', id: 1 }, { 'x-api-key': 'bad-key' });
+
+    // Invoke the registered tool callback exactly as the SDK would while handling a tools/call.
+    const result = (await toolCallback()(
+      { sessionId: 's1', to: '123', text: 'hi' },
+      { requestInfo: { headers: { 'x-api-key': 'bad-key' } } },
+    )) as { isError?: boolean; content: Array<{ text: string }> };
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text)).toMatchObject({
+      success: false,
+      name: 'UnauthorizedException',
+      message: 'API key is invalid',
+    });
+    expect(h.authService.validateApiKey).toHaveBeenCalledWith('bad-key', undefined, 's1');
+    expect(h.tool.handler).not.toHaveBeenCalled(); // refused before the tool runs
+    // ...and the auth failure hits the audit trail with the real request context (mirrors REST).
+    expect(h.auditService.logWarn).toHaveBeenCalledWith(
+      AuditAction.API_KEY_AUTH_FAILED,
+      expect.objectContaining({
+        ipAddress: '203.0.113.7',
+        method: 'POST',
+        path: '/mcp',
+        errorMessage: 'API key is invalid',
+      }),
+    );
+  });
+
+  it('fails closed on a session-scoped tool call without sessionId (guard fires before the auth lookup)', async () => {
+    const h = mount();
+    await post(h, { jsonrpc: '2.0', id: 1 }, { authorization: 'Bearer good-key' });
+
+    const result = (await toolCallback()(
+      { to: '123', text: 'hi' }, // no sessionId
+      { requestInfo: { headers: { authorization: 'Bearer good-key' } } },
+    )) as { isError?: boolean; content: Array<{ text: string }> };
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text)).toMatchObject({
+      success: false,
+      message: 'sessionId is required for this tool',
+    });
+    // Fenced at the runtime boundary before the auth DB lookup, so a session-restricted key can
+    // never ride an undefined scope past validateApiKey's allowedSessions check.
+    expect(h.authService.validateApiKey).not.toHaveBeenCalled();
+    expect(h.tool.handler).not.toHaveBeenCalled();
+    expect(h.auditService.logWarn).not.toHaveBeenCalled(); // 400 parity with REST: not an auth failure
+  });
+
+  it('answers a JSON-RPC 500 when the transport throws', async () => {
+    const h = mount();
+    mockHandleRequest.mockRejectedValueOnce(new Error('boom'));
+    const { res } = await post(h, { jsonrpc: '2.0', id: 1 });
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith({
+      jsonrpc: '2.0',
+      error: { code: -32603, message: 'Internal server error' },
+      id: null,
+    });
   });
 });

@@ -21,7 +21,7 @@
 
 .dashboard .status-badge.connected {
   background: rgba(37, 211, 102, 0.1);
-  color: var(--primary);
+  color: var(--primary-text);
 }
 
 .dashboard .status-badge.disconnected {
@@ -223,13 +223,13 @@
 
 .dashboard .status-pill.ready {
   background: rgba(37, 211, 102, 0.1);
-  color: var(--primary);
+  color: var(--primary-text);
 }
 
 .dashboard .status-pill.connecting,
 .dashboard .status-pill.authenticating {
   background: rgba(245, 158, 11, 0.15);
-  color: var(--warning);
+  color: var(--warning-text);
 }
 
 .dashboard .status-pill.disconnected {
@@ -239,7 +239,7 @@
 
 .dashboard .status-pill.failed {
   background: rgba(239, 68, 68, 0.15);
-  color: var(--error);
+  color: var(--error-text);
 }
 
 .dashboard .last-active {
@@ -271,7 +271,7 @@
 }
 
 .dashboard .btn-sm.danger {
-  color: var(--error);
+  color: var(--error-text);
   border-color: rgba(239, 68, 68, 0.3);
   background: rgba(239, 68, 68, 0.12);
 }

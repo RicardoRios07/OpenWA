@@ -1,10 +1,7 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as fs from 'fs';
 import * as path from 'path';
-import { TarArchive } from 'archiver';
-import * as tar from 'tar-stream';
-import { createGunzip } from 'zlib';
 import { Readable, PassThrough } from 'stream';
 import {
   S3Client,
@@ -16,7 +13,9 @@ import {
   CreateBucketCommand,
 } from '@aws-sdk/client-s3';
 import { createLogger } from '../services/logger.service';
-import { isPathWithin, isSafeStorageKey } from '../utils/path-safety';
+import { isSafeStorageKey } from '../utils/path-safety';
+import { createExportStream, importFromStream } from './storage-transfer';
+import { listLocalFiles, iterateLocalFiles, getLocalFile, putLocalFile, deleteLocalFile } from './storage-local-files';
 
 interface S3Config {
   endpoint?: string;
@@ -26,14 +25,24 @@ interface S3Config {
   bucket?: string;
 }
 
-/** Per-entry buffer cap for an import (200 MiB — 4× the inbound media cap). Bounds a decompression bomb. */
-const DEFAULT_IMPORT_MAX_BYTES = 200 * 1024 * 1024;
-/** Max number of entries an import archive may contain. Bounds an entry-count DoS. */
-const DEFAULT_IMPORT_MAX_ENTRIES = 100_000;
-/** Max number of local files a single traversal enumerates. Bounds a count DoS on a huge media dir. */
-const DEFAULT_LIST_MAX_FILES = 100_000;
-/** Max directory depth a local traversal descends. Prevents a pathological tree from running unbounded. */
-const LOCAL_TRAVERSAL_MAX_DEPTH = 20;
+/** How often an S3-configured service re-probes a bucket that was unreachable at boot. */
+export const DEFAULT_S3_REPROBE_INTERVAL_MS = 60_000;
+
+/**
+ * True when a storage read failed because the object is simply not there.
+ *
+ * Both backends must be covered, and they report it differently: the local backend raises a POSIX
+ * `ENOENT` (a `.code`), while S3 raises `NoSuchKey`/`NotFound`, which carries a `.name` and no
+ * `.code` at all — `getS3File` below rethrows that original error when the local read-through also
+ * misses. Checking only `.code` turns a missing S3 object into a 500 on the one backend where
+ * retention and bucket lifecycle rules make a miss most likely.
+ */
+export function isMissingObjectError(error: unknown): boolean {
+  const e = error as { code?: string; name?: string; $metadata?: { httpStatusCode?: number } };
+  return (
+    e?.code === 'ENOENT' || e?.name === 'NoSuchKey' || e?.name === 'NotFound' || e?.$metadata?.httpStatusCode === 404
+  );
+}
 
 function positiveIntFromEnv(name: string, fallback: number): number {
   const parsed = Number.parseInt(process.env[name] ?? '', 10);
@@ -41,13 +50,15 @@ function positiveIntFromEnv(name: string, fallback: number): number {
 }
 
 @Injectable()
-export class StorageService {
+export class StorageService implements OnModuleDestroy {
   private readonly logger = createLogger('StorageService');
   private readonly storageType: string;
   private readonly localPath: string;
   private s3Client: S3Client | null = null;
   private s3Bucket = 'openwa';
   private s3Available = false;
+  private s3ReprobeTimer: NodeJS.Timeout | null = null;
+  private readonly s3ReprobeIntervalMs = positiveIntFromEnv('S3_REPROBE_INTERVAL_MS', DEFAULT_S3_REPROBE_INTERVAL_MS);
 
   constructor(private readonly configService: ConfigService) {
     this.storageType = this.configService.get<string>('storage.type') || 'local';
@@ -80,6 +91,25 @@ export class StorageService {
         });
         this.s3Bucket = process.env.S3_BUCKET || s3Config.bucket || 'openwa';
         void this.initializeS3Bucket();
+        this.startS3Reprobe();
+      } else {
+        // Every other degradation in this service announces itself, but this one could not: the
+        // logging all lives past the client construction above, so an s3 deployment missing its
+        // credentials built no client, wrote every file to local disk, and said nothing at all.
+        // The operator's first symptom was an empty bucket with no failure to point at.
+        //
+        // Name the variables actually missing rather than declaring all of them absent: reaching
+        // here with one of the pair set is a plain typo in the other, and "no credentials found"
+        // would send that operator looking at the one they got right.
+        const missing = [
+          accessKeyId ? null : 'S3_ACCESS_KEY_ID',
+          secretAccessKey ? null : 'S3_SECRET_ACCESS_KEY',
+        ].filter((name): name is string => name !== null);
+        this.logger.warn(
+          `STORAGE_TYPE=s3 but ${missing.join(' and ')} is not set; media is being written to the ` +
+            `local dir '${this.localPath}' instead of the bucket. The built-in MinIO uses ` +
+            `minioadmin/minioadmin.`,
+        );
       }
     }
 
@@ -87,6 +117,10 @@ export class StorageService {
     if (!fs.existsSync(this.localPath)) {
       fs.mkdirSync(this.localPath, { recursive: true });
     }
+  }
+
+  onModuleDestroy(): void {
+    this.clearS3Reprobe();
   }
 
   private async initializeS3Bucket(): Promise<void> {
@@ -106,10 +140,46 @@ export class StorageService {
           this.logger.log(`Created S3 bucket '${this.s3Bucket}'`);
         } catch (createError) {
           this.logger.error('Failed to create S3 bucket', String(createError));
+          this.warnLocalFallback();
         }
       } else {
         this.logger.error('S3 bucket check failed', String(error));
+        this.warnLocalFallback();
       }
+    }
+  }
+
+  private warnLocalFallback(): void {
+    this.logger.warn(
+      `S3 bucket '${this.s3Bucket}' is unreachable — media storage degraded, using the local fallback dir ` +
+        `'${this.localPath}'. Re-probing every ${this.s3ReprobeIntervalMs}ms; writes return to S3 once it recovers.`,
+    );
+  }
+
+  /**
+   * Periodically re-probe S3 while the effective backend is the local fallback (S3 was unreachable at
+   * boot). Recovery is one-way: availability only ever transitions false→true here, and once S3 is
+   * back the timer stops — a session already on S3 is never dropped to local by a transient error
+   * without an explicit re-evaluation.
+   */
+  private startS3Reprobe(): void {
+    this.s3ReprobeTimer = setInterval(() => {
+      if (this.s3Available) {
+        this.clearS3Reprobe();
+        return;
+      }
+      void this.refreshS3Availability().then(available => {
+        if (!available) this.warnLocalFallback();
+      });
+    }, this.s3ReprobeIntervalMs);
+    // Don't keep the process alive for a probe; shutdown clears it via onModuleDestroy.
+    this.s3ReprobeTimer.unref();
+  }
+
+  private clearS3Reprobe(): void {
+    if (this.s3ReprobeTimer) {
+      clearInterval(this.s3ReprobeTimer);
+      this.s3ReprobeTimer = null;
     }
   }
 
@@ -131,8 +201,8 @@ export class StorageService {
   /**
    * Re-probe S3/MinIO reachability when it's currently marked unavailable — e.g. a bundled MinIO that
    * came up AFTER the app booted (the init HeadBucket raced and latched false). Throttled (10s) and
-   * in-flight-deduped so the status endpoint can call it on every poll cheaply. Once available it
-   * stays available (no need to re-probe a healthy backend here).
+   * in-flight-deduped so the status endpoint and the periodic re-probe can call it cheaply. Once
+   * available it stays available (no need to re-probe a healthy backend here).
    */
   async refreshS3Availability(): Promise<boolean> {
     if (this.storageType !== 's3' || !this.s3Client || this.s3Available) return this.s3Available;
@@ -147,7 +217,13 @@ export class StorageService {
       try {
         await this.s3Client!.send(new HeadBucketCommand({ Bucket: this.s3Bucket }));
         this.s3Available = true;
-        this.logger.log(`S3 bucket '${this.s3Bucket}' is now reachable`);
+        // WARN (not log): the degraded window matters — media written to the local fallback dir while
+        // S3 was down stays local-only; reads for those keys keep working via the NoSuchKey
+        // read-through in getS3File, but the operator should reconcile/acknowledge the gap.
+        this.logger.warn(
+          `S3 bucket '${this.s3Bucket}' recovered — media storage back on S3. Files written to the local ` +
+            `fallback dir '${this.localPath}' during the outage remain there (still readable via read-through).`,
+        );
       } catch {
         // still unreachable — leave s3Available false; a later poll retries after the throttle window
       } finally {
@@ -160,9 +236,41 @@ export class StorageService {
 
   async listFiles(): Promise<string[]> {
     if (this.storageType === 's3' && this.s3Client && this.s3Available) {
-      return this.listS3Files();
+      // Union with the local fallback dir: media written locally while S3 was down is otherwise
+      // invisible to enumeration — getFile reads through to it, so a listing that omits it
+      // contradicts what reads serve, and a sweep reconciling against this listing could never
+      // reclaim it.
+      const files = new Set(await this.listS3Files());
+      for (const file of await this.listLocalFiles()) files.add(file);
+      return [...files];
     }
     return this.listLocalFiles();
+  }
+
+  /**
+   * Enumerate every file in the store (all S3 pages unioned with the local fallback dir, each key
+   * once) as a stream — unlike listFiles(), whose STORAGE_LIST_MAX_FILES truncation is a per-call
+   * DoS guard, not a completeness contract. Callers that must reconcile against the full store
+   * (e.g. the status-media orphan sweep) should iterate this instead of a single capped listing.
+   *
+   * `prefix` narrows the walk at the source — the S3 ListObjectsV2 prefix and the local traversal
+   * root — so a caller reconciling one subtree neither pages the whole store nor holds every key
+   * of it in the dedupe Set. Removing the per-call cap must not trade one unbounded read for
+   * another.
+   */
+  async *iterateFiles(prefix = ''): AsyncGenerator<string> {
+    if (this.storageType === 's3' && this.s3Client && this.s3Available) {
+      const seen = new Set<string>();
+      for await (const file of this.iterateS3Files(prefix)) {
+        seen.add(file);
+        yield file;
+      }
+      for await (const file of this.iterateLocalFiles(prefix)) {
+        if (!seen.has(file)) yield file;
+      }
+      return;
+    }
+    yield* this.iterateLocalFiles(prefix);
   }
 
   async getFile(filePath: string): Promise<Buffer> {
@@ -191,16 +299,19 @@ export class StorageService {
 
   /**
    * Delete a file previously written via `putFile`. Same unsafe-key guard as `getFile`/`putFile` (both
-   * backends key off it, S3's has no host filesystem to check `isPathWithin` against). Missing-file is
-   * treated as success on both backends (local: ENOENT is swallowed; S3 DeleteObject is idempotent by
-   * design) so a caller doesn't have to special-case "already gone".
+   * backends key off it, S3's has no host filesystem to check `isPathWithin` against). When S3 is
+   * active the key is deleted from BOTH backends — delete-through, symmetric with getFile's
+   * read-through: the key may exist only in the local fallback dir (written during an S3 outage),
+   * and deleting just the S3 object would orphan those bytes permanently once the caller drops its
+   * DB reference. Missing-file is treated as success on both backends (local: ENOENT is swallowed;
+   * S3 DeleteObject is idempotent by design) so a caller doesn't have to special-case "already gone".
    */
   async deleteFile(filePath: string): Promise<void> {
     if (!isSafeStorageKey(filePath)) {
       throw new Error(`Refusing to delete an unsafe storage key: ${filePath}`);
     }
     if (this.storageType === 's3' && this.s3Client && this.s3Available) {
-      return this.deleteS3File(filePath);
+      await this.deleteS3File(filePath);
     }
     return this.deleteLocalFile(filePath);
   }
@@ -209,15 +320,36 @@ export class StorageService {
     if (this.storageType === 's3' && this.s3Client && this.s3Available) {
       // ListObjectsV2 already returns each object's Size, so report the real total instead of a
       // 100KB-per-file estimate — no extra API calls beyond the listing we'd do anyway.
-      return this.getS3CountAndSize();
+      const s3 = await this.getS3CountAndSize();
+      // Union with the local fallback dir (same split-brain gap as listFiles): a local-only file
+      // counts with its real on-disk size; for a key present in both, the S3 copy is authoritative.
+      const s3Keys = new Set(s3.keys);
+      let { count, sizeBytes } = s3;
+      for await (const file of this.iterateLocalFiles()) {
+        if (s3Keys.has(file)) continue;
+        count += 1;
+        try {
+          // Same reason as the local branch below: this walk is uncapped too, so the stat must yield.
+          sizeBytes += (await fs.promises.stat(path.join(this.localPath, file))).size;
+        } catch (error) {
+          this.logger.debug(`Failed to stat file: ${file}`, { error: String(error) });
+        }
+      }
+      return { count, sizeBytes };
     }
 
-    const files = await this.listFiles();
+    // The uncapped walk, for the same reason createExportStream uses it: this is the pre-check an
+    // operator runs BEFORE the export/import migration, so a count truncated at STORAGE_LIST_MAX_FILES
+    // would hide exactly the gap they are checking for.
+    const files = await this.listAllFiles();
     let sizeBytes = 0;
     for (const file of files) {
       try {
         const fullPath = path.join(this.localPath, file);
-        const stats = fs.statSync(fullPath);
+        // Awaited, not statSync: uncapping the walk above also uncapped this loop, and a synchronous
+        // stat per file holds the event loop for the whole store — health checks, webhooks and every
+        // in-flight request wait behind a count. Measured at one event-loop tick for 2000 files.
+        const stats = await fs.promises.stat(fullPath);
         sizeBytes += stats.size;
       } catch (error) {
         this.logger.debug(`Failed to stat file: ${file}`, { error: String(error) });
@@ -227,9 +359,12 @@ export class StorageService {
     return { count: files.length, sizeBytes };
   }
 
-  private async getS3CountAndSize(): Promise<{ count: number; sizeBytes: number }> {
+  private async getS3CountAndSize(): Promise<{ count: number; sizeBytes: number; keys: string[] }> {
     let count = 0;
     let sizeBytes = 0;
+    // Keys (prefix-stripped) are kept so getFileCount can union the local fallback dir without a
+    // second listing.
+    const keys: string[] = [];
     let continuationToken: string | undefined;
 
     do {
@@ -244,214 +379,77 @@ export class StorageService {
       for (const obj of response.Contents ?? []) {
         count += 1;
         sizeBytes += obj.Size ?? 0;
+        if (obj.Key) keys.push(obj.Key.replace(/^media\//, ''));
       }
 
       continuationToken = response.NextContinuationToken;
     } while (continuationToken);
 
-    return { count, sizeBytes };
+    return { count, sizeBytes, keys };
   }
 
   // ============================================================================
-  // Export - Create tar.gz stream from current storage
+  // Export/Import - tar.gz streams (implemented in storage-transfer.ts)
   // ============================================================================
 
-  async createExportStream(): Promise<PassThrough> {
-    const files = await this.listFiles();
-    const output = new PassThrough();
-
-    const archive = new TarArchive({
-      gzip: true,
-      gzipOptions: { level: 6 },
-    });
-
-    // Surface archive-level failures (gzip/finalize) on the returned stream instead of
-    // letting them become an unhandled rejection or a silently truncated download.
-    archive.on('error', (err: Error) => {
-      this.logger.error('Export archive failed', String(err));
-      output.destroy(err);
-    });
-
-    archive.pipe(output);
-
-    // Add files to archive
-    for (const file of files) {
-      try {
-        const data = await this.getFile(file);
-        archive.append(data, { name: file });
-      } catch (error) {
-        this.logger.warn(`Failed to export file: ${file}`, { error: String(error) });
-      }
-    }
-
-    // finalize() rejections also emit via the 'error' handler above; catch the promise so it
-    // never surfaces as an unhandled rejection.
-    archive.finalize().catch(() => undefined);
-    return output;
+  createExportStream(): Promise<PassThrough> {
+    // Enumerated with iterateFiles(), NOT listFiles(). listFiles() stops at STORAGE_LIST_MAX_FILES
+    // and returns without logging or throwing — a per-call DoS guard, as its own doc says, and not a
+    // completeness contract. Spending it here made the documented local→S3 migration (export,
+    // repoint STORAGE_TYPE, import) leave media behind on the old backend silently, and the
+    // operator's own files/count pre-check was truncated by the same path, so the consistency check
+    // could not reveal the gap. An export exists to be complete; that is what the uncapped walk is for.
+    return createExportStream(
+      () => this.listAllFiles(),
+      filePath => this.getFile(filePath),
+      this.logger,
+    );
   }
 
-  // ============================================================================
-  // Import - Extract tar.gz stream to current storage
-  // ============================================================================
-
-  // Best-effort, NOT atomic: a single bad/traversing entry is skipped and the rest still import, and a
-  // resource-cap breach aborts the rest but KEEPS the entries already written (no rollback). Callers
-  // re-running an import is safe (putFile overwrites). A staging-dir + atomic promote would make it
-  // transactional, but is out of scope here.
-  async importFromStream(inputStream: Readable): Promise<number> {
-    let importedCount = 0;
-    let entryCount = 0;
-    const maxEntryBytes = positiveIntFromEnv('STORAGE_IMPORT_MAX_BYTES', DEFAULT_IMPORT_MAX_BYTES);
-    const maxEntries = positiveIntFromEnv('STORAGE_IMPORT_MAX_ENTRIES', DEFAULT_IMPORT_MAX_ENTRIES);
-
-    const extract = tar.extract();
-    const gunzip = createGunzip();
-
-    return new Promise<number>((resolve, reject) => {
-      let settled = false;
-      // Abort the whole import: a per-entry overflow or too many entries is a (zip-bomb) attack, not
-      // a per-file skip — tear down the pipeline and reject so nothing further is buffered or written.
-      const fail = (err: Error): void => {
-        if (settled) return;
-        settled = true;
-        extract.destroy();
-        reject(err);
-      };
-
-      extract.on('entry', (header, stream, next) => {
-        if (settled) {
-          stream.resume();
-          return;
-        }
-        if (++entryCount > maxEntries) {
-          stream.resume();
-          fail(new Error(`Import aborted: archive exceeds the ${maxEntries}-entry limit`));
-          return;
-        }
-
-        const chunks: Buffer[] = [];
-        let entryBytes = 0;
-        let entryAborted = false;
-
-        stream.on('data', (chunk: Buffer) => {
-          if (entryAborted || settled) return;
-          entryBytes += chunk.length;
-          if (entryBytes > maxEntryBytes) {
-            entryAborted = true;
-            stream.resume(); // drain the remainder so the source can end
-            fail(new Error(`Import aborted: entry "${header.name}" exceeds the ${maxEntryBytes}-byte per-entry cap`));
-          } else {
-            chunks.push(chunk);
-          }
-        });
-
-        stream.on('end', () => {
-          if (entryAborted || settled) return;
-          const data = Buffer.concat(chunks);
-          this.putFile(header.name, data)
-            .then(() => {
-              importedCount++;
-              this.logger.debug(`Imported file: ${header.name}`);
-              next();
-            })
-            .catch((error: unknown) => {
-              this.logger.error(`Failed to import file: ${header.name}`, String(error));
-              next();
-            });
-        });
-        stream.resume();
-      });
-
-      extract.on('finish', () => {
-        if (settled) return;
-        settled = true;
-        this.logger.log(`Import completed: ${importedCount} files`);
-        resolve(importedCount);
-      });
-
-      extract.on('error', (err: Error) => {
-        this.logger.error('Import failed', String(err));
-        fail(err);
-      });
-
-      inputStream.pipe(gunzip).pipe(extract);
-    });
-  }
-
-  // ============================================================================
-  // Local Storage Operations
-  // ============================================================================
-
-  /**
-   * Enumerate local files under the storage root. Async + iterative (a work queue, not recursion)
-   * so a deep/wide media tree can't block the event loop or stack-overflow. Bounded by a max file
-   * count and a max directory depth; a tree exceeding either is truncated rather than enumerated in
-   * full (these are defense-in-depth caps — a healthy media store stays well under both).
-   */
-  private async listLocalFiles(): Promise<string[]> {
-    const maxFiles = positiveIntFromEnv('STORAGE_LIST_MAX_FILES', DEFAULT_LIST_MAX_FILES);
+  /** Every key in the store, uncapped — the completeness counterpart to the capped listFiles(). */
+  private async listAllFiles(): Promise<string[]> {
     const files: string[] = [];
-    // Iterative BFS: a queue of [relativeDir, depth] avoids unbounded call-stack growth.
-    const queue: Array<{ dir: string; depth: number }> = [{ dir: '', depth: 0 }];
-
-    while (queue.length > 0) {
-      const { dir, depth } = queue.shift()!;
-      if (depth >= LOCAL_TRAVERSAL_MAX_DEPTH) continue;
-
-      const fullPath = path.join(this.localPath, dir);
-      let entries: fs.Dirent[];
-      try {
-        entries = await fs.promises.readdir(fullPath, { withFileTypes: true });
-      } catch {
-        continue; // dir vanished or unreadable — skip rather than abort the whole traversal
-      }
-
-      for (const entry of entries) {
-        const relativePath = dir ? path.join(dir, entry.name) : entry.name;
-        if (entry.isDirectory()) {
-          queue.push({ dir: relativePath, depth: depth + 1 });
-        } else if (entry.isFile()) {
-          files.push(relativePath);
-          if (files.length >= maxFiles) return files; // cap reached — stop early
-        }
-      }
-    }
-
+    for await (const file of this.iterateFiles()) files.push(file);
     return files;
   }
 
+  // Best-effort, NOT atomic: see the implementation in storage-transfer.ts for the full contract.
+  importFromStream(inputStream: Readable): Promise<number> {
+    return importFromStream(inputStream, (filePath, data) => this.putFile(filePath, data), this.logger);
+  }
+
+  // ============================================================================
+  // Local Storage Operations (implemented in storage-local-files.ts)
+  // ============================================================================
+
+  /**
+   * Enumerate local files under the storage root, capped at STORAGE_LIST_MAX_FILES — a per-call
+   * DoS guard (a healthy media store stays well under it), NOT a completeness contract. Callers
+   * that must see the whole tree use iterateFiles().
+   */
+  private listLocalFiles(): Promise<string[]> {
+    return listLocalFiles(this.localPath);
+  }
+
+  /**
+   * Full local enumeration as a stream — no count cap. Async + iterative (a work queue, not
+   * recursion) so a deep/wide media tree can't block the event loop or stack-overflow; still
+   * bounded by the max directory depth so a pathological tree can't descend unbounded.
+   */
+  private iterateLocalFiles(prefix = ''): AsyncGenerator<string> {
+    return iterateLocalFiles(this.localPath, prefix);
+  }
+
   private getLocalFile(filePath: string): Promise<Buffer> {
-    if (!isPathWithin(this.localPath, filePath)) {
-      throw new Error(`Refusing to read outside storage root: ${filePath}`);
-    }
-    const fullPath = path.join(this.localPath, filePath);
-    // Async read so the export loop (the only caller) yields the event loop per file instead of
-    // blocking it with a synchronous read for every media file.
-    return fs.promises.readFile(fullPath);
+    return getLocalFile(this.localPath, filePath);
   }
 
-  private async putLocalFile(filePath: string, data: Buffer): Promise<void> {
-    if (!isPathWithin(this.localPath, filePath)) {
-      throw new Error(`Refusing to write outside storage root: ${filePath}`);
-    }
-    const fullPath = path.join(this.localPath, filePath);
-
-    // Async, non-blocking: a synchronous write here stalls the event loop during an import.
-    // mkdir recursive is idempotent, so it doubles as the existsSync check.
-    await fs.promises.mkdir(path.dirname(fullPath), { recursive: true });
-    await fs.promises.writeFile(fullPath, data);
+  private putLocalFile(filePath: string, data: Buffer): Promise<void> {
+    return putLocalFile(this.localPath, filePath, data);
   }
 
-  private async deleteLocalFile(filePath: string): Promise<void> {
-    if (!isPathWithin(this.localPath, filePath)) {
-      throw new Error(`Refusing to delete outside storage root: ${filePath}`);
-    }
-    const fullPath = path.join(this.localPath, filePath);
-    try {
-      await fs.promises.unlink(fullPath);
-    } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    }
+  private deleteLocalFile(filePath: string): Promise<void> {
+    return deleteLocalFile(this.localPath, filePath);
   }
 
   // ============================================================================
@@ -459,44 +457,62 @@ export class StorageService {
   // ============================================================================
 
   private async listS3Files(): Promise<string[]> {
-    if (!this.s3Client) return [];
-
     const files: string[] = [];
+    for await (const file of this.iterateS3Files()) files.push(file);
+    return files;
+  }
+
+  /** Stream every S3 object key (prefix-stripped), following the ListObjectsV2 pagination token. */
+  private async *iterateS3Files(prefix = ''): AsyncGenerator<string> {
+    if (!this.s3Client) return;
+
     let continuationToken: string | undefined;
 
     do {
       const response = await this.s3Client.send(
         new ListObjectsV2Command({
           Bucket: this.s3Bucket,
-          Prefix: 'media/',
+          Prefix: `media/${prefix}`,
           ContinuationToken: continuationToken,
         }),
       );
 
-      if (response.Contents) {
-        for (const obj of response.Contents) {
-          if (obj.Key) {
-            // Remove 'media/' prefix
-            files.push(obj.Key.replace(/^media\//, ''));
-          }
+      for (const obj of response.Contents ?? []) {
+        if (obj.Key) {
+          // Remove 'media/' prefix
+          yield obj.Key.replace(/^media\//, '');
         }
       }
 
       continuationToken = response.NextContinuationToken;
     } while (continuationToken);
-
-    return files;
   }
 
   private async getS3File(filePath: string): Promise<Buffer> {
     if (!this.s3Client) throw new Error('S3 client not initialized');
 
-    const response = await this.s3Client.send(
-      new GetObjectCommand({
-        Bucket: this.s3Bucket,
-        Key: `media/${filePath}`,
-      }),
-    );
+    let response;
+    try {
+      response = await this.s3Client.send(
+        new GetObjectCommand({
+          Bucket: this.s3Bucket,
+          Key: `media/${filePath}`,
+        }),
+      );
+    } catch (error: unknown) {
+      // Read-through: media written while S3 was down lives only in the local fallback dir, so after
+      // recovery a plain S3 read would split-brain (NoSuchKey even though the app served the file
+      // fine during the outage). Fall through to the local copy; if there is none, surface the
+      // original S3 error so "not found" semantics are unchanged.
+      if ((error as { name?: string }).name !== 'NoSuchKey') throw error;
+      try {
+        const local = await this.getLocalFile(filePath);
+        this.logger.debug(`Served '${filePath}' from the local fallback dir (not yet in S3)`);
+        return local;
+      } catch {
+        throw error;
+      }
+    }
 
     if (!response.Body) throw new Error('Empty response body');
 

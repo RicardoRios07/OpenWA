@@ -1,7 +1,7 @@
 import { Controller, Get, Query } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiQuery } from '@nestjs/swagger';
 import { WebhookService } from './webhook.service';
-import { WebhookResponseDto } from './dto';
+import { WebhookResponseDto, WebhookDeliveryFailureDto } from './dto';
 import { WebhookDeliveryFailure } from './entities/webhook-delivery-failure.entity';
 import { RequireRole, CurrentApiKey } from '../auth/decorators/auth.decorators';
 import { ApiKey, ApiKeyRole } from '../auth/entities/api-key.entity';
@@ -14,7 +14,11 @@ export class WebhooksListController {
   @Get('delivery-failures')
   @RequireRole(ApiKeyRole.ADMIN)
   @ApiOperation({ summary: 'List recently-failed webhook deliveries (all retries exhausted)' })
-  @ApiResponse({ status: 200, description: 'Permanently-failed webhook deliveries, most recent first' })
+  @ApiResponse({
+    status: 200,
+    description: 'Permanently-failed webhook deliveries, most recent first',
+    type: [WebhookDeliveryFailureDto],
+  })
   @ApiQuery({ name: 'sessionId', required: false, description: 'Filter to a single session' })
   @ApiQuery({ name: 'limit', required: false, description: 'Max records to return (1-1000, default 1000)' })
   @ApiQuery({ name: 'offset', required: false, description: 'Number of records to skip (for paging)' })

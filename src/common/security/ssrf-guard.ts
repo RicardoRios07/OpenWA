@@ -1,7 +1,7 @@
-import { isIPv4, isIPv6, type LookupFunction } from 'net';
+import { BlockList, isIPv4, isIPv6, type LookupFunction } from 'net';
 import { lookup } from 'dns/promises';
 import { type LookupAddress, type LookupOptions } from 'dns';
-import { Agent, fetch as undiciFetch, type RequestInit, type Response } from 'undici';
+import { Agent, fetch as undiciFetch, Headers, type RequestInit, type Response } from 'undici';
 
 /** Thrown when an outbound URL is blocked by the SSRF guard. */
 export class SsrfBlockedError extends Error {
@@ -32,7 +32,13 @@ export function redactSsrfError(error: unknown, logger?: { warn: (message: strin
     logger?.warn(`SSRF guard blocked ${site ?? 'an outbound fetch'}: ${error.message}`);
     return SSRF_BLOCKED_CLIENT_MESSAGE;
   }
-  return error instanceof Error ? error.message : String(error);
+  // OS-level connect errors name the receiver's host:port (connect ECONNREFUSED 10.0.0.1:443) —
+  // internal topology an API consumer has no business reading out of a delivery-failure row.
+  // The error code stays (actionable), the address goes.
+  return (error instanceof Error ? error.message : String(error)).replace(
+    /\b(ECONNREFUSED|ENOTFOUND|ETIMEDOUT|EHOSTUNREACH|ECONNRESET|EAI_AGAIN)\s+[\w.-]+(?::\d+)?(?=\s|$)/g,
+    '$1 [redacted]',
+  );
 }
 
 /**
@@ -66,18 +72,9 @@ function getAllowedHosts(): Set<string> {
   );
 }
 
-function ipv4ToInt(ip: string): number {
-  return ip.split('.').reduce((acc, octet) => acc * 256 + Number(octet), 0);
-}
-
-function inCidr4(ipInt: number, base: string, bits: number): boolean {
-  const baseInt = ipv4ToInt(base);
-  const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
-  return (ipInt & mask) >>> 0 === (baseInt & mask) >>> 0;
-}
-
-// IPv4 ranges that must never be reachable by an outbound webhook (SSRF targets).
-const BLOCKED_V4: ReadonlyArray<readonly [string, number]> = [
+// IPv4 ranges that must never be reachable by an outbound webhook (SSRF targets). Membership is
+// delegated to net.BlockList (the vetted stdlib implementation) rather than hand-rolled IP math.
+const BLOCKED_V4_RANGES: ReadonlyArray<readonly [string, number]> = [
   ['0.0.0.0', 8], // "this" network / unspecified
   ['10.0.0.0', 8], // RFC1918 private
   ['100.64.0.0', 10], // CGNAT
@@ -91,12 +88,34 @@ const BLOCKED_V4: ReadonlyArray<readonly [string, number]> = [
   ['240.0.0.0', 4], // reserved
 ];
 
-/**
- * Whether an IP literal points at an internal/reserved range that an outbound
- * webhook must not be allowed to reach (loopback, RFC1918, link-local/metadata,
- * CGNAT, multicast, IPv6 loopback/ULA/link-local, IPv4-mapped variants).
- * Anything that isn't a recognizable public IP is treated as blocked (fail-closed).
- */
+// IPv6 ranges with the same rule. The IPv4-embedding ranges (6to4 2002::/16, NAT64 64:ff9b::/96,
+// IPv4-compatible ::/96, mapped/RFC6052 ::ffff:0:0/96) are deliberately NOT here: an embedding of a
+// genuinely public IPv4 must stay reachable, so those are classified per-address by the
+// decapsulation ladder in isBlockedAddress, not blanket-blocked by range.
+const BLOCKED_V6_RANGES: ReadonlyArray<readonly [string, number]> = [
+  ['::', 128], // unspecified
+  ['::1', 128], // loopback
+  ['0000::', 3], // reserved by IETF (RFC 4291: global unicast is 2000::/3) — ::, ::1 and the
+  // IPv4-embedding forms return earlier via the ladder or their own entries, so the fallthrough
+  // check only catches the rest of the block (e.g. 1::, fc0::, fe8::)
+  ['fc00::', 7], // ULA (RFC 4193)
+  ['fe80::', 10], // link-local
+  ['fec0::', 10], // deprecated site-local (RFC 3879)
+];
+
+const BLOCKED_V4 = new BlockList();
+for (const [subnet, prefix] of BLOCKED_V4_RANGES) BLOCKED_V4.addSubnet(subnet, prefix, 'ipv4');
+
+const BLOCKED_V6 = new BlockList();
+for (const [subnet, prefix] of BLOCKED_V6_RANGES) BLOCKED_V6.addSubnet(subnet, prefix, 'ipv6');
+
+// The single IPv6 ALLOW: RFC 4291's global-unicast 2000::/3. The fallthrough in isBlockedAddress
+// allows only this range — everything outside it that no earlier branch classified (IPv6 multicast
+// ff00::/8, the reserved blocks above 3fff:: — 4000::/3, 5f00::/16, 8000::/3, c000::/3, e000::/3)
+// blocks, mirroring the IPv4 posture where multicast 224.0.0.0/4 and reserved 240.0.0.0/4 block.
+const GLOBAL_UNICAST_V6 = new BlockList();
+GLOBAL_UNICAST_V6.addSubnet('2000::', 3, 'ipv6');
+
 /** Two 16-bit hextets → dotted IPv4 string (for IPv4-in-IPv6 embeddings like ::ffff:, 6to4, NAT64). */
 function hextetsToV4(hi: number, lo: number): string {
   return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
@@ -129,15 +148,21 @@ function expandIPv6(lower: string): number[] | null {
   return nums.some(n => Number.isNaN(n)) ? null : nums;
 }
 
+/**
+ * Whether an IP literal points at an internal/reserved range that an outbound
+ * webhook must not be allowed to reach (loopback, RFC1918, link-local/metadata,
+ * CGNAT, multicast, IPv6 loopback/ULA/link-local, IPv4-mapped variants).
+ * Anything that isn't a recognizable public IP is treated as blocked (fail-closed).
+ */
 export function isBlockedAddress(ip: string): boolean {
+  // The address family is passed explicitly to check(): without it, an IPv6 literal silently
+  // answers false (BlockList defaults to interpreting the input as IPv4), which would fail open.
   if (isIPv4(ip)) {
-    const n = ipv4ToInt(ip);
-    return BLOCKED_V4.some(([base, bits]) => inCidr4(n, base, bits));
+    return BLOCKED_V4.check(ip, 'ipv4');
   }
 
   if (isIPv6(ip)) {
     const lower = ip.toLowerCase();
-    if (lower === '::1' || lower === '::') return true;
 
     // IPv4-mapped (::ffff:a.b.c.d or ::ffff:hhhh:hhhh) — classify by the embedded IPv4, handling
     // BOTH the dotted-decimal and the hex-hextet form (the hex form bypassed a dotted-only regex).
@@ -150,14 +175,9 @@ export function isBlockedAddress(ip: string): boolean {
       if (hextets.length === 2 && hextets.every(h => /^[0-9a-f]{1,4}$/.test(h))) {
         const hi = parseInt(hextets[0], 16);
         const lo = parseInt(hextets[1], 16);
-        return isBlockedAddress(`${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`);
+        return isBlockedAddress(hextetsToV4(hi, lo));
       }
     }
-
-    const firstHextet = lower.split(':')[0];
-    if (firstHextet.startsWith('fc') || firstHextet.startsWith('fd')) return true; // ULA fc00::/7
-    if (/^fe[89ab]/.test(firstHextet)) return true; // link-local fe80::/10
-    if (/^fe[c-f]/.test(firstHextet)) return true; // deprecated site-local fec0::/10 (RFC 3879)
 
     // IPv6 forms that embed an IPv4 — 6to4 (2002::/16), NAT64 (64:ff9b::/96), and the deprecated
     // IPv4-compatible ::/96 — are classified by the embedded address so they reach the IPv4 blocklist,
@@ -203,7 +223,14 @@ export function isBlockedAddress(ip: string): boolean {
         return isBlockedAddress(hextetsToV4(hextets[6], hextets[7]));
       }
     }
-    return false;
+
+    // Reserved-range membership (unspecified, loopback, ULA, link-local, deprecated site-local,
+    // IETF-reserved 0000::/3) via the stdlib BlockList — numeric, so compressed and fully-expanded
+    // spellings of the same address answer alike — and beyond that only RFC 4291 global unicast
+    // (2000::/3) is allowed: IPv6 multicast (ff00::/8) and the reserved blocks above 3fff:: block
+    // too, the same fail-closed posture as IPv4's multicast/reserved ranges. Embedded forms already
+    // returned above (public embeddings, NAT64 included, stay allowed — only the ladder decides those).
+    return BLOCKED_V6.check(lower, 'ipv6') || !GLOBAL_UNICAST_V6.check(lower, 'ipv6');
   }
 
   // Not a valid IP literal — cannot verify, so block.
@@ -231,6 +258,12 @@ function resolveDnsTimeoutMs(): number {
   return Number.isInteger(n) && n > 0 ? n : DEFAULT_DNS_TIMEOUT_MS;
 }
 
+/** Redirect hops followed on the guarded download path before the chain is refused. */
+const MAX_REDIRECT_HOPS = 5;
+
+/** Status codes undici surfaces as a redirect when `redirect: 'manual'` is set. */
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
 /**
  * Resolve a host with `{ all: true }`, bounded by a deadline so a hanging/slow DNS resolver cannot
  * pin a worker indefinitely (the lookup is otherwise unbounded). The default deadline is generous
@@ -239,21 +272,33 @@ function resolveDnsTimeoutMs(): number {
  * its late result swallowed (no unhandledRejection). Wrapping the rejection keeps every resolution
  * failure typed, so callers map it to a 4xx instead of leaking a raw DNS error as a generic 500.
  */
-async function lookupWithDeadline(host: string): Promise<LookupAddress[]> {
+async function lookupWithDeadline(host: string, signal?: AbortSignal | null): Promise<LookupAddress[]> {
+  // An abort that already fired between hops burns no DNS query at all.
+  if (signal?.aborted) throw signal.reason;
   const lookupPromise = lookup(host, { all: true });
   lookupPromise.catch(() => undefined); // swallow a late rejection if the deadline already fired
   let timer: NodeJS.Timeout | undefined;
+  let onAbort: (() => void) | undefined;
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new SsrfBlockedError(`Timed out resolving host: ${host}`)), resolveDnsTimeoutMs());
+    if (signal) {
+      // Reject with the signal's own reason — for AbortSignal.timeout that is the same TimeoutError
+      // a fetch-phase abort produces. Never an SsrfBlockedError: a caller timeout is not an SSRF
+      // block, and the redaction layer must not rewrite it into "destination not allowed".
+      onAbort = () => reject(signal.reason as Error);
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
   });
   try {
     return await Promise.race([lookupPromise, deadline]);
   } catch (err) {
+    if (signal?.aborted) throw signal.reason; // the caller's abort wins over a simultaneous DNS error
     if (err instanceof SsrfBlockedError) throw err; // deadline already produced a typed error
     const code = (err as NodeJS.ErrnoException)?.code;
     throw new SsrfBlockedError(`Could not resolve host: ${host}${code ? ` (${code})` : ''}`);
   } finally {
     if (timer) clearTimeout(timer);
+    if (signal && onAbort) signal.removeEventListener('abort', onAbort);
   }
 }
 
@@ -269,7 +314,10 @@ async function lookupWithDeadline(host: string): Promise<LookupAddress[]> {
  * unpinned, since the operator opts in to whatever its DNS returns) or a literal IP (no DNS, so no
  * rebind is possible — fetch connects straight to the validated literal).
  */
-export async function resolveSafeFetchTarget(rawUrl: string): Promise<LookupAddress[] | null> {
+export async function resolveSafeFetchTarget(
+  rawUrl: string,
+  signal?: AbortSignal | null,
+): Promise<LookupAddress[] | null> {
   let url: URL;
   try {
     url = new URL(rawUrl);
@@ -284,7 +332,10 @@ export async function resolveSafeFetchTarget(rawUrl: string): Promise<LookupAddr
   const host = url.hostname.replace(/^\[|\]$/g, ''); // strip IPv6 brackets
 
   if (getAllowedHosts().has(host.toLowerCase())) {
-    return null; // explicitly allowlisted internal target
+    // Allowlisted = exempt from the BLOCK check, not from pinning: the operator opted into THIS
+    // host, so freeze the connection to the addresses it resolves to right now. Returning null
+    // here left a rebinding window where a name could flip to a different address after validation.
+    return lookupWithDeadline(host, signal);
   }
 
   if (isIPv4(host) || isIPv6(host)) {
@@ -294,7 +345,7 @@ export async function resolveSafeFetchTarget(rawUrl: string): Promise<LookupAddr
     return null; // literal IP — fetch connects directly, nothing to rebind
   }
 
-  const resolved = await lookupWithDeadline(host);
+  const resolved = await lookupWithDeadline(host, signal);
   if (resolved.length === 0) {
     throw new SsrfBlockedError(`Could not resolve host: ${host}`);
   }
@@ -310,8 +361,8 @@ export async function resolveSafeFetchTarget(rawUrl: string): Promise<LookupAddr
  * Backwards-compatible assertion form: validate the URL (used at webhook registration time, where
  * only the throw/no-throw outcome matters).
  */
-export async function assertSafeFetchUrl(rawUrl: string): Promise<void> {
-  await resolveSafeFetchTarget(rawUrl);
+export async function assertSafeFetchUrl(rawUrl: string, signal?: AbortSignal | null): Promise<void> {
+  await resolveSafeFetchTarget(rawUrl, signal);
 }
 
 /**
@@ -327,52 +378,6 @@ export function pinnedLookup(addresses: LookupAddress[]): LookupFunction {
     } else {
       callback(null, addresses[0].address, addresses[0].family);
     }
-  };
-  return fn as unknown as LookupFunction;
-}
-
-/**
- * A `connect.lookup` that resolves EVERY host it is asked to connect to and refuses any that resolve
- * to an internal/reserved address. Used by the redirect-following download path so that each hop —
- * the original URL AND every redirect target — is validated at connect time, not just the first one.
- * This closes the redirect-bypass hole a single-host pin can't: a 3xx to an internal host is rejected
- * at the socket. Allowlisted hosts (SSRF_ALLOWED_HOSTS) are resolved without the block check, matching
- * {@link resolveSafeFetchTarget}.
- */
-export function validatingLookup(): LookupFunction {
-  const fn = (hostname: string, options: LookupOptions, callback: (...args: unknown[]) => void): void => {
-    const host = hostname.replace(/^\[|\]$/g, ''); // strip IPv6 brackets
-    const allowlisted = getAllowedHosts().has(host.toLowerCase());
-    const finish = (addrs: LookupAddress[]): void => {
-      if (options.all) callback(null, addrs);
-      else callback(null, addrs[0].address, addrs[0].family);
-    };
-
-    if (isIPv4(host) || isIPv6(host)) {
-      if (!allowlisted && isBlockedAddress(host)) {
-        callback(new SsrfBlockedError(`Blocked internal address: ${host}`));
-        return;
-      }
-      finish([{ address: host, family: isIPv6(host) ? 6 : 4 }]);
-      return;
-    }
-
-    lookupWithDeadline(host)
-      .then(resolved => {
-        if (resolved.length === 0) {
-          callback(new SsrfBlockedError(`Could not resolve host: ${host}`));
-          return;
-        }
-        if (!allowlisted) {
-          const bad = resolved.find(a => isBlockedAddress(a.address));
-          if (bad) {
-            callback(new SsrfBlockedError(`Host ${host} resolves to a blocked internal address: ${bad.address}`));
-            return;
-          }
-        }
-        finish(resolved);
-      })
-      .catch((err: unknown) => callback(err instanceof Error ? err : new Error(String(err))));
   };
   return fn as unknown as LookupFunction;
 }
@@ -409,6 +414,42 @@ async function useAndSettleBody<T>(response: Response, use: (response: Response)
 }
 
 /**
+ * Escape hatch for deployments whose plugin vendor / release host legitimately redirects an https
+ * URL to a plain-http hop (e.g. behind TLS-terminating infrastructure). Default OFF: an https→http
+ * downgrade hop is refused because the payload on this path is executable code and an http hop
+ * exposes it to on-path substitution. Set PLUGIN_DOWNLOAD_ALLOW_INSECURE_REDIRECTS=true to allow.
+ */
+function isInsecureRedirectHopAllowed(): boolean {
+  return process.env.PLUGIN_DOWNLOAD_ALLOW_INSECURE_REDIRECTS === 'true';
+}
+
+/**
+ * undici's native redirector strips credentials on cross-origin hops and rewrites 301/302/303 to a
+ * bodiless GET — the manual loop must do the same, or a redirect target would receive the original
+ * request's Authorization/Cookie headers and body.
+ */
+function nextRedirectHopInit(init: RequestInit, status: number, nextUrl: string, initialOrigin: string): RequestInit {
+  let next = init;
+  if (
+    status !== 307 &&
+    status !== 308 &&
+    next.method !== undefined &&
+    next.method !== 'GET' &&
+    next.method !== 'HEAD'
+  ) {
+    next = { ...next, method: 'GET' };
+    delete next.body;
+  }
+  if (new URL(nextUrl).origin !== initialOrigin && next.headers !== undefined) {
+    const headers = new Headers(next.headers);
+    headers.delete('authorization');
+    headers.delete('cookie');
+    next = { ...next, headers };
+  }
+  return next;
+}
+
+/**
  * Perform an SSRF-safe fetch and hand the response to `use`, then tear down the per-request
  * connection. The host is validated and resolved ONCE; the connection is pinned to the vetted IP(s)
  * via an undici dispatcher so it cannot be re-resolved to an internal address between check and
@@ -432,25 +473,62 @@ export async function withSafeFetch<T>(
 ): Promise<T> {
   const guard = opts.guard ?? true;
   if (!guard) {
-    return useAndSettleBody(await undiciFetch(rawUrl, { ...init, redirect: 'follow' }), use);
+    // Redirect-following is a separate decision from SSRF protection: an operator who disabled the
+    // guard (closed network) did not opt into chasing 3xx chains to arbitrary hosts. Fail loudly
+    // unless WEBHOOK_SSRF_REDIRECTS=true says otherwise.
+    const follow = process.env.WEBHOOK_SSRF_REDIRECTS === 'true';
+    return useAndSettleBody(await undiciFetch(rawUrl, { ...init, redirect: follow ? 'follow' : 'error' }), use);
   }
 
   if (opts.followRedirects) {
     // Download path (plugin .zip / catalog JSON): public release hosts legitimately 302 to a CDN, so
-    // refusing every redirect breaks them. Follow redirects, but SECURELY — instead of pinning one
-    // host's IPs, route the connection through a lookup that resolves+validates EVERY host on demand,
-    // so each hop (original + every redirect target) is checked at connect time and a 3xx to an
-    // internal host is blocked at the socket. The scheme/host of the original URL is validated first.
-    await resolveSafeFetchTarget(rawUrl);
-    const dispatcher = new Agent({ connect: { lookup: validatingLookup() } });
-    try {
-      return await useAndSettleBody(await undiciFetch(rawUrl, { ...init, redirect: 'follow', dispatcher }), use);
-    } finally {
-      await dispatcher.destroy().catch(() => undefined);
+    // refusing every redirect breaks them. Follow them manually and re-validate EVERY hop with
+    // resolveSafeFetchTarget, which rejects blocked IP literals directly.
+    //
+    // Do NOT delegate hop checking to an Agent's `connect.lookup`: Node skips DNS entirely for an
+    // IP-literal host, so a custom lookup is never invoked for `Location: http://127.0.0.1/` and the
+    // hop goes unchecked. Each hop below is validated BEFORE its socket is opened.
+    let currentUrl = rawUrl;
+    let initialOrigin: string | undefined;
+    let hopInit = init;
+    let sawSecureHop = false;
+    for (let hop = 0; ; hop++) {
+      const target = await resolveSafeFetchTarget(currentUrl, init.signal);
+      // Parsed already by resolveSafeFetchTarget above, so this cannot throw.
+      const current = new URL(currentUrl);
+      initialOrigin ??= current.origin;
+      // A hop that downgrades https→http exposes the (executable) download to on-path substitution.
+      // Chains that STARTED on plain http are unaffected — they were never secure to begin with.
+      if (current.protocol === 'http:' && sawSecureHop && !isInsecureRedirectHopAllowed()) {
+        throw new Error(`Refusing redirect that downgrades from https to http: ${currentUrl}`);
+      }
+      if (current.protocol === 'https:') sawSecureHop = true;
+      const dispatcher = target ? new Agent({ connect: { lookup: pinnedLookup(target) } }) : undefined;
+      try {
+        const response = await undiciFetch(currentUrl, { ...hopInit, redirect: 'manual', dispatcher });
+        if (!REDIRECT_STATUSES.has(response.status)) {
+          return await useAndSettleBody(response, use);
+        }
+        const location = response.headers.get('location');
+        await settleUnreadResponseBody(response);
+        if (!location) {
+          throw new SsrfBlockedError(`Redirect from ${currentUrl} carried no Location header`);
+        }
+        if (hop >= MAX_REDIRECT_HOPS) {
+          // Deliberately NOT an SsrfBlockedError: this is an actionable operator error, not a
+          // blocked-address rejection, so it must survive redactSsrfError verbatim.
+          throw new Error(`Too many redirects while fetching ${rawUrl}`);
+        }
+        const nextUrl = new URL(location, currentUrl).toString();
+        hopInit = nextRedirectHopInit(hopInit, response.status, nextUrl, initialOrigin);
+        currentUrl = nextUrl;
+      } finally {
+        if (dispatcher) await dispatcher.destroy().catch(() => undefined);
+      }
     }
   }
 
-  const target = await resolveSafeFetchTarget(rawUrl);
+  const target = await resolveSafeFetchTarget(rawUrl, init.signal);
   const dispatcher = target ? new Agent({ connect: { lookup: pinnedLookup(target) } }) : undefined;
   try {
     const response = await undiciFetch(rawUrl, { ...init, redirect: 'manual', dispatcher });

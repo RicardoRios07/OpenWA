@@ -10,23 +10,91 @@ Field names mirror the backend DTOs exactly (camelCase JSON).
 
 from __future__ import annotations
 
-from typing import Any, Literal, Optional, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, Optional, TypedDict
+
+# NotRequired ships in typing from 3.11. Class-form annotations are lazy (`from __future__ import
+# annotations`) and only type checkers evaluate them — but the FUNCTIONAL TypedDicts below
+# (MessageRecord: `from` is a keyword and cannot appear in a class body) evaluate their field
+# values at import time, so a real runtime import is needed on 3.9/3.10. typing_extensions is a
+# version-marked runtime dependency for exactly those Pythons.
+import sys
+
+if sys.version_info >= (3, 11):
+    from typing import NotRequired
+else:
+    from typing_extensions import NotRequired
 
 Jid = str
 SessionStatus = Literal[
-    "created", "initializing", "qr_ready", "authenticating", "ready", "disconnected", "failed"
+    "created",
+    "initializing",
+    "qr_ready",
+    "authenticating",
+    "ready",
+    "disconnected",
+    "action_required",
+    "failed",
 ]
 ChatState = Literal["typing", "recording", "paused"]
 MessageDirection = Literal["incoming", "outgoing"]
 DeliveryStatus = Literal["pending", "sent", "delivered", "read", "failed"]
+# The three windows WhatsApp accepts for a pinned message: 24 hours, 7 days, 30 days.
+PinDurationSeconds = Literal[86400, 604800, 2592000]
+# WhatsApp status font family: 0 (default), 1, 2, 6 (bold), 7, 8, 9, 10.
+StatusFont = Literal[0, 1, 2, 6, 7, 8, 9, 10]
 BulkMessageType = Literal["text", "image", "video", "audio", "document"]
+BatchMessageStatus = Literal["pending", "sent", "failed", "cancelled"]
+BatchLifecycleStatus = Literal["pending", "processing", "completed", "failed", "cancelled"]
+ChatKind = Literal["individual", "group", "channel", "status", "broadcast", "unknown"]
 WebhookEvent = Literal[
     "message.received", "message.sent", "message.ack", "message.failed", "message.revoked",
     "message.reaction", "message.edited", "session.status", "session.qr", "session.authenticated",
-    "session.disconnected", "session.reconnect_loop",
-    "group.join", "group.leave", "group.update", "call.received", "status.received",
+    "session.disconnected", "session.reconnect_loop", "session.restriction", "presence.update",
+    "group.join", "group.leave", "group.update", "group.join_request",
+    "call.received", "status.received",
+    "call.accepted", "call.rejected", "call.missed",
     "*",
 ]
+
+
+class SetOwnPresenceRequest(TypedDict):
+    """Body for :meth:`SessionsResource.set_online_presence`.
+
+    ``available`` is True to appear online, False to appear offline (handing notifications back
+    to the phone).
+    """
+
+    available: bool
+
+
+CallLinkType = Literal["audio", "video"]
+
+
+class CreateCallLinkRequest(TypedDict):
+    """Body for :meth:`CallsResource.create_link`.
+
+    ``start_time`` is absolute epoch MILLISECONDS; a link for right now is the current timestamp
+    rather than an omitted field.
+    """
+
+    type: CallLinkType
+    startTime: float
+
+
+class CallLinkResponse(TypedDict):
+    """The shareable WhatsApp call link."""
+
+    link: str
+class DemoteChannelAdminRequest(TypedDict):
+    """Body for :meth:`ChannelsResource.demote_admin`."""
+
+    userId: str
+
+
+class TransferChannelOwnershipRequest(TypedDict):
+    """Body for :meth:`ChannelsResource.transfer_ownership`. The transfer is irreversible."""
+
+    newOwnerId: str
 
 
 class SuccessResult(TypedDict, total=False):
@@ -34,27 +102,182 @@ class SuccessResult(TypedDict, total=False):
     message: str
 
 
+class ParticipantResult(TypedDict, total=False):
+    """One entry per requested participant, in the order they were requested.
+
+    ``success`` is true only when the engine confirmed the change for this participant. Engines that
+    confirm the batch rather than each member report one success entry per requested id, so a true
+    here does not always mean the engine spoke about that participant individually.
+    """
+
+    id: str
+    success: bool
+    status: int
+    message: str
+
+
+class ParticipantsResult(SuccessResult):
+    """The group membership writes.
+
+    A partial refusal does NOT fail the batch — the request answers 200 and reports the
+    per-participant outcome in ``results``, so ``success`` alone hides a member that was rejected.
+    """
+
+    results: list[ParticipantResult]
+
+
+class ParticipantPresence(TypedDict):
+    """One participant's presence within a chat."""
+
+    id: str
+    # 'composing'/'recording' mean actively typing or recording; 'paused' means they stopped.
+    state: Literal["available", "unavailable", "composing", "recording", "paused"]
+    # Unix SECONDS. Absent whenever the contact's privacy settings hide last-seen -- the common case.
+    lastSeen: NotRequired[int]
+
+
+class ChatPresence(TypedDict, total=False):
+    """The last presence reported for a chat since it was subscribed."""
+
+    chatId: str
+    participants: list[ParticipantPresence]
+    # Online member count, groups only.
+    groupOnlineCount: int
+    # When the gateway received the report -- NOT a WhatsApp timestamp.
+    observedAt: str
+
+
+class UpsertLabelRequest(TypedDict, total=False):
+    """A label create-or-update body. The id travels in the path -- WhatsApp keys the write on it."""
+
+    # Leave out to keep the current name.
+    name: str
+    # WhatsApp's colour INDEX (0-19), NOT a hex value -- it does not round-trip with the hexColor
+    # labels are read back with, because neither engine exposes the mapping.
+    color: int
+
+
+class CreateChannelRequest(TypedDict):
+    """Body for creating a channel."""
+
+    name: str
+    description: NotRequired[str]
+
+
+class MuteChannelRequest(TypedDict):
+    """Body for muting or unmuting a channel."""
+
+    # True mutes, False unmutes. The subscription is unaffected either way.
+    mute: bool
+
+
+class GroupJoinInfo(TypedDict):
+    """What an invite code discloses about a group before joining.
+
+    Not GroupInfo: a non-member has no participant list, only a count, and only when WhatsApp
+    discloses one.
+    """
+
+    id: str
+    name: str
+    description: NotRequired[str]
+    owner: NotRequired[str]
+    # Unix seconds.
+    createdAt: NotRequired[int]
+    participantCount: NotRequired[int]
+
+
+class CustomLinkPreview(TypedDict, total=False):
+    """A caller-supplied link preview. Nothing is fetched for these."""
+
+    url: str
+    # Required -- WhatsApp will not render a preview without a title.
+    title: str
+    description: str
+
+
 # ── Session ───────────────────────────────────────────────────────
 
 
-class SessionResponse(TypedDict, total=False):
+class AccountRestriction(TypedDict):
+    """A restriction WhatsApp has in force on a session's account.
+
+    'reachout_timelock' leaves the session connected and existing chats working -- only starting new
+    conversations is blocked -- whereas 'tos_block' and 'proxy_block' refuse the connection itself
+    and therefore cannot coexist with a 'ready' status.
+    """
+
+    kind: Literal["reachout_timelock", "tos_block", "proxy_block"]
+    # The engine's own token for the cause, verbatim (TOS_BLOCK, BIZ_QUALITY, ...).
+    code: str
+    # ISO timestamp when enforcement ends, when WhatsApp states one.
+    expiresAt: NotRequired[str | None]
+
+
+class SessionResponse(TypedDict):
     id: str
     name: str
     status: SessionStatus
-    phone: str | None
-    pushName: str | None
-    connectedAt: str | None
-    lastActive: str | None
+    phone: NotRequired[str | None]
+    pushName: NotRequired[str | None]
+    connectedAt: NotRequired[str | None]
+    lastActive: NotRequired[str | None]
     createdAt: str
     updatedAt: str
-    lastError: str | None
+    lastError: NotRequired[str | None]
+    # A limit WhatsApp itself has placed on the account, or None when there is none. Distinct from
+    # lastError, which describes a fault on the gateway's side.
+    restriction: NotRequired[AccountRestriction | None]
+    # Whether the gateway holds a live engine for this session -- the precondition stop/logout/
+    # force-kill require and start refuses. Not derivable from status: 'disconnected' covers both a
+    # session mid automatic-reconnect (engine present) and one stopped with no engine. Absent from a
+    # gateway that predates the field (the TypedDict is total=False).
+    engineLoaded: bool
 
 
-class CreateSessionRequest(TypedDict, total=False):
+class SessionProxy(TypedDict):
+    """Masked per-session proxy configuration — credentials are never returned."""
+
+    enabled: bool
+    proxyType: Literal['http', 'https', 'socks4', 'socks5'] | None
+    proxyHost: str | None
+    hasCredentials: bool
+
+
+class UpdateSessionProxyRequest(TypedDict, total=False):
+    """Update per-session proxy settings. Send proxyUrl=null to clear. Applies on the next start."""
+
+    proxyUrl: str | None
+
+
+class SessionConfig(TypedDict):
+    """A session's effective runtime configuration.
+
+    ``None`` on ``maxReconnectAttempts`` means unlimited -- not unset.
+    """
+
+    autoRejectCalls: bool
+    maxReconnectAttempts: int | None
+    reconnectBaseDelay: int
+
+
+class UpdateSessionConfigRequest(TypedDict, total=False):
+    """Partial update of a running session's config -- no re-link, no QR scan.
+
+    Send ``None`` for ``maxReconnectAttempts`` to restore unlimited retries, which no in-range number
+    can express.
+    """
+
+    autoRejectCalls: bool | None
+    maxReconnectAttempts: int | None
+    reconnectBaseDelay: int | None
+
+
+class CreateSessionRequest(TypedDict):
     name: str
-    config: dict[str, Any]
-    proxyUrl: str
-    proxyType: Literal["http", "https", "socks4", "socks5"]
+    config: NotRequired[dict[str, Any]]
+    proxyUrl: NotRequired[str]
+    proxyType: NotRequired[Literal['http', 'https', 'socks4', 'socks5']]
 
 
 class QrCodeResponse(TypedDict):
@@ -95,21 +318,40 @@ class MessageResponse(TypedDict):
 
 
 class SendTextRequest(TypedDict):
+    # chatId/text required; mentions optional.
     chatId: Jid
     text: str
+    # WIDs to @mention (e.g. ["62811@c.us"]). The text must also contain the @<number> token.
+    mentions: NotRequired[list[str]]
+    # Controls the URL preview. False suppresses it on both engines. Otherwise the engines differ:
+    # whatsapp-web.js builds one in-page by default, while on Baileys a preview is OPT-IN -- it needs
+    # True, because generating one is a blocking outbound fetch per URL.
+    linkPreview: NotRequired[bool]
+    # Attach a preview you supply yourself instead of one fetched from the URL. Nothing is fetched,
+    # so this works even for a URL the gateway cannot reach. Baileys only -- whatsapp-web.js takes a
+    # boolean and answers 501. Cannot be combined with linkPreview=False.
+    customLinkPreview: NotRequired[CustomLinkPreview]
+    # Quote an earlier message, turning this send into a reply. Engine-specific: whatsapp-web.js
+    # matches the serialized message id, Baileys the raw key id of a message it has already stored.
+    quotedMessageId: NotRequired[str]
 
 
-class SendMediaRequest(TypedDict, total=False):
+class SendMediaRequest(TypedDict):
     chatId: Jid
-    url: str
-    base64: str
-    mimetype: str
-    filename: str
-    caption: str
+    url: NotRequired[str]
+    base64: NotRequired[str]
+    mimetype: NotRequired[str]
+    filename: NotRequired[str]
+    caption: NotRequired[str]
+    # Quote an earlier message, turning this send into a reply. Engine-specific: whatsapp-web.js
+    # matches the serialized message id, Baileys the raw key id of a message it has already stored.
+    quotedMessageId: NotRequired[str]
+    # WIDs to @mention; the caption must also contain the @<number> token.
+    mentions: NotRequired[list[str]]
 
 
-class SendAudioRequest(SendMediaRequest, total=False):
-    ptt: bool  # audio only: send as a WhatsApp voice note (PTT)
+class SendAudioRequest(SendMediaRequest):
+    ptt: NotRequired[bool]
 
 
 class BulkMediaRequest(TypedDict, total=False):
@@ -122,25 +364,38 @@ class BulkMediaRequest(TypedDict, total=False):
     ptt: bool
 
 
-class SendLocationRequest(TypedDict, total=False):
+class SendLocationRequest(TypedDict):
     # chatId/latitude/longitude required; description/address optional.
     chatId: Jid
     latitude: float
     longitude: float
-    description: str
-    address: str
+    description: NotRequired[str]
+    address: NotRequired[str]
+    # Quote an earlier message, turning this send into a reply. Engine-specific: whatsapp-web.js
+    # matches the serialized message id, Baileys the raw key id of a message it has already stored.
+    quotedMessageId: NotRequired[str]
 
 
-class SendContactRequest(TypedDict):
+class _SendContactRequired(TypedDict):
     chatId: Jid
     contactName: str
     contactNumber: str
+
+
+# Split so the optional key can be added without loosening the three required ones — the same
+# inheritance shape SendAudioRequest already uses.
+class SendContactRequest(_SendContactRequired):
+    # Quote an earlier message, turning this send into a reply. Engine-specific: whatsapp-web.js
+    # matches the serialized message id, Baileys the raw key id of a message it has already stored.
+    quotedMessageId: NotRequired[str]
 
 
 class ReplyMessageRequest(TypedDict):
     chatId: Jid
     quotedMessageId: str
     text: str
+    # WIDs to @mention; the text must also contain the matching @<number> token.
+    mentions: NotRequired[list[str]]
 
 
 class ForwardMessageRequest(TypedDict):
@@ -155,11 +410,11 @@ class ReactMessageRequest(TypedDict):
     emoji: str
 
 
-class DeleteMessageRequest(TypedDict, total=False):
+class DeleteMessageRequest(TypedDict):
     # chatId/messageId required; forEveryone optional (default true).
     chatId: Jid
     messageId: str
-    forEveryone: bool
+    forEveryone: NotRequired[bool]
 
 
 class EditMessageRequest(TypedDict):
@@ -167,21 +422,40 @@ class EditMessageRequest(TypedDict):
     messageId: str
     # Same 4096-char cap as SendTextRequest.text — an edit cannot exceed what a send allows.
     body: str
+    # An edit REPLACES the body, so tags are re-applied rather than preserved.
+    mentions: NotRequired[list[str]]
 
 
-class SendTemplateRequest(TypedDict, total=False):
+class SendTemplateRequest(TypedDict):
     # chatId required; provide exactly one of templateId / templateName.
     # Modeled total=False (callers pass plain dicts); the backend validates.
     chatId: Jid
-    templateId: str
-    templateName: str
-    vars: dict[str, str]
+    templateId: NotRequired[str]
+    templateName: NotRequired[str]
+    vars: NotRequired[dict[str, str]]
+    # The rendered body is dispatched like a send-text, so it carries the same two optionals.
+    mentions: NotRequired[list[str]]
+    linkPreview: NotRequired[bool]
+
+
+class SendPollRequest(TypedDict):
+    # chatId/name/options required; allowMultipleAnswers optional (default single choice).
+    chatId: Jid
+    # Poll question / title (max 255 chars).
+    name: str
+    # Options to vote on (WhatsApp allows between 2 and 12).
+    options: list[str]
+    allowMultipleAnswers: NotRequired[bool]
+    # Quote an earlier message, turning this send into a reply. Engine-specific: whatsapp-web.js
+    # matches the serialized message id, Baileys the raw key id of a message it has already stored.
+    quotedMessageId: NotRequired[str]
 
 
 # ``from`` is a Python keyword, so use the functional TypedDict form.
 ListMessagesQuery = TypedDict(
     "ListMessagesQuery",
-    {"chatId": Jid, "from": Jid, "limit": int, "offset": int},
+    # ``after`` is a keyset cursor: the id of the last message of the previous page.
+    {"chatId": Jid, "from": Jid, "limit": int, "offset": int, "after": str, "inlineMedia": bool},
     total=False,
 )
 
@@ -194,24 +468,30 @@ class MessageHistoryQuery(TypedDict, total=False):
 
 # ``from`` is a Python keyword, so use the functional TypedDict form (and
 # Optional[...] rather than ``X | None`` so the runtime values stay 3.9-safe).
+# Functional form (not a class) because `from` is a Python keyword and cannot appear in a class
+# body. Required-vs-optional mirrors the wire DTO exactly; nullable-and-optional fields use
+# NotRequired[Optional[...]] like the class-form TypedDicts in this file.
 MessageRecord = TypedDict(
     "MessageRecord",
     {
         "id": str,
         "sessionId": str,
-        "waMessageId": Optional[str],
+        "waMessageId": NotRequired[Optional[str]],
         "chatId": Jid,
         "from": Jid,
         "to": Jid,
-        "body": Optional[str],
+        "body": NotRequired[Optional[str]],
         "type": str,
         "direction": MessageDirection,
-        "timestamp": Optional[int],
-        "metadata": dict,
+        "chatName": NotRequired[Optional[str]],
+        "author": NotRequired[Optional[str]],
+        "mediaPath": NotRequired[Optional[str]],
+        "mediaMimetype": NotRequired[Optional[str]],
+        "timestamp": NotRequired[Optional[int]],
+        "metadata": NotRequired[Optional[dict]],
         "status": DeliveryStatus,
         "createdAt": str,
     },
-    total=False,
 )
 
 
@@ -236,6 +516,33 @@ class MessageLocation(TypedDict, total=False):
     url: str
 
 
+class MessageCall(TypedDict, total=False):
+    """Call block on a live history message, present on ``call`` messages only."""
+
+    video: bool
+    missed: bool
+
+
+class MessageContact(TypedDict, total=False):
+    """Sender contact block. History carries ``pushName`` only; the richer fields arrive on
+    ``message.received`` when ``WEBHOOK_CONTACT_DETAILS`` is enabled."""
+
+    id: Jid
+    number: str
+    name: str
+    pushName: str
+    shortName: str
+    type: str
+    isMyContact: bool
+    isWAContact: bool
+    isBusiness: bool
+    isEnterprise: bool
+    verifiedName: str
+    verifiedLevel: int
+    isBlocked: bool
+    labels: list
+
+
 # A message read live from WhatsApp by ``messages.history()`` — the engine
 # payload, richer and differently shaped than the persisted MessageRecord.
 ChatHistoryMessage = TypedDict(
@@ -252,10 +559,15 @@ ChatHistoryMessage = TypedDict(
         "isGroup": bool,
         "isStatusBroadcast": bool,
         "kind": str,
+        "ephemeralDuration": int,
         "author": Jid,
         "mentionedIds": list,
+        "call": MessageCall,
         "isLidSender": bool,
         "senderPhone": Optional[str],
+        "contact": MessageContact,
+        "backgroundColor": str,
+        "font": int,
         "media": ChatHistoryMedia,
         "quotedMessage": QuotedMessage,
         "location": MessageLocation,
@@ -294,14 +606,16 @@ class BulkMessageContent(TypedDict, total=False):
     audio: BulkMediaRequest
     document: BulkMediaRequest
     caption: str
+    # Per item: a batch fans out to many chats, and a WID is only taggable in a chat it is in.
+    mentions: list[str]
 
 
-class BulkMessageItem(TypedDict, total=False):
+class BulkMessageItem(TypedDict):
     # chatId/type/content required; variables optional.
     chatId: Jid
     type: BulkMessageType
     content: BulkMessageContent
-    variables: dict[str, str]
+    variables: NotRequired[dict[str, str]]
 
 
 class BulkOptions(TypedDict, total=False):
@@ -314,17 +628,17 @@ class _SendBulkRequired(TypedDict):
     messages: list[BulkMessageItem]
 
 
-class SendBulkRequest(_SendBulkRequired, total=False):
+class SendBulkRequest(_SendBulkRequired):
     # `options` and `batchId` are optional; the backend applies defaults.
-    options: BulkOptions
-    batchId: str
+    options: NotRequired[BulkOptions]
+    batchId: NotRequired[str]
 
 
 class BulkMessageResponse(TypedDict):
     batchId: str
     status: str
     totalMessages: int
-    estimatedCompletionTime: str
+    estimatedCompletionTime: NotRequired[str]
     statusUrl: str
 
 
@@ -333,15 +647,15 @@ class BatchError(TypedDict, total=False):
     message: str
 
 
-class BatchMessageResult(TypedDict, total=False):
+class BatchMessageResult(TypedDict):
     chatId: Jid
-    status: str
-    messageId: str
-    sentAt: str
-    error: BatchError
+    status: BatchMessageStatus
+    messageId: NotRequired[str]
+    sentAt: NotRequired[str]
+    error: NotRequired[BatchError]
 
 
-class BatchProgress(TypedDict, total=False):
+class BatchProgress(TypedDict):
     total: int
     sent: int
     failed: int
@@ -349,30 +663,38 @@ class BatchProgress(TypedDict, total=False):
     cancelled: int
 
 
-class BatchStatusResponse(TypedDict, total=False):
+class BatchStatusResponse(TypedDict):
     """Response from ``GET /messages/batch/:batchId`` and the cancel endpoint.
 
     Distinct from :class:`BulkMessageResponse` (the send-bulk acknowledgement).
     """
 
     batchId: str
-    status: str
+    status: BatchLifecycleStatus
     progress: BatchProgress
     results: list[BatchMessageResult]
-    startedAt: str
-    completedAt: str
+    startedAt: NotRequired[str | None]
+    completedAt: NotRequired[str | None]
 
 
 # ── Contact ───────────────────────────────────────────────────────
 
 
 class ContactRecord(TypedDict, total=False):
+    """A contact as the gateway returns it.
+
+    ``isBlocked`` reflects the account's real blocklist on both engines. When the blocklist query
+    fails the field stays at its default rather than reporting "nobody is blocked", and the gateway
+    logs a warning — so a ``False`` is not proof the contact is unblocked if the link is unhealthy.
+    """
+
     id: Jid
     name: str | None
     number: str | None
-    pushname: str | None
-    isBusiness: bool
+    pushName: str | None
     isMyContact: bool
+    isBlocked: bool
+    profilePicUrl: str | None
 
 
 class CheckNumberResponse(TypedDict):
@@ -385,6 +707,11 @@ class ProfilePictureResponse(TypedDict):
     url: str | None
 
 
+class ProfilePicturesResponse(TypedDict):
+    # Map of contact id → picture URL (None when the lookup failed).
+    pictures: dict[str, str | None]
+
+
 class ContactPhoneResponse(TypedDict):
     contactId: Jid
     phone: str | None
@@ -393,36 +720,58 @@ class ContactPhoneResponse(TypedDict):
 # ── Group ─────────────────────────────────────────────────────────
 
 
-class GroupParticipant(TypedDict, total=False):
+class GroupParticipant(TypedDict):
     id: Jid
     number: str
-    name: str
+    name: NotRequired[str]
     isAdmin: bool
     isSuperAdmin: bool
 
 
-class GroupSummary(TypedDict, total=False):
+class GroupSummary(TypedDict):
     """Item returned by ``GET /sessions/:id/groups`` (the slim list shape)."""
 
     id: Jid
     name: str
-    participantsCount: int
-    isAdmin: bool
-    linkedParentJID: str | None
+    participantsCount: NotRequired[int]
+    isAdmin: NotRequired[bool]
+    linkedParentJID: NotRequired[str | None]
 
 
-class GroupInfo(TypedDict, total=False):
+GroupMembershipRequestMethod = Literal["invite_link", "non_admin_add", "linked_group_join"]
+
+
+class GroupMembershipRequest(TypedDict):
+    """A pending request to join a group.
+
+    Only ``participantId`` is always present; the engine reports the rest when it has it, so treat
+    ``addedById``, ``method`` and ``requestedAt`` as absent rather than assuming a shape.
+    """
+
+    participantId: str
+    addedById: NotRequired[str]
+    method: NotRequired[GroupMembershipRequestMethod]
+    requestedAt: NotRequired[float]
+
+
+class GroupInfo(TypedDict):
     """Full detail returned by ``GET /sessions/:id/groups/:groupId``."""
 
     id: Jid
     name: str
-    description: str | None
-    owner: Jid | None
-    createdAt: int
+    description: NotRequired[str]
+    owner: NotRequired[Jid]
+    createdAt: NotRequired[int]
     participants: list[GroupParticipant]
-    isReadOnly: bool
-    isAnnounce: bool
-    linkedParentJID: str | None
+    isReadOnly: NotRequired[bool]
+    isAnnounce: NotRequired[bool]
+    linkedParentJID: NotRequired[str | None]
+
+
+    announce: NotRequired[bool]
+    ephemeralSeconds: NotRequired[int]
+    locked: NotRequired[bool]
+    memberAddMode: NotRequired[Literal["all", "admins"]]
 
 
 class CreateGroupRequest(TypedDict):
@@ -450,10 +799,15 @@ class JoinGroupResponse(TypedDict, total=False):
 # (callers pass plain dicts); the backend validates (empty body -> 400).
 # `ephemeralSeconds` is the disappearing-messages timer (0 disables); the
 # whatsapp-web.js engine does not support it (request -> 501).
+GroupMemberAddMode = Literal["all", "admins"]
+
+
 class GroupSettings(TypedDict, total=False):
     announce: bool
     locked: bool
     ephemeralSeconds: int
+    # Who may add participants: "all" (any member) or "admins" (admins only).
+    memberAddMode: GroupMemberAddMode
 
 
 # ── Profile (own account) ─────────────────────────────────────────
@@ -479,40 +833,58 @@ class SetProfilePictureRequest(TypedDict, total=False):
 # ── Webhook ───────────────────────────────────────────────────────
 
 
-class WebhookFilterCondition(TypedDict):
+class WebhookFilterCondition(TypedDict, total=False):
+    # field/operator/value required; caseSensitive optional (text fields only, default false).
     field: str
     operator: str
-    value: list[str]
+    # Polymorphic per field kind: a single string (text fields), a list of
+    # strings (id/idArray/enum fields), or a bool (boolean fields).
+    value: str | list[str] | bool
+    caseSensitive: bool
 
 
 class WebhookFilters(TypedDict):
     conditions: list[WebhookFilterCondition]
 
 
-class CreateWebhookRequest(TypedDict, total=False):
+class CreateWebhookRequest(TypedDict):
+    url: str
+    events: NotRequired[list[WebhookEvent]]
+    # HMAC secret, signed as ``X-OpenWA-Signature: sha256=<hex>``. At least 16 characters; the
+    # gateway answers 400 below that. Omit for unsigned deliveries. Never returned by a read.
+    secret: NotRequired[str]
+    headers: NotRequired[dict[str, str]]
+    filters: NotRequired[WebhookFilters | None]
+    # Server DTO field is ``retryCount`` (0–5; default 3).
+    retryCount: NotRequired[int]
+
+
+class UpdateWebhookRequest(TypedDict, total=False):
+    # Deliberately NOT derived from CreateWebhookRequest: `url` is required to create a webhook and
+    # optional to update one, and a TypedDict subclass cannot relax an inherited key back to
+    # optional. Every field here is a partial update.
     url: str
     events: list[WebhookEvent]
+    # Same 16-character minimum as the create request, with one exception: the empty string is the
+    # documented "clear the secret" value and is accepted.
     secret: str
     headers: dict[str, str]
     filters: WebhookFilters | None
-    # Server DTO field is ``retryCount`` (0–5; default 3).
+    # Server DTO field is ``retryCount`` (0-5; default 3).
     retryCount: int
-
-
-class UpdateWebhookRequest(CreateWebhookRequest, total=False):
     active: bool
 
 
-class WebhookResponse(TypedDict, total=False):
+class WebhookResponse(TypedDict):
     id: str
     sessionId: str
     url: str
     events: list[WebhookEvent]
     active: bool
-    filters: WebhookFilters | None
+    filters: NotRequired[WebhookFilters | None]
     retryCount: int
     # ISO timestamp of the last delivery attempt, or None if never triggered.
-    lastTriggeredAt: str | None
+    lastTriggeredAt: NotRequired[str | None]
     createdAt: str
     updatedAt: str
     # NOTE: the server deliberately omits ``secret`` and ``headers`` from reads.
@@ -527,19 +899,34 @@ class WebhookTestResult(TypedDict, total=False):
 # ── Chat ──────────────────────────────────────────────────────────
 
 
-class ChatSummary(TypedDict, total=False):
+class ChatSummary(TypedDict):
     id: Jid
-    name: str | None
+    name: str
     isGroup: bool
     unreadCount: int
     # Server returns a plain preview string, not a message object.
-    lastMessage: str
+    lastMessage: NotRequired[str]
     timestamp: str | int
-    kind: str
+    kind: ChatKind
 
 
 class MarkChatRequest(TypedDict):
+    # Body for mark_unread.
     chatId: Jid
+
+
+class SubscribePresenceRequest(TypedDict):
+    # Body for subscribe_presence.
+    chatId: Jid
+
+
+class MarkChatReadRequest(TypedDict):
+    # Body for mark_read.
+    chatId: Jid
+    # Messages to acknowledge (at most 100; an empty list is refused). Baileys acknowledges
+    # individual messages, so without this only the newest message the engine still holds in
+    # memory gets a receipt. Ignored by whatsapp-web.js, whose own sendSeen is chat-level.
+    messageIds: NotRequired[list[str]]
 
 
 class SendChatStateRequest(TypedDict):
@@ -578,10 +965,10 @@ class StatusRecord(TypedDict, total=False):
     expiresAt: str
 
 
-# Result of a status POST (``send-text``/``send-image``/``send-video``). Mirrors the backend
+# Result of a status POST (``send-text``/``send-image``/``send-video``/``send-voice``). Mirrors the backend
 # ``StatusResult``, which is deliberately NOT ``Status``: the acknowledgement carries the id and
 # timing only, with no contact or media. ``statusId`` is the handle ``delete()`` takes.
-class StatusResult(TypedDict, total=False):
+class StatusResult(TypedDict):
     statusId: str
     # ISO 8601 timestamp of the post.
     timestamp: str
@@ -589,13 +976,98 @@ class StatusResult(TypedDict, total=False):
     expiresAt: str
 
 
-class SendTextStatusRequest(TypedDict, total=False):
+class StatusMedia(TypedDict):
+    """A stored status media file: raw bytes plus the served content type."""
+
+    data: bytes
+    contentType: str | None
+
+
+class PinMessageRequest(TypedDict):
+    """Pin a message. ``durationSeconds`` is 86400 (24h), 604800 (7d) or 2592000 (30d)."""
+
+    chatId: str
+    messageId: str
+    durationSeconds: NotRequired[PinDurationSeconds]
+
+
+class SetGroupPictureRequest(TypedDict, total=False):
+    """Group picture: provide url OR base64 (base64 wins); mimetype required with base64."""
+
+    url: str
+    base64: str
+    mimetype: str
+
+
+class UpsertContactRequest(TypedDict):
+    """Save or edit an addressbook contact. lastName is optional."""
+
+    firstName: str
+    lastName: NotRequired[str]
+
+
+class ArchiveChatRequest(TypedDict):
+    """Archive or unarchive a chat."""
+
+    chatId: str
+    archive: bool
+
+
+class PinChatRequest(TypedDict):
+    """Pin a chat to the top of the list, or unpin it."""
+
+    chatId: str
+    pin: bool
+
+
+class MuteChatRequest(TypedDict):
+    """Mute a chat until an absolute timestamp, or unmute it.
+
+    ``muteUntil`` is epoch **milliseconds**, or ``None`` to unmute now. Milliseconds, not seconds:
+    a seconds-scale value is an instant in 1970, so the mute expires immediately while the request
+    still answers 200. Required rather than optional because the two readings of an omitted value,
+    unmute now and mute indefinitely, are opposites.
+    """
+
+    chatId: str
+    muteUntil: Optional[int]
+
+
+class VotePollRequest(TypedDict):
+    """Vote on a poll. options are option TEXTS (no ids); [] clears the vote."""
+
+    chatId: str
+    pollMessageId: str
+    options: list[str]
+
+
+class StarMessageRequest(TypedDict):
+    """Star or unstar a message. Best-effort on whatsapp-web.js."""
+
+    chatId: str
+    messageId: str
+    star: bool
+
+
+class UnpinMessageRequest(TypedDict):
+    chatId: str
+    messageId: str
+
+
+class MessageMedia(TypedDict):
+    """A message's stored media: raw bytes plus the served content type."""
+
+    data: bytes
+    contentType: str | None
+
+
+class SendTextStatusRequest(TypedDict):
     # text always required; recipients required on the Baileys engine only.
     text: str
     # Recipient JIDs. Required on the Baileys engine (absent/empty -> 400); omit on whatsapp-web.js.
-    recipients: list[str]
-    backgroundColor: str
-    font: int
+    recipients: NotRequired[list[str]]
+    backgroundColor: NotRequired[str]
+    font: NotRequired[StatusFont]
 
 
 class StatusMediaInput(TypedDict, total=False):
@@ -606,22 +1078,37 @@ class StatusMediaInput(TypedDict, total=False):
     mimetype: str
 
 
-class SendImageStatusRequest(TypedDict, total=False):
+class SendImageStatusRequest(TypedDict):
     """Server expects a nested ``{ image: { url|base64 } }`` body."""
 
     image: StatusMediaInput
     # Recipient JIDs. Required on the Baileys engine (absent/empty -> 400); omit on whatsapp-web.js.
-    recipients: list[str]
-    caption: str
+    recipients: NotRequired[list[str]]
+    caption: NotRequired[str]
 
 
-class SendVideoStatusRequest(TypedDict, total=False):
+class SendVideoStatusRequest(TypedDict):
     """Server expects a nested ``{ video: { url|base64 } }`` body."""
 
     video: StatusMediaInput
     # Recipient JIDs. Required on the Baileys engine (absent/empty -> 400); omit on whatsapp-web.js.
-    recipients: list[str]
-    caption: str
+    recipients: NotRequired[list[str]]
+    caption: NotRequired[str]
+
+
+class SendVoiceStatusRequest(TypedDict):
+    """Post an audio status as a voice note.
+
+    No caption: WhatsApp has nowhere to render one on a status voice note. ``audio.mimetype``
+    defaults to ``audio/ogg; codecs=opus``, the only format WhatsApp plays as one — neither engine
+    transcodes, so produce those bytes with ``media.convert_voice``.
+    """
+
+    audio: StatusMediaInput
+    #: Required on the Baileys engine (absent/empty -> 400); omit on whatsapp-web.js.
+    recipients: NotRequired[list[str]]
+    #: Background colour as "#RRGGBB", behind the voice-note bubble. Baileys only; wwjs ignores it.
+    backgroundColor: NotRequired[str]
 
 
 # ── Health ────────────────────────────────────────────────────────
@@ -660,13 +1147,13 @@ class TemplateRecord(TypedDict, total=False):
     updatedAt: str
 
 
-class CreateTemplateRequest(TypedDict, total=False):
+class CreateTemplateRequest(TypedDict):
     # name + body required; header/footer optional. Modeled total=False
     # (callers pass plain dicts); the backend validates the required fields.
     name: str
     body: str
-    header: str
-    footer: str
+    header: NotRequired[str]
+    footer: NotRequired[str]
 
 
 class UpdateTemplateRequest(TypedDict, total=False):
@@ -771,18 +1258,23 @@ class PaginatedProducts(TypedDict):
     pagination: ProductPagination
 
 
+class ProductMessageResponse(TypedDict):
+    """Response of ``send-product``.
+
+    The route answers with the sent message's id under ``id``, not the ``messageId`` the other send
+    routes use.
+    """
+
+    id: str
+    timestamp: int
+
+
 # chatId + productId required; body optional. Modeled total=False for 3.9 compat
 # (callers pass plain dicts); the backend validates the required fields.
-class SendProductRequest(TypedDict, total=False):
+class SendProductRequest(TypedDict):
     chatId: Jid
     productId: str
-    body: str
-
-
-# chatId required; body optional. See SendProductRequest note.
-class SendCatalogRequest(TypedDict, total=False):
-    chatId: Jid
-    body: str
+    body: NotRequired[str]
 
 
 # ── Search ────────────────────────────────────────────────────────
@@ -852,3 +1344,20 @@ class SearchResults(TypedDict):
     total: int
     tookMs: int
     provider: str
+
+
+class ConvertedMedia(TypedDict, total=False):
+    """Converted media, shaped for handing straight to a send call."""
+
+    #: The converted bytes, ready to use as a send call's ``base64``.
+    base64: str
+    #: What the bytes now are — not what they were.
+    mimetype: str
+    #: Decoded size, so a size check needs no decoding.
+    bytes: int
+
+
+class MediaConversionAvailability(TypedDict, total=False):
+    """Whether server-side conversion can be used on this deployment."""
+
+    available: bool

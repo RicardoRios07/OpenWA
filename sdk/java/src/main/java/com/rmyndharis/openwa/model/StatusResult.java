@@ -1,7 +1,7 @@
 package com.rmyndharis.openwa.model;
 
 /**
- * Result of a status POST ({@code send-text}/{@code send-image}/{@code send-video}).
+ * Result of a status POST ({@code send-text}/{@code send-image}/{@code send-video}/{@code send-voice}).
  * Mirrors the backend {@code StatusResult} exactly.
  */
 public record StatusResult(

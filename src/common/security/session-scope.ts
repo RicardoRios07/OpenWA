@@ -21,3 +21,20 @@ export function resolveSessionScope(
   }
   return requestedSessionId ? [requestedSessionId] : null;
 }
+
+/**
+ * True when `sessionScope` — a resource's session binding, where null/undefined means "all
+ * sessions" — falls inside the calling key's `allowedSessions`. An unrestricted key (no allowlist)
+ * sees every scope; a scoped key only sees resources bound to one of its own sessions, so a null
+ * scope (and the '*' wildcard) is never inside its fence. Use this on surfaces whose session
+ * binding travels in the request body or in persisted rows, which the ApiKeyGuard's route-param
+ * fence cannot reach (the same body/persisted-scope pattern the integration-instance controller
+ * uses to confine a scoped key to instances bound inside its allowedSessions).
+ */
+export function sessionScopeVisible(
+  allowedSessions: string[] | null | undefined,
+  sessionScope: string | null | undefined,
+): boolean {
+  if (allowedSessions == null || allowedSessions.length === 0) return true;
+  return sessionScope != null && sessionScope !== '*' && allowedSessions.includes(sessionScope);
+}

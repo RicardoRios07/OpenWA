@@ -27,23 +27,53 @@ describe('recordWebhookDeliveryFailure', () => {
     lastError: 'HTTP 503: x',
   };
 
+  const repoWith = (insert: jest.Mock, existing = 0): Repository<WebhookDeliveryFailure> =>
+    ({ insert, count: jest.fn().mockResolvedValue(existing) }) as unknown as Repository<WebhookDeliveryFailure>;
+
   it('inserts the failure record, defaulting a missing lastStatusCode to null', async () => {
     const insert = jest.fn().mockResolvedValue({});
-    const repo = { insert } as unknown as Repository<WebhookDeliveryFailure>;
     const logger = { error: jest.fn() };
 
-    await recordWebhookDeliveryFailure(repo, logger, { ...input, lastStatusCode: undefined });
+    await expect(
+      recordWebhookDeliveryFailure(repoWith(insert), logger, { ...input, lastStatusCode: undefined }),
+    ).resolves.toBe(true);
 
     expect(insert).toHaveBeenCalledWith(expect.objectContaining({ webhookId: 'wh-1', lastStatusCode: null }));
     expect(logger.error).not.toHaveBeenCalled();
   });
 
-  it('swallows a repository error so a logging hiccup cannot re-poison the delivery', async () => {
-    const insert = jest.fn().mockRejectedValue(new Error('db down'));
-    const repo = { insert } as unknown as Repository<WebhookDeliveryFailure>;
+  it('skips a delivery it has already recorded, so one lost event is one row', async () => {
+    // The reconciler replays a stranded delivery once per sweep until its budget is spent, and each
+    // failed replay lands here with the SAME idempotency key.
+    const insert = jest.fn().mockResolvedValue({});
     const logger = { error: jest.fn() };
 
-    await expect(recordWebhookDeliveryFailure(repo, logger, input)).resolves.toBeUndefined();
+    await expect(recordWebhookDeliveryFailure(repoWith(insert, 1), logger, input)).resolves.toBe(false);
+
+    expect(insert).not.toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it('still records a failure that carries no idempotency key', async () => {
+    // Control: without a key there is no identity to dedupe on, so the guard must not swallow the
+    // row. Otherwise "skips a duplicate" would be satisfied by a helper that stopped inserting.
+    const insert = jest.fn().mockResolvedValue({});
+    const logger = { error: jest.fn() };
+
+    await expect(
+      recordWebhookDeliveryFailure(repoWith(insert, 1), logger, { ...input, idempotencyKey: undefined }),
+    ).resolves.toBe(true);
+
+    expect(insert).toHaveBeenCalled();
+  });
+
+  it('swallows a repository error so a logging hiccup cannot re-poison the delivery', async () => {
+    const insert = jest.fn().mockRejectedValue(new Error('db down'));
+    const logger = { error: jest.fn() };
+
+    // Reported as recorded even though the row was lost: the delivery really did fail, and the
+    // caller's failure metric must count it rather than hide it behind a database problem.
+    await expect(recordWebhookDeliveryFailure(repoWith(insert), logger, input)).resolves.toBe(true);
     expect(logger.error).toHaveBeenCalled();
   });
 });

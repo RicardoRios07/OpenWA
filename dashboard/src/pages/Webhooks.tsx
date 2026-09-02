@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Plus,
@@ -7,16 +7,15 @@ import {
   Play,
   ExternalLink,
   Loader2,
-  X,
   Webhook as WebhookIcon,
   Check,
-  AlertTriangle,
   AlertCircle,
   Filter,
 } from 'lucide-react';
 import { webhookApi, type Webhook, type WebhookFilters, type WebhookFilterCondition } from '../services/api';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useRole } from '../hooks/useRole';
+import { useToast } from '../hooks/useToast';
 import {
   useWebhooksQuery,
   useSessionsQuery,
@@ -27,6 +26,7 @@ import {
 } from '../hooks/queries';
 import { PageHeader } from '../components/PageHeader';
 import { FilterBuilder } from '../components/FilterBuilder';
+import { Modal } from '../components/Modal';
 import './Webhooks.css';
 
 // Filters only apply to message.* events (the wildcard subscribes to them too).
@@ -101,10 +101,16 @@ const availableEventNames = [
   'session.authenticated',
   'session.disconnected',
   'session.reconnect_loop',
+  'session.restriction',
+  'presence.update',
   'group.join',
   'group.leave',
   'group.update',
+  'group.join_request',
   'call.received',
+  'call.accepted',
+  'call.rejected',
+  'call.missed',
   'status.received',
   '*',
 ] as const;
@@ -131,23 +137,16 @@ export function Webhooks() {
     filters: WebhookFilters | null;
   }>({ url: '', events: ['message.received'], sessionId: '', filters: null });
   const [testingId, setTestingId] = useState<string | null>(null);
-  const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const toast = useToast();
 
   // Single source for the contact/group autocomplete in whichever modal is open.
-  const activeSessionId = showEditModal ? editWebhook?.sessionId ?? '' : newWebhook.sessionId;
+  const activeSessionId = showEditModal ? (editWebhook?.sessionId ?? '') : newWebhook.sessionId;
   const { data: chats = [] } = useSessionChatsQuery(activeSessionId, showCreateModal || showEditModal);
 
   const eventDescription = (name: string) => {
     if (name === '*') return t('webhooks.eventDescriptions.all');
     return t(`webhooks.eventDescriptions.${name}`, { defaultValue: name });
   };
-
-  useEffect(() => {
-    if (toast) {
-      const timer = setTimeout(() => setToast(null), 4000);
-      return () => clearTimeout(timer);
-    }
-  }, [toast]);
 
   const handleCreate = async () => {
     if (!newWebhook.url || !newWebhook.sessionId) return;
@@ -161,14 +160,13 @@ export function Webhooks() {
       });
       setShowCreateModal(false);
       setNewWebhook({ url: '', events: ['message.received'], sessionId: '', filters: null });
-      setToast({ type: 'success', message: t('webhooks.toasts.created') });
+      toast.success(t('webhooks.toasts.created'));
     } catch (err) {
-      setToast({
-        type: 'error',
-        message: t('webhooks.toasts.createFailed', {
+      toast.error(
+        t('webhooks.toasts.createFailed', {
           message: err instanceof Error ? err.message : t('common.unknownError'),
         }),
-      });
+      );
     }
   };
 
@@ -183,14 +181,13 @@ export function Webhooks() {
       await deleteMutation.mutateAsync({ sessionId: deleteTarget.sessionId, id: deleteTarget.id });
       setShowDeleteModal(false);
       setDeleteTarget(null);
-      setToast({ type: 'success', message: t('webhooks.toasts.deleted') });
+      toast.success(t('webhooks.toasts.deleted'));
     } catch (err) {
-      setToast({
-        type: 'error',
-        message: t('webhooks.toasts.deleteFailed', {
+      toast.error(
+        t('webhooks.toasts.deleteFailed', {
           message: err instanceof Error ? err.message : t('common.unknownError'),
         }),
-      });
+      );
     }
   };
 
@@ -199,20 +196,16 @@ export function Webhooks() {
     try {
       const result = await webhookApi.test(sessionId, id);
       if (result.success) {
-        setToast({ type: 'success', message: t('webhooks.toasts.testOk', { status: result.statusCode }) });
+        toast.success(t('webhooks.toasts.testOk', { status: result.statusCode }));
       } else {
-        setToast({
-          type: 'error',
-          message: t('webhooks.toasts.testFailed', { message: result.error || `Status ${result.statusCode}` }),
-        });
+        toast.error(t('webhooks.toasts.testFailed', { message: result.error || `Status ${result.statusCode}` }));
       }
     } catch (err) {
-      setToast({
-        type: 'error',
-        message: t('webhooks.toasts.testError', {
+      toast.error(
+        t('webhooks.toasts.testError', {
           message: err instanceof Error ? err.message : t('common.unknownError'),
         }),
-      });
+      );
     } finally {
       setTestingId(null);
     }
@@ -239,14 +232,13 @@ export function Webhooks() {
       });
       setShowEditModal(false);
       setEditWebhook(null);
-      setToast({ type: 'success', message: t('webhooks.toasts.updated') });
+      toast.success(t('webhooks.toasts.updated'));
     } catch (err) {
-      setToast({
-        type: 'error',
-        message: t('webhooks.toasts.updateFailed', {
+      toast.error(
+        t('webhooks.toasts.updateFailed', {
           message: err instanceof Error ? err.message : t('common.unknownError'),
         }),
-      });
+      );
     }
   };
 
@@ -280,16 +272,6 @@ export function Webhooks() {
 
   return (
     <div className="webhooks-page">
-      {toast && (
-        <div className={`toast ${toast.type}`}>
-          {toast.type === 'success' ? <Check size={18} /> : <AlertTriangle size={18} />}
-          <span>{toast.message}</span>
-          <button className="toast-close" onClick={() => setToast(null)}>
-            <X size={16} />
-          </button>
-        </div>
-      )}
-
       <PageHeader
         title={t('webhooks.title')}
         subtitle={t('webhooks.subtitle')}
@@ -311,173 +293,171 @@ export function Webhooks() {
       )}
 
       {showCreateModal && (
-        <div className="modal-overlay" onClick={() => setShowCreateModal(false)}>
-          <div className="modal" onClick={e => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>{t('webhooks.createTitle')}</h2>
-              <button className="btn-icon" onClick={() => setShowCreateModal(false)}>
-                <X size={20} />
-              </button>
-            </div>
-            <div className="modal-body">
-              <label>{t('webhooks.session')}</label>
-              <select
-                value={newWebhook.sessionId}
-                onChange={e => setNewWebhook({ ...newWebhook, sessionId: e.target.value })}
-              >
-                <option value="">{t('webhooks.selectSession')}</option>
-                {sessions.map(s => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
-                ))}
-              </select>
-              <label>{t('common.url')}</label>
-              <input
-                type="url"
-                placeholder="https://..."
-                value={newWebhook.url}
-                onChange={e => setNewWebhook({ ...newWebhook, url: e.target.value })}
-              />
-              <label>{t('webhooks.events')}</label>
-              <div className="event-tags">
-                {availableEventNames.map(name => {
-                  const isSelected = newWebhook.events.includes(name);
-                  return (
-                    <button
-                      key={name}
-                      type="button"
-                      className={`event-tag ${isSelected ? 'selected' : ''}`}
-                      onClick={() => toggleNewEvent(name)}
-                    >
-                      {isSelected && <Check size={12} className="tag-check-icon" />}
-                      {name}
-                    </button>
-                  );
-                })}
-              </div>
-              {supportsFilters(newWebhook.events) && (
-                <FilterBuilder
-                  filters={newWebhook.filters}
-                  onChange={filters => setNewWebhook(prev => ({ ...prev, filters }))}
-                  chats={chats}
-                />
-              )}
-            </div>
-            <div className="modal-footer">
+        <Modal
+          open
+          onClose={() => setShowCreateModal(false)}
+          title={t('webhooks.createTitle')}
+          closeLabel={t('common.close')}
+          footer={
+            <>
               <button className="btn-secondary" onClick={() => setShowCreateModal(false)}>
                 {t('common.cancel')}
               </button>
               <button className="btn-primary" onClick={handleCreate}>
                 {t('common.create')}
               </button>
-            </div>
+            </>
+          }
+        >
+          <label htmlFor="wh-1">{t('webhooks.session')}</label>
+          <select
+            id="wh-1"
+            value={newWebhook.sessionId}
+            onChange={e => setNewWebhook({ ...newWebhook, sessionId: e.target.value })}
+          >
+            <option value="">{t('webhooks.selectSession')}</option>
+            {sessions.map(s => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+          <label htmlFor="wh-2">{t('common.url')}</label>
+          <input
+            id="wh-2"
+            type="url"
+            placeholder="https://..."
+            value={newWebhook.url}
+            onChange={e => setNewWebhook({ ...newWebhook, url: e.target.value })}
+          />
+          <label>{t('webhooks.events')}</label>
+          <div className="event-tags">
+            {availableEventNames.map(name => {
+              const isSelected = newWebhook.events.includes(name);
+              return (
+                <button
+                  key={name}
+                  type="button"
+                  className={`event-tag ${isSelected ? 'selected' : ''}`}
+                  onClick={() => toggleNewEvent(name)}
+                >
+                  {isSelected && <Check size={12} className="tag-check-icon" />}
+                  {name}
+                </button>
+              );
+            })}
           </div>
-        </div>
+          {supportsFilters(newWebhook.events) && (
+            <FilterBuilder
+              filters={newWebhook.filters}
+              onChange={filters => setNewWebhook(prev => ({ ...prev, filters }))}
+              chats={chats}
+            />
+          )}
+        </Modal>
       )}
 
       {showEditModal && editWebhook && (
-        <div className="modal-overlay" onClick={() => setShowEditModal(false)}>
-          <div className="modal" onClick={e => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>{t('webhooks.editTitle')}</h2>
-              <button className="btn-icon" onClick={() => setShowEditModal(false)}>
-                <X size={20} />
-              </button>
-            </div>
-            <div className="modal-body">
-              <label>{t('common.url')}</label>
-              <input
-                type="url"
-                value={editWebhook.url}
-                onChange={e => setEditWebhook({ ...editWebhook, url: e.target.value })}
-              />
-              <label>{t('webhooks.events')}</label>
-              <div className="event-tags">
-                {availableEventNames.map(name => {
-                  const isSelected = editWebhook.events.includes(name);
-                  return (
-                    <button
-                      key={name}
-                      type="button"
-                      className={`event-tag ${isSelected ? 'selected' : ''}`}
-                      onClick={() => toggleEditEvent(name)}
-                    >
-                      {isSelected && <Check size={12} className="tag-check-icon" />}
-                      {name}
-                    </button>
-                  );
-                })}
-              </div>
-              {supportsFilters(editWebhook.events) && (
-                <FilterBuilder
-                  filters={editWebhook.filters}
-                  onChange={filters => setEditWebhook(prev => (prev ? { ...prev, filters } : prev))}
-                  chats={chats}
-                />
-              )}
-              <div className="toggle-group">
-                <span className="toggle-label">{t('common.status')}</span>
-                <label className="toggle-switch">
-                  <input
-                    type="checkbox"
-                    checked={editWebhook.active}
-                    onChange={e => setEditWebhook({ ...editWebhook, active: e.target.checked })}
-                  />
-                  <span className="toggle-slider"></span>
-                </label>
-                <span className={`toggle-status ${editWebhook.active ? 'active' : 'inactive'}`}>
-                  {editWebhook.active ? t('common.active') : t('common.inactive')}
-                </span>
-              </div>
-            </div>
-            <div className="modal-footer">
+        <Modal
+          open
+          onClose={() => setShowEditModal(false)}
+          title={t('webhooks.editTitle')}
+          closeLabel={t('common.close')}
+          footer={
+            <>
               <button className="btn-secondary" onClick={() => setShowEditModal(false)}>
                 {t('common.cancel')}
               </button>
               <button className="btn-primary" onClick={handleEdit}>
                 {t('webhooks.saveChanges')}
               </button>
-            </div>
+            </>
+          }
+        >
+          <label htmlFor="wh-3">{t('common.url')}</label>
+          <input
+            id="wh-3"
+            type="url"
+            value={editWebhook.url}
+            onChange={e => setEditWebhook({ ...editWebhook, url: e.target.value })}
+          />
+          <label>{t('webhooks.events')}</label>
+          <div className="event-tags">
+            {availableEventNames.map(name => {
+              const isSelected = editWebhook.events.includes(name);
+              return (
+                <button
+                  key={name}
+                  type="button"
+                  className={`event-tag ${isSelected ? 'selected' : ''}`}
+                  onClick={() => toggleEditEvent(name)}
+                >
+                  {isSelected && <Check size={12} className="tag-check-icon" />}
+                  {name}
+                </button>
+              );
+            })}
           </div>
-        </div>
+          {supportsFilters(editWebhook.events) && (
+            <FilterBuilder
+              filters={editWebhook.filters}
+              onChange={filters => setEditWebhook(prev => (prev ? { ...prev, filters } : prev))}
+              chats={chats}
+            />
+          )}
+          <div className="toggle-group">
+            <span className="toggle-label" id="webhook-active-label">
+              {t('common.status')}
+            </span>
+            <label className="toggle-switch">
+              <input
+                type="checkbox"
+                aria-labelledby="webhook-active-label"
+                checked={editWebhook.active}
+                onChange={e => setEditWebhook({ ...editWebhook, active: e.target.checked })}
+              />
+              <span className="toggle-slider"></span>
+            </label>
+            <span className={`toggle-status ${editWebhook.active ? 'active' : 'inactive'}`}>
+              {editWebhook.active ? t('common.active') : t('common.inactive')}
+            </span>
+          </div>
+        </Modal>
       )}
 
       {showDeleteModal && deleteTarget && (
-        <div className="modal-overlay" onClick={() => setShowDeleteModal(false)}>
-          <div className="modal modal-sm" onClick={e => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>{t('webhooks.deleteTitle')}</h2>
-              <button className="btn-icon" onClick={() => setShowDeleteModal(false)}>
-                <X size={20} />
-              </button>
-            </div>
-            <div className="modal-body">
-              <p>{t('webhooks.deleteConfirm')}</p>
-              <code
-                style={{
-                  display: 'block',
-                  marginTop: '0.5rem',
-                  padding: '0.5rem',
-                  background: 'var(--color-bg-secondary)',
-                  borderRadius: '4px',
-                  fontSize: '0.85rem',
-                  wordBreak: 'break-all',
-                }}
-              >
-                {deleteTarget.url}
-              </code>
-            </div>
-            <div className="modal-footer">
+        <Modal
+          open
+          onClose={() => setShowDeleteModal(false)}
+          title={t('webhooks.deleteTitle')}
+          className="modal-sm"
+          closeLabel={t('common.close')}
+          footer={
+            <>
               <button className="btn-secondary" onClick={() => setShowDeleteModal(false)}>
                 {t('common.cancel')}
               </button>
               <button className="btn-danger" onClick={handleDelete}>
                 {t('common.delete')}
               </button>
-            </div>
-          </div>
-        </div>
+            </>
+          }
+        >
+          <p>{t('webhooks.deleteConfirm')}</p>
+          <code
+            style={{
+              display: 'block',
+              marginTop: '0.5rem',
+              padding: '0.5rem',
+              background: 'var(--color-bg-secondary)',
+              borderRadius: '4px',
+              fontSize: '0.85rem',
+              wordBreak: 'break-all',
+            }}
+          >
+            {deleteTarget.url}
+          </code>
+        </Modal>
       )}
 
       <div className="webhooks-content">
@@ -491,7 +471,8 @@ export function Webhooks() {
           ) : (
             <div className="webhooks-card-list">
               {webhooks.map(webhook => {
-                const sessionName = sessions.find(s => s.id === webhook.sessionId)?.name || webhook.sessionId.substring(0, 12);
+                const sessionName =
+                  sessions.find(s => s.id === webhook.sessionId)?.name || webhook.sessionId.substring(0, 12);
                 return (
                   <div key={webhook.id} className="webhook-card">
                     <div className="webhook-card-header">
@@ -506,11 +487,19 @@ export function Webhooks() {
                           onClick={() => handleTest(webhook.sessionId, webhook.id)}
                           disabled={testingId === webhook.id}
                         >
-                          {testingId === webhook.id ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
+                          {testingId === webhook.id ? (
+                            <Loader2 size={16} className="animate-spin" />
+                          ) : (
+                            <Play size={16} />
+                          )}
                         </button>
                         {canWrite && (
                           <>
-                            <button className="icon-btn" title={t('webhooks.actions.edit')} onClick={() => openEdit(webhook)}>
+                            <button
+                              className="icon-btn"
+                              title={t('webhooks.actions.edit')}
+                              onClick={() => openEdit(webhook)}
+                            >
                               <Edit size={16} />
                             </button>
                             <button

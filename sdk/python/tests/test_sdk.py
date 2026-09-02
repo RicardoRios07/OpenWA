@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import httpx
 import pytest
 
 from openwa import OpenWAClient, OpenWAApiError, OpenWANotFoundError
+from openwa._http import build_url
+from openwa.errors import OpenWAServiceUnavailableError
+from openwa.types import WebhookFilters
 
 from conftest import MockBackend, make_client
 
@@ -97,9 +101,24 @@ class TestClientCore:
         assert "chatId=a%40c.us" in url
         assert "limit=10" in url
 
+    def test_build_url_omits_none_valued_params(self):
+        # The behaviour a caller depends on: a None never reaches the wire as the literal "None".
+        # Tested here because build_url is what implements it — the typed resource signatures
+        # forbid None, so proving it through one of them would mean lying about a type.
+        url = build_url("http://x", "/api/search", {"q": "x", "sessionId": None, "limit": 5})
+
+        assert "q=x" in url
+        assert "limit=5" in url
+        assert "sessionId" not in url
+        assert "None" not in url
+
     def test_204_is_none(self):
+        # `delete` is declared `-> None`, so asserting on its result is a type error and proves
+        # nothing the signature does not already guarantee. What is worth asserting is that a 204
+        # completes without trying to parse an empty body as JSON.
         backend = MockBackend().on("DELETE", "/api/sessions", status=204)
-        assert make_client(backend).sessions.delete("x") is None
+        make_client(backend).sessions.delete("x")
+        assert backend.last_call.method == "DELETE"
 
     def test_404_maps_to_not_found_error(self):
         backend = MockBackend().on("GET", "/api/sessions/missing", status=404, body={
@@ -107,6 +126,17 @@ class TestClientCore:
         })
         with pytest.raises(OpenWANotFoundError):
             make_client(backend).sessions.get("missing")
+
+    def test_maps_503_to_service_unavailable(self):
+        # The gateway answers 503 when the engine never confirmed an operation -- the one typed error
+        # here worth retrying. It used to fall through to the base class while the permanent 501 had a
+        # subclass of its own.
+        backend = MockBackend()
+        backend.on("GET", "/api/sessions/s1", 503, {
+            "statusCode": 503, "message": "WhatsApp did not answer", "error": "Service Unavailable"
+        })
+        with pytest.raises(OpenWAServiceUnavailableError):
+            make_client(backend).sessions.get("s1")
 
     def test_exposes_all_resources(self):
         client = make_client(MockBackend())
@@ -123,6 +153,22 @@ class TestMessages:
         make_client(backend).messages.send_text("s1", {"chatId": "a@c.us", "text": "hi"})
         assert backend.last_call.url == "http://localhost:2785/api/sessions/s1/messages/send-text"
         assert backend.last_call.body == {"chatId": "a@c.us", "text": "hi"}
+
+    def test_send_text_forwards_mentions_verbatim(self):
+        backend = MockBackend().on("POST", "/send-text", body={"messageId": "m1", "timestamp": 1})
+        make_client(backend).messages.send_text("s1", {"chatId": "g@g.us", "text": "hi @628123", "mentions": ["628123@c.us"]})
+        assert backend.last_call.body == {"chatId": "g@g.us", "text": "hi @628123", "mentions": ["628123@c.us"]}
+
+    def test_send_poll_uses_send_poll_path(self):
+        backend = MockBackend().on("POST", "/send-poll", body={"messageId": "m2", "timestamp": 2})
+        res = make_client(backend).messages.send_poll("s1", {
+            "chatId": "a@c.us", "name": "Where?", "options": ["Park", "Beach"], "allowMultipleAnswers": True,
+        })
+        assert backend.last_call.url == "http://localhost:2785/api/sessions/s1/messages/send-poll"
+        assert backend.last_call.body == {
+            "chatId": "a@c.us", "name": "Where?", "options": ["Park", "Beach"], "allowMultipleAnswers": True,
+        }
+        assert res["messageId"] == "m2"
 
     @pytest.mark.parametrize("method,segment", [
         ("send_image", "send-image"),
@@ -162,6 +208,36 @@ class TestMessages:
         res = make_client(backend).messages.list("s")
         assert res["total"] == 1
         assert len(res["messages"]) == 1
+
+    def test_quoted_message_id_reaches_the_body_on_every_send(self):
+        # Asserted on the BODY, not the URL: a URL assertion cannot see a dropped key, and dropping
+        # one is exactly how a client ends up 400ing while its four siblings work.
+        backend = MockBackend()
+        for route in ("send-text", "send-image", "send-location", "send-contact", "send-poll"):
+            backend.on("POST", f"/{route}", body={"messageId": "m", "timestamp": 1})
+        client = make_client(backend)
+
+        client.messages.send_text("s", {"chatId": "a@c.us", "text": "hi", "quotedMessageId": "q1"})
+        client.messages.send_image("s", {"chatId": "a@c.us", "url": "http://u", "quotedMessageId": "q1"})
+        client.messages.send_location(
+            "s", {"chatId": "a@c.us", "latitude": 1, "longitude": 2, "quotedMessageId": "q1"}
+        )
+        client.messages.send_contact(
+            "s", {"chatId": "a@c.us", "contactName": "A", "contactNumber": "628", "quotedMessageId": "q1"}
+        )
+        client.messages.send_poll(
+            "s", {"chatId": "a@c.us", "name": "Q", "options": ["a", "b"], "quotedMessageId": "q1"}
+        )
+
+        for call in backend.calls[-5:]:
+            assert call.body["quotedMessageId"] == "q1", call.url
+
+    def test_ordinary_send_carries_no_quote_key(self):
+        # Known-negative control: without it an implementation that always emitted the key — as null,
+        # which some clients drop and others send — would satisfy the assertion above.
+        backend = MockBackend().on("POST", "/send-image", body={"messageId": "m", "timestamp": 1})
+        make_client(backend).messages.send_image("s", {"chatId": "a@c.us", "url": "http://u"})
+        assert "quotedMessageId" not in backend.calls[-1].body
 
     def test_reply_forwardReactDelete(self):
         backend = MockBackend()
@@ -244,6 +320,7 @@ class TestSessions:
         backend.on("DELETE", "/sessions/s1", status=204)
         backend.on("POST", "/start", body={"id": "s1", "status": "initializing"})
         backend.on("POST", "/stop", body={"id": "s1", "status": "disconnected"})
+        backend.on("POST", "/logout", body={"id": "s1", "status": "disconnected"})
         backend.on("POST", "/force-kill", body={"id": "s1", "status": "disconnected"})
         client = make_client(backend)
         client.sessions.list()
@@ -255,6 +332,8 @@ class TestSessions:
         client.sessions.start("s1")
         assert "/sessions/s1/start" in backend.calls[-1].url
         client.sessions.stop("s1")
+        client.sessions.logout("s1")
+        assert "/sessions/s1/logout" in backend.calls[-1].url
         client.sessions.force_kill("s1")
         assert "/sessions/s1/force-kill" in backend.calls[-1].url
         client.sessions.delete("s1")
@@ -272,6 +351,16 @@ class TestSessions:
         assert backend.calls[-1].body == {"phoneNumber": "628123456789"}
         client.sessions.stats()
         assert "/sessions/stats/overview" in backend.calls[-1].url
+
+    def test_set_online_presence(self):
+        backend = MockBackend()
+        backend.on("PUT", "/presence", body={"success": True})
+        client = make_client(backend)
+        client.sessions.set_online_presence("s1", {"available": False})
+        # The account's own presence: no chat id in the path and no /subscribe suffix.
+        assert backend.calls[-1].method == "PUT"
+        assert backend.calls[-1].url.endswith("/sessions/s1/presence")
+        assert backend.calls[-1].body == {"available": False}
 
 
 # ── Groups, Contacts, Webhooks, Chats, Health ──────────────────────
@@ -374,6 +463,41 @@ class TestProfile:
         client.profile.set_profile_picture("s", {"base64": "aGVsbG8=", "mimetype": "image/jpeg"})
         assert backend.calls[-1].body == {"base64": "aGVsbG8=", "mimetype": "image/jpeg"}
 
+    def test_delete_profile_picture(self):
+        backend = MockBackend().on("DELETE", "/profile/picture", body={"success": True, "message": "Profile picture removed"})
+        client = make_client(backend)
+        client.profile.delete_profile_picture("s")
+        assert backend.calls[-1].method == "DELETE"
+        assert backend.calls[-1].url == "http://localhost:2785/api/sessions/s/profile/picture"
+        assert backend.calls[-1].body is None
+
+
+class TestMedia:
+    def test_conversion_status(self):
+        backend = MockBackend().on("GET", "/media/convert", body={"available": True})
+        res = make_client(backend).media.conversion_status("s")
+        assert backend.last_call.url == "http://localhost:2785/api/sessions/s/media/convert"
+        assert res["available"] is True
+
+    def test_convert_voice(self):
+        backend = MockBackend().on(
+            "POST", "/media/convert/voice", body={"base64": "T2dnUw==", "mimetype": "audio/ogg; codecs=opus", "bytes": 8}
+        )
+        res = make_client(backend).media.convert_voice("s", base64="SUQz")
+        assert backend.last_call.method == "POST"
+        assert backend.last_call.url == "http://localhost:2785/api/sessions/s/media/convert/voice"
+        # Only the field that was given: a blank one reads as supplied-but-empty.
+        assert backend.last_call.body == {"base64": "SUQz"}
+        assert res["mimetype"] == "audio/ogg; codecs=opus"
+
+    def test_convert_video_with_url(self):
+        backend = MockBackend().on(
+            "POST", "/media/convert/video", body={"base64": "AAAA", "mimetype": "video/mp4", "bytes": 4}
+        )
+        make_client(backend).media.convert_video("s", url="https://example.com/c.mov")
+        assert backend.last_call.url == "http://localhost:2785/api/sessions/s/media/convert/video"
+        assert backend.last_call.body == {"url": "https://example.com/c.mov"}
+
 
 class TestCalls:
     def test_reject_call(self):
@@ -419,6 +543,26 @@ class TestContacts:
         client.contacts.unblock("s", "a@c.us")
         assert backend.calls[-1].method == "DELETE"
 
+    def test_list_blocked_gets_session_wide_route(self):
+        backend = MockBackend().on("GET", "/contacts/blocked", body=["a@c.us", "b@c.us"])
+        client = make_client(backend)
+        res = client.contacts.list_blocked("s")
+        call = backend.calls[-1]
+        assert call.method == "GET"
+        # Session-wide: no contact id in the path, and not the /contacts list route.
+        assert call.url.endswith("/api/sessions/s/contacts/blocked")
+        assert call.body is None
+        assert res == ["a@c.us", "b@c.us"]
+
+    def test_profile_pictures_batch_resolves_ids_query(self):
+        backend = MockBackend().on("GET", "/contacts/profile-pictures", body={
+            "pictures": {"a@c.us": "http://p/a", "b@c.us": None}
+        })
+        res = make_client(backend).contacts.profile_pictures("s", ["a@c.us", "b@c.us"])
+        assert backend.last_call.method == "GET"
+        assert backend.last_call.url == "http://localhost:2785/api/sessions/s/contacts/profile-pictures?ids=a%40c.us%2Cb%40c.us"
+        assert res["pictures"] == {"a@c.us": "http://p/a", "b@c.us": None}
+
 
 class TestWebhooks:
     def test_crud_test(self):
@@ -442,12 +586,28 @@ class TestWebhooks:
         client.webhooks.test("s", "w1")
         assert "/webhooks/w1/test" in backend.calls[-1].url
 
+    def test_create_forwards_polymorphic_filter_values_verbatim(self):
+        backend = MockBackend().on("POST", "/webhooks", body={"id": "w1"})
+        # Annotated, not inferred: an unannotated literal widens to dict[str, list[object]] and the
+        # call below then proves nothing about the declared filter shape — which is the whole point
+        # of a test named "forwards polymorphic filter values verbatim".
+        filters: WebhookFilters = {
+            "conditions": [
+                {"field": "sender", "operator": "is", "value": ["123@c.us"]},
+                {"field": "body", "operator": "contains", "value": "invoice", "caseSensitive": True},
+                {"field": "isGroup", "operator": "is", "value": False},
+            ]
+        }
+        make_client(backend).webhooks.create("s", {"url": "u", "events": ["message.received"], "filters": filters})
+        assert backend.last_call.body == {"url": "u", "events": ["message.received"], "filters": filters}
+
 
 class TestStatus:
     def test_send_image_video_forward_nested_media_body(self):
         backend = MockBackend()
         backend.on("POST", "/status/send-image", body={"statusId": "s1"})
         backend.on("POST", "/status/send-video", body={"statusId": "s2"})
+        backend.on("POST", "/status/send-voice", body={"statusId": "s3"})
         client = make_client(backend)
         # Server requires a nested {image|video:{...}} body, not flat media fields,
         # plus a required recipients list.
@@ -455,6 +615,57 @@ class TestStatus:
         assert backend.calls[-1].body == {"image": {"url": "http://img"}, "recipients": ["a@c.us"], "caption": "hi"}
         client.status.send_video("s", {"video": {"url": "http://vid"}, "recipients": ["a@c.us"]})
         assert backend.calls[-1].body == {"video": {"url": "http://vid"}, "recipients": ["a@c.us"]}
+        # A voice status takes an `audio` wrapper and carries no caption — WhatsApp has nowhere to
+        # render one on a status voice note.
+        client.status.send_voice("s", {"audio": {"base64": "T2dnUw=="}, "recipients": ["a@c.us"]})
+        assert backend.last_call.url == "http://localhost:2785/api/sessions/s/status/send-voice"
+        assert backend.calls[-1].body == {"audio": {"base64": "T2dnUw=="}, "recipients": ["a@c.us"]}
+
+    def test_vote_poll_posts_option_texts(self):
+        backend = MockBackend().on("POST", "/messages/vote-poll", body={"success": True})
+        make_client(backend).messages.vote_poll("s", {"chatId": "c1", "pollMessageId": "p1", "options": ["Pizza"]})
+        assert backend.last_call.url == "http://localhost:2785/api/sessions/s/messages/vote-poll"
+        assert backend.last_call.body == {"chatId": "c1", "pollMessageId": "p1", "options": ["Pizza"]}
+
+    def test_star_posts_the_boolean_through(self):
+        backend = MockBackend().on("POST", "/messages/star", body={"success": True})
+        make_client(backend).messages.star("s", {"chatId": "c1", "messageId": "m1", "star": False})
+        assert backend.last_call.url == "http://localhost:2785/api/sessions/s/messages/star"
+        assert backend.last_call.body == {"chatId": "c1", "messageId": "m1", "star": False}
+
+    def test_pin_and_unpin_post_to_their_routes(self):
+        backend = MockBackend().on("POST", "/messages/pin", body={"success": True})
+        backend.on("POST", "/messages/unpin", body={"success": True})
+        client = make_client(backend)
+        client.messages.pin("s", {"chatId": "c1", "messageId": "m1", "durationSeconds": 604800})
+        assert backend.last_call.url == "http://localhost:2785/api/sessions/s/messages/pin"
+        assert backend.last_call.method == "POST"
+        client.messages.unpin("s", {"chatId": "c1", "messageId": "m1"})
+        assert backend.last_call.url == "http://localhost:2785/api/sessions/s/messages/unpin"
+
+    def test_message_media_fetches_archived_bytes(self):
+        backend = MockBackend()
+        backend.fallback = lambda _: httpx.Response(200, content=b"PNG_BYTES", headers={"content-type": "image/png"})
+        res = make_client(backend).messages.media("s", "c1", "m1")
+        assert backend.last_call.method == "GET"
+        assert backend.last_call.url == "http://localhost:2785/api/sessions/s/messages/c1/m1/media"
+        assert res == {"data": b"PNG_BYTES", "contentType": "image/png"}
+
+    def test_media_fetches_stored_status_bytes(self):
+        backend = MockBackend()
+        backend.fallback = lambda _: httpx.Response(200, content=b"PNG_BYTES", headers={"content-type": "image/png"})
+        res = make_client(backend).status.media("s", "w1")
+        assert backend.last_call.method == "GET"
+        assert backend.last_call.url == "http://localhost:2785/api/sessions/s/status/w1/media"
+        assert res == {"data": b"PNG_BYTES", "contentType": "image/png"}
+
+    def test_media_404_maps_to_not_found_error(self):
+        backend = MockBackend()
+        backend.fallback = lambda _: httpx.Response(
+            404, content=b'{"statusCode": 404, "message": "Status media not found or expired"}'
+        )
+        with pytest.raises(OpenWANotFoundError):
+            make_client(backend).status.media("s", "w1")
 
 
 class TestChatsAndHealth:
@@ -473,6 +684,65 @@ class TestChatsAndHealth:
         client.chats.delete("s", {"chatId": "a@c.us"})
         client.chats.send_state("s", {"chatId": "a@c.us", "state": "typing"})
         assert "/chats/typing" in backend.calls[-1].url
+
+    def test_chats_clear_messages(self):
+        backend = MockBackend().on("DELETE", "/messages", body={"success": True})
+        make_client(backend).chats.clear_messages("s", "a@c.us")
+        assert backend.last_call.method == "DELETE"
+        assert backend.last_call.url == "http://localhost:2785/api/sessions/s/chats/a@c.us/messages"
+
+    def test_groups_picture(self):
+        backend = MockBackend().on("GET", "/picture", body={"url": "https://x/p.jpg"})
+        backend.on("PUT", "/picture", body={"success": True})
+        backend.on("DELETE", "/picture", body={"success": True})
+        client = make_client(backend)
+        assert client.groups.get_picture("s", "g@g.us") == {"url": "https://x/p.jpg"}
+        client.groups.set_picture("s", "g@g.us", {"url": "https://x/new.jpg"})
+        assert backend.last_call.method == "PUT"
+        client.groups.delete_picture("s", "g@g.us")
+        assert backend.last_call.method == "DELETE"
+        assert backend.last_call.url == "http://localhost:2785/api/sessions/s/groups/g@g.us/picture"
+
+    def test_contacts_addressbook(self):
+        backend = MockBackend().on("PUT", "/contacts/", body={"success": True})
+        backend.on("DELETE", "/contacts/", body={"success": True})
+        client = make_client(backend)
+        client.contacts.upsert("s", "a@c.us", {"firstName": "Ada"})
+        assert backend.last_call.method == "PUT"
+        assert backend.last_call.url == "http://localhost:2785/api/sessions/s/contacts/a@c.us"
+        client.contacts.delete("s", "a@c.us")
+        assert backend.last_call.method == "DELETE"
+
+    def test_chats_archive(self):
+        backend = MockBackend().on("POST", "/chats/archive", body={"success": True})
+        make_client(backend).chats.archive("s", {"chatId": "a@c.us", "archive": True})
+        assert backend.last_call.url == "http://localhost:2785/api/sessions/s/chats/archive"
+        assert backend.last_call.body == {"chatId": "a@c.us", "archive": True}
+
+    def test_chats_pin(self):
+        backend = MockBackend().on("POST", "/chats/pin", body={"success": True})
+        make_client(backend).chats.pin("s", {"chatId": "a@c.us", "pin": True})
+        assert backend.last_call.url == "http://localhost:2785/api/sessions/s/chats/pin"
+        assert backend.last_call.body == {"chatId": "a@c.us", "pin": True}
+
+    def test_chats_pin_reports_refusal(self):
+        backend = MockBackend().on("POST", "/chats/pin", body={"success": False})
+        assert make_client(backend).chats.pin("s", {"chatId": "a@c.us", "pin": True}) == {"success": False}
+
+    def test_chats_mute_sends_epoch_milliseconds_unchanged(self):
+        # The value must arrive as the exact millisecond number given. A client that divided by 1000
+        # would still get a 200 back; the wrong unit is only visible on the wire.
+        backend = MockBackend().on("POST", "/chats/mute", body={"success": True})
+        make_client(backend).chats.mute("s", {"chatId": "a@c.us", "muteUntil": 1893456000000})
+        assert backend.last_call.url == "http://localhost:2785/api/sessions/s/chats/mute"
+        assert backend.last_call.body == {"chatId": "a@c.us", "muteUntil": 1893456000000}
+
+    def test_chats_mute_sends_explicit_null_to_unmute(self):
+        # None is the unmute signal and is NOT the same as omitting the key, which the route rejects.
+        backend = MockBackend().on("POST", "/chats/mute", body={"success": True})
+        make_client(backend).chats.mute("s", {"chatId": "a@c.us", "muteUntil": None})
+        assert backend.last_call.body == {"chatId": "a@c.us", "muteUntil": None}
+        assert "muteUntil" in backend.last_call.body
 
     def test_health_and_auth(self):
         backend = MockBackend()
@@ -537,7 +807,6 @@ class TestLabelsChannelsCatalog:
         })
         backend.on("GET", "/catalog/products/p1", body={"id": "p1", "name": "Widget"})
         backend.on("POST", "/messages/send-product", body={"messageId": "m", "timestamp": 1})
-        backend.on("POST", "/messages/send-catalog", body={"messageId": "m", "timestamp": 1})
         client = make_client(backend)
         client.catalog.info("s")
         assert "/sessions/s/catalog" in backend.calls[-1].url
@@ -548,8 +817,6 @@ class TestLabelsChannelsCatalog:
         client.catalog.send_product("s", {"chatId": "a@c.us", "productId": "p1", "body": "x"})
         assert "/messages/send-product" in backend.calls[-1].url
         assert backend.calls[-1].body == {"chatId": "a@c.us", "productId": "p1", "body": "x"}
-        client.catalog.send_catalog("s", {"chatId": "a@c.us", "body": "cat"})
-        assert "/messages/send-catalog" in backend.calls[-1].url
 
     def test_templates_crud(self):
         tpl = {"id": "t1", "sessionId": "s", "name": "welcome", "body": "Hi {{name}}", "createdAt": "", "updatedAt": ""}
@@ -640,12 +907,66 @@ class TestSearch:
         assert res["hits"][0]["direction"] == "incoming"
 
     def test_search_none_values_skipped_in_query(self):
-        # None-typed optional filters must be omitted, never sent as the literal "None".
+        # Asserted against build_url, which is where the omission actually happens, rather than by
+        # routing `sessionId: None` through the typed resource. The contract has sessionId optional
+        # but NOT nullable (openapi.json: required false, type string, no nullable), so the
+        # TypedDict is right to demand a str and the old call was sending a payload the gateway
+        # would reject. Testing the mechanism at its owner keeps the regression covered without
+        # anything having to lie about the type.
         backend = MockBackend().on("GET", "/api/search", body={
             "hits": [], "total": 0, "tookMs": 0, "provider": "builtin-fts",
         })
-        make_client(backend).search.search({"q": "x", "sessionId": None, "limit": 5})
+        make_client(backend).search.search({"q": "x", "limit": 5})
         url = backend.last_call.url
         assert "q=x" in url
         assert "limit=5" in url
         assert "sessionId" not in url
+
+
+class TestGroupMembershipRequests:
+    def test_list_approve_reject(self):
+        backend = MockBackend()
+        backend.on("GET", "/membership-requests", body=[{"participantId": "a@c.us", "method": "invite_link"}])
+        backend.on("POST", "/membership-requests/approve", body={"success": True, "message": "ok", "results": []})
+        backend.on("POST", "/membership-requests/reject", body={"success": True, "message": "ok", "results": []})
+        client = make_client(backend)
+
+        pending = client.groups.get_membership_requests("s", "g1@g.us")
+        assert backend.calls[-1].method == "GET"
+        assert backend.calls[-1].url.endswith("/groups/g1@g.us/membership-requests")
+        assert pending[0]["participantId"] == "a@c.us"
+
+        client.groups.approve_membership_requests("s", "g1@g.us", ["a@c.us"])
+        assert backend.calls[-1].url.endswith("/membership-requests/approve")
+        assert backend.calls[-1].body == {"participants": ["a@c.us"]}
+
+        # Omitting the list means "every pending request": an empty body, not a null participants key.
+        client.groups.reject_membership_requests("s", "g1@g.us")
+        assert backend.calls[-1].url.endswith("/membership-requests/reject")
+        assert backend.calls[-1].body == {}
+
+
+class TestCallLink:
+    def test_create_link(self):
+        backend = MockBackend()
+        backend.on("POST", "/calls/link", body={"link": "https://call.whatsapp.com/video/AbC"})
+        client = make_client(backend)
+        res = client.calls.create_link("s", {"type": "video", "startTime": 1800000000000})
+        assert backend.calls[-1].method == "POST"
+        assert backend.calls[-1].url.endswith("/sessions/s/calls/link")
+        assert backend.calls[-1].body == {"type": "video", "startTime": 1800000000000}
+        assert "call.whatsapp.com" in res["link"]
+class TestChannelAdminOwnership:
+    def test_demote_and_transfer(self):
+        backend = MockBackend()
+        backend.on("POST", "/admins/demote", body={"success": True})
+        backend.on("POST", "/owner/transfer", body={"success": True})
+        client = make_client(backend)
+
+        client.channels.demote_admin("s", "c@newsletter", {"userId": "a@c.us"})
+        assert backend.calls[-1].url.endswith("/channels/c@newsletter/admins/demote")
+        assert backend.calls[-1].body == {"userId": "a@c.us"}
+
+        client.channels.transfer_ownership("s", "c@newsletter", {"newOwnerId": "b@c.us"})
+        assert backend.calls[-1].url.endswith("/channels/c@newsletter/owner/transfer")
+        assert backend.calls[-1].body == {"newOwnerId": "b@c.us"}

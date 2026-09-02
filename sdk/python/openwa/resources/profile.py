@@ -37,3 +37,7 @@ class ProfileResource:
         Requires an OPERATOR-level key.
         """
         return self._http.request("PUT", f"/api/sessions/{quote_segment(session_id)}/profile/picture", body=body)
+
+    def delete_profile_picture(self, session_id: str) -> SuccessResult:
+        """Remove the account profile picture. Requires an OPERATOR-level key."""
+        return self._http.request("DELETE", f"/api/sessions/{quote_segment(session_id)}/profile/picture")

@@ -202,7 +202,7 @@
 
 .chats-page .chat-item-card.active .chat-avatar {
   background: var(--bg-white);
-  color: var(--primary);
+  color: var(--primary-text);
   border-color: rgba(34, 197, 94, 0.3);
 }
 
@@ -288,6 +288,7 @@
    ============================================================================= */
 .chats-page .chats-room {
   flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   background: var(--bg-light);
@@ -467,7 +468,7 @@
 
 .chats-page .scroll-to-bottom-btn:hover {
   background: var(--bg-light);
-  color: var(--primary);
+  color: var(--primary-text);
   border-color: var(--primary);
 }
 
@@ -541,6 +542,16 @@
   color: #e9edef;
 }
 
+/* System-dark twin: the default 'system' theme removes data-theme entirely, so the explicit rule
+   above never matches on a dark OS. :not([data-theme='light']) keeps an explicit light choice in
+   control (same pattern as Webhooks.css). */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .chats-page .message-bubble.outgoing {
+    background: #005c4b;
+    color: #e9edef;
+  }
+}
+
 .chats-page .message-text {
   word-break: break-word;
   white-space: pre-wrap;
@@ -580,7 +591,10 @@
 }
 
 .chats-page .message-status-icon.read {
-  color: #53bdeb; /* WhatsApp blue checks */
+  /* The WhatsApp blue is 2.13:1 on the outgoing bubble, and these checks are TEXT, not an icon.
+     Darkened to clear 4.5:1 there and on white; the status is also spelled out in aria-label/title,
+     since delivered and read otherwise differ only by this colour. */
+  color: #337592;
 }
 
 /* =============================================================================
@@ -601,6 +615,11 @@
 
 .chats-page .message-text-input {
   flex: 1;
+  /* An input keeps its intrinsic width as its automatic minimum, which pinned the whole composer to
+     369px and pushed the send button outside the layout's clip. The floor replaces that with one small
+     enough to let the composer fit a narrow pane and large enough to keep a caret and a few characters
+     visible; without it the box shrinks to its own padding and shows nothing at all. */
+  min-width: 64px;
   padding: 0.75rem 1rem;
   border: 1px solid var(--border);
   border-radius: 24px;
@@ -685,7 +704,7 @@
 }
 
 .chats-page .text-warn {
-  color: #ea580c;
+  color: var(--warning-text);
 }
 
 /* Real-time connection-lost banner */
@@ -697,7 +716,7 @@
   margin-bottom: 0.75rem;
   border-radius: 6px;
   background: rgba(234, 88, 12, 0.1);
-  color: #ea580c;
+  color: var(--warning-text);
   font-size: 0.875rem;
 }
 
@@ -729,7 +748,7 @@
 
 .chats-page .btn-input-accessory.active {
   background: rgba(34, 197, 94, 0.1);
-  color: var(--primary);
+  color: var(--primary-text);
 }
 
 .chats-page .attachment-preview-banner {
@@ -798,7 +817,7 @@
 
 .chats-page .btn-remove-attachment:hover {
   background: rgba(239, 68, 68, 0.12);
-  color: var(--error);
+  color: var(--error-text);
 }
 
 .chats-page .chats-emoji-picker {
@@ -882,6 +901,38 @@
   }
 }
 
+/* Between the mobile breakpoint and 889px the two-pane layout leaves the room narrower than the
+   composer's 244px minimum, so the send button fell outside the panel's clip with no scrollbar to
+   recover it. In that band the panes swap one at a time instead, the way they already do on a phone.
+   Bounded on both sides on purpose: at 768px and below the mobile shell owns the layout, and from 890px
+   the room fits the composer again. The room is `viewport - 646`, so the bound is 646 + 244 - 1; it
+   moves if the composer's own minimum does. Keyed to the navigation as well as the viewport, because
+   that arithmetic only holds while the nav is expanded; collapsed it already fits and none of this
+   should apply. `.main-content.expanded` is Layout's class for the COLLAPSED nav. */
+@media (min-width: 769px) and (max-width: 889px) {
+  .main-content:not(.expanded) .chats-page .chats-layout {
+    flex-direction: column;
+  }
+
+  .main-content:not(.expanded) .chats-page .chats-sidebar {
+    width: 100%;
+    height: 100%;
+    border-right: none;
+  }
+
+  .main-content:not(.expanded) .chats-page .chats-layout.has-active-chat .chats-sidebar {
+    display: none;
+  }
+
+  .main-content:not(.expanded) .chats-page .chats-layout:not(.has-active-chat) .chats-room {
+    display: none;
+  }
+
+  .main-content:not(.expanded) .chats-page .room-back {
+    display: inline-flex;
+  }
+}
+
 /* =============================================================================
    MEDIA RENDERING STYLES
    ============================================================================= */
@@ -895,10 +946,36 @@
   object-fit: cover;
 }
 
+/* A button, not a label: the bytes are fetchable from the per-message media route, so this is the
+   viewer's handle on media the list did not inline. Styled to keep the previous inert appearance
+   apart from the affordance. */
 .chats-page .message-media-omitted {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0;
+  border: none;
+  background: none;
   color: var(--text-muted);
   font-style: italic;
   font-size: 0.9em;
+  font-family: inherit;
+  margin-bottom: 0.25rem;
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+
+.chats-page .message-media-omitted:disabled {
+  cursor: default;
+  text-decoration: none;
+}
+
+/* The map preview keeps its own modest cap, but bounded by the bubble the way every other media type
+   here is. As a bare pixel width it stayed 220px wide in a narrower room and ran past the panel edge. */
+.chats-page .chat-location-media {
+  max-width: min(220px, 100%);
+  border-radius: 8px;
+  display: block;
   margin-bottom: 0.25rem;
 }
 
@@ -940,6 +1017,13 @@
 [data-theme='dark'] .chats-page .chat-document-media {
   background: #202c33;
   border-color: #2f3b43;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .chats-page .chat-document-media {
+    background: #202c33;
+    border-color: #2f3b43;
+  }
 }
 
 .chats-page .message-bubble.media-type {
@@ -1001,7 +1085,7 @@
 }
 
 .chats-page .action-btn.delete-btn:hover {
-  color: var(--error);
+  color: var(--error-text);
   background: rgba(239, 68, 68, 0.12);
 }
 
@@ -1109,6 +1193,17 @@
 [data-theme='dark'] .chats-page .message-quote-box {
   background: rgba(255, 255, 255, 0.08);
 }
+/* Outgoing-bubble quote boxes: the plain dark rule loses the specificity tie with the light
+   outgoing rule below, so both dark modes apply the same treatment explicitly. */
+[data-theme='dark'] .chats-page .message-bubble.outgoing .message-quote-box {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .chats-page .message-quote-box {
+    background: rgba(255, 255, 255, 0.08);
+  }
+}
 
 .chats-page .quote-body {
   white-space: nowrap;
@@ -1141,7 +1236,12 @@
 .chats-page .replying-to-title {
   font-size: 0.8125rem;
   font-weight: 700;
-  color: var(--primary);
+  color: var(--primary-text);
+  /* Same treatment as `.replying-to-body` below. Without it a quoted name with no break opportunity
+     keeps its box but paints straight through the close button and out of the panel. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .chats-page .replying-to-body {
@@ -1181,6 +1281,15 @@
 [data-theme='dark'] .chats-page .message-reactions-badge {
   background: #202c33;
   border-color: #2f3b43;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .chats-page .message-actions-menu,
+  :root:not([data-theme='light']) .chats-page .reaction-quick-popover,
+  :root:not([data-theme='light']) .chats-page .message-reactions-badge {
+    background: #202c33;
+    border-color: #2f3b43;
+  }
 }
 
 /* Inline code inside a message body. */
@@ -1234,6 +1343,13 @@
   color: var(--text-secondary);
 }
 
+/* The pane icon's only in-flow sibling here is the heading, which has never opted out of shrinking,
+   so without this opt-out the row takes width from the icon as well. The heading absorbs most of the
+   deficit but not all of it, and on the narrowest pane the icon is squeezed to a couple of pixels. */
+.chats-page .chats-room-header > svg {
+  flex-shrink: 0;
+}
+
 .chats-page .chats-room-header h2 {
   font-size: 1rem;
   font-weight: 600;
@@ -1241,6 +1357,12 @@
   text-transform: none;
   letter-spacing: normal;
   margin: 0;
+  /* Same treatment as the chat header's h3. `overflow: hidden` is the load-bearing declaration: it
+     both clips and zeroes this flex item's automatic minimum, so no min-width is needed here or on
+     an ancestor. Without it the other two are inert and a long title runs past the panel edge. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .chats-page .messages-list {

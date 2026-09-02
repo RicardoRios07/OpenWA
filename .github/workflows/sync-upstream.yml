@@ -1,4 +1,9 @@
-name: Sync upstream + Deploy
+name: Sync fork with upstream
+
+# Solo sincroniza la rama `main` del fork con el upstream oficial (rmyndharis/OpenWA).
+# NO despliega a producción: prod construye desde la rama `stable`, que solo avanza
+# de forma deliberada vía scripts/openwa/promote.sh tras pasar el canary.
+# El pin de WhatsApp Web (WWEBJS_WEB_VERSION) se mantiene al día aparte (scripts/openwa/pin.sh).
 
 on:
   schedule:
@@ -16,17 +21,25 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Configure git identity
+        run: |
+          git config user.name "openwa-sync[bot]"
+          git config user.email "openwa-sync[bot]@users.noreply.github.com"
+
       - name: Fetch upstream
         run: |
           git remote add upstream https://github.com/rmyndharis/OpenWA.git
           git fetch upstream main
 
-      - name: Sync fork with upstream
+      - name: Sync fork with upstream (fast-forward only)
         id: sync
         run: |
           git checkout main
           BEFORE=$(git rev-parse HEAD)
-          git merge upstream/main --no-edit --allow-unrelated-histories
+          # El fork mantiene commits propios en main (config del sync), así que
+          # ff-only es imposible por diseño: merge normal absorbe upstream sin
+          # tocar la config propia. Sin conflictos: upstream nunca toca este workflow.
+          git merge upstream/main --no-edit
           AFTER=$(git rev-parse HEAD)
           echo "before=$BEFORE" >> "$GITHUB_OUTPUT"
           echo "after=$AFTER" >> "$GITHUB_OUTPUT"
@@ -34,11 +47,8 @@ jobs:
       - name: Push to fork
         if: steps.sync.outputs.before != steps.sync.outputs.after
         run: |
+          # actions/checkout registra el GITHUB_TOKEN de la App como extraheader
+          # que gana sobre el PAT de la URL (matchea https://github.com/ completo).
+          git config --unset-all http.https://github.com/.extraheader || true
           git remote set-url origin "https://x-access-token:${{ secrets.OPENWA_SYNC_PAT }}@github.com/RicardoRios07/OpenWA.git"
           git push origin main
-
-      - name: Deploy to Coolify
-        run: |
-          curl -fsS -X POST \
-            -H "Authorization: Bearer ${{ secrets.COOLIFY_API_TOKEN }}" \
-            "https://coolify-api.vendi.ec/api/v1/deploy?uuid=n50tfqbjdl6d56vd2921c7bq&force=true"

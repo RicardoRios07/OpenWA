@@ -16,7 +16,7 @@ export class SearchQueryDto {
   @ApiProperty({ description: 'Search term (required, non-empty)' })
   @IsString()
   @IsNotEmpty()
-  q: string;
+  q!: string;
 
   @ApiPropertyOptional({ description: 'Restrict to a single session' })
   @IsOptional()

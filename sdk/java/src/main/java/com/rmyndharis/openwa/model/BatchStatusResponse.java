@@ -9,7 +9,7 @@ import java.util.List;
  */
 public record BatchStatusResponse(
     String batchId,
-    String status,
+    BatchLifecycleStatus status,
     BatchProgress progress,
     List<BatchMessageResult> results,
     String startedAt,

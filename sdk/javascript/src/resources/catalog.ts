@@ -1,10 +1,10 @@
 /**
- * Catalog resource — WhatsApp Business catalog, products, and product/catalog sends.
+ * Catalog resource — WhatsApp Business catalog, products, and product sends.
  *
  * Backed by `src/modules/catalog/catalog.controller.ts` (`@Controller('sessions/:sessionId')`).
  * NOTE: the catalog controller is mounted under the session root, so catalog
- * reads are `/catalog...` while product/catalog SENDS share the messages
- * namespace (`/messages/send-product`, `/messages/send-catalog`). All require
+ * reads are `/catalog...` while product sends share the messages
+ * namespace (`/messages/send-product`). All require
  * an OPERATOR-level key for write operations.
  * @packageDocumentation
  */
@@ -15,9 +15,8 @@ import type {
   CatalogInfo,
   CatalogProduct,
   CatalogProductsQuery,
-  MessageResponse,
   PaginatedProducts,
-  SendCatalogRequest,
+  ProductMessageResponse,
   SendProductRequest,
 } from '../types.js';
 
@@ -50,19 +49,10 @@ export class CatalogResource {
   }
 
   /** Send a product message. Requires an OPERATOR-level key. Shares the messages path. */
-  sendProduct(sessionId: string, body: SendProductRequest): Promise<MessageResponse> {
-    return this.client.request<MessageResponse>({
+  sendProduct(sessionId: string, body: SendProductRequest): Promise<ProductMessageResponse> {
+    return this.client.request<ProductMessageResponse>({
       method: 'POST',
       path: `/api/sessions/${encodeSegment(sessionId)}/messages/send-product`,
-      body,
-    });
-  }
-
-  /** Send a catalog link message. Requires an OPERATOR-level key. Shares the messages path. */
-  sendCatalog(sessionId: string, body: SendCatalogRequest): Promise<MessageResponse> {
-    return this.client.request<MessageResponse>({
-      method: 'POST',
-      path: `/api/sessions/${encodeSegment(sessionId)}/messages/send-catalog`,
       body,
     });
   }

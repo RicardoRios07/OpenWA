@@ -12,8 +12,10 @@ const HOOK_HANG_FIXTURE = path.resolve(ROOT, 'test/fixtures/sandbox/hook-hang-pl
 const RUNAWAY_FIXTURE = path.resolve(ROOT, 'test/fixtures/sandbox/runaway-plugin.cjs');
 const CTX_FIXTURE = path.resolve(ROOT, 'test/fixtures/sandbox/ctx-aware-plugin.cjs');
 const HOOK_CONFIG_FIXTURE = path.resolve(ROOT, 'test/fixtures/sandbox/hook-config-plugin.cjs');
+const HOOK_ERROR_FIXTURE = path.resolve(ROOT, 'test/fixtures/sandbox/hook-error-plugin.cjs');
 const CTX_LIFECYCLE_FIXTURE = path.resolve(ROOT, 'test/fixtures/sandbox/ctx-lifecycle-plugin.cjs');
 const SEARCH_FIXTURE = path.resolve(ROOT, 'test/fixtures/sandbox/search-plugin.cjs');
+const UNLOAD_FIXTURE = path.resolve(ROOT, 'test/fixtures/sandbox/unload-plugin.cjs');
 const flushAsync = (): Promise<void> => new Promise(resolve => setImmediate(resolve));
 
 // Run the TS bootstrap inside the worker via ts-node. The base tsconfig is nodenext; we pin the
@@ -46,6 +48,20 @@ describe('plugin worker — real worker_threads round-trip (B1)', () => {
     await host.load(FIXTURE);
     await host.runLifecycle('onEnable');
     await host.runLifecycle('onDisable');
+    await host.terminate();
+  });
+
+  it('dispatches onUnload to the plugin inside the worker (the hook the loader fires on uninstall)', async () => {
+    const host = makeHost();
+    await host.load(UNLOAD_FIXTURE);
+    await host.runLifecycle('onEnable');
+    await expect(host.healthCheck(3000)).resolves.toMatchObject({ message: 'loaded' });
+
+    await host.runLifecycle('onUnload');
+
+    // The worker-side instance observed its onUnload — before this hook was dispatched on the
+    // unload path, a sandboxed plugin's cleanup (timers, connections) never ran.
+    await expect(host.healthCheck(3000)).resolves.toMatchObject({ message: 'unloaded' });
     await host.terminate();
   });
 
@@ -115,9 +131,36 @@ describe('plugin worker — real worker_threads round-trip (B1)', () => {
     // shutdown is impossible. terminate() must still reclaim the thread.
     const wedged = host.runLifecycle('onEnable');
     wedged.catch(() => undefined); // terminate() rejects this pending call; swallow it
-    await new Promise(resolve => setTimeout(resolve, 150));
+    // Poll until the loop is genuinely blocked rather than sleeping a fixed 150ms: the health-check
+    // message is queued behind the onEnable call (FIFO on one channel), so it can only time out once
+    // the infinite loop has actually started. Firing terminate() earlier would reclaim an idle worker
+    // and prove nothing.
+    const wedgeDeadline = Date.now() + 10_000;
+    for (;;) {
+      const health = await host.healthCheck(150);
+      if (!health.healthy) break;
+      if (Date.now() > wedgeDeadline) throw new Error('runaway plugin never blocked the worker event loop');
+    }
 
     await expect(host.terminate()).resolves.toBeUndefined();
+  });
+
+  it('a throwing worker hook handler is reported back on the hook-result (not silently swallowed)', async () => {
+    const host = new PluginWorkerHost(makeChannel(), undefined, () => undefined);
+    await host.load(HOOK_ERROR_FIXTURE);
+    await host.runLifecycle('onEnable');
+    await flushAsync();
+
+    // The chain still fails open (continue:true) — but the worker's error crosses the wire so the
+    // host can log it and record it for the plugin's health surface. `data` round-trips untouched.
+    const result = await host.dispatchHook({
+      event: 'message:received',
+      data: {},
+      source: 'Engine',
+      timeoutMs: 5000,
+    });
+    expect(result).toEqual({ continue: true, data: {}, error: 'intentional hook failure' });
+    await host.terminate();
   });
 
   it('preserves a structured-clone-safe hook payload across the worker boundary', async () => {

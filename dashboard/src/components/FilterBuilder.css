@@ -86,7 +86,7 @@
 
 .filter-remove:hover {
   border-color: var(--error);
-  color: var(--error);
+  color: var(--error-text);
 }
 
 .filter-remove:hover svg {
@@ -102,7 +102,7 @@
   border: 1px dashed var(--border);
   border-radius: 6px;
   background: transparent;
-  color: var(--primary);
+  color: var(--primary-text);
   font-size: 0.8125rem;
   font-weight: 600;
   cursor: pointer;
@@ -168,7 +168,7 @@
 
 .enum-tag:hover {
   border-color: var(--primary);
-  color: var(--primary);
+  color: var(--primary-text);
 }
 
 .enum-tag.selected {
@@ -201,7 +201,7 @@
   padding: 0.125rem 0.375rem;
   background: rgba(37, 211, 102, 0.15);
   border: 1px solid rgba(37, 211, 102, 0.25);
-  color: var(--primary);
+  color: var(--primary-text);
   border-radius: 6px;
   font-size: 0.75rem;
   font-weight: 600;
@@ -282,7 +282,7 @@
 }
 
 .chips-suggestion-add {
-  color: var(--primary);
+  color: var(--primary-text);
   font-weight: 600;
   font-size: 0.8125rem;
   border-top: 1px solid var(--border);

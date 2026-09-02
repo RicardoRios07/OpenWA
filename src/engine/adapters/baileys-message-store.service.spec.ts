@@ -50,6 +50,10 @@ describe('BaileysMessageStoreService', () => {
     ({
       key: { id, remoteJid: '1@s.whatsapp.net', fromMe: false },
       message: { conversation: id },
+      // A real WAMessage carries binary fields, and they are the only reason the BufferJSON round-trip
+      // exists. With a string-only fixture the assertions below held under any replacer/reviver pair,
+      // including identity — the test named the codec without exercising it.
+      mediaKey: Buffer.from([0x01, 0x02, 0x03, 0xff]),
     }) as unknown as Parameters<BaileysMessageStoreService['put']>[1];
 
   it('round-trips a WAMessage through BufferJSON', async () => {
@@ -58,6 +62,10 @@ describe('BaileysMessageStoreService', () => {
     const got = await service.getMessage('s1', 'M1');
     expect(got?.key?.id).toBe('M1');
     expect(got?.message?.conversation).toBe('M1');
+    // The assertion that makes this a round-trip test rather than a string-copy test.
+    const mediaKey = (got as unknown as { mediaKey?: unknown }).mediaKey;
+    expect(Buffer.isBuffer(mediaKey)).toBe(true);
+    expect(mediaKey).toEqual(Buffer.from([0x01, 0x02, 0x03, 0xff]));
   });
 
   it('returns null for an unknown id and is session-scoped', async () => {
@@ -171,6 +179,39 @@ describe('BaileysMessageStoreService', () => {
     const boom = Object.assign(new Error('disk full'), { code: 'SQLITE_FULL' });
     jest.spyOn(repo, 'upsert').mockRejectedValueOnce(boom);
     await expect(service.put('s1', msg('M1'))).rejects.toThrow('disk full');
+  });
+
+  describe('getMessages', () => {
+    it('returns the batch in one query, skipping ids it has never seen', async () => {
+      await seedSession('s1');
+      await service.put('s1', msg('M1'));
+      await service.put('s1', msg('M2'));
+      const found = await service.getMessages('s1', ['M1', 'MISSING', 'M2']);
+      expect(found.map(m => m.key.id).sort()).toEqual(['M1', 'M2']);
+    });
+
+    it('stays scoped to its own session', async () => {
+      await seedSession('s1');
+      await seedSession('s2');
+      await service.put('s2', msg('M1'));
+      expect(await service.getMessages('s1', ['M1'])).toEqual([]);
+    });
+
+    it('short-circuits on an empty or all-falsy id list instead of querying', async () => {
+      // An empty In() clause is a SQL syntax error on some drivers and matches everything on others.
+      const find = jest.spyOn(repo, 'find');
+      expect(await service.getMessages('s1', [])).toEqual([]);
+      expect(await service.getMessages('s1', [''])).toEqual([]);
+      expect(find).not.toHaveBeenCalled();
+    });
+
+    it('round-trips binary fields the same way getMessage does', async () => {
+      await seedSession('s1');
+      await service.put('s1', msg('M1'));
+      const [found] = await service.getMessages('s1', ['M1']);
+      // mediaKey is off the public WAMessage type, like the fixture that wrote it.
+      expect(Buffer.isBuffer((found as unknown as { mediaKey: unknown }).mediaKey)).toBe(true);
+    });
   });
 
   it('clearSession removes only that session', async () => {

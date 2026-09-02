@@ -67,7 +67,8 @@ for hit in res["hits"]:
 
 A non-2xx response raises a typed `OpenWAApiError` subclass — `OpenWAAuthError` (401),
 `OpenWAForbiddenError` (403), `OpenWANotFoundError` (404), `OpenWAConflictError` (409),
-`OpenWARateLimitError` (429), `OpenWANotImplementedError` (501) — each carrying `.status`
+`OpenWARateLimitError` (429), `OpenWANotImplementedError` (501),
+`OpenWAServiceUnavailableError` (503 — the only retryable one) — each carrying `.status`
 and the parsed `.body`. A timeout raises `OpenWATimeoutError`.
 
 ```python
@@ -87,6 +88,34 @@ except OpenWANotFoundError as e:
   reverse proxy) is preserved.
 - Escape hatch for endpoints the SDK does not wrap:
   `client.request(method, path, query=…, body=…)`.
+
+## Releasing
+
+Publishing to PyPI is done by the
+[`python-sdk-release.yml`](../../.github/workflows/python-sdk-release.yml)
+workflow, which authenticates with **PyPI Trusted Publishing (OIDC)**. There is
+no PyPI token in the workflow or in the repository secrets: PyPI mints a
+short-lived credential from the GitHub OIDC token, so nothing long-lived exists
+to leak or rotate.
+
+One-time setup, required **before** the first tag — on pypi.org, open the
+project's publishing settings and add a GitHub trusted publisher:
+
+- Owner: `rmyndharis`
+- Repository: `OpenWA`
+- Workflow name: `python-sdk-release.yml`
+
+There are no repository secrets to add. Until the trusted publisher exists PyPI
+rejects the upload, so configure it first.
+
+Cutting a release:
+
+1. Bump `version` in `pyproject.toml` and land it on `main`.
+2. Tag that commit `py-sdk-v<version>` (e.g. `py-sdk-v0.5.0`) and push the tag.
+   The SDK has its own version line — the monorepo's `v*` tags are the app
+   version and never trigger an SDK publish.
+3. The workflow re-runs the test suite, builds the sdist and wheel, and
+   uploads. The artifacts published are the ones those tests passed against.
 
 ## License
 

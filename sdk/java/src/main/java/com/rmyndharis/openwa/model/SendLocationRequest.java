@@ -6,7 +6,8 @@ public record SendLocationRequest(
     double latitude,
     double longitude,
     String description,
-    String address) {
+    String address,
+    String quotedMessageId) {
 
     public static Builder builder() {
         return new Builder();
@@ -18,6 +19,7 @@ public record SendLocationRequest(
         private double longitude;
         private String description;
         private String address;
+        private String quotedMessageId;
 
         public Builder chatId(String v) {
             this.chatId = v;
@@ -44,8 +46,18 @@ public record SendLocationRequest(
             return this;
         }
 
+        /**
+         * Quote an earlier message, turning this send into a reply. Engine-specific:
+         * whatsapp-web.js matches the serialized message id, Baileys the raw key id of a message
+         * it has already stored.
+         */
+        public Builder quotedMessageId(String v) {
+            this.quotedMessageId = v;
+            return this;
+        }
+
         public SendLocationRequest build() {
-            return new SendLocationRequest(chatId, latitude, longitude, description, address);
+            return new SendLocationRequest(chatId, latitude, longitude, description, address, quotedMessageId);
         }
     }
 }

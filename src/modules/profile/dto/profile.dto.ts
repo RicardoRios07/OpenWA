@@ -6,7 +6,7 @@ export class SetProfileNameDto {
   @IsString()
   @IsNotEmpty()
   @MaxLength(25)
-  name: string;
+  name!: string;
 }
 
 export class SetProfileStatusDto {
@@ -16,7 +16,7 @@ export class SetProfileStatusDto {
   })
   @IsString()
   @MaxLength(139)
-  status: string;
+  status!: string;
 }
 
 /**

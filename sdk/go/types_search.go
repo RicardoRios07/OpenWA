@@ -34,17 +34,17 @@ func (q *SearchQuery) values() url.Values {
 
 // SearchHit is one search result.
 type SearchHit struct {
-	MessageID   string  `json:"messageId"`
-	WaMessageID string  `json:"waMessageId"`
-	SessionID   string  `json:"sessionId"`
-	ChatID      string  `json:"chatId"`
-	Body        string  `json:"body"`
-	Snippet     string  `json:"snippet"`
-	Timestamp   int64   `json:"timestamp"`
-	Type        string  `json:"type"`
-	Direction   string  `json:"direction"`
-	From        string  `json:"from"`
-	Score       float64 `json:"score,omitempty"`
+	MessageID   string           `json:"messageId"`
+	WaMessageID string           `json:"waMessageId"`
+	SessionID   string           `json:"sessionId"`
+	ChatID      string           `json:"chatId"`
+	Body        string           `json:"body"`
+	Snippet     string           `json:"snippet"`
+	Timestamp   int64            `json:"timestamp"`
+	Type        string           `json:"type"`
+	Direction   MessageDirection `json:"direction"`
+	From        string           `json:"from"`
+	Score       float64          `json:"score,omitempty"`
 }
 
 // SearchResults is the GET /search payload.

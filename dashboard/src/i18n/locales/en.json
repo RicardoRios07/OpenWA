@@ -11,6 +11,7 @@
     "cancel": "Cancel",
     "delete": "Delete",
     "create": "Create",
+    "save": "Save",
     "close": "Close",
     "showApiKey": "Show API key",
     "hideApiKey": "Hide API key",
@@ -84,7 +85,8 @@
     "loadingChats": "Loading chats...",
     "empty": "No chats",
     "noMessageYet": "No messages yet",
-    "unreadBadge": "{{count}} unread messages",
+    "unreadBadge": "{{count}} unread message",
+    "unreadBadge_other": "{{count}} unread messages",
     "loadingMessages": "Loading messages...",
     "noMessagesInChat": "No messages yet. Send the first message to get started!",
     "downloadDocument": "Download document",
@@ -141,13 +143,15 @@
       "orLabel": "or",
       "post": "Post",
       "posted": "Status posted",
-      "postFailed": "Could not post the status"
+      "postFailed": "Could not post the status",
+      "imageFile": "Status image"
     },
     "channels": {
       "notSupported": "Channels are not supported on the Baileys engine.",
       "empty": "You are not subscribed to any channels yet.",
       "notReady": "Session is not ready yet.",
-      "subscribers": "{{count}} subscribers"
+      "subscribers": "{{count}} subscriber",
+      "subscribers_other": "{{count}} subscribers"
     },
     "errors": {
       "loadSessions": "Failed to load sessions",
@@ -155,9 +159,17 @@
       "markRead": "Failed to mark chat as read",
       "send": "Failed to send message",
       "react": "Failed to react to message",
-      "delete": "Failed to delete message"
+      "delete": "Failed to delete message",
+      "fileTooLarge": "File is too large (max 18 MB)"
     },
-    "loadMessagesError": "Couldn't load messages. Check the server logs."
+    "loadMessagesError": "Couldn't load messages. Check the server logs.",
+    "messageStatus": {
+      "pending": "Pending",
+      "sent": "Sent",
+      "delivered": "Delivered",
+      "read": "Read",
+      "failed": "Failed"
+    }
   },
   "errorBoundary": {
     "title": "Something went wrong",
@@ -225,7 +237,10 @@
     "connecting": "Connecting...",
     "qr_ready": "Scan QR",
     "ready": "Connected",
-    "disconnected": "Disconnected"
+    "disconnected": "Disconnected",
+    "action_required": "Action required",
+    "failed": "Failed",
+    "authenticating": "Authenticating..."
   },
   "sessions": {
     "title": "Sessions",
@@ -265,6 +280,10 @@
       "errorTitle": "Delete Failed",
       "errorDefault": "Failed to delete session"
     },
+    "start": {
+      "teardownPendingTitle": "Session Starting",
+      "teardownPending": "A credential teardown for this session is still settling. Wait a moment and try again."
+    },
     "qr": {
       "title": "Scan QR Code",
       "step1": "<strong>1.</strong> Open WhatsApp on your phone",
@@ -285,13 +304,34 @@
       "phone": "Phone Number",
       "phoneNone": "Not connected",
       "created": "Created",
-      "lastActive": "Last Active"
+      "lastActive": "Last Active",
+      "autoRejectCalls": "Auto-reject calls",
+      "autoRejectCallsHint": "Incoming calls are declined as soon as they ring. The call.received webhook still fires first. Applies to the next call — no restart needed."
+    },
+    "proxy": {
+      "title": "Proxy Configuration",
+      "status": "Current",
+      "enabled": "Use proxy",
+      "url": "Proxy URL",
+      "urlPlaceholder": "http://user:pass@proxy.example.com:8080",
+      "urlKeepPlaceholder": "Enter new URL to replace {{host}} (credentials not shown)",
+      "configured": "{{host}} ({{type}})",
+      "noProxy": "No proxy configured",
+      "hasCredentials": "Credentials are stored but not shown. Enter a full URL to change them.",
+      "hint": "Changes apply on the next session start, not to a running connection. The proxy must be real and reachable — an unreachable value blocks QR delivery and start returns 504.",
+      "createHint": "Only needed when your network cannot reach WhatsApp directly. Must be a real, reachable proxy.",
+      "invalidUrl": "Enter a valid http, https, socks4, or socks5 proxy URL.",
+      "saveSuccessTitle": "Proxy Saved",
+      "saveSuccess": "Proxy settings saved. They apply on the next session start.",
+      "saveError": "Failed to save proxy settings"
     },
     "actions": {
       "view": "View",
+      "proxy": "Proxy",
       "start": "Start",
       "stop": "Stop",
       "reconnect": "Reconnect",
+      "unlink": "Unlink",
       "delete": "Delete",
       "killStuck": "Kill Stuck"
     },
@@ -300,6 +340,8 @@
       "readyDesc": "WhatsApp session is now connected",
       "disconnectedTitle": "Session Disconnected",
       "disconnectedDesc": "WhatsApp session was disconnected",
+      "actionRequiredTitle": "Action required",
+      "actionRequiredDesc": "This session needs your attention. Open the session to see what to do.",
       "failedTitle": "Session Failed",
       "failedDesc": "The WhatsApp session failed to start. Open the session to see the reason."
     },
@@ -307,7 +349,8 @@
       "phone": "Phone",
       "sessionId": "Session ID",
       "lastActive": "Last Active",
-      "error": "Error"
+      "error": "Error",
+      "restriction": "Restriction"
     },
     "forceKill": {
       "title": "Kill Stuck Session",
@@ -318,6 +361,18 @@
       "success": "Session has been force-killed. You can restart it now.",
       "failedTitle": "Force-Kill Failed",
       "failed": "Failed to force-kill the session."
+    },
+    "unlink": {
+      "title": "Unlink Device",
+      "message": "Unlink session <strong>\"{{name}}\"</strong> from the WhatsApp account?",
+      "warning": "WhatsApp removes this device from the account's Linked Devices and the session stops. Reconnecting requires a fresh QR scan or pairing code. To also erase all local data, delete the session afterwards.",
+      "confirm": "Unlink",
+      "successTitle": "Device Unlinked",
+      "success": "Unlink completed: the device was logged out and the local session credentials were cleared. Reconnecting requires a fresh QR scan or pairing code.",
+      "incompleteTitle": "Unlink Incomplete",
+      "incomplete": "The session stopped locally, but the logout operation is incomplete — the device may still be linked. Start the session and retry the logout.",
+      "failedTitle": "Unlink Failed",
+      "failed": "Failed to unlink the session."
     },
     "pairing": {
       "tabQr": "QR Code",
@@ -336,6 +391,12 @@
       "step3": "<strong>3.</strong> Tap <strong>Link a Device</strong>, then tap <strong>Link with phone number instead</strong>",
       "step4": "<strong>4.</strong> Enter the 8-character code shown above on your phone",
       "waitingConnection": "Waiting for your phone to link…"
+    },
+    "restriction": {
+      "reachout_timelock": "New chats blocked",
+      "tos_block": "Blocked by WhatsApp",
+      "proxy_block": "Connection blocked",
+      "until": "until {{date}}"
     }
   },
   "webhooks": {
@@ -355,6 +416,7 @@
       "title": "Filters (optional)",
       "hint": "Only fire when all conditions match. Applies to message events.",
       "badge": "{{count}} filter",
+      "badge_other": "{{count}} filters",
       "addCondition": "Add condition",
       "removeCondition": "Remove condition",
       "caseSensitive": "Case sensitive",
@@ -378,7 +440,10 @@
         "isNot": "is not",
         "contains": "contains",
         "equals": "equals"
-      }
+      },
+      "fieldLabel": "Filter field",
+      "operatorLabel": "Filter operator",
+      "valueLabel": "Filter value"
     },
     "columns": {
       "url": "URL",
@@ -459,7 +524,8 @@
       "deleted": "Template deleted successfully",
       "deleteFailed": "Failed to delete template: {{message}}",
       "copied": "Template name copied"
-    }
+    },
+    "sessionSelect": "Session"
   },
   "apiKeys": {
     "title": "API Keys",
@@ -486,7 +552,8 @@
       "role": "Role",
       "status": "Status",
       "lastUsed": "Last Used",
-      "actions": "Actions"
+      "actions": "Actions",
+      "sessions": "Sessions"
     },
     "statuses": {
       "active": "Active",
@@ -507,7 +574,19 @@
     "actions": {
       "copy": "Copy",
       "revoke": "Revoke",
-      "delete": "Delete"
+      "delete": "Delete",
+      "editSessions": "Edit sessions"
+    },
+    "sessions": {
+      "label": "Session access",
+      "hint": "Select the sessions this key may use.",
+      "all": "All sessions",
+      "empty": "No sessions yet. This key will be able to access every session once any exist.",
+      "restricted": "{{count}} selected",
+      "editTitle": "Edit session access",
+      "save": "Save",
+      "choose": "Choose sessions",
+      "leaveAll": "Leave for all sessions"
     }
   },
   "logs": {
@@ -531,7 +610,10 @@
     },
     "empty": {
       "title": "No logs found",
-      "description": "Audit logs will appear here as actions are performed"
+      "description": "Audit logs will appear here as actions are performed",
+      "filteredTitle": "No matches on this page",
+      "filteredDescription": "The search filters the current page only. Clear it, page through, or use the severity filter to narrow server-side.",
+      "filteredServerDescription": "No logs match these filters. Adjust the severity filter to widen the search."
     }
   },
   "messageTester": {
@@ -600,6 +682,7 @@
     "forwardMessageId": "Message ID",
     "forwardMessageIdHint": "ID of the message to forward",
     "bulkRecipients": "Recipients",
+    "bulkRecipientsUpload": "Upload CSV/TXT",
     "bulkRecipientsPlaceholder": "+62812345678",
     "bulkRecipientsHint": "One phone number or chat ID per line (max 100)",
     "bulkRecipientsCount": "Recipients: {{count}}",
@@ -716,7 +799,8 @@
       "disconnected": "Disconnected",
       "disabled": "Disabled"
     },
-    "envPinNote": "Pinned by an environment variable — this is the running value; dashboard changes won't apply until that variable is unset.",
+    "envPinNote": "Pinned by the environment variable {{name}} — this is the running value; dashboard changes won't apply until that variable is unset.",
+    "pendingRestartNote": "Saved, but not applied yet — restart the server for this change to take effect.",
     "migration": {
       "title": "Heads up — this changes the data backend",
       "dbWarning": "The new database starts empty. Download a backup of your current data now (while still on the old database), then restore it after the restart.",
@@ -727,6 +811,8 @@
       "export": "Export data",
       "import": "Import data",
       "exportFailed": "Couldn't export data",
+      "exportPartialTitle": "Backup is missing some media",
+      "exportPartial": "{{count}} attachment payload(s) exceeded the export media budget and were saved as placeholders. The messages restore; their media does not.",
       "importFailed": "Couldn't import data",
       "importOk": "Data imported",
       "importConfirm": "Importing will REPLACE all current data with the backup ({{rows}} rows). This cannot be undone. Continue?",
@@ -789,8 +875,14 @@
     "installModal": {
       "title": "Install a plugin",
       "hint": "Upload a plugin packaged as a .zip (with a manifest.json). It runs sandboxed once enabled.",
+      "trustWarning": "Plugins run with the gateway's full process privileges — the sandbox contains crashes, not malicious code. Install only plugins you trust.",
       "choose": "Choose a .zip file…",
-      "tooLarge": "The file exceeds the 5 MB limit."
+      "tooLarge": "The file exceeds the 5 MB limit.",
+      "catalogHint": "Install directly from the OpenWA plugin catalog. The .zip is fetched server-side through the SSRF guard, then validated and sandboxed.",
+      "catalogTeaser": "Looking for plugins?",
+      "catalogTeaserSuffix": "browses the official marketplace.",
+      "tabCatalog": "Catalog",
+      "tabUpload": "Upload .zip"
     },
     "toasts": {
       "errorTitle": "Plugin Error",
@@ -808,7 +900,8 @@
       "enableFailedTitle": "Enable failed",
       "disableFailedTitle": "Disable failed",
       "configRequiredTitle": "Configuration required",
-      "configRequiredDesc": "Fill in the required field(s) before enabling: {{fields}}"
+      "configRequiredDesc": "Fill in the required field(s) before enabling: {{fields}}",
+      "updateFailed": "Update failed"
     },
     "sessions": {
       "activationTitle": "Run for",
@@ -887,6 +980,17 @@
         "secretRegenerated": "Secret regenerated",
         "actionFailed": "Action failed"
       }
+    },
+    "catalog": {
+      "empty": "No plugins in the catalog.",
+      "install": "Install",
+      "installed": "Installed",
+      "noDownload": "This catalog entry has no download URL.",
+      "noMatch": "No plugins match your search.",
+      "searchPlaceholder": "Search plugins…",
+      "update": "Update",
+      "updateAvailable": "Update available",
+      "updated": "Plugin updated"
     }
   },
   "search": {

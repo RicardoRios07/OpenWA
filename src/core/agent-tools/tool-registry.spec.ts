@@ -1,16 +1,7 @@
+import { allAgentTools } from './tools';
 import { ToolRegistryService } from './tool-registry.service';
 import type { ToolDescriptor } from './tool-descriptor';
-import type { SessionService } from '../../modules/session/session.service';
-import type { MessageService } from '../../modules/message/message.service';
-import type { ContactService } from '../../modules/contact/contact.service';
-import type { GroupService } from '../../modules/group/group.service';
-import type { WebhookService } from '../../modules/webhook/webhook.service';
 import { z } from 'zod';
-import { sessionTools } from './tools/session.tools';
-import { messageTools } from './tools/message.tools';
-import { contactTools } from './tools/contact.tools';
-import { groupTools } from './tools/group.tools';
-import { webhookTools } from './tools/webhook.tools';
 
 const r: ToolDescriptor = {
   name: 'R',
@@ -53,6 +44,8 @@ describe('v1 tool surface snapshot', () => {
       'SessionFindOne',
       'SessionGetChats',
       'SessionGetStats',
+      'SessionSubscribePresence',
+      'SessionGetPresence',
       'SessionMarkChatRead',
       'SessionMarkChatUnread',
       'SessionSendChatState',
@@ -88,19 +81,21 @@ describe('v1 tool surface snapshot', () => {
       'WebhooksList',
       'WebhookFindBySession',
       'WebhookFindOne',
+      'LabelFindAll',
+      'LabelFindOne',
+      'LabelListChats',
+      'LabelListForChat',
+      'LabelUpsert',
+      'LabelDelete',
+      'LabelAddToChat',
+      'LabelRemoveFromChat',
+      'AutomationRuleFindAll',
+      'AutomationRuleFindOne',
     ].sort();
 
-    const actualNames = [
-      ...sessionTools({} as unknown as SessionService),
-      ...messageTools({} as unknown as MessageService),
-      ...contactTools({} as unknown as ContactService),
-      ...groupTools({} as unknown as GroupService),
-      ...webhookTools({} as unknown as WebhookService),
-    ]
-      .map(t => t.name)
-      .sort();
+    const actualNames = [...allAgentTools({} as never)].map(t => t.name).sort();
 
     expect(actualNames).toEqual(expected);
-    expect(expected).toHaveLength(39);
+    expect(expected).toHaveLength(51);
   });
 });

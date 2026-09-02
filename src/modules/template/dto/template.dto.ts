@@ -14,7 +14,7 @@ export class CreateTemplateDto {
   @IsString()
   @IsNotEmpty()
   @MaxLength(NAME_MAX_LENGTH)
-  name: string;
+  name!: string;
 
   @ApiProperty({
     description: 'Template body with {{variable}} placeholders',
@@ -24,7 +24,7 @@ export class CreateTemplateDto {
   @IsString()
   @IsNotEmpty()
   @MaxLength(BODY_MAX_LENGTH)
-  body: string;
+  body!: string;
 
   @ApiPropertyOptional({
     description: 'Optional header text, prepended to the rendered body',
@@ -77,16 +77,16 @@ export class UpdateTemplateDto {
 
 export class TemplateResponseDto {
   @ApiProperty()
-  id: string;
+  id!: string;
 
   @ApiProperty()
-  sessionId: string;
+  sessionId!: string;
 
   @ApiProperty()
-  name: string;
+  name!: string;
 
   @ApiProperty()
-  body: string;
+  body!: string;
 
   @ApiPropertyOptional({ type: String, nullable: true })
   header?: string | null;
@@ -95,8 +95,8 @@ export class TemplateResponseDto {
   footer?: string | null;
 
   @ApiProperty()
-  createdAt: Date;
+  createdAt!: Date;
 
   @ApiProperty()
-  updatedAt: Date;
+  updatedAt!: Date;
 }

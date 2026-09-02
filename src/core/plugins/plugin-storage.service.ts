@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as fs from 'fs';
 import * as path from 'path';
+import { DEFAULT_DATA_DIR } from '../../config/configuration';
 import { createLogger } from '../../common/services/logger.service';
 import { isPathWithin, isSafeStorageKey } from '../../common/utils/path-safety';
 import { PluginStatus, PluginStorage, PluginRegistryEntry } from './plugin.interfaces';
@@ -31,6 +32,13 @@ function atomicWriteFileSync(filePath: string, data: string, options?: { mode?: 
 
 const ENCODED_KEY_PREFIX = 'key-';
 
+/**
+ * Default per-plugin bound on ctx.storage writes (plugins.storageMaxBytes / PLUGIN_STORAGE_MAX_BYTES
+ * overrides). The worker is not a security boundary, but an unbounded storage.set loop would still
+ * fill the host disk — this is a robustness quota, not isolation.
+ */
+const DEFAULT_MAX_PLUGIN_STORAGE_BYTES = 50 * 1024 * 1024;
+
 function encodeStorageKey(key: string): string {
   return (
     ENCODED_KEY_PREFIX +
@@ -57,11 +65,16 @@ export class PluginStorageService {
   private readonly logger = createLogger('PluginStorageService');
   private readonly dataDir: string;
   private readonly registryPath: string;
+  private readonly maxPluginStorageBytes: number;
   private registry: Map<string, PluginRegistryEntry> = new Map();
 
   constructor(private readonly configService: ConfigService) {
-    this.dataDir = this.configService.get<string>('dataDir') ?? './data';
+    // Same constant the `dataDir` key is built from, so this fallback (hit only by a ConfigService
+    // that carries no app config, e.g. in unit tests) can never drift from the configured value.
+    this.dataDir = this.configService.get<string>('dataDir') ?? DEFAULT_DATA_DIR;
     this.registryPath = path.join(this.dataDir, 'plugins', 'registry.json');
+    this.maxPluginStorageBytes =
+      this.configService.get<number>('plugins.storageMaxBytes') ?? DEFAULT_MAX_PLUGIN_STORAGE_BYTES;
     this.loadRegistry();
   }
 
@@ -212,6 +225,62 @@ export class PluginStorageService {
   // Plugin Data Storage (sandboxed per-plugin storage)
   // ============================================================================
 
+  /**
+   * Remove a plugin's entire data-storage directory (<dataDir>/plugins/<id>). Called on uninstall.
+   * Containment-guarded exactly like the package-dir delete in the loader: an id that resolves
+   * outside the storage root is refused, so only the named plugin's directory can ever be touched.
+   * Best-effort — a removal failure is logged, never thrown, so the uninstall still completes.
+   */
+  deletePluginData(pluginId: string): void {
+    const root = path.resolve(this.dataDir, 'plugins');
+    const dir = path.resolve(root, pluginId);
+    if (dir === root || !dir.startsWith(root + path.sep)) {
+      this.logger.warn(`Refusing to delete plugin storage outside the storage root: ${pluginId}`, {
+        pluginId,
+        action: 'plugin_storage_delete_refused',
+      });
+      return;
+    }
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      this.logger.debug(`Deleted plugin storage: ${pluginId}`, { pluginId, action: 'plugin_storage_deleted' });
+    } catch (error) {
+      this.logger.warn(`Failed to delete plugin storage for ${pluginId}`, {
+        pluginId,
+        action: 'plugin_storage_delete_failed',
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * Reject a write that would push the plugin's storage past maxPluginStorageBytes. Only the encoded
+   * `key-*.json` files count — they are the only files a plugin can create through this service (new
+   * writes always use the encoded name), and when code and state share a directory the plugin's own
+   * package files must not eat its quota. The file being overwritten is excluded from the current
+   * usage so replacing a large key does not count its bytes twice.
+   */
+  private assertStorageQuota(pluginDataDir: string, targetPath: string, incomingBytes: number, pluginId: string): void {
+    let used = 0;
+    for (const entry of fs.readdirSync(pluginDataDir)) {
+      if (!entry.startsWith(ENCODED_KEY_PREFIX) || !entry.endsWith('.json')) continue;
+      const full = path.join(pluginDataDir, entry);
+      if (full === targetPath) continue;
+      try {
+        used += fs.statSync(full).size;
+      } catch {
+        /* vanished between readdir and stat; ignore */
+      }
+    }
+    if (used + incomingBytes > this.maxPluginStorageBytes) {
+      throw new Error(
+        `Plugin ${pluginId} storage quota exceeded: this write would bring the plugin to ${
+          used + incomingBytes
+        } bytes (max ${this.maxPluginStorageBytes}). Delete unused keys or raise PLUGIN_STORAGE_MAX_BYTES.`,
+      );
+    }
+  }
+
   createPluginStorage(pluginId: string): PluginStorage {
     const pluginDataDir = path.join(this.dataDir, 'plugins', pluginId);
 
@@ -271,10 +340,12 @@ export class PluginStorageService {
           return Promise.reject(new Error(`Unsafe plugin storage key: ${key}`));
         }
         try {
+          const payload = JSON.stringify(value, null, 2);
+          this.assertStorageQuota(pluginDataDir, filePath, Buffer.byteLength(payload, 'utf8'), pluginId);
           // 0o600 (owner-only): a plugin-persisted secret must not land in a group/other-readable file.
           // The mode on the temp write carries through the rename; chmod is a backstop if the target
           // pre-existed (writeFileSync mode only applies on create). Mirrors saveRegistry's hardening.
-          atomicWriteFileSync(filePath, JSON.stringify(value, null, 2), { mode: 0o600 });
+          atomicWriteFileSync(filePath, payload, { mode: 0o600 });
           fs.chmodSync(filePath, 0o600);
           // Keep any legacy file in place. Encoded-first reads and de-duplicated lists ensure it cannot
           // shadow this write, while avoiding an unlink outside the service-owned key-* namespace.

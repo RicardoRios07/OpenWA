@@ -1,5 +1,5 @@
 import { PayloadTooLargeException } from '@nestjs/common';
-import { inboundMediaMaxBytes } from '../../engine/adapters/inbound-media-cap';
+import { inboundMediaMaxBytes } from '../../engine';
 
 /**
  * Accept the historical `data:<mime>;base64,<payload>` form without passing its metadata prefix to

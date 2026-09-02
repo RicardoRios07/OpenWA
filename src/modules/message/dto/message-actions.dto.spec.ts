@@ -1,3 +1,4 @@
+import { ValidationPipe } from '@nestjs/common';
 import { plainToInstance } from 'class-transformer';
 import { validate, ValidationError } from 'class-validator';
 import {
@@ -7,7 +8,9 @@ import {
   DeleteMessageDto,
   ForwardMessageDto,
   EditMessageDto,
+  ReplyMessageDto,
 } from './message-actions.dto';
+import { GLOBAL_VALIDATION_OPTIONS } from '../../../config/app-validation';
 
 /**
  * Regression locks: these endpoints previously took inline @Body literals (no
@@ -139,5 +142,49 @@ describe('message action DTOs', () => {
   it('EditMessageDto: missing messageId is rejected', async () => {
     const errs = await errorsFor(EditMessageDto, { chatId: 'x@c.us', body: 'new text' });
     expect(errs.some(e => e.property === 'messageId')).toBe(true);
+  });
+});
+
+/**
+ * These run through the REAL production pipe rather than bare `validate()`, because the defect they
+ * lock is a whitelist rejection: `forbidNonWhitelisted` answers 400 "property X should not exist"
+ * for anything the DTO does not declare, and a plain validate() call cannot see that at all.
+ */
+describe('mentions on the quoted-send and edit routes (whitelist behaviour)', () => {
+  const pipe = new ValidationPipe(GLOBAL_VALIDATION_OPTIONS);
+  const through = (metatype: unknown, value: object): Promise<unknown> =>
+    pipe.transform(value, { type: 'body', metatype: metatype as never });
+
+  const REPLY = { chatId: '120363000000000000@g.us', quotedMessageId: 'Q1', text: 'hi @62811' };
+  const EDIT = { chatId: '120363000000000000@g.us', messageId: 'M1', body: 'hi @62811' };
+
+  it('ReplyMessageDto accepts a mentions array', async () => {
+    await expect(through(ReplyMessageDto, { ...REPLY, mentions: ['62811@c.us'] })).resolves.toMatchObject({
+      mentions: ['62811@c.us'],
+    });
+  });
+
+  it('EditMessageDto accepts a mentions array', async () => {
+    await expect(through(EditMessageDto, { ...EDIT, mentions: ['62811@c.us'] })).resolves.toMatchObject({
+      mentions: ['62811@c.us'],
+    });
+  });
+
+  // Control for both cases above. Without it, a pipe whose whitelist had been switched off entirely
+  // would satisfy them just as well, and the assertions would prove nothing about the new field.
+  it('still refuses a property no DTO declares', async () => {
+    await expect(through(ReplyMessageDto, { ...REPLY, notAField: 1 })).rejects.toMatchObject({
+      response: { message: ['property notAField should not exist'] },
+    });
+    await expect(through(EditMessageDto, { ...EDIT, notAField: 1 })).rejects.toMatchObject({
+      response: { message: ['property notAField should not exist'] },
+    });
+  });
+
+  it('rejects a mentions entry that is not an individual WID', async () => {
+    // A group id is not a participant, and the shared constraint refuses it on every route that
+    // takes the field.
+    await expect(through(ReplyMessageDto, { ...REPLY, mentions: ['120363000000000000@g.us'] })).rejects.toBeDefined();
+    await expect(through(EditMessageDto, { ...EDIT, mentions: ['not-a-wid'] })).rejects.toBeDefined();
   });
 });

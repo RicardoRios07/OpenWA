@@ -1,7 +1,8 @@
-import { Controller, Get, Put, NotImplementedException } from '@nestjs/common';
+import { Controller, Get } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import { SettingsResponseDto } from './dto/settings-response.dto';
 import { ConfigService } from '@nestjs/config';
-import { RequireRole } from '../auth/decorators/auth.decorators';
+import { RequireRole, RequireUnscopedKey } from '../auth/decorators/auth.decorators';
 import { ApiKeyRole } from '../auth/entities/api-key.entity';
 import { isSwaggerEnabled } from '../../config/bootstrap-security';
 
@@ -60,31 +61,14 @@ export class SettingsController {
 
   @Get()
   @RequireRole(ApiKeyRole.ADMIN)
+  @RequireUnscopedKey()
   @ApiOperation({ summary: 'Get application settings' })
-  @ApiResponse({ status: 200, description: 'Current settings' })
+  @ApiResponse({ status: 200, description: 'Current settings', type: SettingsResponseDto })
   get(): Settings {
     // Settings expose environment-derived configuration (debug flag, reconnect policy, rate-limit
-    // thresholds, base URL). Gate the read at ADMIN, matching the PUT below and the rest of the
-    // admin-config surface — a VIEWER or session-scoped key has no business reading server config.
+    // thresholds, base URL) that describes the deployment rather than any one session. Gate the read
+    // at ADMIN and require an unrestricted key: the role check alone does not exclude a key confined
+    // to specific sessions, which has no claim on deployment-wide configuration.
     return this.settings;
-  }
-
-  @Put()
-  @RequireRole(ApiKeyRole.ADMIN)
-  @ApiOperation({ summary: 'Settings are read-only at runtime (environment-derived)' })
-  @ApiResponse({
-    status: 501,
-    description: 'Settings are derived from environment configuration and cannot be changed at runtime',
-  })
-  update(): never {
-    // Every Settings field is derived from environment variables and consumed at boot /
-    // decorator-evaluation time (ThrottlerModule.forRootAsync, port, webhook timeout, DB logging),
-    // and ConfigService is immutable at runtime — so a runtime write cannot actually take effect.
-    // The previous handler mutated an in-memory copy and returned 200 'updated' while persisting
-    // nothing and applying nothing: a false success. Be honest instead of pretending it worked.
-    throw new NotImplementedException(
-      'Settings are derived from environment configuration and are read-only at runtime. ' +
-        'Change the corresponding environment variable and restart the service.',
-    );
   }
 }

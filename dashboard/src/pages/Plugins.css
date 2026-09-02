@@ -74,7 +74,7 @@
   background: rgba(217, 119, 6, 0.12);
 }
 .plugins-page .type-queue .plugin-icon-wrapper svg {
-  color: #d97706;
+  color: var(--warning-text);
 }
 .plugins-page .type-auth .plugin-icon-wrapper {
   background: rgba(147, 51, 234, 0.12);
@@ -98,6 +98,43 @@
 .plugins-page .plugin-version {
   font-size: 0.75rem;
   color: var(--text-muted);
+}
+
+/* Newer-version chip on an installed plugin's card. Clickable: opens the Install drawer's
+   catalog tab pre-filtered to this plugin, where the actual Update button lives. */
+.plugins-page .plugin-update-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 8px;
+  padding: 0.0625rem 0.4375rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--primary-text, #17813e);
+  background: color-mix(in srgb, var(--primary, #25d366) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--primary, #25d366) 35%, transparent);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.plugins-page .plugin-update-chip:hover {
+  background: color-mix(in srgb, var(--primary, #25d366) 20%, transparent);
+}
+
+/* Pending-update counter on the Install button, so updates are visible without opening it. */
+.plugins-page .install-update-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  padding: 0 0.3125rem;
+  margin-left: 6px;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  color: var(--primary-text, #17813e);
+  background: color-mix(in srgb, var(--primary, #25d366) 18%, transparent);
+  border-radius: 999px;
 }
 
 .plugins-page .plugin-builtin-badge {
@@ -197,7 +234,7 @@
 }
 
 .plugins-page .plugin-error-text {
-  color: #ef4444;
+  color: var(--error-text);
   font-size: 0.75rem;
 }
 
@@ -239,7 +276,7 @@
 .plugins-page .btn-toggle.disable {
   background: rgba(239, 68, 68, 0.1);
   border: 1px solid rgba(239, 68, 68, 0.3);
-  color: #ef4444;
+  color: var(--error-text);
 }
 
 .plugins-page .btn-toggle.disable:hover {
@@ -362,7 +399,8 @@
   margin-bottom: 1.25rem;
 }
 
-.plugins-page .config-form .config-array > label {
+.plugins-page .config-form .config-array > label,
+.plugins-page .config-form .config-array > .config-array-label {
   display: block;
   font-size: 0.875rem;
   font-weight: 600;
@@ -392,7 +430,7 @@
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-light);
-  color: var(--error);
+  color: var(--error-text);
   cursor: pointer;
   transition: all 0.2s;
 }
@@ -420,7 +458,7 @@
 
 .plugins-page .config-form .config-array-add:hover {
   border-color: var(--primary);
-  color: var(--primary);
+  color: var(--primary-text);
 }
 
 /* Sandboxed-iframe config editor (B-full). */
@@ -443,7 +481,7 @@
 .plugins-page .config-ui-error {
   padding: 1rem;
   text-align: center;
-  color: var(--error);
+  color: var(--error-text);
 }
 
 .plugins-page .config-form .form-group small {
@@ -454,8 +492,11 @@
   line-height: 1.4;
 }
 
-.plugins-page .config-form .form-group .required-mark {
-  color: var(--error);
+/* Scoped to .config-form rather than .form-group: the same mark also renders inside an array's
+   caption, which lives in .config-array and so never matched the narrower selector. A required
+   array showed its asterisk in body text instead of the error colour. */
+.plugins-page .config-form .required-mark {
+  color: var(--error-text);
 }
 
 .plugins-page .toggle-group {
@@ -683,7 +724,7 @@
 }
 
 .plugins-page .btn-action-danger:hover svg {
-  color: #ef4444;
+  color: var(--error-text);
 }
 
 /* Install modal */
@@ -703,6 +744,20 @@
   color: var(--text-muted);
 }
 
+/* Trusted-code warning at the top of the install modal — the warning colour and the icon mark it
+   as a caution, not a hint (mirrors .migration-warning on the infrastructure page). */
+.plugins-page .install-hint-warning {
+  display: flex;
+  gap: 0.4rem;
+  align-items: flex-start;
+  color: var(--warning-text);
+}
+
+.plugins-page .install-hint-warning svg {
+  flex-shrink: 0;
+  margin-top: 0.15rem;
+}
+
 /* Inline "Catalog" link inside the sub-hint — looks like a link, not a button, so it doesn't compete
    with the tab strip above or the footer actions. */
 .plugins-page .install-inline-link {
@@ -710,7 +765,7 @@
   padding: 0;
   background: none;
   border: none;
-  color: var(--primary);
+  color: var(--primary-text);
   font: inherit;
   font-weight: 600;
   cursor: pointer;
@@ -786,7 +841,7 @@
    horizontal center of the header with absolute positioning — justify-content:space-between only
    centers them approximately because the title (left) and close button (right) have different widths,
    leaving the pill visibly off-center. The header carries position:relative so this is self-contained. */
-.plugins-page .install-modal-header .install-tabs {
+.plugins-page .install-modal .modal-header .install-tabs {
   margin: 0;
   position: absolute;
   left: 50%;
@@ -797,13 +852,13 @@
 /* Three-item header (title + tabs + close). Position:relative anchors the absolutely-centered pill;
    flex-wrap keeps it from overflowing horizontally on a narrow viewport (mobile bottom-sheet width),
    wrapping to a second row instead. */
-.plugins-page .install-modal-header {
+.plugins-page .install-modal .modal-header {
   position: relative;
   flex-wrap: wrap;
   row-gap: 0.75rem;
 }
 
-.plugins-page .install-modal-header h2 {
+.plugins-page .install-modal .modal-header h2 {
   min-width: 0;
   /* Truncate an over-long title rather than collide with the tabs; the modal title is short by
      design ("Install a plugin"), so this only ever bites an unusually long translation. */
@@ -940,7 +995,7 @@
 
 .plugins-page .catalog-error {
   flex-wrap: wrap;
-  color: var(--error);
+  color: var(--error-text);
 }
 
 .plugins-page .catalog-search {
@@ -1011,7 +1066,7 @@
 }
 
 .plugins-page .catalog-badge.update {
-  color: var(--primary, #25d366);
+  color: var(--primary-text, #17813e);
 }
 
 .plugins-page .catalog-row-action {

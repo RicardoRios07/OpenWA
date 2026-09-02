@@ -1,5 +1,7 @@
 package openwa
 
+import "encoding/json"
+
 // WebhookEvent names an event a webhook may subscribe to. It is an alias for
 // string so the Event* constants drop straight into the []string Events fields
 // of CreateWebhookRequest / UpdateWebhookRequest without a conversion. Use
@@ -21,9 +23,15 @@ const (
 	EventSessionAuthenticated WebhookEvent = "session.authenticated"
 	EventSessionDisconnected  WebhookEvent = "session.disconnected"
 	EventSessionReconnectLoop WebhookEvent = "session.reconnect_loop"
+	EventSessionRestriction   WebhookEvent = "session.restriction"
+	EventPresenceUpdate       WebhookEvent = "presence.update"
+	EventCallAccepted         WebhookEvent = "call.accepted"
+	EventCallRejected         WebhookEvent = "call.rejected"
+	EventCallMissed           WebhookEvent = "call.missed"
 	EventGroupJoin            WebhookEvent = "group.join"
 	EventGroupLeave           WebhookEvent = "group.leave"
 	EventGroupUpdate          WebhookEvent = "group.update"
+	EventGroupJoinRequest     WebhookEvent = "group.join_request"
 	EventCallReceived         WebhookEvent = "call.received"
 	EventStatusReceived       WebhookEvent = "status.received"
 	EventAll                  WebhookEvent = "*"
@@ -79,6 +87,9 @@ type WebhookFilters struct {
 }
 
 // CreateWebhookRequest registers a webhook. RetryCount is 0–5 (default 3).
+//
+// Secret is optional and signs every delivery as X-OpenWA-Signature: sha256=<hex>. The gateway
+// enforces a 16-character minimum and answers 400 below it; omit Secret for unsigned deliveries.
 type CreateWebhookRequest struct {
 	URL        string            `json:"url"`
 	Events     []string          `json:"events"`
@@ -89,14 +100,49 @@ type CreateWebhookRequest struct {
 }
 
 // UpdateWebhookRequest updates a webhook; all fields optional.
+//
+// The server distinguishes an ABSENT field (leave it alone) from an explicit empty or null value
+// (clear it). Secret and Headers are therefore pointers: with a value type, `omitempty` dropped an
+// empty string and an empty map from the body, so the two documented "clear this" values could not
+// be expressed at all and the stored values survived an update that meant to remove them.
+//
+// Filters cannot use the same trick — a nil pointer marshals away under omitempty, and dropping
+// omitempty would send "filters": null on EVERY update, clearing filters nobody asked to touch. Set
+// ClearFilters instead; MarshalJSON turns it into the explicit null the server reads.
+//
+// The gateway's 16-character minimum on Secret applies here too, with one exception: the empty
+// string is the documented "clear the secret" value and is accepted.
 type UpdateWebhookRequest struct {
-	URL        string            `json:"url,omitempty"`
-	Events     []string          `json:"events,omitempty"`
-	Secret     string            `json:"secret,omitempty"`
-	Headers    map[string]string `json:"headers,omitempty"`
-	Filters    *WebhookFilters   `json:"filters,omitempty"`
-	RetryCount *int              `json:"retryCount,omitempty"`
-	Active     *bool             `json:"active,omitempty"`
+	URL        string             `json:"url,omitempty"`
+	Events     []string           `json:"events,omitempty"`
+	Secret     *string            `json:"secret,omitempty"`
+	Headers    *map[string]string `json:"headers,omitempty"`
+	Filters    *WebhookFilters    `json:"filters,omitempty"`
+	RetryCount *int               `json:"retryCount,omitempty"`
+	Active     *bool              `json:"active,omitempty"`
+
+	// ClearFilters removes any stored filters. Ignored when Filters is set — setting and clearing
+	// the same field in one request is a caller error, and setting is the more specific intent.
+	ClearFilters bool `json:"-"`
+}
+
+// MarshalJSON emits the explicit `"filters": null` the server reads as "remove the filters", which
+// no combination of struct tags can express for a nil pointer.
+func (r UpdateWebhookRequest) MarshalJSON() ([]byte, error) {
+	type payload UpdateWebhookRequest // alias sheds this method, so json.Marshal does not recurse
+	encoded, err := json.Marshal(payload(r))
+	if err != nil {
+		return nil, err
+	}
+	if !r.ClearFilters || r.Filters != nil {
+		return encoded, nil
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		return nil, err
+	}
+	fields["filters"] = json.RawMessage("null")
+	return json.Marshal(fields)
 }
 
 // WebhookResponse is a stored webhook (secret/headers are omitted on reads).
@@ -107,7 +153,7 @@ type WebhookResponse struct {
 	Events          []string        `json:"events"`
 	Active          bool            `json:"active"`
 	Filters         *WebhookFilters `json:"filters,omitempty"`
-	RetryCount      int             `json:"retryCount,omitempty"`
+	RetryCount      int             `json:"retryCount"`
 	LastTriggeredAt *string         `json:"lastTriggeredAt,omitempty"`
 	CreatedAt       string          `json:"createdAt"`
 	UpdatedAt       string          `json:"updatedAt"`

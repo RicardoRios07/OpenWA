@@ -46,4 +46,14 @@ public final class ProfileResource {
             body,
             SuccessResult.class);
     }
+
+    /** Remove the account profile picture. */
+    public SuccessResult deleteProfilePicture(String sessionId) {
+        return client.request(
+            HttpMethod.DELETE,
+            "/api/sessions/" + encodeSegment(sessionId) + "/profile/picture",
+            null,
+            null,
+            SuccessResult.class);
+    }
 }

@@ -6,7 +6,7 @@ export class SendTextStatusDto {
   @ApiProperty({ description: 'Status text body.', example: 'Out for delivery 📦', maxLength: 4096 })
   @IsString()
   @MaxLength(4096)
-  text: string;
+  text!: string;
 
   @ApiPropertyOptional({ description: 'Background color (hex).', example: '#25D366' })
   @IsOptional()

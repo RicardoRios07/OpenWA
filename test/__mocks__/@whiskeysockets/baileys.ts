@@ -15,6 +15,17 @@ export const fetchLatestBaileysVersion = jest.fn();
 export const getContentType = jest.fn();
 export const DisconnectReason = { loggedOut: 401 };
 
+/**
+ * Protocol constants the adapter reads at RUNTIME (not just as types), mirrored from
+ * WAProto/index.d.ts. Values are wire-format enum members, so they are fixed by the protocol
+ * rather than by the library version — but keep them in step with the real proto if more are
+ * added here.
+ */
+export const proto = {
+  // namespace proto.PinInChat { enum Type } — WAProto/index.d.ts:10355-10361
+  PinInChat: { Type: { UNKNOWN_TYPE: 0, PIN_FOR_ALL: 1, UNPIN_FOR_ALL: 2 } },
+};
+
 // Inline implementation mirrored from @whiskeysockets/baileys/lib/Utils/generics.js
 // (the package is pure ESM; ts-jest runs CJS, so the mock owns the serialisation helpers)
 

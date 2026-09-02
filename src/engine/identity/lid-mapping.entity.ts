@@ -16,16 +16,16 @@ import { Column, Entity, Index, PrimaryColumn, UpdateDateColumn } from 'typeorm'
 export class LidMapping {
   /** The lid number (bare, device-stripped - the user-part of `<lid>@lid`). */
   @PrimaryColumn()
-  lid: string;
+  lid!: string;
 
   /** E.164 phone digits, or null when the lid is known-but-unresolved (a cached negative result). */
   @Column({ type: 'varchar', nullable: true })
-  phone: string | null;
+  phone!: string | null;
 
   /** The session that last wrote this row. Provenance/debugging only; not a foreign key. */
   @Column({ type: 'varchar', nullable: true })
-  sessionId: string | null;
+  sessionId!: string | null;
 
   @UpdateDateColumn()
-  updatedAt: Date;
+  updatedAt!: Date;
 }

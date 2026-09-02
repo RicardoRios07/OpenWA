@@ -1,4 +1,5 @@
-import { resolveReconnectConfig, clampReconnectDelay } from './session.service';
+import { clampReconnectDelay } from './reconnect-policy';
+import { resolveReconnectConfig } from './session-engine-lifecycle.service';
 
 // an OPERATOR-supplied session.config flows into the reconnect backoff math unchecked.
 // config:{reconnectBaseDelay:'x'} makes the delay NaN -> setTimeout(fn, NaN) fires at 0 (relaunch

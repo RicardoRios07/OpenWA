@@ -39,18 +39,18 @@ export enum MessageStatus {
 @Index('UQ_messages_sessionId_waMessageId', ['sessionId', 'waMessageId'], { unique: true })
 export class Message {
   @PrimaryGeneratedColumn('uuid')
-  id: string;
+  id!: string;
 
   // No standalone @Index here: sessionId-only lookups are already served by the composite indexes
   // that lead with sessionId — (sessionId, createdAt) above and the unique (sessionId, waMessageId).
   @Column()
-  sessionId: string;
+  sessionId!: string;
 
   @Column({ nullable: true })
-  waMessageId: string;
+  waMessageId!: string;
 
   @Column()
-  chatId: string;
+  chatId!: string;
 
   /** Human-readable name for the chat (contact pushName, group name, etc). Populated on save when available — null for legacy rows. */
   @Column({ nullable: true })
@@ -65,36 +65,63 @@ export class Message {
   author?: string;
 
   @Column()
-  from: string;
+  from!: string;
 
   @Column()
-  to: string;
+  to!: string;
 
   @Column({ type: 'text', nullable: true })
-  body: string;
+  body!: string;
 
   @Column({ default: 'text' })
-  type: string;
+  type!: string;
 
   @Column({
     type: 'varchar',
     default: MessageDirection.OUTGOING,
   })
-  direction: MessageDirection;
+  direction!: MessageDirection;
 
   @Column({ type: 'bigint', nullable: true, transformer: bigintToNumberTransformer })
-  timestamp: number;
+  timestamp!: number;
 
   @Column({ type: jsonColumnType(), nullable: true })
-  metadata: Record<string, unknown>;
+  metadata!: Record<string, unknown>;
+
+  /**
+   * Storage key of this message's archived media, or null when nothing was archived — which is the
+   * case for every row written while `CHAT_MEDIA_ARCHIVE_ENABLED` is off (the default), for non-media
+   * messages, and for media above the archive cap. Independent of the inline base64 copy in
+   * `metadata.media`, which is unaffected by archiving.
+   */
+  // Partial index for the chat-media orphan sweep's per-chunk `mediaPath IN (...)` lookup. NULL for
+  // every un-archived row (archiving is opt-in), so the WHERE clause keeps the index to rows that
+  // can ever match. The explicit name matches the migration that creates it on synchronize-disabled
+  // deployments, so both schema paths converge on one index.
+  // The column name is QUOTED in the predicate on purpose: PostgreSQL folds a bare identifier to
+  // lower case, so `mediaPath IS NOT NULL` makes synchronize fail on `column "mediapath" does not
+  // exist`. The migration below already quotes it, so this is also what keeps the two in step.
+  @Index('IDX_messages_mediaPath', { where: '"mediaPath" IS NOT NULL' })
+  @Column({ nullable: true })
+  mediaPath?: string;
+
+  /** Mimetype of the archived media, so the read endpoint can serve a Content-Type without
+   *  depending on the inline copy. Null whenever `mediaPath` is. */
+  @Column({ nullable: true })
+  mediaMimetype?: string;
 
   @Column({
     type: 'varchar',
     default: MessageStatus.SENT,
   })
   @Index()
-  status: MessageStatus;
+  status!: MessageStatus;
 
+  // Standalone index for the createdAt-only range predicates of the stats aggregates — the
+  // composite above leads with sessionId, so it can't serve them (SQLite needs ANALYZE stats for
+  // a skip-scan; Postgres has none). The explicit name matches the migration that creates it on
+  // synchronize-disabled deployments, so both schema paths converge on one index.
   @CreateDateColumn()
-  createdAt: Date;
+  @Index('IDX_messages_createdAt')
+  createdAt!: Date;
 }

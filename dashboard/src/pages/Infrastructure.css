@@ -43,7 +43,7 @@
 }
 
 .infrastructure-page .header-left svg {
-  color: var(--primary);
+  color: var(--primary-text);
 }
 
 .infrastructure-page .card-header h2 {
@@ -62,12 +62,12 @@
 
 .infrastructure-page .status-indicator.connected {
   background: rgba(37, 211, 102, 0.1);
-  color: var(--primary);
+  color: var(--primary-text);
 }
 
 .infrastructure-page .status-indicator.disconnected {
   background: rgba(239, 68, 68, 0.12);
-  color: var(--error);
+  color: var(--error-text);
 }
 
 .infrastructure-page .status-indicator.sqlite {
@@ -327,22 +327,22 @@
 }
 
 .infrastructure-page .stat-item.pending .value {
-  color: var(--warning);
+  color: var(--warning-text);
 }
 .infrastructure-page .stat-item.pending .label {
-  color: var(--warning);
+  color: var(--warning-text);
 }
 .infrastructure-page .stat-item.completed .value {
-  color: var(--primary);
+  color: var(--primary-text);
 }
 .infrastructure-page .stat-item.completed .label {
-  color: var(--primary);
+  color: var(--primary-text);
 }
 .infrastructure-page .stat-item.failed .value {
-  color: var(--error);
+  color: var(--error-text);
 }
 .infrastructure-page .stat-item.failed .label {
-  color: var(--error);
+  color: var(--error-text);
 }
 
 .infrastructure-page .queue-actions {
@@ -512,7 +512,7 @@
   gap: 0.4rem;
   margin: 0 0 1rem;
   font-size: 0.8125rem;
-  color: var(--warning);
+  color: var(--warning-text);
 }
 .infrastructure-page .env-pin-note svg {
   flex-shrink: 0;
@@ -531,7 +531,7 @@
 }
 .infrastructure-page .migration-warning svg {
   flex-shrink: 0;
-  color: var(--warning);
+  color: var(--warning-text);
   margin-top: 0.1rem;
 }
 .infrastructure-page .migration-warning p {
@@ -581,7 +581,7 @@
 }
 
 .infrastructure-page .status-error-icon {
-  color: var(--warning, #d97706);
+  color: var(--warning-text, #9f6707);
   margin-bottom: 1rem;
 }
 
@@ -624,7 +624,7 @@
 }
 
 .infrastructure-page .empty-state-icon.success {
-  color: var(--success);
+  color: var(--success-text);
   opacity: 0.7;
 }
 
@@ -642,7 +642,7 @@
 
 .infrastructure-page .migrations-status {
   margin: 0.75rem 0 0;
-  color: var(--success);
+  color: var(--success-text);
   font-size: 0.875rem;
   font-weight: 500;
   display: flex;
@@ -677,12 +677,12 @@
   text-align: center;
 }
 
-.infrastructure-page .restart-modal-header {
+.infrastructure-page .restart-modal .modal-header {
   justify-content: center;
   border-bottom: none;
 }
 
-.infrastructure-page .restart-modal-body {
+.infrastructure-page .restart-modal .modal-body {
   padding: 2rem;
 }
 
@@ -703,7 +703,7 @@
 }
 
 .infrastructure-page .restart-status-icon {
-  color: var(--success);
+  color: var(--success-text);
   margin-bottom: 1rem;
 }
 
@@ -740,6 +740,6 @@
 
 .infrastructure-page .restart-error-msg {
   font-size: 1rem;
-  color: var(--error);
+  color: var(--error-text);
   margin-bottom: 1rem;
 }

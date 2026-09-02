@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import type * as BaileysLib from '@whiskeysockets/baileys';
 import type { WAMessage } from '@whiskeysockets/baileys';
 import { BaileysStoredMessage } from './baileys-stored-message.entity';
@@ -97,6 +97,21 @@ export class BaileysMessageStoreService implements BaileysMessageStore {
     }
     const { BufferJSON } = await this.loadLib();
     return JSON.parse(row.serializedMessage, BufferJSON.reviver) as WAMessage;
+  }
+
+  async getMessages(sessionId: string, messageIds: string[]): Promise<WAMessage[]> {
+    // One query for the whole batch: the read-receipt path resolves up to a hundred ids at a time,
+    // and a findOne apiece would be a hundred sequential round trips for a single request.
+    const ids = messageIds.filter(Boolean);
+    if (ids.length === 0) {
+      return [];
+    }
+    const rows = await this.repo.find({ where: { sessionId, waMessageId: In(ids) } });
+    if (rows.length === 0) {
+      return [];
+    }
+    const { BufferJSON } = await this.loadLib();
+    return rows.map(row => JSON.parse(row.serializedMessage, BufferJSON.reviver) as WAMessage);
   }
 
   async clearSession(sessionId: string): Promise<void> {

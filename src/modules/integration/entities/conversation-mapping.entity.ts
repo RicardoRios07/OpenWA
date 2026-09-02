@@ -10,29 +10,29 @@ export type HandoverState = 'bot' | 'human' | 'closed';
 @Index('UQ_conversation_mappings_reverse', ['pluginId', 'instanceId', 'providerConversationId'], { unique: true })
 export class ConversationMapping {
   @PrimaryGeneratedColumn('uuid')
-  id: string;
+  id!: string;
 
   @Column()
-  sessionId: string;
+  sessionId!: string;
 
   @Column()
-  chatId: string;
+  chatId!: string;
 
   @Column()
-  pluginId: string;
+  pluginId!: string;
 
   @Column()
-  instanceId: string;
+  instanceId!: string;
 
   @Column()
-  providerConversationId: string;
+  providerConversationId!: string;
 
   @Column({ default: 'bot' })
-  handoverState: HandoverState;
+  handoverState!: HandoverState;
 
   @Column({ type: jsonColumnType(), nullable: true })
-  metadata: Record<string, unknown> | null;
+  metadata!: Record<string, unknown> | null;
 
   @UpdateDateColumn()
-  updatedAt: Date;
+  updatedAt!: Date;
 }

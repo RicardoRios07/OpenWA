@@ -1,10 +1,6 @@
+import { allAgentTools } from './tools';
 import { z } from 'zod';
-import { sessionTools } from './tools/session.tools';
-import { messageTools } from './tools/message.tools';
-import { contactTools } from './tools/contact.tools';
-import { groupTools } from './tools/group.tools';
-import { webhookTools } from './tools/webhook.tools';
-import type { ToolDescriptor } from './tool-descriptor';
+import type { AnyToolDescriptor } from './tool-descriptor';
 
 // Registry-level invariant (not a per-tool enumeration): EVERY sessionScoped tool must require a
 // non-empty sessionId. tool-invoker only passes sessionId into the allowedSessions fence when it is a
@@ -13,18 +9,29 @@ import type { ToolDescriptor } from './tool-descriptor';
 // This catches a FUTURE tool authored with z.string().optional() — no test edit needed when one is added.
 describe('agent-tool registry: every sessionScoped tool requires a non-empty sessionId', () => {
   // Handlers are never invoked here; stub services are fine — we only inspect the schema/flags.
-  const allTools: ToolDescriptor[] = [
-    ...sessionTools({} as never),
-    ...messageTools({} as never),
-    ...contactTools({} as never),
-    ...groupTools({} as never),
-    ...webhookTools({} as never),
-  ];
+  const allTools: AnyToolDescriptor[] = [...allAgentTools({} as never)];
 
   const sessionScoped = allTools.filter(t => t.sessionScoped === true);
 
   it('has sessionScoped tools to check (the guard is meaningful)', () => {
     expect(sessionScoped.length).toBeGreaterThan(0);
+  });
+
+  /**
+   * The other direction, and the one that actually leaks. `tool-invoker` only applies the
+   * allowedSessions fence to a tool marked sessionScoped, so a tool that takes a sessionId and
+   * forgets the flag lets a session-restricted key act on any session at all. Nothing else notices:
+   * the tool works, the schema is valid, and only the fence is missing.
+   */
+  it('marks every tool that takes a sessionId as sessionScoped', () => {
+    const takesSessionId = allTools.filter(tool => {
+      const shape = (tool.inputSchema as unknown as z.ZodObject<Record<string, z.ZodType>>).shape;
+      return shape != null && 'sessionId' in shape;
+    });
+
+    // Guard the guard: a shape probe that silently matched nothing would make this vacuous.
+    expect(takesSessionId.length).toBeGreaterThan(0);
+    expect(takesSessionId.filter(tool => tool.sessionScoped !== true).map(tool => tool.name)).toEqual([]);
   });
 
   it.each(sessionScoped.map(t => [t.name, t] as const))(

@@ -83,8 +83,94 @@ export class PluginSessionsDto {
 }
 
 export class InstallFromUrlDto {
-  @ApiProperty({ description: 'HTTP(S) URL of the plugin .zip to download and install' })
+  @ApiProperty({
+    description:
+      'URL of the plugin .zip to download and install (SSRF-guarded; private-network hosts remain ' +
+      'subject to the guard). https:// is accepted as-is. Plain http:// is only accepted when the URL ' +
+      'pins the package content — append `#sha256=<64 hex>` (fragment — never sent to the server; query ' +
+      'params are ignored) — because the package is executable code and must be integrity-protected in ' +
+      'transit. A pinned digest that does not match the downloaded archive fails the install.',
+  })
   @IsString()
-  @IsUrl({ protocols: ['http', 'https'], require_protocol: true })
+  @IsUrl({ protocols: ['http', 'https'], require_protocol: true }, { message: 'url must be an absolute http(s) URL' })
   url!: string;
+}
+
+/** Shared shape of the plugin lifecycle writes (enable/disable/config/uninstall). */
+export class PluginActionResponseDto {
+  @ApiProperty({ description: 'Whether the change was applied; a refusal is carried in `message`.', example: true })
+  success!: boolean;
+
+  @ApiProperty({ description: 'Human-readable outcome.', example: 'Plugin echo configuration updated' })
+  message!: string;
+}
+
+export class PluginHealthResponseDto {
+  @ApiProperty({ description: 'Whether the plugin reports healthy.', example: true })
+  healthy!: boolean;
+
+  @ApiPropertyOptional({ description: 'Failure detail when unhealthy.', example: 'worker did not answer in time' })
+  message?: string;
+}
+
+/** A remote-catalog entry annotated with this instance's install state. Extra catalog fields pass through. */
+export class PluginCatalogEntryDto {
+  @ApiProperty({ example: 'echo' })
+  id!: string;
+
+  @ApiProperty({ example: 'Echo Bot' })
+  name!: string;
+
+  @ApiProperty({ example: '1.2.0' })
+  version!: string;
+
+  @ApiPropertyOptional({ example: 'utility' })
+  type?: string;
+
+  @ApiPropertyOptional({ example: 'stable' })
+  status?: string;
+
+  @ApiPropertyOptional()
+  description?: string;
+
+  @ApiPropertyOptional()
+  author?: string;
+
+  @ApiPropertyOptional({ example: 'MIT' })
+  license?: string;
+
+  @ApiPropertyOptional({ type: [String] })
+  keywords?: string[];
+
+  @ApiPropertyOptional({ example: '0.18.0' })
+  minOpenWAVersion?: string;
+
+  @ApiPropertyOptional({ example: '0.18.0' })
+  testedOpenWAVersion?: string;
+
+  @ApiPropertyOptional({ example: '2026-08-01' })
+  releasedAt?: string;
+
+  @ApiPropertyOptional({ example: 'https://github.com/example/echo-plugin' })
+  repoUrl?: string;
+
+  @ApiPropertyOptional()
+  homepage?: string;
+
+  @ApiPropertyOptional({ description: 'Download URL of the plugin package.' })
+  download?: string;
+
+  @ApiProperty({ description: 'Whether this instance has the plugin installed.', example: false })
+  installed!: boolean;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description: 'The installed version, or null when not installed.',
+    example: null,
+  })
+  installedVersion!: string | null;
+
+  @ApiProperty({ description: 'True when installed and the catalog version is strictly newer.', example: false })
+  updateAvailable!: boolean;
 }

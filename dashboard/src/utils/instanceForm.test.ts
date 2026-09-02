@@ -16,7 +16,7 @@ test('isValidInstanceSecret: blank → auto-generate, short → rejected, >=16 �
   assert.equal(isValidInstanceSecret('too-short'), false);
   assert.equal(isValidInstanceSecret('x'.repeat(15)), false);
   assert.equal(isValidInstanceSecret('x'.repeat(16)), true);
-  assert.equal(isValidInstanceSecret('  5t7oive8SuXwrnVgLEQs88gm  '), true); // padded real secret trims to valid
+  assert.equal(isValidInstanceSecret('  0123456789abcdef01234567  '), true); // padded value trims to a valid length
 });
 
 test('parseInstanceConfig: blank → undefined, object → parsed, invalid → not ok', () => {

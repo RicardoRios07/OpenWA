@@ -11,6 +11,7 @@
     "cancel": "취소",
     "delete": "삭제",
     "create": "생성",
+    "save": "Save",
     "close": "닫기",
     "showApiKey": "API 키 표시",
     "hideApiKey": "API 키 숨기기",
@@ -85,6 +86,7 @@
     "empty": "채팅 없음",
     "noMessageYet": "아직 메시지 없음",
     "unreadBadge": "읽지 않은 메시지 {{count}}개",
+    "unreadBadge_other": "읽지 않은 메시지 {{count}}개",
     "loadingMessages": "메시지 불러오는 중...",
     "noMessagesInChat": "아직 메시지가 없습니다. 첫 메시지를 보내 대화를 시작하세요!",
     "downloadDocument": "문서 다운로드",
@@ -141,13 +143,15 @@
       "orLabel": "또는",
       "post": "게시",
       "posted": "상태가 게시되었습니다",
-      "postFailed": "상태를 게시할 수 없습니다"
+      "postFailed": "상태를 게시할 수 없습니다",
+      "imageFile": "상태 이미지"
     },
     "channels": {
       "notSupported": "Baileys 엔진에서는 채널을 지원하지 않습니다.",
       "empty": "아직 구독 중인 채널이 없습니다.",
       "notReady": "세션이 아직 준비되지 않았습니다.",
-      "subscribers": "구독자 {{count}}명"
+      "subscribers": "구독자 {{count}}명",
+      "subscribers_other": "구독자 {{count}}명"
     },
     "errors": {
       "loadSessions": "세션을 불러오지 못했습니다",
@@ -155,9 +159,17 @@
       "markRead": "채팅을 읽음으로 표시하지 못했습니다",
       "send": "메시지를 보내지 못했습니다",
       "react": "메시지에 반응하지 못했습니다",
-      "delete": "메시지를 삭제하지 못했습니다"
+      "delete": "메시지를 삭제하지 못했습니다",
+      "fileTooLarge": "파일이 너무 큽니다 (최대 18 MB)"
     },
-    "loadMessagesError": "메시지를 불러올 수 없습니다. 서버 로그를 확인하세요."
+    "loadMessagesError": "메시지를 불러올 수 없습니다. 서버 로그를 확인하세요.",
+    "messageStatus": {
+      "pending": "대기 중",
+      "sent": "전송됨",
+      "delivered": "전달됨",
+      "read": "읽음",
+      "failed": "실패"
+    }
   },
   "errorBoundary": {
     "title": "문제가 발생했습니다",
@@ -225,7 +237,10 @@
     "connecting": "연결하는 중...",
     "qr_ready": "QR 스캔",
     "ready": "연결됨",
-    "disconnected": "연결 끊김"
+    "disconnected": "연결 끊김",
+    "action_required": "조치 필요",
+    "failed": "실패",
+    "authenticating": "인증하는 중..."
   },
   "sessions": {
     "title": "세션",
@@ -285,13 +300,34 @@
       "phone": "전화번호",
       "phoneNone": "연결되지 않음",
       "created": "생성일",
-      "lastActive": "마지막 활동"
+      "lastActive": "마지막 활동",
+      "autoRejectCalls": "통화 자동 거절",
+      "autoRejectCallsHint": "수신 통화가 울리는 즉시 거절됩니다. call.received 웹훅은 그전에 그대로 전송됩니다. 다음 통화부터 적용되며 재시작이 필요하지 않습니다."
+    },
+    "proxy": {
+      "title": "Proxy Configuration",
+      "status": "Current",
+      "enabled": "Use proxy",
+      "url": "Proxy URL",
+      "urlPlaceholder": "http://user:pass@proxy.example.com:8080",
+      "urlKeepPlaceholder": "Enter new URL to replace {{host}} (credentials not shown)",
+      "configured": "{{host}} ({{type}})",
+      "noProxy": "No proxy configured",
+      "hasCredentials": "Credentials are stored but not shown. Enter a full URL to change them.",
+      "hint": "Changes apply on the next session start, not to a running connection. The proxy must be real and reachable — an unreachable value blocks QR delivery and start returns 504.",
+      "createHint": "Only needed when your network cannot reach WhatsApp directly. Must be a real, reachable proxy.",
+      "invalidUrl": "Enter a valid http, https, socks4, or socks5 proxy URL.",
+      "saveSuccessTitle": "Proxy Saved",
+      "saveSuccess": "Proxy settings saved. They apply on the next session start.",
+      "saveError": "Failed to save proxy settings"
     },
     "actions": {
       "view": "보기",
+      "proxy": "Proxy",
       "start": "시작",
       "stop": "중지",
       "reconnect": "재연결",
+      "unlink": "연결 해제",
       "delete": "삭제",
       "killStuck": "강제 종료"
     },
@@ -300,6 +336,8 @@
       "readyDesc": "WhatsApp 세션이 연결되었습니다",
       "disconnectedTitle": "세션 연결 끊김",
       "disconnectedDesc": "WhatsApp 세션 연결이 끊어졌습니다",
+      "actionRequiredTitle": "조치 필요",
+      "actionRequiredDesc": "이 세션에 주의가 필요합니다. 할 일을 확인하려면 세션을 여세요.",
       "failedTitle": "세션 실패",
       "failedDesc": "WhatsApp 세션을 시작하지 못했습니다. 세션을 열어 원인을 확인하세요."
     },
@@ -307,7 +345,8 @@
       "phone": "전화번호",
       "sessionId": "세션 ID",
       "lastActive": "마지막 활동",
-      "error": "오류"
+      "error": "오류",
+      "restriction": "제한"
     },
     "forceKill": {
       "title": "멈춘 세션 강제 종료",
@@ -318,6 +357,18 @@
       "success": "세션이 강제로 종료되었습니다. 지금 다시 시작할 수 있습니다.",
       "failedTitle": "강제 종료 실패",
       "failed": "세션을 강제로 종료하지 못했습니다."
+    },
+    "unlink": {
+      "title": "기기 연결 해제",
+      "message": "세션 <strong>\"{{name}}\"</strong>을(를) WhatsApp 계정에서 연결 해제할까요?",
+      "warning": "WhatsApp이 이 기기를 계정의 연결된 기기 목록에서 제거하고 세션이 중지됩니다. 다시 연결하려면 새 QR 스캔 또는 페어링 코드가 필요합니다. 로컬 데이터까지 모두 지우려면 이후 세션을 삭제하세요.",
+      "confirm": "연결 해제",
+      "successTitle": "기기 연결 해제됨",
+      "success": "연결 해제 완료: 기기가 로그아웃되고 로컬 세션 자격 증명이 삭제되었습니다. 다시 연결하려면 새로운 QR 스캔 또는 페어링 코드가 필요합니다.",
+      "failedTitle": "연결 해제 실패",
+      "failed": "세션 연결 해제에 실패했습니다.",
+      "incompleteTitle": "연결 해제 미완료",
+      "incomplete": "세션이 로컬에서 중지되었지만 로그아웃 작업이 완료되지 않았습니다. 기기가 여전히 연결되어 있을 수 있습니다. 세션을 시작하고 연결 해제를 다시 시도하세요."
     },
     "pairing": {
       "tabQr": "QR 코드",
@@ -336,6 +387,16 @@
       "step3": "<strong>3.</strong> <strong>기기 연결</strong>을 누른 다음 <strong>전화번호로 연결하기</strong>를 누르세요",
       "step4": "<strong>4.</strong> 위에 표시된 8자리 코드를 휴대폰에 입력하세요",
       "waitingConnection": "휴대폰이 연결되기를 기다리는 중…"
+    },
+    "start": {
+      "teardownPendingTitle": "세션 시작 중",
+      "teardownPending": "이 세션의 자격 증명 해체가 아직 진행 중입니다. 잠시 기다린 후 다시 시도하세요."
+    },
+    "restriction": {
+      "reachout_timelock": "새 대화 차단됨",
+      "tos_block": "WhatsApp에 의해 차단됨",
+      "proxy_block": "연결 차단됨",
+      "until": "{{date}}까지"
     }
   },
   "webhooks": {
@@ -355,6 +416,7 @@
       "title": "필터 (선택 사항)",
       "hint": "모든 조건이 일치할 때만 실행됩니다. 메시지 이벤트에 적용됩니다.",
       "badge": "필터 {{count}}개",
+      "badge_other": "필터 {{count}}개",
       "addCondition": "조건 추가",
       "removeCondition": "조건 제거",
       "caseSensitive": "대소문자 구분",
@@ -378,7 +440,10 @@
         "isNot": "다음과 같지 않음",
         "contains": "포함",
         "equals": "동일함"
-      }
+      },
+      "fieldLabel": "필터 필드",
+      "operatorLabel": "필터 연산자",
+      "valueLabel": "필터 값"
     },
     "columns": {
       "url": "URL",
@@ -459,7 +524,8 @@
       "deleted": "템플릿이 삭제되었습니다",
       "deleteFailed": "템플릿 삭제 실패: {{message}}",
       "copied": "템플릿 이름이 복사되었습니다"
-    }
+    },
+    "sessionSelect": "세션"
   },
   "apiKeys": {
     "title": "API 키",
@@ -486,7 +552,8 @@
       "role": "역할",
       "status": "상태",
       "lastUsed": "마지막 사용",
-      "actions": "작업"
+      "actions": "작업",
+      "sessions": "세션"
     },
     "statuses": {
       "active": "활성",
@@ -507,7 +574,19 @@
     "actions": {
       "copy": "복사",
       "revoke": "폐기",
-      "delete": "삭제"
+      "delete": "삭제",
+      "editSessions": "세션 편집"
+    },
+    "sessions": {
+      "label": "세션 접근",
+      "hint": "이 키가 사용할 세션을 선택하세요.",
+      "all": "모든 세션",
+      "empty": "아직 세션이 없습니다. 세션이 생기면 이 키는 모두에 접근할 수 있습니다.",
+      "restricted": "{{count}}개 선택됨",
+      "editTitle": "세션 접근 편집",
+      "save": "저장",
+      "choose": "세션 선택",
+      "leaveAll": "모든 세션에 두기"
     }
   },
   "logs": {
@@ -531,7 +610,10 @@
     },
     "empty": {
       "title": "로그가 없습니다",
-      "description": "작업이 수행되면 감사 로그가 여기에 표시됩니다"
+      "description": "작업이 수행되면 감사 로그가 여기에 표시됩니다",
+      "filteredTitle": "이 페이지에 일치하는 항목이 없습니다",
+      "filteredDescription": "검색은 현재 페이지만 필터링합니다. 지우거나 페이지를 이동하거나 서버 측 심각도 필터를 사용하세요.",
+      "filteredServerDescription": "이 필터에 일치하는 로그가 없습니다. 검색 범위를 넓히려면 심각도 필터를 조정하세요."
     }
   },
   "messageTester": {
@@ -600,6 +682,7 @@
     "forwardMessageId": "메시지 ID",
     "forwardMessageIdHint": "전달할 메시지의 ID",
     "bulkRecipients": "수신자",
+    "bulkRecipientsUpload": "CSV/TXT 업로드",
     "bulkRecipientsPlaceholder": "+62812345678",
     "bulkRecipientsHint": "한 줄에 하나의 전화번호 또는 채팅 ID (최대 100개)",
     "bulkRecipientsCount": "수신자: {{count}}",
@@ -716,7 +799,8 @@
       "disconnected": "연결 끊김",
       "disabled": "사용 안 함"
     },
-    "envPinNote": "환경 변수로 고정됨 — 현재 실행 중인 값이며, 해당 변수를 해제해야 대시보드 변경 사항이 적용됩니다.",
+    "envPinNote": "환경 변수 {{name}}(으)로 고정됨 — 현재 실행 중인 값이며, 해당 변수를 해제해야 대시보드 변경 사항이 적용됩니다.",
+    "pendingRestartNote": "저장되었지만 아직 적용되지 않았습니다 — 이 변경 사항을 적용하려면 서버를 다시 시작하세요.",
     "migration": {
       "title": "주의 — 데이터 백엔드가 변경됩니다",
       "dbWarning": "새 데이터베이스는 비어 있는 상태로 시작됩니다. 지금(기존 데이터베이스에 있는 동안) 현재 데이터를 백업한 후 재시작이 끝나면 복원하세요.",
@@ -727,6 +811,8 @@
       "export": "데이터 내보내기",
       "import": "데이터 가져오기",
       "exportFailed": "데이터를 내보내지 못했습니다",
+      "exportPartialTitle": "Backup is missing some media",
+      "exportPartial": "{{count}} attachment payload(s) exceeded the export media budget and were saved as placeholders. The messages restore; their media does not.",
       "importFailed": "데이터를 가져오지 못했습니다",
       "importOk": "데이터를 가져왔습니다",
       "importConfirm": "가져오기를 실행하면 현재 데이터가 백업본({{rows}}행)으로 완전히 대체됩니다. 되돌릴 수 없습니다. 계속할까요?",
@@ -789,8 +875,14 @@
     "installModal": {
       "title": "플러그인 설치",
       "hint": "manifest.json이 포함된 .zip으로 패키징된 플러그인을 업로드하세요. 활성화되면 샌드박스에서 실행됩니다.",
+      "trustWarning": "플러그인은 게이트웨이의 전체 프로세스 권한으로 실행됩니다. 샌드박스는 충돌만 격리할 뿐 악성 코드는 막지 못합니다. 신뢰할 수 있는 플러그인만 설치하세요.",
       "choose": ".zip 파일 선택…",
-      "tooLarge": "파일이 5MB 제한을 초과합니다."
+      "tooLarge": "파일이 5MB 제한을 초과합니다.",
+      "catalogHint": "OpenWA 플러그인 카탈로그에서 직접 설치하세요. .zip 파일은 SSRF 가드를 통해 서버에서 가져온 후 검증되고 샌드박스에서 실행됩니다.",
+      "catalogTeaser": "플러그인을 찾고 계신가요?",
+      "catalogTeaserSuffix": "공식 마켓플레이스를 둘러봅니다.",
+      "tabCatalog": "카탈로그",
+      "tabUpload": ".zip 업로드"
     },
     "toasts": {
       "errorTitle": "플러그인 오류",
@@ -808,7 +900,8 @@
       "enableFailedTitle": "활성화 실패",
       "disableFailedTitle": "비활성화 실패",
       "configRequiredTitle": "설정 필요",
-      "configRequiredDesc": "활성화하기 전에 필수 항목을 입력하세요: {{fields}}"
+      "configRequiredDesc": "활성화하기 전에 필수 항목을 입력하세요: {{fields}}",
+      "updateFailed": "업데이트 실패"
     },
     "sessions": {
       "activationTitle": "실행 대상",
@@ -827,6 +920,7 @@
       "title": "인스턴스",
       "description": "이 연동을 위해 계정별 인스턴스를 프로비저닝하세요. 각 인스턴스는 고유한 서명 시크릿과 인그레스 URL을 가집니다.",
       "create": "인스턴스 생성",
+      "save": "Save",
       "empty": "아직 인스턴스가 없습니다. 인스턴스를 만들면 인그레스 URL과 시크릿을 받을 수 있습니다.",
       "loadError": "인스턴스를 불러오지 못했습니다.",
       "allSessions": "모든 세션",
@@ -887,6 +981,17 @@
         "secretRegenerated": "시크릿이 재생성되었습니다",
         "actionFailed": "작업 실패"
       }
+    },
+    "catalog": {
+      "empty": "카탈로그에 플러그인이 없습니다.",
+      "install": "설치",
+      "installed": "설치됨",
+      "noDownload": "이 카탈로그 항목에는 다운로드 URL이 없습니다.",
+      "noMatch": "검색과 일치하는 플러그인이 없습니다.",
+      "searchPlaceholder": "플러그인 검색…",
+      "update": "업데이트",
+      "updateAvailable": "업데이트 사용 가능",
+      "updated": "플러그인이 업데이트되었습니다"
     }
   },
   "search": {

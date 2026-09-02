@@ -16,7 +16,14 @@
  * @packageDocumentation
  */
 
-import type { CatalogInfo, ChannelMessageRecord, ChannelRecord, LabelRecord, StatusRecord } from '../src/types.js';
+import type {
+  CatalogInfo,
+  ChannelMessageRecord,
+  ChannelRecord,
+  ChatHistoryMessage,
+  LabelRecord,
+  StatusRecord,
+} from '../src/types.js';
 
 /** `Label` — `hexColor` is the only colour field the wire shape carries. */
 interface WireLabel {
@@ -64,6 +71,74 @@ interface WireChannelMessage {
   mediaUrl?: string;
 }
 
+/**
+ * `IncomingMessage` — `messages.history()` hands back the engine array verbatim, so the wire shape is
+ * that interface serialized. `backgroundColor`/`font` are set by the Baileys extended-text mapper but
+ * are not reachable through this route (Baileys answers `getChatHistory` with `unsupported`); they are
+ * declared for the same forward-compatibility reason as on `WireStatus`.
+ *
+ * Scope, so nobody reads more into a green build than it carries: `Mirrors` compares TOP-LEVEL keys,
+ * so drift inside `contact`, `call`, `media`, `quotedMessage` or `location` compiles clean. And like
+ * every `Wire*` type here this one is a hand transcription, so a field added to the server's
+ * `IncomingMessage` does not fail this build either — `sdk-ci.yml` re-runs the job when that file
+ * changes, which prompts a human to update the transcription. What this pair does lock is the SDK
+ * type against the transcription: neither side can lose or gain a top-level key unnoticed.
+ */
+interface WireChatHistoryMessage {
+  id: string;
+  from: string;
+  to: string;
+  chatId: string;
+  body: string;
+  type:
+    | 'text'
+    | 'image'
+    | 'video'
+    | 'audio'
+    | 'voice'
+    | 'document'
+    | 'sticker'
+    | 'location'
+    | 'contact'
+    | 'poll'
+    | 'call'
+    | 'revoked'
+    | 'masked'
+    | 'unknown';
+  timestamp: number;
+  fromMe: boolean;
+  isGroup: boolean;
+  kind: 'individual' | 'group' | 'channel' | 'status' | 'broadcast' | 'unknown';
+  isStatusBroadcast?: boolean;
+  ephemeralDuration?: number;
+  author?: string;
+  mentionedIds?: string[];
+  call?: { video: boolean; missed: boolean };
+  isLidSender?: boolean;
+  senderPhone?: string | null;
+  contact?: {
+    id?: string;
+    number?: string;
+    name?: string;
+    pushName?: string;
+    shortName?: string;
+    type?: string;
+    isMyContact?: boolean;
+    isWAContact?: boolean;
+    isBusiness?: boolean;
+    isEnterprise?: boolean;
+    verifiedName?: string;
+    verifiedLevel?: number;
+    isBlocked?: boolean;
+    labels?: string[];
+  };
+  backgroundColor?: string;
+  font?: number;
+  media?: { mimetype: string; filename?: string; data?: string; omitted?: boolean; sizeBytes?: number };
+  quotedMessage?: { id: string; body: string };
+  location?: { latitude: number; longitude: number; description?: string; address?: string; url?: string };
+}
+
 /** `Catalog` — the control: this pair already agreed before #754 and must stay agreeing. */
 interface WireCatalog {
   id: string;
@@ -92,5 +167,6 @@ const status: Mirrors<WireStatus, StatusRecord> = true;
 const channel: Mirrors<WireChannel, ChannelRecord> = true;
 const channelMessage: Mirrors<WireChannelMessage, ChannelMessageRecord> = true;
 const catalog: Mirrors<WireCatalog, CatalogInfo> = true;
+const chatHistoryMessage: Mirrors<WireChatHistoryMessage, ChatHistoryMessage> = true;
 
-export const contract = [label, status, channel, channelMessage, catalog];
+export const contract = [label, status, channel, channelMessage, catalog, chatHistoryMessage];

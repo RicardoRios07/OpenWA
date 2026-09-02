@@ -45,6 +45,18 @@ class GroupsResource
     }
 
     /**
+     * Preview a group from its invite code, WITHOUT joining. Read-only, so it is safe to call on a
+     * code from an untrusted source. There is no participant list — the account is not a member —
+     * only a count, and only when WhatsApp discloses one.
+     *
+     * @return array<string,mixed>
+     */
+    public function joinInfo(string $sessionId, string $code): array
+    {
+        return $this->http->request('GET', "/api/sessions/{$this->http->encodeSegment($sessionId)}/groups/join-info", ['code' => $code]);
+    }
+
+    /**
      * Join a group via an invite code (the token from a chat.whatsapp.com/<code>
      * link). Returns {success: true, groupId}.
      *
@@ -104,8 +116,9 @@ class GroupsResource
 
     /**
      * Update group settings. At least one of {announce, locked,
-     * ephemeralSeconds} is required (400 otherwise); ephemeralSeconds responds
-     * 501 on engines without disappearing-message support (whatsapp-web.js).
+     * ephemeralSeconds, memberAddMode} is required (400 otherwise);
+     * ephemeralSeconds responds 501 on engines without disappearing-message
+     * support (whatsapp-web.js). memberAddMode is 'all' or 'admins'.
      *
      * @param array<string,mixed> $settings
      * @return array<string,mixed>
@@ -121,6 +134,37 @@ class GroupsResource
         return $this->http->request('POST', "/api/sessions/{$this->http->encodeSegment($sessionId)}/groups/{$this->http->encodeSegment($groupId)}/leave");
     }
 
+    /**
+     * Get the group's picture URL (null when it has none).
+     *
+     * @return array<string,mixed>
+     */
+    public function getPicture(string $sessionId, string $groupId): array
+    {
+        return $this->http->request('GET', "/api/sessions/{$this->http->encodeSegment($sessionId)}/groups/{$this->http->encodeSegment($groupId)}/picture") ?? [];
+    }
+
+    /**
+     * Set the group's picture. Requires admin rights on the group.
+     *
+     * @param array<string,mixed> $body url OR base64 (base64 wins), plus mimetype with base64.
+     * @return array<string,mixed>
+     */
+    public function setPicture(string $sessionId, string $groupId, array $body): array
+    {
+        return $this->http->request('PUT', "/api/sessions/{$this->http->encodeSegment($sessionId)}/groups/{$this->http->encodeSegment($groupId)}/picture", [], $body) ?? [];
+    }
+
+    /**
+     * Remove the group's picture. Requires admin rights on the group.
+     *
+     * @return array<string,mixed>
+     */
+    public function deletePicture(string $sessionId, string $groupId): array
+    {
+        return $this->http->request('DELETE', "/api/sessions/{$this->http->encodeSegment($sessionId)}/groups/{$this->http->encodeSegment($groupId)}/picture") ?? [];
+    }
+
     /** @return array<string,mixed> */
     public function inviteCode(string $sessionId, string $groupId): array
     {
@@ -132,4 +176,46 @@ class GroupsResource
     {
         return $this->http->request('POST', "/api/sessions/{$this->http->encodeSegment($sessionId)}/groups/{$this->http->encodeSegment($groupId)}/invite-code/revoke");
     }
+
+    /**
+     * List a group's pending join requests. Requires the account to be a group admin.
+     *
+     * Only `participantId` is guaranteed on each entry — the engine reports the rest when it has it.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    public function getMembershipRequests(string $sessionId, string $groupId): array
+    {
+        return $this->http->request('GET', "/api/sessions/{$this->http->encodeSegment($sessionId)}/groups/{$this->http->encodeSegment($groupId)}/membership-requests") ?? [];
+    }
+
+    /**
+     * Approve pending join requests. Pass null to approve every pending request.
+     *
+     * A partial refusal answers 200 and reports it per participant in `results`, so `success` alone
+     * does not mean everyone was let in.
+     *
+     * @param list<string>|null $participants
+     * @return array<string,mixed>
+     */
+    public function approveMembershipRequests(string $sessionId, string $groupId, ?array $participants = null): array
+    {
+        $body = $participants === null ? [] : ['participants' => $participants];
+
+        return $this->http->request('POST', "/api/sessions/{$this->http->encodeSegment($sessionId)}/groups/{$this->http->encodeSegment($groupId)}/membership-requests/approve", [], $body);
+    }
+
+    /**
+     * Reject pending join requests. Pass null to reject every pending request.
+     *
+     * @param list<string>|null $participants
+     * @return array<string,mixed>
+     */
+    public function rejectMembershipRequests(string $sessionId, string $groupId, ?array $participants = null): array
+    {
+        $body = $participants === null ? [] : ['participants' => $participants];
+
+        return $this->http->request('POST', "/api/sessions/{$this->http->encodeSegment($sessionId)}/groups/{$this->http->encodeSegment($groupId)}/membership-requests/reject", [], $body);
+    }
+
 }

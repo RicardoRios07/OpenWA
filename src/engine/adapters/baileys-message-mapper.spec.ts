@@ -2,6 +2,7 @@ import {
   BaileysIncomingFields,
   buildIncomingMessageFromBaileys,
   extractBaileysBody,
+  extractBaileysContext,
   mapBaileysMessageType,
   mapBaileysStatus,
 } from './baileys-message-mapper';
@@ -113,6 +114,78 @@ describe('extractBaileysBody (inbound text/caption + interactive shapes)', () =>
     expect(extractBaileysBody({})).toBe('');
     expect(extractBaileysBody({ interactiveMessage: {} })).toBe('');
     expect(extractBaileysBody({ templateMessage: {} })).toBe('');
+  });
+
+  it('extracts a single shared contact card as its raw vCard', () => {
+    const vcard = 'BEGIN:VCARD\nVERSION:3.0\nFN:Alice\nEND:VCARD';
+    expect(extractBaileysBody({ contactMessage: { vcard } })).toBe(vcard);
+  });
+
+  it('joins multiple shared contact cards, one vCard per line, in order', () => {
+    const alice = 'BEGIN:VCARD\nFN:Alice\nEND:VCARD';
+    const bob = 'BEGIN:VCARD\nFN:Bob\nEND:VCARD';
+    expect(extractBaileysBody({ contactsArrayMessage: { contacts: [{ vcard: alice }, { vcard: bob }] } })).toBe(
+      `${alice}\n${bob}`,
+    );
+  });
+
+  it('skips a contactsArrayMessage entry with no vCard rather than injecting an empty line', () => {
+    const alice = 'BEGIN:VCARD\nFN:Alice\nEND:VCARD';
+    expect(extractBaileysBody({ contactsArrayMessage: { contacts: [{ vcard: alice }, { vcard: null }] } })).toBe(alice);
+  });
+
+  it('falls through to empty string for an empty contactsArrayMessage', () => {
+    expect(extractBaileysBody({ contactsArrayMessage: { contacts: [] } })).toBe('');
+  });
+
+  it('prefers plain text over a contact card when somehow both are present', () => {
+    expect(extractBaileysBody({ conversation: 'plain', contactMessage: { vcard: 'ignored' } })).toBe('plain');
+  });
+
+  it('extracts an inbound poll question across the wire content-key variants', () => {
+    expect(extractBaileysBody({ pollCreationMessage: { name: 'Lunch order?' } })).toBe('Lunch order?');
+    expect(extractBaileysBody({ pollCreationMessageV2: { name: 'Team offsite?' } })).toBe('Team offsite?');
+    expect(extractBaileysBody({ pollCreationMessageV3: { name: 'Standup time?' } })).toBe('Standup time?');
+  });
+
+  it('returns empty for a poll with no name rather than falling through to other sources', () => {
+    expect(extractBaileysBody({ pollCreationMessage: {} })).toBe('');
+    expect(extractBaileysBody({ pollCreationMessage: { name: null } })).toBe('');
+  });
+
+  it('extracts a shared event display name', () => {
+    expect(extractBaileysBody({ eventMessage: { name: 'Release party' } })).toBe('Release party');
+  });
+
+  it('extracts which business button label the user tapped', () => {
+    expect(extractBaileysBody({ buttonsResponseMessage: { selectedDisplayText: 'Yes, notify me' } })).toBe(
+      'Yes, notify me',
+    );
+    expect(extractBaileysBody({ templateButtonReplyMessage: { selectedDisplayText: 'Track order' } })).toBe(
+      'Track order',
+    );
+  });
+});
+
+describe('extractBaileysContext (quoted body shares the live body extractor)', () => {
+  const quoted = (quotedMessage: object) =>
+    extractBaileysContext({
+      imageMessage: { contextInfo: { stanzaId: 'wamid.original', quotedMessage } },
+    }).quotedMessage;
+
+  it('carries a quoted contact card as its vCard', () => {
+    const vcard = 'BEGIN:VCARD\nFN:Alice\nEND:VCARD';
+    expect(quoted({ contactMessage: { vcard } })).toEqual({ id: 'wamid.original', body: vcard });
+  });
+
+  it('carries a quoted poll question', () => {
+    expect(quoted({ pollCreationMessage: { name: 'Lunch order?' } })?.body).toBe('Lunch order?');
+  });
+
+  it('still carries captions and plain text from the classic sources', () => {
+    expect(quoted({ imageMessage: { caption: 'pic' } })?.body).toBe('pic');
+    expect(quoted({ conversation: 'the original' })?.body).toBe('the original');
+    expect(quoted({ stickerMessage: {} })?.body).toBe('');
   });
 });
 

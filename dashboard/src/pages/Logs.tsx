@@ -9,6 +9,7 @@ import { PageHeader } from '../components/PageHeader';
 import { CustomSelect } from '../components/CustomSelect';
 import { pageWindow } from '../utils/pageWindow';
 import { fetchAllPages } from '../utils/fetchAllPages';
+import { escapeCsvCell } from '../utils/csv';
 import './Logs.css';
 
 export function Logs() {
@@ -33,6 +34,13 @@ export function Logs() {
   });
 
   const totalPages = Math.ceil(total / limit);
+  // Distinguish "filters matched nothing on this page" from "there are no logs at all": the search
+  // box only filters the fetched page (the API has no text search), so a non-match here must not
+  // read as "no such event exists" while more pages may hold it.
+  const hasSearch = searchQuery.trim() !== '';
+  // Severity is enforced SERVER-SIDE (the query carries it): an empty result there means no logs
+  // match at all, which deserves different guidance than the page-local search box.
+  const hasSeverityFilter = severityFilter !== 'all';
 
   const formatTimestamp = (date: string) => new Date(date).toLocaleString();
 
@@ -49,10 +57,6 @@ export function Logs() {
       'statusCode',
       'errorMessage',
     ];
-    const escape = (value: unknown): string => {
-      const s = value === undefined || value === null ? '' : String(value);
-      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-    };
     const lines = rows.map(log =>
       [
         log.createdAt,
@@ -66,7 +70,7 @@ export function Logs() {
         log.statusCode,
         log.errorMessage,
       ]
-        .map(escape)
+        .map(escapeCsvCell)
         .join(','),
     );
     return [headers.join(','), ...lines].join('\n');
@@ -142,7 +146,11 @@ export function Logs() {
             type="text"
             placeholder={t('logs.searchPlaceholder')}
             value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
+            onChange={e => {
+              setSearchQuery(e.target.value);
+              // A new query invalidates the current page position, like the severity filter below.
+              setPage(1);
+            }}
           />
         </div>
 
@@ -177,8 +185,21 @@ export function Logs() {
           {filteredLogs.length === 0 ? (
             <div className="empty-table-state">
               <FileText size={48} strokeWidth={1} />
-              <h3>{t('logs.empty.title')}</h3>
-              <p>{t('logs.empty.description')}</p>
+              {hasSeverityFilter || hasSearch ? (
+                <>
+                  <h3>{t('logs.empty.filteredTitle')}</h3>
+                  <p>
+                    {hasSeverityFilter && !hasSearch
+                      ? t('logs.empty.filteredServerDescription')
+                      : t('logs.empty.filteredDescription')}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <h3>{t('logs.empty.title')}</h3>
+                  <p>{t('logs.empty.description')}</p>
+                </>
+              )}
             </div>
           ) : (
             filteredLogs.map(log => (

@@ -3,34 +3,36 @@
 // webhook Worker's @Processor connection) see the configured values rather than pre-dotenv defaults.
 import './config/load-env';
 import { NestFactory } from '@nestjs/core';
-import { ShutdownSignal } from '@nestjs/common';
+import { INestApplication, ShutdownSignal } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SwaggerModule } from '@nestjs/swagger';
-import helmet from 'helmet';
 import { AppModule, DASHBOARD_DIST, dashboardServingEnabled, dashboardBuildPresent } from './app.module';
 import { ShutdownService } from './common/services/shutdown.service';
 import { LoggerService, LogLevel, createLogger } from './common/services/logger.service';
-import { createSwaggerConfig, exemptPublicOperations } from './config/swagger.config';
-import { registerUncaughtExceptionMonitor } from './config/process-error-monitor';
+import { createSwaggerConfig, dropUnexpressibleOperations, exemptPublicOperations } from './config/swagger.config';
+import { registerUncaughtExceptionMonitor, registerUnhandledRejectionHandler } from './config/process-error-monitor';
+import { runBootstrapOrExit } from './config/bootstrap-fatal';
+import { resolveStorageRoot } from './config/storage-root';
 import { applyHttpTimeouts, HttpTimeoutConfig, HttpTimeoutSink } from './config/http-timeouts';
 import { applyGlobalValidation } from './config/app-validation';
-import { requestContextMiddleware } from './common/middleware/request-context.middleware';
-import { injectDashboardCspNonce } from './config/dashboard-csp';
+import { configureApp } from './configure-app';
 import {
-  resolveCorsPolicy,
   isSwaggerEnabled,
-  isUpgradeInsecureRequestsEnabled,
   isDashboardCspUpgradeTrapLikely,
-  resolveBodyLimit,
   assertNoDefaultSecretsInProduction,
   isApiKeyPepperMissingInProduction,
+  isNodeEnvUnset,
 } from './config/bootstrap-security';
 import { BullBoardAuthMiddleware } from './common/security/bull-board-auth.middleware';
 import { AuthService } from './modules/auth/auth.service';
-import { Request, Response, NextFunction, json, urlencoded } from 'express';
-import { randomBytes } from 'crypto';
-import { readFileSync } from 'fs';
-import { extname, join } from 'path';
+import { AuditService } from './modules/audit/audit.service';
+import { Request, Response, NextFunction } from 'express';
+import { RedisIoAdapter } from './modules/events/redis-io.adapter';
+
+// The created app, exposed at module scope so the fatal handler below can run a best-effort teardown
+// (engine sessions, Redis/pg) when bootstrap fails AFTER NestFactory.create succeeded — notably a
+// listen() bind failure (EADDRINUSE), where full init already ran.
+let appInstance: INestApplication | undefined;
 
 async function bootstrap() {
   // Apply the operator-configured log verbosity (LOG_LEVEL) before anything logs. Unset/invalid → INFO.
@@ -40,17 +42,26 @@ async function bootstrap() {
   }
 
   // Backstop for promise rejections that escaped a local handler (e.g. a fire-and-forget engine-event
-  // dispatch). Node terminates the process on an unhandled rejection by default; for a long-running
-  // self-hosted gateway we'd rather log it and stay up than let one stray rejection kill all sessions.
+  // dispatch), including the expected engine-teardown case it downgrades to a warning (see the helper).
   const bootstrapLogger = createLogger('Bootstrap');
-  process.on('unhandledRejection', (reason: unknown) => {
-    bootstrapLogger.error('Unhandled promise rejection', reason instanceof Error ? reason.stack : String(reason));
-  });
+  registerUnhandledRejectionHandler(bootstrapLogger);
 
   // A synchronous throw from a non-promise context (e.g. a sync timer callback) is fatal — Node prints a
   // raw stack to stderr, bypassing the structured log pipeline, and exits(1). Route the stack through the
   // logger WITHOUT swallowing the exception, so the crash-and-restart posture is unchanged (see the helper).
   registerUncaughtExceptionMonitor(bootstrapLogger);
+
+  // Advisory (not enforced): an unset/blank NODE_ENV is the deliberate local-dev default, but it
+  // silently degrades four controls to their dev posture (the default-secret guard, wildcard CORS,
+  // Swagger UI, validation error detail) — warn so a production deployment that simply forgot the
+  // variable can tell. The defaults themselves stay unchanged.
+  if (isNodeEnvUnset(process.env.NODE_ENV)) {
+    bootstrapLogger.warn(
+      'NODE_ENV is not set: running with development defaults — the default-secret guard is skipped, ' +
+        'wildcard CORS is allowed, Swagger UI is served, and validation error detail is exposed. ' +
+        'Set NODE_ENV=production for a production deployment.',
+    );
+  }
 
   // Fail fast: never start production with default/placeholder secrets.
   assertNoDefaultSecretsInProduction({
@@ -80,38 +91,29 @@ async function bootstrap() {
     );
   }
 
+  // Fail fast on a media storage root the app cannot write to, BEFORE Nest builds the module graph:
+  // StorageService only checks that the root EXISTS, so a root owned by another user passes boot and
+  // fails later on the first media write instead (#1065). Runs ahead of NestFactory.create so
+  // configuration.ts reads the resolved value.
+  process.env.STORAGE_LOCAL_PATH = resolveStorageRoot({
+    configured: process.env.STORAGE_LOCAL_PATH,
+    logger: bootstrapLogger,
+  });
+
   // Disable Nest's default body parser so we can set an explicit size cap below.
   const app = await NestFactory.create(AppModule, { bodyParser: false });
+  appInstance = app;
 
-  // Cap request body size (DoS hardening). Media sends carry base64 in the JSON body,
-  // so the default is generous; tune with BODY_SIZE_LIMIT.
-  const bodyLimit = resolveBodyLimit(process.env.BODY_SIZE_LIMIT);
-  // The `verify` callback stashes the EXACT bytes json() received on req.rawBody, byte-identical to
-  // what a provider signed, so the @Public ingress controller can HMAC-verify over the raw body
-  // (JSON.stringify(req.body) is NOT byte-identical). Cheap for every route; non-ingress routes ignore it.
-  app.use(
-    json({
-      limit: bodyLimit,
-      verify: (req: Request & { rawBody?: Buffer }, _res, buf) => {
-        req.rawBody = buf;
-      },
-    }),
-  );
-  app.use(
-    urlencoded({
-      extended: true,
-      limit: bodyLimit,
-      // Form-encoded webhook providers also sign the exact wire bytes. Use the same capture contract
-      // as json(); other content types remain unsupported rather than installing a global catch-all.
-      verify: (req: Request & { rawBody?: Buffer }, _res, buf) => {
-        req.rawBody = buf;
-      },
-    }),
-  );
+  // Cross-replica WebSocket fan-out: when Redis is enabled, broadcasts reach clients on every
+  // replica, not just this process. Set before the gateway's namespace is created so it inherits
+  // the adapter. Inert (plain in-memory adapter) without REDIS_ENABLED, so single-node pays nothing.
+  app.useWebSocketAdapter(new RedisIoAdapter(app));
 
-  // Assign a request id to every inbound request (X-Request-ID), echo it on the response, and run
-  // the whole downstream chain inside its scope so every log line + audit row carries it.
-  app.use(requestContextMiddleware);
+  // The production HTTP surface: in-flight body budget, body parsers, request context, the CSP
+  // nonce, helmet, the SPA document handler and CORS. Extracted so the e2e lane runs the SAME
+  // stack instead of a copy of it (src/config/configure-app.ts).
+  const { bodyLimit, inflightBudgetBytes } = configureApp(app);
+  bootstrapLogger.log(`Request body caps: ${bodyLimit} per request, ${inflightBudgetBytes} bytes aggregate in flight`);
 
   // Let Nest own every shutdown signal EXCEPT SIGTERM/SIGINT — those we route through the bounded
   // drain below, so a load balancer / orchestrator observes readiness=503 and stops routing BEFORE
@@ -145,112 +147,6 @@ async function bootstrap() {
     });
   }
 
-  // Give every response a CSP nonce. A bundled dashboard document receives its own value in a meta
-  // element below; plugin config UIs copy it only onto inline scripts in their opaque sandboxed iframe.
-  app.use((req: Request, res: Response, next: NextFunction) => {
-    res.locals.cspNonce = randomBytes(18).toString('base64url');
-    next();
-  });
-
-  // Enhanced Security Headers
-  app.use(
-    helmet({
-      contentSecurityPolicy: {
-        directives: {
-          defaultSrc: ["'self'"],
-          // The bundled dashboard pulls webfonts from Google Fonts (CSS from fonts.googleapis.com,
-          // font files from fonts.gstatic.com). Now that NestJS serves the dashboard under this CSP,
-          // allow those origins or the @import'd fonts are blocked and the UI falls back to system fonts.
-          styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
-          scriptSrc: ["'self'", (_req, res) => `'nonce-${(res as Response).locals.cspNonce as string}'`],
-          // `blob:` is needed for the outgoing image-attachment preview, which the dashboard renders
-          // from a URL.createObjectURL(file) blob before the message is sent (Chats.tsx).
-          imgSrc: ["'self'", 'data:', 'blob:', 'https:'],
-          // Chat media (voice notes, video) is served to the dashboard as data: URIs. Without an
-          // explicit media-src, <audio>/<video> fall back to default-src 'self' and are blocked.
-          // Mirror imgSrc so audio/video render the same way images already do.
-          mediaSrc: ["'self'", 'data:', 'blob:', 'https:'],
-          connectSrc: ["'self'"],
-          fontSrc: ["'self'", 'https://fonts.gstatic.com'],
-          objectSrc: ["'none'"],
-          // Auto-upgrade HTTP→HTTPS in production, unless CSP_UPGRADE_INSECURE_REQUESTS opts out for an
-          // HTTP-only private-network deployment (otherwise the browser forces the dashboard to https). (#611)
-          upgradeInsecureRequests: isUpgradeInsecureRequestsEnabled(
-            process.env.CSP_UPGRADE_INSECURE_REQUESTS,
-            process.env.NODE_ENV,
-          )
-            ? []
-            : null,
-        },
-      },
-      hsts: {
-        maxAge: 31536000,
-        includeSubDomains: true,
-        preload: true,
-      },
-      noSniff: true,
-      referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
-      // Disable for API usage
-      crossOriginResourcePolicy: { policy: 'cross-origin' },
-    }),
-  );
-
-  // Serve SPA documents dynamically so the nonce embedded in this exact document matches its CSP
-  // response header. A shared cookie is deliberately avoided: a second dashboard tab could overwrite
-  // it and make the first tab's srcdoc scripts fail CSP. Assets and Nest-owned routes fall through.
-  if (dashboardServingEnabled && dashboardBuildPresent) {
-    const dashboardIndex = readFileSync(join(DASHBOARD_DIST, 'index.html'), 'utf8');
-    app.use((req: Request, res: Response, next: NextFunction) => {
-      const excluded =
-        req.path.startsWith('/api/') ||
-        req.path === '/api' ||
-        req.path.startsWith('/socket.io/') ||
-        req.path === '/socket.io' ||
-        req.path.startsWith('/mcp/') ||
-        req.path === '/mcp' ||
-        req.path.startsWith('/assets/');
-      const documentRequest =
-        req.method === 'GET' &&
-        !excluded &&
-        ((req.headers.accept ?? '').includes('text/html') || extname(req.path) === '');
-      if (!documentRequest) return next();
-
-      res.setHeader('Cache-Control', 'no-store');
-      res.type('html').send(injectDashboardCspNonce(dashboardIndex, res.locals.cspNonce as string));
-    });
-  }
-
-  // CORS Configuration (#221 hardening)
-  const corsPolicy = resolveCorsPolicy(process.env.CORS_ORIGINS, process.env.NODE_ENV);
-  if (process.env.NODE_ENV === 'production' && corsPolicy.origins.length === 0 && !corsPolicy.allowAnyOrigin) {
-    console.warn(
-      '[Bootstrap] No explicit CORS_ORIGINS in production (wildcard "*" is refused): cross-origin browser ' +
-        'requests will be blocked. Set CORS_ORIGINS to your dashboard origin(s).',
-    );
-  }
-  app.enableCors({
-    origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-      // Allow requests with no origin (mobile apps, Postman, server-to-server)
-      if (!origin) return callback(null, true);
-
-      if (corsPolicy.allowAnyOrigin || corsPolicy.origins.includes(origin)) {
-        callback(null, true);
-      } else {
-        // Deny WITHOUT throwing. Throwing here surfaced as a 500 Internal Server Error (#250).
-        // Returning false simply omits the CORS headers: the browser blocks a true cross-origin
-        // request itself (correct), while same-origin requests — e.g. the bundled dashboard served
-        // through the proxy, which the browser never subjects to CORS — keep working. A genuine
-        // cross-origin dashboard still needs its origin in CORS_ORIGINS.
-        callback(null, false);
-      }
-    },
-    credentials: corsPolicy.credentials,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'X-API-Key', 'Authorization', 'X-Request-ID'],
-    exposedHeaders: ['X-RateLimit-Limit', 'X-RateLimit-Remaining', 'X-RateLimit-Reset'],
-    maxAge: 86400, // 24 hours
-  });
-
   // Shared production/e2e prefix and DTO validation contract.
   applyGlobalValidation(app);
 
@@ -260,6 +156,10 @@ async function bootstrap() {
   if (swaggerEnabled) {
     const config = createSwaggerConfig();
     const document = SwaggerModule.createDocument(app, config);
+    // Same two passes, in the same order, as scripts/export-openapi.ts. The document is produced in
+    // TWO places — here for the live /api/docs and there for the committed snapshot — and fixing only
+    // the snapshot leaves a running gateway serving a document that fails schema validation.
+    dropUnexpressibleOperations(document);
     exemptPublicOperations(document);
     SwaggerModule.setup('api/docs', app, document);
   }
@@ -267,8 +167,13 @@ async function bootstrap() {
   // Protect the Bull Board queue UI (/api/admin/queues). It is mounted by
   // @bull-board/nestjs as raw Express middleware that the global ApiKeyGuard
   // does not cover; registering this before app.listen() ensures it runs ahead
-  // of the Bull Board router. Requires a valid ADMIN API key.
-  const bullBoardAuth = new BullBoardAuthMiddleware(app.get(AuthService), app.get(ConfigService));
+  // of the Bull Board router. Requires a valid ADMIN API key. The middleware also
+  // writes the audit trail for this mount (auth failures + queue mutations).
+  const bullBoardAuth = new BullBoardAuthMiddleware(
+    app.get(AuthService),
+    app.get(ConfigService),
+    app.get(AuditService),
+  );
   app.use('/api/admin/queues', (req: Request, res: Response, next: NextFunction) => {
     void bullBoardAuth.use(req, res, next);
   });
@@ -334,7 +239,15 @@ async function bootstrap() {
   }
 }
 
-bootstrap().catch((err: unknown) => {
-  createLogger('Bootstrap').error('Fatal error during bootstrap', err instanceof Error ? err.stack : String(err));
-  process.exitCode = 1;
+// A failed bootstrap MUST terminate the process with a non-zero code, not just set `process.exitCode`:
+// listen() runs the full module init (database, Redis, plugin registration) before binding the port, and
+// the detached session auto-start (SessionService.onApplicationBootstrap) is already launching engines by
+// then, so a bind failure (EADDRINUSE) would otherwise leave a zombie process: no HTTP port, yet still
+// holding the event loop open and running WhatsApp sessions, invisible to Docker's restart policy.
+// runBootstrapOrExit logs the failure, runs a bounded best-effort app.close() teardown, then exits(1); a
+// successful boot returns without touching exit. Puppeteer's own `exit` handlers kill any browser
+// children still up.
+void runBootstrapOrExit(bootstrap, {
+  logger: createLogger('Bootstrap'),
+  closeApp: () => (appInstance ? appInstance.close() : Promise.resolve()),
 });

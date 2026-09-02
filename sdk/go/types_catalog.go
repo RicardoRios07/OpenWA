@@ -58,9 +58,3 @@ type SendProductRequest struct {
 	ProductID string `json:"productId"`
 	Body      string `json:"body,omitempty"`
 }
-
-// SendCatalogRequest sends a catalog link message.
-type SendCatalogRequest struct {
-	ChatID string `json:"chatId"`
-	Body   string `json:"body,omitempty"`
-}

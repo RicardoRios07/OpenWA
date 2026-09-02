@@ -6,7 +6,7 @@ export interface IncomingStatus {
   contactJid: string;
   contactName?: string;
   contactPushName?: string;
-  type: 'text' | 'image' | 'video';
+  type: 'text' | 'image' | 'video' | 'voice';
   caption?: string;
   backgroundColor?: string;
   font?: number;
@@ -14,9 +14,14 @@ export interface IncomingStatus {
   postedAt: number;
 }
 
-/** Collapse the rich MessageType to the status union (image/video, else text). */
-function statusType(t: string): 'text' | 'image' | 'video' {
-  return t === 'image' || t === 'video' ? t : 'text';
+/**
+ * Collapse the rich MessageType to the status union.
+ *
+ * `voice` is listed explicitly because both engines map a PTT message to it, and without that an
+ * incoming voice status would be stored as `text` — the bucket everything non-image/video fell into.
+ */
+function statusType(t: string): 'text' | 'image' | 'video' | 'voice' {
+  return t === 'image' || t === 'video' || t === 'voice' ? t : 'text';
 }
 
 /**

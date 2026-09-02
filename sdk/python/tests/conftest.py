@@ -8,6 +8,14 @@ to test an httpx-based client.
 from __future__ import annotations
 
 import json
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Import-time cost is why the runtime import stays inside make_client; the annotation still
+    # needs the name so mypy can follow a call chain through this helper. Without a return type
+    # the helper yields Any, and every `make_client(...).messages.send_*(...)` in the suite goes
+    # unchecked — which is exactly how a TypedDict key can go missing with the gate still green.
+    from openwa import OpenWAClient
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -75,7 +83,9 @@ class MockBackend:
         return self.calls[-1]
 
 
-def make_client(backend: MockBackend, base_url: str = "http://localhost:2785", api_key: str = "owa_k1_test"):
+def make_client(
+    backend: MockBackend, base_url: str = "http://localhost:2785", api_key: str = "owa_k1_test"
+) -> "OpenWAClient":
     from openwa import OpenWAClient
 
     return OpenWAClient(base_url=base_url, api_key=api_key, transport=backend.as_transport())

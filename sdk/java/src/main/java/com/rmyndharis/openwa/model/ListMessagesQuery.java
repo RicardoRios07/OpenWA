@@ -1,7 +1,8 @@
 package com.rmyndharis.openwa.model;
 
 /** Query parameters for {@code GET /sessions/:id/messages}. Null fields are omitted. */
-public record ListMessagesQuery(String chatId, String from, Integer limit, Integer offset) {
+public record ListMessagesQuery(
+        String chatId, String from, Integer limit, Integer offset, String after, Boolean inlineMedia) {
     public static Builder builder() {
         return new Builder();
     }
@@ -11,6 +12,8 @@ public record ListMessagesQuery(String chatId, String from, Integer limit, Integ
         private String from;
         private Integer limit;
         private Integer offset;
+        private String after;
+        private Boolean inlineMedia;
 
         public Builder chatId(String v) {
             this.chatId = v;
@@ -32,8 +35,20 @@ public record ListMessagesQuery(String chatId, String from, Integer limit, Integ
             return this;
         }
 
+        /** Keyset cursor: the id of the last message of the previous page. Takes precedence over offset. */
+        public Builder after(String v) {
+            this.after = v;
+            return this;
+        }
+
+        /** Set false to omit inline media payloads; the budget is per response, so a walk repays it per page. */
+        public Builder inlineMedia(Boolean v) {
+            this.inlineMedia = v;
+            return this;
+        }
+
         public ListMessagesQuery build() {
-            return new ListMessagesQuery(chatId, from, limit, offset);
+            return new ListMessagesQuery(chatId, from, limit, offset, after, inlineMedia);
         }
     }
 }

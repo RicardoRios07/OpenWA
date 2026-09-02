@@ -88,6 +88,28 @@ export function generateIdempotencyKey(event: string, data: Record<string, unkno
       // always sends 'logged out'), which would otherwise collapse every disconnect onto one key.
       return `disc_${toStr(data.sessionId)}_${hashData({ reason: data.reason })}${occurrence}`;
 
+    case 'session.restriction':
+      // Keyed on what changed (`kind` is null when a restriction is lifted) and salted per
+      // occurrence: an account that is restricted, freed and restricted again for the same cause
+      // produces the same content twice, and the second one is genuine news that must not collapse
+      // onto the first. Without an explicit case the default branch hashes the whole payload, which
+      // would dedupe exactly that.
+      return `restr_${toStr(data.sessionId)}_${toStr(data.kind)}_${toStr(data.active)}${occurrence}`;
+
+    case 'call.accepted':
+    case 'call.rejected':
+    case 'call.missed':
+      // A call id is unique per call and each call ends exactly once, so (session, call, outcome)
+      // is already distinct — no occurrence salt, matching call.received's stable key.
+      return `call_${toStr(data.sessionId)}_${toStr(data.callId)}_${toStr(data.outcome)}`;
+
+    case 'presence.update':
+      // Keyed on the chat and salted per occurrence. Only genuine state CHANGES are dispatched, and
+      // a contact who types, stops, and types again produces the same payload each time — content
+      // hashing would collapse that back into one delivery and hide the very transitions the event
+      // exists to report.
+      return `pres_${toStr(data.sessionId)}_${toStr(data.chatId)}${occurrence}`;
+
     case 'group.join':
       // A membership change carries no unique id and repeats with identical content (the same user
       // leaves and rejoins the same group). Key on the affected participants and salt with
@@ -98,6 +120,11 @@ export function generateIdempotencyKey(event: string, data: Record<string, unkno
     case 'group.leave':
       // Same recurring-occurrence treatment as group.join.
       return `grp_${toStr(data.groupId)}_${hashData({ participants: data.participantIds })}_leave${occurrence}`;
+
+    case 'group.join_request':
+      // Same recurring-occurrence treatment as group.join: a user whose request was rejected can
+      // legitimately ask again, so the occurrence salt keeps the re-request deliverable.
+      return `grp_${toStr(data.groupId)}_${hashData({ participants: data.participantIds })}_join_request${occurrence}`;
 
     case 'group.update':
       // Key on WHAT changed (a subject set to "X" twice is one logical change; announce toggling

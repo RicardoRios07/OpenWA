@@ -33,6 +33,7 @@ import httpx
 from ._http import HttpExecutor, HttpMethod
 from .resources import (
     CallsResource,
+    MediaResource,
     CatalogResource,
     ChannelsResource,
     ChatsResource,
@@ -158,6 +159,10 @@ class OpenWAClient:
     @property
     def calls(self) -> CallsResource:
         return CallsResource(self._http)
+
+    @property
+    def media(self) -> MediaResource:
+        return MediaResource(self._http)
 
     # ── Auth ─────────────────────────────────────────────────────────
 

@@ -13,10 +13,11 @@
  * Self-removing: it no-ops once the installed whatsapp-web.js already defines
  * `Base._normalizeId` (i.e. upstream shipped #201832 and OpenWA bumped its dep).
  *
- * Why `patch` and not `git apply`: a bare `git -C node_modules/whatsapp-web.js
+ * Why `patch` first and not `git apply`: a bare `git -C node_modules/whatsapp-web.js
  * apply` silently no-ops ("Skipped / 0 files changed") because the parent repo's
  * .git interferes with the diff's blob-SHA index lines. `patch` has no repo
- * discovery and applies cleanly.
+ * discovery and applies cleanly. `git apply` is still the fallback when the `patch`
+ * binary is missing — see applyWithGit, which fences off that repo discovery.
  *
  * Known reject on 1.34.7: Contact.js hunk #2 targets a LID-aware block()/
  * unblock() path that does not exist in 1.34.7 (the PR's base is ahead there).
@@ -28,6 +29,7 @@
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
@@ -66,6 +68,11 @@ const REQUIRED_SITES = [
 /** Artifacts `patch` can leave behind. `.~N~` are GNU's backup-if-mismatch copies of pre-patch source. */
 const ARTIFACT_RE = /(\.rej|\.orig|~)$/;
 
+/** Keep artifact keys stable across POSIX and Windows for EXPECTED_REJECTS comparisons. */
+function normalizeArtifactPath(rel) {
+  return rel.replaceAll('\\', '/');
+}
+
 /** True once `rel`'s REQUIRED_SITES marker is present in the installed tree. */
 function siteLanded(wwjsDir, rel) {
   const marker = REQUIRED_SITES.find(([r]) => r === rel)[1];
@@ -92,10 +99,94 @@ function findArtifacts(root, dir = root) {
     if (entry.isDirectory()) {
       out.push(...findArtifacts(root, full));
     } else if (ARTIFACT_RE.test(entry.name)) {
-      out.push(path.relative(root, full));
+      out.push(normalizeArtifactPath(path.relative(root, full)));
     }
   }
   return out;
+}
+
+/**
+ * Fallback applier for hosts without the GNU `patch` binary — the default on Windows outside Git
+ * Bash, and the reason a native install could silently ship an unpatched whatsapp-web.js while
+ * `npm install` still reported success (#889). Anyone installing from source necessarily has git,
+ * so this closes that gap without adding a dependency.
+ *
+ * GIT_CEILING_DIRECTORIES is what makes it work at all: without it git discovers the parent OpenWA
+ * repo, whose index the diff's blob SHAs do not match, and skips every file while exiting 0. Aimed
+ * at node_modules, discovery stops before it can reach any repo.
+ *
+ * `--reject` reproduces GNU patch's behaviour on this patch exactly — byte-identical tree, the same
+ * single Contact.js reject, the same exit 1 — so the caller's artifact and REQUIRED_SITES checks
+ * apply unchanged. core.autocrlf is forced off because a Windows global config would otherwise
+ * rewrite line endings in the files it touches, producing a tree no other platform generates.
+ */
+/**
+ * Hand the appliers a patch with LF line endings, copying to a temp file only when the checked-out one
+ * has CRLF.
+ *
+ * Neither applier accepts CRLF: a unified diff line must start with ' ', '+', '-' or '@', and a bare
+ * \r is none of those, so both stop at line 7 of this patch — its first empty context line (`git
+ * apply`: "corrupt patch at line 7"; `patch`: "malformed patch at line 7"). Windows checks the file out
+ * that way whenever `core.autocrlf` is on, which is its default, so the git fallback added for Windows
+ * could never actually run there and took `npm install` down with it (#889).
+ *
+ * The `.gitattributes` rule keeps fresh clones on LF; this repairs the ones already on disk, which that
+ * rule cannot reach. Everywhere else the file is already LF and this is a single read with no temp file.
+ */
+function withLfPatch(patchFile, run) {
+  const raw = fs.readFileSync(patchFile, 'utf8');
+  if (!raw.includes('\r\n')) return run(patchFile);
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wwebjs-201832-'));
+  try {
+    const lf = path.join(dir, path.basename(patchFile));
+    fs.writeFileSync(lf, raw.replace(/\r\n/g, '\n'));
+    return run(lf);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * `git apply` exit 128 is its generic "fatal", and only SOME fatals happen before anything is written.
+ * It parses the whole patch up front, so a diff it cannot read — or a bad invocation — is refused with
+ * the tree untouched; that is the case the Windows CRLF handling needs to degrade cleanly. A fatal
+ * raised while writing results (read-only tree, full disk) leaves the files already written in place,
+ * and classifying THAT as pristine lets `--best-effort` wave a half-patched dependency through with
+ * exit 0 — which is exactly what the flag must never do, because a half-patched tree reads as healthy
+ * afterwards. So match the messages git emits before it writes, not the exit code on its own.
+ */
+// Verified against the messages git actually emits: a CRLF patch gives "corrupt patch at line N" and a
+// non-diff gives "No valid patches in input" (older builds: "unrecognized input"). Both are refusals
+// raised while parsing, before a single file is touched.
+const GIT_APPLY_REFUSED_INPUT =
+  /corrupt patch|unrecognized input|no valid patches in input|only garbage|usage: git apply|not a git repository|No such file or directory/i;
+
+/** True only when a `git apply` failure provably happened before anything was written. */
+function gitApplyLeftTreeUntouched(e) {
+  if (e.code === 'ENOENT') return true; // git never executed at all
+  if (e.status !== 128) return false; // any other failure may have written
+  return GIT_APPLY_REFUSED_INPUT.test(e.stderr ? String(e.stderr) : e.message || '');
+}
+
+function applyWithGit(wwjsDir, patchFile) {
+  try {
+    execFileSync('git', ['-c', 'core.autocrlf=false', 'apply', '-p1', '--reject', '--ignore-whitespace', patchFile], {
+      cwd: wwjsDir,
+      env: { ...process.env, GIT_CEILING_DIRECTORIES: path.dirname(wwjsDir) },
+      stdio: 'pipe',
+    });
+  } catch (e) {
+    // Exit 1 = hunks rejected: expected, and verified against EXPECTED_REJECTS by the caller.
+    if (e.status === 1) return;
+    const detail = e.stderr ? String(e.stderr).trim() : e.message;
+    const err = new Error(`neither \`patch\` nor \`git apply\` could run (${e.code ?? `exit ${e.status}`}): ${detail}`);
+    // Degrade only when nothing can have been written: ENOENT means git never executed at all, and a
+    // 128 whose message is one of git's pre-write refusals means it rejected the input before applying
+    // anything. Any other failure — including a 128 raised midway through writing results — has to be
+    // treated as a partial tree. A rejected hunk is exit 1, which returned above.
+    throw gitApplyLeftTreeUntouched(e) ? err : partialTree(err);
+  }
 }
 
 function applyBackport(wwjsDir = DEFAULT_WWJS, patchFile = DEFAULT_PATCH) {
@@ -110,6 +201,16 @@ function applyBackport(wwjsDir = DEFAULT_WWJS, patchFile = DEFAULT_PATCH) {
   // as "already fixed" and ship it. Matched loosely (`Base._normalizeId(` OR an inline `$1` fallback)
   // so a future upstream release that fixes this differently still stands the patcher down.
   const msgJs = path.join(wwjsDir, 'src', 'structures', 'Message.js');
+  if (!fs.existsSync(msgJs)) {
+    // A dep tree with Base.js but no Message.js is version skew vs the backport base — say so,
+    // instead of dying on a raw ENOENT from the read below. A plain Error, NOT partialTree:
+    // nothing has been written yet, so `--best-effort` may still degrade on a pristine tree.
+    throw new Error(
+      `whatsapp-web.js at ${wwjsDir} has src/structures/Base.js but no src/structures/Message.js — ` +
+        'version skew vs the backport base. Reinstall the dependency, or drop this backport if the ' +
+        'installed version restructured these files.',
+    );
+  }
   const msgSrc = fs.readFileSync(msgJs, 'utf8');
   if (/_normalizeId\(|\.\$1/.test(msgSrc)) {
     // Message.js normalizing is necessary but NOT sufficient to stand down. `patch` writes as it goes and
@@ -149,23 +250,26 @@ function applyBackport(wwjsDir = DEFAULT_WWJS, patchFile = DEFAULT_PATCH) {
   //                            rather than be skipped silently.
   // With these, GNU and BSD patch produce byte-identical trees, so a local macOS run faithfully
   // reproduces the Debian image build.
-  try {
-    execFileSync(
-      'patch',
-      ['-p1', '-d', wwjsDir, '--no-backup-if-mismatch', '-N', '-f', '-F0', '--ignore-whitespace', '-i', patchFile],
-      { stdio: 'pipe' },
-    );
-  } catch (e) {
-    // `patch` exits 1 when hunks reject — expected here (Contact.js hunk #2), and the reject set is
-    // verified below. Anything else (2 = serious trouble, ENOENT = `patch` not installed) is a real
-    // failure: rethrow it rather than let the assertions below misreport it as version skew.
-    if (e.status !== 1) {
-      const detail = e.stderr ? String(e.stderr).trim() : e.message;
-      const err = new Error(`\`patch\` failed (${e.code ?? `exit ${e.status}`}): ${detail}`);
-      // ENOENT means `patch` never executed, so the tree is untouched and degrading is still safe.
-      throw e.code === 'ENOENT' ? err : partialTree(err);
+  withLfPatch(patchFile, lfPatch => {
+    try {
+      execFileSync(
+        'patch',
+        ['-p1', '-d', wwjsDir, '--no-backup-if-mismatch', '-N', '-f', '-F0', '--ignore-whitespace', '-i', lfPatch],
+        { stdio: 'pipe' },
+      );
+    } catch (e) {
+      // `patch` exits 1 when hunks reject — expected here (Contact.js hunk #2), and the reject set is
+      // verified below. ENOENT means the binary is absent: apply with git instead of leaving the dep
+      // unpatched. Anything else (2 = serious trouble) is a real failure: rethrow it rather than let
+      // the assertions below misreport it as version skew.
+      if (e.code === 'ENOENT') {
+        applyWithGit(wwjsDir, lfPatch);
+      } else if (e.status !== 1) {
+        const detail = e.stderr ? String(e.stderr).trim() : e.message;
+        throw partialTree(new Error(`\`patch\` failed (${e.code ?? `exit ${e.status}`}): ${detail}`));
+      }
     }
-  }
+  });
 
   const artifacts = findArtifacts(wwjsDir);
   const unexpected = artifacts.filter(a => !EXPECTED_REJECTS.has(a));
@@ -225,4 +329,11 @@ if (require.main === module) {
   }
 }
 
-module.exports = { applyBackport, DEFAULT_WWJS, DEFAULT_PATCH, EXPECTED_REJECTS };
+module.exports = {
+  applyBackport,
+  normalizeArtifactPath,
+  gitApplyLeftTreeUntouched,
+  DEFAULT_WWJS,
+  DEFAULT_PATCH,
+  EXPECTED_REJECTS,
+};

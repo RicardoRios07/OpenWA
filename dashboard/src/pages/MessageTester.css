@@ -40,7 +40,8 @@
   margin-bottom: 1.25rem;
 }
 
-.message-tester .form-group label {
+.message-tester .form-group label,
+.message-tester .form-group > .group-label {
   display: block;
   font-size: 0.7rem;
   font-weight: 700;
@@ -148,12 +149,12 @@
 
 .message-tester .response-status.success {
   background: rgba(37, 211, 102, 0.1);
-  color: var(--primary);
+  color: var(--primary-text);
 }
 
 .message-tester .response-status.error {
   background: rgba(239, 68, 68, 0.12);
-  color: var(--error);
+  color: var(--error-text);
 }
 
 .message-tester .response-details {
@@ -233,7 +234,7 @@
 
 .message-tester .browse-btn:hover {
   border-color: var(--primary);
-  color: var(--primary);
+  color: var(--primary-text);
 }
 
 .message-tester .file-selected {
@@ -261,7 +262,7 @@
   gap: 0.25rem;
   flex-shrink: 0;
   font-size: 0.8125rem;
-  color: var(--error);
+  color: var(--error-text);
   background: none;
   border: none;
   cursor: pointer;
@@ -316,7 +317,7 @@
   flex-shrink: 0;
   width: 2rem;
   height: 2rem;
-  color: var(--error);
+  color: var(--error-text);
   background: none;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -349,7 +350,7 @@
 
 .message-tester .add-option-btn:hover:not(:disabled) {
   border-color: var(--primary);
-  color: var(--primary);
+  color: var(--primary-text);
 }
 
 .message-tester .add-option-btn:disabled {
@@ -409,12 +410,12 @@
 
 .message-tester .batch-badge.completed {
   background: rgba(37, 211, 102, 0.12);
-  color: var(--primary);
+  color: var(--primary-text);
 }
 
 .message-tester .batch-badge.failed {
   background: rgba(239, 68, 68, 0.12);
-  color: var(--error);
+  color: var(--error-text);
 }
 
 .message-tester .batch-badge.cancelled {
@@ -445,7 +446,7 @@
   padding: 0.25rem 0.75rem;
   font-size: 0.75rem;
   font-weight: 600;
-  color: var(--error);
+  color: var(--error-text);
   background: none;
   border: 1px solid var(--error);
   border-radius: var(--radius);
@@ -464,7 +465,7 @@
 .message-tester .batch-error {
   margin-top: 0.5rem;
   font-size: 0.8125rem;
-  color: var(--error);
+  color: var(--error-text);
 }
 
 @media (max-width: 1000px) {

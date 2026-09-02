@@ -78,16 +78,37 @@ export class BuiltInFtsProvider implements SearchProvider, OnModuleInit {
 
   /**
    * Probes the FTS schema once per instance and caches the result. SQLite: look for the `messages_fts`
-   * virtual table in sqlite_master. Postgres: look for the generated `body_ts` column in
-   * information_schema. Safe to call repeatedly; only the first call hits the DB.
+   * virtual table in sqlite_master. Postgres: look for the generated `body_ts` column on the SAME
+   * `messages` table the search queries resolve — see the to_regclass note below. Safe to call
+   * repeatedly; only the first successful probe hits the DB and caches.
    */
   private async probeFts(): Promise<boolean> {
     if (this.ftsAvailable !== null) return this.ftsAvailable;
     if (this.dataSource.options.type === 'postgres') {
-      const rows: unknown[] = await this.dataSource.query(
-        `SELECT 1 FROM information_schema.columns WHERE table_name='messages' AND column_name='body_ts'`,
-      );
-      this.ftsAvailable = Array.isArray(rows) && rows.length === 1;
+      // to_regclass('messages') resolves the name through the session search_path — the identical
+      // resolution the runtime queries (`FROM messages m`) use, and the data connection pins
+      // search_path to `<schema>,public` when POSTGRES_SCHEMA is non-public (app.module.ts). So the
+      // probe inspects the table search will actually hit, in the active schema. An unqualified
+      // information_schema scan would instead peek across EVERY visible schema and can lie both ways
+      // on a custom-schema deployment: a namesake public.messages.body_ts reports FTS present when
+      // the active schema lacks it, and a >1-row match (both schemas carry the column) reports it
+      // absent. to_regclass returns NULL when `messages` is unresolvable on the path → zero rows →
+      // unavailable, so an undeterminable schema fails closed by construction.
+      // Fail-closed on probe error (degraded state, e.g. boot ensure left the pool mid-recovery):
+      // report unavailable WITHOUT caching, so search() 501s via ensureFts — the same clean posture
+      // as a genuinely absent index, never a raw 500 — and a later call re-probes after recovery.
+      let rows: unknown[];
+      try {
+        rows = await this.dataSource.query(
+          `SELECT a.attname FROM pg_attribute a WHERE a.attrelid = to_regclass('messages') AND a.attname = 'body_ts' AND NOT a.attisdropped`,
+        );
+      } catch (e) {
+        this.logger.warn(
+          `FTS probe failed; treating the index as unavailable: ${e instanceof Error ? e.message : String(e)}`,
+        );
+        return false;
+      }
+      this.ftsAvailable = Array.isArray(rows) && rows.length >= 1;
     } else {
       const rows: unknown[] = await this.dataSource.query(
         `SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'`,
@@ -135,15 +156,30 @@ export class BuiltInFtsProvider implements SearchProvider, OnModuleInit {
     await this.dataSource.query(
       `CREATE VIRTUAL TABLE IF NOT EXISTS "messages_fts" USING fts5(body, content='messages', content_rowid='rowid')`,
     );
-    // Backfill only when the FTS table is empty but messages has rows — avoids re-copying on every boot
-    // once the index is populated. `messages_fts` with 'rowid' content exposes its size via this count.
-    const sizeRow: unknown[] = await this.dataSource.query(
-      `SELECT (SELECT count(*) FROM "messages_fts") AS fts, (SELECT count(*) FROM "messages" WHERE "body" IS NOT NULL) AS msgs`,
+    // Backfill the rows this index does not hold. NOT an emptiness test: `messages_fts` is an FTS5
+    // external-content table, so `count(*)` on it scans `messages` and returns THAT table's row
+    // count, never the number of indexed documents — a "the index is empty" probe written that way
+    // is unsatisfiable, because a zero count means `messages` itself is empty. The indexed documents
+    // live in the `messages_fts_docsize` shadow table, so completeness is a rowid-level anti-join.
+    //
+    // It has to hold on a PARTIALLY populated index, not just an empty one: once a box has booted
+    // once without the backfill, its later writes are indexed by the triggers below while its older
+    // rows stay missing, and an emptiness test is false there and repairs nothing. Until those rows
+    // are indexed the AFTER UPDATE/DELETE triggers issue FTS5 'delete' commands for documents that
+    // were never added, and SQLite rejects the whole statement — so ordinary edits and deletes on
+    // them fail, not merely searches. Reads `d."rowid"` rather than `d."id"`: same query plan,
+    // without depending on the shadow table's column naming.
+    const gapRow: unknown[] = await this.dataSource.query(
+      `SELECT EXISTS(SELECT 1 FROM "messages" m WHERE m."body" IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM "messages_fts_docsize" d WHERE d."rowid" = m."rowid")) AS missing`,
     );
-    const sr = (sizeRow as Array<{ fts: number; msgs: number }>)[0];
-    if (Number(sr?.fts) === 0 && Number(sr?.msgs) > 0) {
+    if (Number((gapRow as Array<{ missing: number }>)[0]?.missing)) {
+      // `body IS NOT NULL` mirrors the migration's own backfill exactly: a repair that indexed a NULL
+      // body as an empty document would leave the index disagreeing with the schema it repairs.
       await this.dataSource.query(
-        `INSERT INTO "messages_fts"("rowid", "body") SELECT "rowid", "body" FROM "messages" WHERE "body" IS NOT NULL`,
+        `INSERT INTO "messages_fts"("rowid", "body")
+           SELECT m."rowid", m."body" FROM "messages" m WHERE m."body" IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM "messages_fts_docsize" d WHERE d."rowid" = m."rowid")`,
       );
     }
     // The three sync triggers are CREATE-OR-REPLACE by name via DROP + CREATE; idempotent on re-run.
@@ -254,6 +290,13 @@ export class BuiltInFtsProvider implements SearchProvider, OnModuleInit {
 
   // --- SQLite FTS5 -----------------------------------------------------------
   // SQL appearance order: MATCH term -> filters -> LIMIT -> OFFSET. Params pushed in that order.
+  // Both dialects tiebreak on `m."id"`: neither `rank`/`score` nor the whole-second `timestamp` is
+  // unique (a one-word query can score every hit identically), and without a total order a paged
+  // walk repeats some hits and never returns others. Measured on Postgres, which sorts a tie group
+  // differently per LIMIT/OFFSET: an ordinary search repeated a row by the third page. SQLite was
+  // already self-consistent, but it keeps the term so the two dialects page alike; its plan is
+  // unchanged (the ORDER BY already needed a temp b-tree) and the extra column costs about a
+  // millisecond a page.
   private buildSqlite(q: SearchQuery, limit: number, offset: number) {
     const ph = BuiltInFtsProvider.sqlitePlaceholder;
     const params: unknown[] = [];
@@ -261,7 +304,7 @@ export class BuiltInFtsProvider implements SearchProvider, OnModuleInit {
     params.push(BuiltInFtsProvider.toFts5Query(q.q));
     this.applyFilters(where, params, q, 'm.', ph);
     const cols = `m."id", m."waMessageId" AS wa_message_id, m."sessionId" AS session_id, m."chatId" AS chat_id, m."from" AS "from", m."body", m."timestamp", m."type", m."direction", snippet(messages_fts, 0, '<mark>', '</mark>', '…', ${MAX_SNIPPET_WORDS}) AS snippet, rank AS score`;
-    const sql = `SELECT ${cols} FROM messages_fts JOIN messages m ON m."rowid" = messages_fts."rowid" WHERE ${where.join(' AND ')} ORDER BY rank, m."timestamp" DESC LIMIT ${ph()} OFFSET ${ph()}`;
+    const sql = `SELECT ${cols} FROM messages_fts JOIN messages m ON m."rowid" = messages_fts."rowid" WHERE ${where.join(' AND ')} ORDER BY rank, m."timestamp" DESC, m."id" DESC LIMIT ${ph()} OFFSET ${ph()}`;
     params.push(limit, offset);
     return { sql, params };
   }
@@ -281,7 +324,7 @@ export class BuiltInFtsProvider implements SearchProvider, OnModuleInit {
     // StartSel/StopSel are pinned to <mark>/</mark> to match the SQLite FTS5 snippet() output, so the
     // SearchHit.snippet contract stays dialect-agnostic (PG's ts_headline defaults to <b>/</b>).
     const cols = `m."id", m."waMessageId" AS wa_message_id, m."sessionId" AS session_id, m."chatId" AS chat_id, m."from", m."body", m."timestamp", m."type", m."direction", ts_headline('simple', m."body", q.query, 'MaxFragments=1, MaxWords=${MAX_SNIPPET_WORDS}, StartSel=<mark>, StopSel=</mark>') AS snippet, ts_rank(m.body_ts, q.query) AS score`;
-    const sql = `SELECT ${cols} FROM messages m, ${ftsTerm} WHERE ${where.join(' AND ')} ORDER BY score DESC, m."timestamp" DESC LIMIT ${ph()} OFFSET ${ph()}`;
+    const sql = `SELECT ${cols} FROM messages m, ${ftsTerm} WHERE ${where.join(' AND ')} ORDER BY score DESC, m."timestamp" DESC, m."id" DESC LIMIT ${ph()} OFFSET ${ph()}`;
     params.push(limit, offset);
     return { sql, params };
   }

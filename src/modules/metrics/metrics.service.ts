@@ -1,13 +1,16 @@
 import { Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { timingSafeEqual } from 'crypto';
+import { constantTimeEqual } from '../../common/security/constantTimeEqual';
 import { StatsService } from '../stats/stats.service';
 import { getWebhookDeliveryFailuresTotal } from '../../common/metrics/webhook-delivery-metrics';
 import {
   getSessionReconnectAttemptsTotal,
   getSessionReconnectLoopAlertsTotal,
 } from '../../common/metrics/session-reconnect-metrics';
+import { getRestrictedSessionCount } from '../../common/metrics/session-restriction-metrics';
+import { getSendPacingRefusals } from '../../common/metrics/send-pacing-metrics';
 import { renderHttpRequestMetrics } from '../../common/metrics/request-metrics';
+import { createLogger } from '../../common/services/logger.service';
 
 /**
  * Prometheus exposition for OpenWA. Kept dependency-free (no prom-client) — the
@@ -27,6 +30,8 @@ export const METRICS_RENDER_TTL_MS = 5000;
 
 @Injectable()
 export class MetricsService {
+  private readonly logger = createLogger('MetricsService');
+
   private cachedRender: { at: number; text: string } | null = null;
 
   constructor(
@@ -54,12 +59,10 @@ export class MetricsService {
   }
 
   private safeEqual(a: string, b: string): boolean {
-    const ab = Buffer.from(a);
-    const bb = Buffer.from(b);
-    // timingSafeEqual requires equal lengths; compare to a fixed digest of `b` to avoid
-    // leaking the expected length through an early return.
-    if (ab.length !== bb.length) return false;
-    return timingSafeEqual(ab, bb);
+    // Length-hiding constant-time compare: hash both inputs with a per-process key (fixed-length
+    // digests) then timingSafeEqual, so the expected token's byte-length is not leaked through a
+    // fast length-mismatch return. This `/api/metrics` endpoint is @Public and timed by callers.
+    return constantTimeEqual(a, b);
   }
 
   /** Render the current metrics in Prometheus text exposition format (memoized for a short TTL). */
@@ -69,7 +72,21 @@ export class MetricsService {
       return this.cachedRender.text;
     }
 
-    const overview = await this.statsService.getOverview();
+    // The database-derived series are best-effort. Awaiting them unguarded meant a single rejected
+    // query — a statement timeout, pool exhaustion, SQLITE_BUSY under load, or a genuine outage —
+    // answered the whole scrape with a 500, so Prometheus lost the process, HTTP and webhook series
+    // too, and `up` conflated "process dead" with "database unreachable": the exact incident this
+    // endpoint exists to describe. The series that need no database are emitted either way, and the
+    // ones that do are OMITTED rather than reported as zero, because a zero would fire an alert
+    // claiming every session had dropped.
+    let overview: Awaited<ReturnType<StatsService['getOverview']>> | null = null;
+    try {
+      overview = await this.statsService.getOverview();
+    } catch (err) {
+      this.logger.warn(
+        `Metrics scrape could not read stats; database-derived series omitted: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     const mem = process.memoryUsage();
     const lines: string[] = [];
 
@@ -84,24 +101,32 @@ export class MetricsService {
     gauge('openwa_process_resident_memory_bytes', 'Resident set size in bytes.', mem.rss);
     gauge('openwa_process_heap_used_bytes', 'V8 heap used in bytes.', mem.heapUsed);
 
-    gauge('openwa_sessions_total', 'Total number of configured sessions.', overview.sessions.total);
-    gauge('openwa_sessions_active', 'Number of READY (active) sessions.', overview.sessions.active);
+    gauge(
+      'openwa_stats_available',
+      'Whether the database-derived series below could be read on this scrape (1) or not (0).',
+      overview ? 1 : 0,
+    );
 
-    // Per-status session counts share one metric name with a `status` label.
-    lines.push('# HELP openwa_sessions Number of sessions by status.');
-    lines.push('# TYPE openwa_sessions gauge');
-    for (const [status, count] of Object.entries(overview.sessions.byStatus)) {
-      lines.push(`openwa_sessions{status="${this.escapeLabel(status)}"} ${count}`);
+    if (overview) {
+      gauge('openwa_sessions_total', 'Total number of configured sessions.', overview.sessions.total);
+      gauge('openwa_sessions_active', 'Number of READY (active) sessions.', overview.sessions.active);
+
+      // Per-status session counts share one metric name with a `status` label.
+      lines.push('# HELP openwa_sessions Number of sessions by status.');
+      lines.push('# TYPE openwa_sessions gauge');
+      for (const [status, count] of Object.entries(overview.sessions.byStatus)) {
+        lines.push(`openwa_sessions{status="${this.escapeLabel(status)}"} ${count}`);
+      }
+
+      lines.push('# HELP openwa_messages_total Current stored messages by direction.');
+      lines.push('# TYPE openwa_messages_total gauge');
+      lines.push(`openwa_messages_total{direction="outgoing"} ${overview.messages.sent}`);
+      lines.push(`openwa_messages_total{direction="incoming"} ${overview.messages.received}`);
+
+      lines.push('# HELP openwa_messages_failed_total Current stored messages in FAILED state.');
+      lines.push('# TYPE openwa_messages_failed_total gauge');
+      lines.push(`openwa_messages_failed_total ${overview.messages.failed}`);
     }
-
-    lines.push('# HELP openwa_messages_total Current stored messages by direction.');
-    lines.push('# TYPE openwa_messages_total gauge');
-    lines.push(`openwa_messages_total{direction="outgoing"} ${overview.messages.sent}`);
-    lines.push(`openwa_messages_total{direction="incoming"} ${overview.messages.received}`);
-
-    lines.push('# HELP openwa_messages_failed_total Current stored messages in FAILED state.');
-    lines.push('# TYPE openwa_messages_failed_total gauge');
-    lines.push(`openwa_messages_failed_total ${overview.messages.failed}`);
 
     lines.push(
       '# HELP openwa_webhook_delivery_failures_total Webhook deliveries that terminally failed (all retries exhausted) since process start.',
@@ -118,6 +143,21 @@ export class MetricsService {
     lines.push('# HELP openwa_session_reconnect_loop_alerts_total Reconnect-loop alerts emitted since process start.');
     lines.push('# TYPE openwa_session_reconnect_loop_alerts_total counter');
     lines.push(`openwa_session_reconnect_loop_alerts_total ${getSessionReconnectLoopAlertsTotal()}`);
+
+    lines.push('# HELP openwa_sessions_restricted Sessions whose account WhatsApp is currently restricting.');
+    lines.push('# TYPE openwa_sessions_restricted gauge');
+    lines.push(`openwa_sessions_restricted ${getRestrictedSessionCount()}`);
+
+    // Emitted only once a refusal has actually happened, like the HTTP series: a family that appears
+    // at its first occurrence is easier to alert on than one pinned at zero for every reason.
+    const refusals = getSendPacingRefusals();
+    if (refusals.size > 0) {
+      lines.push('# HELP openwa_send_pacing_refusals_total Sends refused by the pacing governor since process start.');
+      lines.push('# TYPE openwa_send_pacing_refusals_total counter');
+      for (const [reason, count] of refusals) {
+        lines.push(`openwa_send_pacing_refusals_total{reason="${this.escapeLabel(reason)}"} ${count}`);
+      }
+    }
 
     // HTTP RED metrics (request rate + duration per route), recorded by RequestMetricsInterceptor.
     // Included in the same cached render — a few seconds of staleness is fine for Prometheus.

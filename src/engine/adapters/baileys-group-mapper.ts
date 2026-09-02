@@ -10,10 +10,27 @@ import { userPart } from '../identity/wa-id';
 type NormalizeJid = (jid: string) => string;
 const identity: NormalizeJid = jid => jid;
 
+/**
+ * The phone-dialect identity for a participant or owner.
+ *
+ * A LID-addressed group hands us `<lid>@lid` in `id`/`owner`, and the SAME payload carries the phone
+ * twin alongside it (`participant.phoneNumber`, `metadata.ownerPn`). Reading only the lid left the
+ * neutral output correct ONLY once the lid→pn mapping had been learned — before that, ids did not
+ * match the `@c.us` the session's own contacts and message webhooks emit for the same person, and
+ * `number` presented LID digits as an MSISDN. Prefer the twin the server already sent; fall back to
+ * the normalizer, which still resolves a learned mapping. WhatsApp withholds `phone_number` for
+ * non-contacts, so the fallback is the ordinary case, not an error path.
+ */
+function preferPhoneDialect(jid: string, phoneTwin: string | undefined, normalizeJid: NormalizeJid): string {
+  return normalizeJid(phoneTwin ?? jid);
+}
+
 function isSelfAdmin(metadata: GroupMetadata, selfJid: string, normalizeJid: NormalizeJid): boolean {
   const self = userPart(normalizeJid(selfJid));
   return metadata.participants.some(
-    p => userPart(normalizeJid(p.id)) === self && (p.admin === 'admin' || p.admin === 'superadmin'),
+    p =>
+      userPart(preferPhoneDialect(p.id, p.phoneNumber, normalizeJid)) === self &&
+      (p.admin === 'admin' || p.admin === 'superadmin'),
   );
 }
 
@@ -33,9 +50,13 @@ export function mapBaileysGroup(
 }
 
 /** Map a Baileys GroupMetadata to the neutral {@link GroupInfo} (full participant list). */
-export function mapBaileysGroupInfo(metadata: GroupMetadata, normalizeJid: NormalizeJid = identity): GroupInfo {
+export function mapBaileysGroupInfo(
+  metadata: GroupMetadata,
+  normalizeJid: NormalizeJid = identity,
+  selfJid?: string,
+): GroupInfo {
   const participants: GroupParticipant[] = metadata.participants.map(p => {
-    const id = normalizeJid(p.id);
+    const id = preferPhoneDialect(p.id, p.phoneNumber, normalizeJid);
     return {
       id,
       number: userPart(id),
@@ -48,15 +69,28 @@ export function mapBaileysGroupInfo(metadata: GroupMetadata, normalizeJid: Norma
     id: metadata.id,
     name: metadata.subject,
     description: metadata.desc,
-    owner: metadata.owner ? normalizeJid(metadata.owner) : metadata.owner,
+    owner: metadata.owner ? preferPhoneDialect(metadata.owner, metadata.ownerPn, normalizeJid) : metadata.owner,
     createdAt: metadata.creation,
     participants,
-    // WhatsApp "announce" = only admins can post; surface as both isAnnounce and (members') isReadOnly (best-effort).
+    // WhatsApp "announce" = only admins can post. isAnnounce reports the group SETTING; isReadOnly
+    // reports what it means for THIS account, which is the question whatsapp-web.js answers with WA
+    // Web's own per-account flag. Copying announce into both told an admin of an announce-only group
+    // that they could not post, in the one field a client uses to disable its composer.
     isAnnounce: metadata.announce,
-    isReadOnly: metadata.announce,
+    isReadOnly: selfJid
+      ? Boolean(metadata.announce) && !isSelfAdmin(metadata, selfJid, normalizeJid)
+      : metadata.announce,
     announce: metadata.announce,
     locked: metadata.restrict,
     ephemeralSeconds: metadata.ephemeralDuration,
+    // Baileys decodes member_add_mode to a boolean where TRUE means all_member_add — the opposite
+    // sense to the boolean whatsapp-web.js's types describe, hence the explicit mapping here.
+    memberAddMode:
+      metadata.memberAddMode === undefined
+        ? undefined
+        : metadata.memberAddMode
+          ? ('all' as const)
+          : ('admins' as const),
     linkedParentJID: metadata.linkedParent ?? null,
   };
 }

@@ -23,6 +23,21 @@ if [ -z "$schema" ] || [ "$schema" = "public" ]; then
   exit 0
 fi
 
+# The value is interpolated into the CREATE SCHEMA / SET search_path statements below, so apply
+# the same boot-time validation the app does (src/config/env.validation.ts): a plain, non-reserved
+# Postgres identifier or nothing. Fail fast here rather than let a typo reach the SQL.
+identifier_re='^[A-Za-z_][A-Za-z0-9_]{0,62}$'
+if ! [[ "$schema" =~ $identifier_re ]]; then
+  echo "postgres-init-schema: ERROR: POSTGRES_SCHEMA must be a valid Postgres identifier (a letter or underscore, then letters/digits/underscores, max 63 chars; got '${schema}')." >&2
+  exit 1
+fi
+case "$schema" in
+  [pP][gG]_*)
+    echo "postgres-init-schema: ERROR: POSTGRES_SCHEMA must not use the reserved \"pg_\" prefix (got '${schema}')." >&2
+    exit 1
+    ;;
+esac
+
 echo "postgres-init-schema: creating schema '${schema}' and setting default search_path."
 
 # The postgres image exports POSTGRES_USER + POSTGRES_DB for docker-entrypoint-initdb.d

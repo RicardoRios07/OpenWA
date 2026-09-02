@@ -1,23 +1,60 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  ArrayMinSize,
+  IsArray,
+  IsBoolean,
+  IsIn,
+  IsInt,
+  IsOptional,
   IsString,
   IsUrl,
-  IsArray,
-  IsOptional,
-  IsBoolean,
-  IsInt,
-  Min,
   Max,
   MaxLength,
-  ArrayMinSize,
-  IsIn,
+  Min,
+  MinLength,
+  ValidateIf,
 } from 'class-validator';
 import { Expose, plainToInstance } from 'class-transformer';
 import { Webhook } from '../entities/webhook.entity';
-import { WebhookFilters } from '../filters/filter-types';
+import { MAX_CONDITIONS } from '../filters/filter-types';
+import type { FilterOperator, WebhookFilters } from '../filters/filter-types';
 import { IsValidWebhookFilters } from '../filters/filter-validation';
 import { IsHeaderMap } from './is-header-map.validator';
 import { ToStrictBoolean, ToStrictNumber } from '../../../common/utils/strict-boolean';
+
+/**
+ * Swagger metadata for the smart-filter shape — `WebhookFilters` in filters/filter-types.ts is a
+ * plain interface (validated at runtime by @IsValidWebhookFilters), which the scanner cannot
+ * introspect: without these classes the `filters` field on every webhook DTO degraded to a bare
+ * `{ "type": "object" }` in openapi.json, describing NEITHER side of the wire. Metadata only —
+ * no validators here; the runtime types stay authoritative.
+ */
+class WebhookFilterConditionDto {
+  @ApiProperty({ example: 'sender', description: 'Filterable field for the fired event family.' })
+  field!: string;
+
+  @ApiProperty({ enum: ['is', 'isNot', 'contains', 'equals'], example: 'is' })
+  operator!: FilterOperator;
+
+  @ApiProperty({
+    oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }, { type: 'boolean' }],
+    example: ['1234567890@c.us'],
+  })
+  value!: string | string[] | boolean;
+
+  @ApiPropertyOptional({ description: 'Only meaningful for text fields. Defaults to false.' })
+  caseSensitive?: boolean;
+}
+
+class WebhookFiltersDto {
+  @ApiProperty({
+    type: [WebhookFilterConditionDto],
+    minItems: 1,
+    maxItems: MAX_CONDITIONS,
+    description: 'Every condition must match (AND) for the webhook to fire.',
+  })
+  conditions!: WebhookFilterConditionDto[];
+}
 
 const FILTERS_API_DESCRIPTION =
   'Optional smart pre-filter. When set, every condition must match (AND) for the webhook to fire. Omit or null to fire on every subscribed event.';
@@ -48,14 +85,18 @@ export const WEBHOOK_EVENTS = [
   'session.authenticated',
   'session.disconnected',
   'session.reconnect_loop',
+  'session.restriction',
+  'presence.update',
   'group.join',
   'group.leave',
   'group.update',
+  'group.join_request',
   'call.received',
+  'call.accepted',
+  'call.rejected',
+  'call.missed',
   ...WEBHOOK_RESERVED_EVENTS,
 ] as const;
-
-export type WebhookEventType = (typeof WEBHOOK_EVENTS)[number];
 
 export class CreateWebhookDto {
   @ApiProperty({
@@ -65,7 +106,7 @@ export class CreateWebhookDto {
   // require_tld:false allows hostnames without a dot (e.g. http://localhost:3000); the SSRF
   // guard still decides whether the host is actually allowed to be delivered to.
   @IsUrl({ require_tld: false })
-  url: string;
+  url!: string;
 
   @ApiPropertyOptional({
     description: "Event types to subscribe to. '*' subscribes to all events.",
@@ -83,23 +124,45 @@ export class CreateWebhookDto {
   events?: string[];
 
   @ApiPropertyOptional({
-    description: 'Secret key for HMAC signature verification',
-    example: 'your-secret-key',
+    description:
+      'Secret key for HMAC signature verification. Never returned by any webhook route; it is used to ' +
+      'compute the `X-OpenWA-Signature: sha256=<hex>` header on every delivery.',
+    // Both bounds are spelled out because @MinLength/@MaxLength do not reach the published schema on
+    // their own, and the example must satisfy them: the previous 15-character one was rejected by the
+    // very route that offered it, so pasting it back from Swagger answered 400
+    // ([#1491](https://github.com/rmyndharis/OpenWA/issues/1491)).
+    minLength: 16,
+    maxLength: 255,
+    example: 'your-webhook-signing-secret',
   })
   @IsOptional()
   @IsString()
+  // A short secret signs webhooks badly: HMAC-SHA256 over a 4-char key is brute-forcible from one
+  // observed signature. 16 is the floor, not a recommendation.
+  @MinLength(16)
   @MaxLength(255)
   secret?: string;
 
   @ApiPropertyOptional({
-    description: 'Custom headers to include in webhook requests',
+    description:
+      'Custom headers to include in webhook requests. Never returned by any webhook route. At delivery, ' +
+      '`content-type` and `x-openwa-*` names are stripped so a custom header cannot shadow a system one.',
     example: { 'X-Custom-Header': 'value' },
   })
   @IsOptional()
   @IsHeaderMap()
   headers?: Record<string, string>;
 
-  @ApiPropertyOptional({ description: FILTERS_API_DESCRIPTION, example: FILTERS_API_EXAMPLE })
+  // `nullable` spelled out for the same reason lastTriggeredAt spells out its type: the field is
+  // STORED as null whenever a webhook is created without filters (`dto.filters ?? null`), and the
+  // description offers null as an input, so a schema without it rejects a value the route both
+  // sends and accepts.
+  @ApiPropertyOptional({
+    type: WebhookFiltersDto,
+    description: FILTERS_API_DESCRIPTION,
+    example: FILTERS_API_EXAMPLE,
+    nullable: true,
+  })
   @IsOptional()
   @IsValidWebhookFilters()
   filters?: WebhookFilters | null;
@@ -137,18 +200,48 @@ export class UpdateWebhookDto {
   @IsIn([...WEBHOOK_EVENTS, '*'], { each: true })
   events?: string[];
 
-  @ApiPropertyOptional({ description: 'Secret key for HMAC signature' })
+  @ApiPropertyOptional({
+    // No `minLength` here, unlike create: this route also accepts the empty string as "clear the
+    // secret", so a 16 in the schema would reject a value the route honours. The floor still applies
+    // to every other value, which only the description can say.
+    description:
+      'Secret key for HMAC signature. At least 16 characters, or an empty string to clear it. ' +
+      'Never returned by any webhook route.',
+    maxLength: 255,
+    // Deliberately no `example`, unlike create. This route patches a webhook that is already
+    // signing deliveries, and a prefilled secret submitted whole would replace a working key with
+    // a published one: every later delivery still verifies, so nothing looks broken while the
+    // signature is forgeable by anyone reading these docs. The floor belongs in the description
+    // here, where it costs a `400` to ignore rather than a silent downgrade.
+  })
   @IsOptional()
   @IsString()
+  // Same floor as create: a short secret is brute-forcible from one observed signature. The
+  // floor is skipped only for the empty string, which this route treats as "clear the secret"
+  // (the service stores null for it); a non-string value is still rejected by @IsString.
+  @ValidateIf((o: UpdateWebhookDto) => o.secret !== '')
+  @MinLength(16)
   @MaxLength(255)
   secret?: string;
 
-  @ApiPropertyOptional({ description: 'Custom headers' })
+  @ApiPropertyOptional({
+    description: 'Custom headers. Replaces the stored map wholesale. Never returned by any webhook route.',
+    example: { 'X-Custom-Header': 'value' },
+  })
   @IsOptional()
   @IsHeaderMap()
   headers?: Record<string, string>;
 
-  @ApiPropertyOptional({ description: FILTERS_API_DESCRIPTION, example: FILTERS_API_EXAMPLE })
+  // `nullable` spelled out for the same reason lastTriggeredAt spells out its type: the field is
+  // STORED as null whenever a webhook is created without filters (`dto.filters ?? null`), and the
+  // description offers null as an input, so a schema without it rejects a value the route both
+  // sends and accepts.
+  @ApiPropertyOptional({
+    type: WebhookFiltersDto,
+    description: FILTERS_API_DESCRIPTION,
+    example: FILTERS_API_EXAMPLE,
+    nullable: true,
+  })
   @IsOptional()
   @IsValidWebhookFilters()
   filters?: WebhookFilters | null;
@@ -159,7 +252,12 @@ export class UpdateWebhookDto {
   @IsBoolean()
   active?: boolean;
 
-  @ApiPropertyOptional({ description: 'Retry count' })
+  @ApiPropertyOptional({
+    description: 'Delivery attempts before the webhook is parked. Same range the create route enforces.',
+    example: 3,
+    minimum: 0,
+    maximum: 5,
+  })
   @ToStrictNumber()
   @IsOptional()
   @IsInt()
@@ -171,7 +269,8 @@ export class UpdateWebhookDto {
 /**
  * Public response shape for a webhook. Deliberately omits `secret` (the HMAC
  * signing key) and `headers` (which may carry receiver credentials) — these are
- * write-only and must never appear in any API response.
+ * write-only and never appear in a response built from this DTO. The backup route
+ * (`GET /api/infra/export-data`) also omits both from its webhook rows.
  *
  * `@Expose()` is required on every field: `fromEntity` maps with
  * `excludeExtraneousValues: true`, so only exposed fields are serialized and any
@@ -180,43 +279,57 @@ export class UpdateWebhookDto {
 export class WebhookResponseDto {
   @Expose()
   @ApiProperty()
-  id: string;
+  id!: string;
 
   @Expose()
   @ApiProperty()
-  sessionId: string;
+  sessionId!: string;
 
   @Expose()
   @ApiProperty()
-  url: string;
+  url!: string;
 
   @Expose()
-  @ApiProperty()
-  events: string[];
+  // Same vocabulary the create and update bodies validate against: the stored list can only hold
+  // values those routes accepted. Publishing a bare string[] understated the response, and left
+  // every client's typed event list comparing against `array<string>` instead of the enum.
+  @ApiProperty({ enum: [...WEBHOOK_EVENTS, '*'], type: String, isArray: true })
+  events!: string[];
 
   @Expose()
-  @ApiPropertyOptional({ description: FILTERS_API_DESCRIPTION, example: FILTERS_API_EXAMPLE })
+  // `nullable` spelled out for the same reason lastTriggeredAt spells out its type: the field is
+  // STORED as null whenever a webhook is created without filters (`dto.filters ?? null`), and the
+  // description offers null as an input, so a schema without it rejects a value the route both
+  // sends and accepts.
+  @ApiPropertyOptional({
+    type: WebhookFiltersDto,
+    description: FILTERS_API_DESCRIPTION,
+    example: FILTERS_API_EXAMPLE,
+    nullable: true,
+  })
   filters?: WebhookFilters | null;
 
   @Expose()
   @ApiProperty()
-  active: boolean;
+  active!: boolean;
 
   @Expose()
   @ApiProperty()
-  retryCount: number;
+  retryCount!: number;
 
   @Expose()
-  @ApiPropertyOptional()
+  // Spelled out because a bare @ApiPropertyOptional() on `Date | null` emits `type: object`, and the
+  // published schema then rejects both values this field actually carries.
+  @ApiPropertyOptional({ type: String, format: 'date-time', nullable: true })
   lastTriggeredAt?: Date | null;
 
   @Expose()
   @ApiProperty()
-  createdAt: Date;
+  createdAt!: Date;
 
   @Expose()
   @ApiProperty()
-  updatedAt: Date;
+  updatedAt!: Date;
 
   static fromEntity(entity: Webhook): WebhookResponseDto {
     return plainToInstance(WebhookResponseDto, entity, { excludeExtraneousValues: true });
@@ -225,4 +338,61 @@ export class WebhookResponseDto {
   static fromEntities(entities: Webhook[]): WebhookResponseDto[] {
     return entities.map(entity => WebhookResponseDto.fromEntity(entity));
   }
+}
+
+/** A webhook delivery that exhausted every retry — the shape `GET /webhooks/delivery-failures` serves. */
+export class WebhookDeliveryFailureDto {
+  @ApiProperty({ example: '0a941dac-a965-45e7-b318-74ae8be134f0' })
+  id!: string;
+
+  @ApiProperty({ example: '0a941dac-a965-45e7-b318-74ae8be134f0' })
+  webhookId!: string;
+
+  @ApiProperty({ example: '0a941dac-a965-45e7-b318-74ae8be134f0' })
+  sessionId!: string;
+
+  @ApiProperty({ example: 'message.received' })
+  event!: string;
+
+  @ApiProperty({ example: 'https://receiver.example.com/hook' })
+  url!: string;
+
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description: 'The idempotency key the receiver would have deduped on.',
+  })
+  idempotencyKey?: string | null;
+
+  @ApiPropertyOptional({ type: String, nullable: true })
+  deliveryId?: string | null;
+
+  @ApiProperty({ description: 'Total attempts made before giving up.', example: 5 })
+  attempts!: number;
+
+  @ApiPropertyOptional({
+    type: Number,
+    nullable: true,
+    description: 'Last HTTP status when the failure was a non-2xx response; null for a network/timeout error.',
+    example: null,
+  })
+  lastStatusCode?: number | null;
+
+  @ApiProperty({ example: 'connect ECONNREFUSED 10.0.0.1:443' })
+  lastError!: string;
+
+  @ApiProperty({ type: String, format: 'date-time', description: 'When the delivery was finally abandoned.' })
+  createdAt!: Date;
+}
+
+/** Outcome of `POST /sessions/:sessionId/webhooks/:id/test`. */
+export class WebhookTestResponseDto {
+  @ApiProperty({ description: 'True when the receiver answered 2xx.', example: true })
+  success!: boolean;
+
+  @ApiPropertyOptional({ description: 'The HTTP status the receiver answered, when it answered.', example: 200 })
+  statusCode?: number;
+
+  @ApiPropertyOptional({ description: 'The delivery error, when the attempt failed.', example: 'timeout' })
+  error?: string;
 }

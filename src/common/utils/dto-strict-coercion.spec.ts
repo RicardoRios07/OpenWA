@@ -1,6 +1,6 @@
 import 'reflect-metadata';
 import { getMetadataStorage, validate } from 'class-validator';
-import { plainToInstance } from 'class-transformer';
+import { ClassConstructor, plainToInstance } from 'class-transformer';
 import { readdirSync, statSync } from 'fs';
 import { join } from 'path';
 
@@ -54,11 +54,9 @@ dtoFiles(SRC).forEach(file => {
   require(file);
 });
 
-interface ValidatedClass {
-  new (...args: never[]): object;
-  name: string;
-  prototype: object;
-}
+// class-transformer's own constructor type, not a hand-rolled copy: `plainToInstance` is what these
+// are handed to, so its contract is the one that has to hold.
+type ValidatedClass = ClassConstructor<object> & { name: string; prototype: object };
 
 function registeredClasses(): ValidatedClass[] {
   const storage = getMetadataStorage() as unknown as { validationMetadatas?: Map<unknown, unknown> };

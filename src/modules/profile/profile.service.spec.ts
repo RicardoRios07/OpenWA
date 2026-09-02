@@ -1,12 +1,13 @@
 import { BadRequestException } from '@nestjs/common';
 import { ProfileService } from './profile.service';
-import { SessionService } from '../session/session.service';
+import { EngineRegistry } from '../../engine/engine-registry.service';
 import { IWhatsAppEngine, MediaInput } from '../../engine/interfaces/whatsapp-engine.interface';
 
 describe('ProfileService', () => {
   const makeService = (engine: Partial<IWhatsAppEngine> | undefined) => {
-    const sessionService = { getEngine: jest.fn().mockReturnValue(engine) } as unknown as SessionService;
-    return new ProfileService(sessionService);
+    const engines = new EngineRegistry();
+    if (engine) engines.set('s1', engine as IWhatsAppEngine);
+    return new ProfileService(engines);
   };
 
   it('throws 400 "Session is not started" when the engine is missing (guard preserved)', () => {
@@ -25,6 +26,20 @@ describe('ProfileService', () => {
     const setProfileStatus = jest.fn().mockResolvedValue(undefined);
     await makeService({ setProfileStatus }).setProfileStatus('s1', '');
     expect(setProfileStatus).toHaveBeenCalledWith('');
+  });
+
+  it('deleteProfilePicture delegates to the engine with no arguments (the account is implicit)', async () => {
+    const deleteProfilePicture = jest.fn().mockResolvedValue(undefined);
+    await makeService({ deleteProfilePicture }).deleteProfilePicture('s1');
+    // Called with nothing: the engine removes the picture of the account it is already bound to, so
+    // forwarding the sessionId here would be a jid the adapter never asked for.
+    expect(deleteProfilePicture).toHaveBeenCalledWith();
+  });
+
+  it('deleteProfilePicture throws 400 when the engine is missing', () => {
+    // The route carries no body, so this guard is the only pre-check standing between the caller and
+    // the adapter.
+    expect(() => makeService(undefined).deleteProfilePicture('s1')).toThrow(BadRequestException);
   });
 
   describe('setProfilePicture', () => {

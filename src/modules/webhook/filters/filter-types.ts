@@ -9,6 +9,8 @@
  * subscribed to several families behaves sanely without per-event filter sets.
  */
 
+import { MessageType } from '../../../engine/interfaces/whatsapp-engine.interface';
+
 export type FilterOperator = 'is' | 'isNot' | 'contains' | 'equals';
 
 /** Value shape a field resolves to, which decides how operators are applied. */
@@ -35,21 +37,30 @@ export interface FieldDefinition {
   enumValues?: readonly string[];
 }
 
-export const MESSAGE_TYPES = [
-  'text',
-  'image',
-  'video',
-  'audio',
-  'voice',
-  'document',
-  'sticker',
-  'location',
-  'contact',
-  'call',
-  'revoked',
-  'masked',
-  'unknown',
-] as const;
+/**
+ * Every neutral message type a `type` filter condition may name. Derived exhaustively from the
+ * engine-neutral {@link MessageType} union so a type added there cannot be silently rejected here:
+ * `poll` was offered by the dashboard's own copy of this list while saving was refused as invalid.
+ * The `Record<MessageType, ...>` shape makes an omitted or stale entry a compile error.
+ */
+const MESSAGE_TYPE_FLAGS: Record<MessageType, true> = {
+  text: true,
+  image: true,
+  video: true,
+  audio: true,
+  voice: true,
+  document: true,
+  sticker: true,
+  location: true,
+  contact: true,
+  poll: true,
+  call: true,
+  revoked: true,
+  masked: true,
+  unknown: true,
+};
+
+export const MESSAGE_TYPES: readonly MessageType[] = Object.keys(MESSAGE_TYPE_FLAGS) as MessageType[];
 
 // Guard rails. These bound both stored config size and per-event evaluation cost.
 export const MAX_CONDITIONS = 20;

@@ -5,6 +5,9 @@ import { Repository } from 'typeorm';
 import { PluginInstance } from './entities/plugin-instance.entity';
 import type { PluginConfigSchema } from '../../core/plugins/plugin.interfaces';
 import { redactSecretConfig, restoreSecretConfig, SECRET_SENTINEL } from '../plugins/redact-config';
+// Type-only: the module binds this class to PLUGIN_INSTANCE_PORT with a `useExisting` alias, which
+// TypeScript does not check, so `implements` is what keeps the two in step.
+import type { PluginInstancePort } from '../../core/plugins/plugin-host-ports';
 
 // A supplied ingress secret must be a real, guessing-resistant value; an empty/short one would make the
 // public HMAC forgeable. Absent => auto-generate. Trimmed so pasted whitespace can't slip a weak secret in.
@@ -25,7 +28,7 @@ export class InstanceExistsError extends Error {
 }
 
 @Injectable()
-export class PluginInstanceService {
+export class PluginInstanceService implements PluginInstancePort {
   constructor(@InjectRepository(PluginInstance, 'data') private readonly repo: Repository<PluginInstance>) {}
 
   async mint(

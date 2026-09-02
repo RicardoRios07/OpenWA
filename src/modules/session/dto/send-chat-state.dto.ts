@@ -12,7 +12,7 @@ export class SendChatStateDto {
   })
   @IsString()
   @IsNotEmpty()
-  chatId: string;
+  chatId!: string;
 
   @ApiProperty({
     description: "Presence to send: 'typing' or 'recording' shows the indicator; 'paused' clears it",
@@ -20,5 +20,5 @@ export class SendChatStateDto {
     example: 'typing',
   })
   @IsIn(['typing', 'recording', 'paused'])
-  state: ChatState;
+  state!: ChatState;
 }

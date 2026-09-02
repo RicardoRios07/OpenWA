@@ -11,7 +11,7 @@ export class CreateApiKeyDto {
   @IsString()
   @MinLength(3)
   @MaxLength(100)
-  name: string;
+  name!: string;
 
   @ApiPropertyOptional({
     description: 'Role/permission level',
@@ -33,8 +33,11 @@ export class CreateApiKeyDto {
   allowedIps?: string[];
 
   @ApiPropertyOptional({
-    description: 'Allowed session IDs this key can access',
-    example: ['session-uuid-1', 'session-uuid-2'],
+    description:
+      'Session **ids** this key may act on — the server-generated UUIDs, not session names. Matched by ' +
+      'exact equality against the id in the request path, so a name never matches and would silently ' +
+      'scope the key to nothing. Omit or leave empty to let the key reach every session.',
+    example: ['0a941dac-a965-45e7-b318-74ae8be134f0', '8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a'],
   })
   @IsOptional()
   @IsArray()
@@ -52,18 +55,18 @@ export class CreateApiKeyDto {
 
 export class ApiKeyResponseDto {
   @ApiProperty()
-  id: string;
+  id!: string;
 
   @ApiProperty()
-  name: string;
+  name!: string;
 
   @ApiProperty({
     description: 'First 8 characters of the key (for identification)',
   })
-  keyPrefix: string;
+  keyPrefix!: string;
 
   @ApiProperty({ enum: ApiKeyRole })
-  role: ApiKeyRole;
+  role!: ApiKeyRole;
 
   @ApiPropertyOptional()
   allowedIps?: string[];
@@ -72,7 +75,7 @@ export class ApiKeyResponseDto {
   allowedSessions?: string[];
 
   @ApiProperty()
-  isActive: boolean;
+  isActive!: boolean;
 
   @ApiPropertyOptional()
   expiresAt?: Date;
@@ -81,10 +84,10 @@ export class ApiKeyResponseDto {
   lastUsedAt?: Date;
 
   @ApiProperty()
-  usageCount: number;
+  usageCount!: number;
 
   @ApiProperty()
-  createdAt: Date;
+  createdAt!: Date;
 }
 
 export class ApiKeyCreatedResponseDto extends ApiKeyResponseDto {
@@ -92,7 +95,16 @@ export class ApiKeyCreatedResponseDto extends ApiKeyResponseDto {
     description: 'Full API key (only shown once at creation)',
     example: 'owa_k1_abc123...',
   })
-  apiKey: string;
+  apiKey!: string;
+}
+
+/** Result of `POST /auth/validate` — the guard's verdict on the presented key. */
+export class ValidateApiKeyResponseDto {
+  @ApiProperty({ description: 'Whether the presented API key is valid.', example: true })
+  valid!: boolean;
+
+  @ApiPropertyOptional({ enum: ApiKeyRole, description: "The key's role; present only when valid." })
+  role?: ApiKeyRole;
 }
 
 export class UpdateApiKeyDto {

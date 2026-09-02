@@ -39,4 +39,12 @@ export class ProfileResource {
       body,
     });
   }
+
+  /** Remove the account profile picture. */
+  deleteProfilePicture(sessionId: string): Promise<SuccessResult> {
+    return this.client.request<SuccessResult>({
+      method: 'DELETE',
+      path: `/api/sessions/${encodeSegment(sessionId)}/profile/picture`,
+    });
+  }
 }

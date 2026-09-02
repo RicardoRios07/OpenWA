@@ -1,0 +1,117 @@
+name: Scheduled Security Scan
+
+# The PR and tag paths gate every change against the advisories known at merge time, but a newly
+# published advisory burns silently until the next push or dependabot PR — nothing re-runs
+# `npm audit` or the image scan in between. This workflow gives both a run of their own: weekly
+# (and on demand) it re-runs the exact gates CI already uses, against the current dependency trees
+# and the PUBLISHED image, so a fresh CVE in a shipped layer (chromium, the Debian base, the
+# bundled npm CLI) turns something red within days instead of at the next release.
+#
+# Scheduled runs execute on the default branch only. workflow_dispatch exists for on-demand runs —
+# note a workflow is dispatchable only once its file exists on the default branch, so the first
+# live run necessarily happens post-merge.
+
+on:
+  schedule:
+    # Wednesdays 03:00 UTC — offset from Monday's dependabot npm wave so the scan sees the
+    # dependency graph as it stands AFTER the weekly updates, not mid-churn.
+    - cron: '0 3 * * 3'
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: '22'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-scan
+  cancel-in-progress: false
+
+jobs:
+  # Mirrors the ci.yml `audit` job step for step, so a scheduled failure means exactly what a
+  # merge-gate failure means — no stricter, no looser.
+  audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          # Both trees are installed below, so both lockfiles belong in the cache key.
+          cache-dependency-path: |
+            package-lock.json
+            dashboard/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Security audit
+        # check:audit, not bare `npm audit`: the per-advisory allowlist in scripts/check-audit.mjs
+        # applies, so an advisory already excused by id (with its recorded reason and drop
+        # condition) does not fire a false weekly alarm.
+        run: npm run check:audit
+
+      # The dashboard is a second dependency tree and the one that reaches a browser; same
+      # rationale as the ci.yml audit job.
+      - name: Install dashboard dependencies
+        run: cd dashboard && npm ci
+
+      - name: Security audit (dashboard)
+        run: cd dashboard && npm audit --audit-level=high
+
+  # Mirrors the release.yml `image-scan` job, minus the staging ref: this scans the image the
+  # release pipeline actually promoted, on both architectures.
+  image-scan:
+    name: Image scan (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    permissions:
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux/amd64, linux/arm64]
+    steps:
+      # Needed for .trivyignore: the scan reads the image from the registry, but the ignore file
+      # is repo state and trivy-action resolves it from the workspace — without a checkout the
+      # file simply is not there and every entry is silently inert.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve published image ref
+        id: image
+        env:
+          REPO: ${{ github.repository }}
+        # `latest` moves only through the release workflow's promote step (never the CI build), so
+        # this always scans an image boot-smoke proved on both architectures. Bash ${VAR,,}
+        # lowercases — GHCR paths are lowercase and github.repository may not be.
+        run: echo "ref=ghcr.io/${REPO,,}:latest" >> "$GITHUB_OUTPUT"
+
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          # trivy reads TRIVY_PLATFORM for its --platform flag. Scanning is static (it reads the
+          # image layers, it does not run the image), so no QEMU is needed to inspect the arm64
+          # variant of the manifest — only a pull, which the GHCR login above authorizes.
+          TRIVY_PLATFORM: ${{ matrix.platform }}
+        with:
+          scan-type: image
+          image-ref: ${{ steps.image.outputs.ref }}
+          format: table
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+          # Explicit rather than implicit: each entry in .trivyignore carries a written
+          # justification and a condition for removing it.
+          trivyignores: .trivyignore

@@ -21,7 +21,7 @@ Modern web dashboard for managing OpenWA WhatsApp API Gateway sessions, webhooks
 | ---------------- | ----------------------- |
 | React 19         | UI Framework            |
 | TypeScript       | Type Safety             |
-| Vite 7           | Build Tool              |
+| Vite 8           | Build Tool              |
 | React Router 7   | Client-side Routing     |
 | TanStack Query   | Server State Management |
 | TanStack Table   | Data Tables             |

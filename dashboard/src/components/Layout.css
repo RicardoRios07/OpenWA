@@ -149,11 +149,11 @@
 
 .nav-item.active {
   background: var(--primary-soft);
-  color: var(--primary);
+  color: var(--primary-text);
 }
 
 .nav-item.active svg {
-  color: var(--primary);
+  color: var(--primary-text);
 }
 
 .sidebar-footer {
@@ -259,7 +259,7 @@
 
 .language-menu-item.active {
   background: var(--primary-soft);
-  color: var(--primary);
+  color: var(--primary-text);
 }
 
 .sidebar.collapsed .language-menu-list {
@@ -288,7 +288,7 @@
 .logout-btn:hover {
   background: rgba(239, 68, 68, 0.12);
   border-color: rgba(239, 68, 68, 0.3);
-  color: var(--error);
+  color: var(--error-text);
 }
 
 /* ==================== Main Content ==================== */

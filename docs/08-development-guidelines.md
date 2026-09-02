@@ -11,12 +11,12 @@ openwa/
 │   ├── config/                    # Runtime config, env validation, bootstrap security, Swagger
 │   ├── core/                      # Hook and plugin framework
 │   ├── database/                  # TypeORM data sources and migrations
-│   ├── engine/                    # WhatsApp engine abstraction, adapters, identity mapping
+│   ├── engine/                    # WhatsApp engine abstraction, adapters, identity mapping,
+│   │                              # and the built-in engine plugins (engine/builtin/)
 │   ├── modules/                   # API feature modules
-│   └── plugins/                   # Built-in engine and extension plugins
 ├── test/                          # E2E smoke tests and mocks
 ├── dashboard/                     # React/Vite dashboard
-├── sdk/                           # JavaScript and Python SDK scaffolds
+├── sdk/                           # Client SDKs: go, java, javascript, php, python
 ├── docs/                          # Documentation
 ├── scripts/                       # Utility scripts
 ├── .github/workflows/             # CI and release workflows
@@ -35,41 +35,43 @@ openwa/
 ### TypeScript Configuration
 
 ```json
-// tsconfig.json
+// tsconfig.json (abridged — see the file for the commented rationale)
 {
   "compilerOptions": {
-    "module": "commonjs",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "target": "ES2023",
+    "rootDir": ".",
+    "outDir": "./dist",
+    "types": ["node", "jest"],
     "declaration": true,
-    "removeComments": true,
     "emitDecoratorMetadata": true,
     "experimentalDecorators": true,
-    "allowSyntheticDefaultImports": true,
-    "target": "ES2022",
-    "sourceMap": true,
-    "outDir": "./dist",
-    "baseUrl": "./",
-    "incremental": true,
-    "skipLibCheck": true,
     "strictNullChecks": true,
     "noImplicitAny": true,
     "strictBindCallApply": true,
-    "forceConsistentCasingInFileNames": true,
     "noFallthroughCasesInSwitch": true,
-    "paths": {
-      "@/*": ["src/*"],
-      "@common/*": ["src/common/*"],
-      "@modules/*": ["src/modules/*"],
-      "@config/*": ["src/config/*"]
-    }
-  }
+    "strictPropertyInitialization": false,
+    "strictFunctionTypes": false,
+    "useUnknownInCatchVariables": false
+  },
+  "include": ["src", "test"],
+  "exclude": ["node_modules", "dist", "dashboard"]
 }
 ```
+
+There are **no path aliases** — no `baseUrl`, no `paths`. Import with relative paths
+(`../common/services/logger.service`), not `@/…`. Under TypeScript 6 the strict family defaults on,
+so the three `false` entries above are deliberate opt-outs pending their own migrations
+(`strictPropertyInitialization` alone flags around 260 TypeORM entity properties). `types` must be
+listed explicitly because TypeScript 6 no longer auto-includes every `@types` package.
 
 ### ESLint Configuration
 
 The backend uses ESLint flat config in `eslint.config.mjs` with type-aware TypeScript rules,
 Prettier integration, and an architecture guard for controllers. HTTP controllers must call
-capability services; they must not import `IWhatsAppEngine` or call `getEngine()` directly.
+capability services; they must not import `IWhatsAppEngine` or `EngineRegistry`, call `getEngine()`,
+or resolve an engine via `engines.require()` / `engines.get()`.
 
 ```bash
 npm run lint
@@ -146,17 +148,7 @@ export class ExampleModule {}
 
 ```typescript
 // modules/example/example.controller.ts
-import {
-  Controller,
-  Get,
-  Post,
-  Body,
-  Headers,
-  Param,
-  Delete,
-  HttpCode,
-  HttpStatus,
-} from '@nestjs/common';
+import { Controller, Get, Post, Body, Headers, Param, Delete, HttpCode, HttpStatus } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { ExampleService } from './example.service';
 import { CreateExampleDto } from './dto/create-example.dto';
@@ -173,7 +165,7 @@ export class ExampleController {
   @ApiResponse({ status: 201, type: ExampleResponseDto })
   async create(
     @Body() dto: CreateExampleDto,
-    @Headers('x-request-id') requestId?: string
+    @Headers('x-request-id') requestId?: string,
   ): Promise<ExampleResponseDto> {
     return this.exampleService.create(dto, { requestId });
   }
@@ -196,8 +188,26 @@ export class ExampleController {
 
 Controllers are protected by the global API key guard unless marked with `@Public()`. Keep
 controllers thin: validate transport input through DTOs, delegate behavior to services, and never
-call `SessionService.getEngine()` directly from a controller. Engine-specific details belong behind
-capability services and engine adapters.
+resolve an engine directly from a controller. Engine-specific details belong behind capability
+services and engine adapters.
+
+A capability service reaches the live engine through `EngineRegistry`, the narrow port exported by
+the (global) `EngineModule` — not through `SessionService`, which drives the session _lifecycle_
+(start/stop/delete/reconnect, owned by `SessionEngineLifecycle`) and should only be injected by code
+that actually drives it:
+
+```typescript
+@Injectable()
+export class ExampleService {
+  constructor(private readonly engines: EngineRegistry) {}
+
+  // require() throws 400 "Session is not started" by default; pass a factory to keep an
+  // endpoint's own documented status/message.
+  private getEngine(sessionId: string): IWhatsAppEngine {
+    return this.engines.require(sessionId);
+  }
+}
+```
 
 ### Service Template
 
@@ -210,34 +220,31 @@ import { Example } from './entities/example.entity';
 
 @Injectable()
 export class ExampleService {
-  private readonly logger = new Logger(ExampleService.name);
+  private readonly logger = createLogger('ExampleService');
 
   constructor(private readonly repository: ExampleRepository) {}
 
-  async create(
-    dto: CreateExampleDto,
-    context?: { requestId?: string }
-  ): Promise<Example> {
+  async create(dto: CreateExampleDto, context?: { requestId?: string }): Promise<Example> {
     this.logger.log(`Creating example: ${dto.name}`, context);
-    
+
     const example = this.repository.create(dto);
     return this.repository.save(example);
   }
 
   async findOne(id: string): Promise<Example> {
     const example = await this.repository.findOne({ where: { id } });
-    
+
     if (!example) {
       throw new NotFoundException(`Example with ID ${id} not found`);
     }
-    
+
     return example;
   }
 
   async remove(id: string): Promise<void> {
     const example = await this.findOne(id);
     await this.repository.remove(example);
-    
+
     this.logger.log(`Deleted example: ${id}`);
   }
 }
@@ -268,6 +275,32 @@ export class CreateExampleDto {
   callbackUrl?: string;
 }
 ```
+
+### Global modules — the fixed set
+
+`@Global()` makes a module's exported providers injectable everywhere without an import, which is
+convenient exactly until two modules both assume they own a name and the injector silently picks
+one. The sanctioned set is therefore frozen at these ten — every one of them a cross-cutting
+concern that nearly every module would otherwise have to import:
+
+| Module             | Path                                         | Why it is global                                      |
+| ------------------ | -------------------------------------------- | ----------------------------------------------------- |
+| `AuthModule`       | `src/modules/auth/auth.module.ts`            | API-key guard + role checks run on nearly every route |
+| `AuditModule`      | `src/modules/audit/audit.module.ts`          | Every mutation surface writes audit entries           |
+| `EventsModule`     | `src/modules/events/events.module.ts`        | The event bus fans out from every module              |
+| `EngineModule`     | `src/engine/engine.module.ts`                | `EngineRegistry`, the narrow port to the live engines |
+| `PluginsModule`    | `src/core/plugins/plugins.module.ts`         | Plugin services are consumed across modules           |
+| `HooksModule`      | `src/core/hooks/hooks.module.ts`             | `HookManager` is invoked from unrelated modules       |
+| `CacheModule`      | `src/common/cache/cache.module.ts`           | Shared cache service                                  |
+| `StorageModule`    | `src/common/storage/storage.module.ts`       | File/media storage used across modules                |
+| `LoggerModule`     | `src/common/services/logger.module.ts`       | The logger is needed literally everywhere             |
+| `AgentToolsModule` | `src/core/agent-tools/agent-tools.module.ts` | The tool registry is shared by MCP and the REST layer |
+
+Do not add an eleventh. A new global needs an ADR-level justification — written down and reviewed
+with the same weight as an architecture decision record — because the cost (implicit coupling,
+order-dependent provider resolution, tests that pass only because the whole app booted) is paid by
+every future module, not by the one that opts out of an explicit `imports` entry. The default for a
+new module is the standard template above: declare `exports` and let consumers `imports` you.
 
 ## 8.4 Git Workflow
 
@@ -355,15 +388,18 @@ Fixes #456
 
 ```markdown
 ## Description
+
 Brief description of changes
 
 ## Type of Change
+
 - [ ] Bug fix
 - [ ] New feature
 - [ ] Breaking change
 - [ ] Documentation update
 
 ## Checklist
+
 - [ ] Tests added/updated
 - [ ] Documentation updated
 - [ ] Lint passes
@@ -372,6 +408,7 @@ Brief description of changes
 ## Screenshots (if applicable)
 
 ## Related Issues
+
 Closes #
 ```
 
@@ -400,7 +437,7 @@ test/
 
 ```typescript
 // src/modules/session/reconnect-config.spec.ts
-import { resolveReconnectConfig } from './session.service';
+import { resolveReconnectConfig } from './session-engine-lifecycle.service';
 
 describe('resolveReconnectConfig', () => {
   it('keeps reconnect settings finite and bounded', () => {
@@ -444,7 +481,7 @@ describe('App (e2e)', () => {
       return request(app.getHttpServer())
         .get('/api/health')
         .expect(200)
-        .expect((res) => {
+        .expect(res => {
           expect(res.body.status).toBe('ok');
         });
     });
@@ -469,10 +506,10 @@ Coverage thresholds are enforced by Jest in `package.json`. Security-sensitive c
 
 ### Code Documentation
 
-```typescript
+````typescript
 /**
  * Session service handles all session-related operations.
- * 
+ *
  * @example
  * ```typescript
  * const session = await sessionService.create({ name: 'my-bot' });
@@ -483,7 +520,7 @@ Coverage thresholds are enforced by Jest in `package.json`. Security-sensitive c
 export class SessionService {
   /**
    * Creates a new WhatsApp session.
-   * 
+   *
    * @param dto - Session creation parameters
    * @returns The created session with QR code if applicable
    * @throws {ConflictException} If session name already exists
@@ -493,7 +530,7 @@ export class SessionService {
     // Implementation
   }
 }
-```
+````
 
 ### API Documentation (Swagger)
 
@@ -524,70 +561,37 @@ export class SessionController {
 
 ## 8.7 Error Handling
 
-### Custom Exception Classes
+There is **no custom exception base class and no global exception filter**. Handlers throw NestJS's
+built-in HTTP exceptions and NestJS's own `BaseExceptionFilter` renders them, so responses carry the
+framework default shape `{ statusCode, message, error }`.
 
 ```typescript
-// common/exceptions/business.exception.ts
-export class BusinessException extends HttpException {
-  constructor(
-    public readonly code: string,
-    message: string,
-    statusCode: HttpStatus = HttpStatus.BAD_REQUEST,
-    public readonly details?: Record<string, any>,
-  ) {
-    super({ code, message, details }, statusCode);
-  }
-}
-
-// Usage
-throw new BusinessException(
-  'SESSION_NOT_READY',
-  'Session is not ready to send messages',
-  HttpStatus.BAD_REQUEST,
-  { sessionId, currentStatus: session.status }
-);
+throw new BadRequestException('Session is not started');
+throw new NotFoundException(`Contact ${contactId} not found`);
 ```
 
-### Global Exception Filter
+### Domain errors extend a built-in exception
 
-```typescript
-// common/filters/http-exception.filter.ts
-@Catch()
-export class AllExceptionsFilter implements ExceptionFilter {
-  private readonly logger = new Logger(AllExceptionsFilter.name);
+Where a failure mode recurs across engines, `src/common/errors/` defines a named error that extends
+the NestJS exception carrying the right status, so throwing it from an adapter maps to the intended
+HTTP code with no filter involved:
 
-  catch(exception: unknown, host: ArgumentsHost): void {
-    const ctx = host.switchToHttp();
-    const response = ctx.getResponse<Response>();
-    const request = ctx.getRequest<Request>();
+| Error                                                                                        | Extends                        | Status |
+| -------------------------------------------------------------------------------------------- | ------------------------------ | ------ |
+| `EngineNotSupportedError`                                                                    | `NotImplementedException`      | 501    |
+| `ChannelMediaNotSupportedError`                                                              | `NotImplementedException`      | 501    |
+| `EngineNotReadyError`                                                                        | `ConflictException`            | 409    |
+| `EngineRefusedError`                                                                         | `ForbiddenException`           | 403    |
+| `EngineTransportError`                                                                       | `ServiceUnavailableException`  | 503    |
+| `ChatLabelsUnsupportedError`                                                                 | `UnprocessableEntityException` | 422    |
+| `CallNotFoundError` / `ChannelNotFoundError` / `GroupNotFoundError` / `MessageNotFoundError` | `NotFoundException`            | 404    |
 
-    const status = exception instanceof HttpException
-      ? exception.getStatus()
-      : HttpStatus.INTERNAL_SERVER_ERROR;
+Add a new one only when the condition is engine-agnostic and recurs; a one-off stays an inline
+`throw new BadRequestException(...)`.
 
-    const errorResponse = this.formatError(exception, request);
-
-    this.logger.error(
-      `${request.method} ${request.url} - ${status}`,
-      exception instanceof Error ? exception.stack : undefined,
-    );
-
-    response.status(status).json(errorResponse);
-  }
-
-  private formatError(exception: unknown, request: Request) {
-    const status = exception instanceof HttpException
-      ? exception.getStatus()
-      : HttpStatus.INTERNAL_SERVER_ERROR;
-    // Return NestJS default error shape: { statusCode, message, error }
-    return {
-      statusCode: status,
-      message: this.getErrorMessage(exception),
-      error: this.getErrorCode(exception),
-    };
-  }
-}
-```
+> Do not introduce a response envelope. A `ResponseInterceptor`/`HttpExceptionFilter` pair that
+> wrapped every payload in `{ success, data, meta }` was written once, never registered, and has
+> since been deleted — `dashboard/src/services/api.ts` reads the raw payload.
 
 ---
 
@@ -608,6 +612,15 @@ export class AllExceptionsFilter implements ExceptionFilter {
 - pgAdmin or DBeaver
 ```
 
+> Dependency installation patches whatsapp-web.js for the WhatsApp Web 2.3000.x message-id rename.
+> It applies the patch with GNU `patch`, falling back to `git apply` — so Git alone is enough,
+> including on Windows outside Git Bash. With neither available the install still succeeds, but the
+> whatsapp-web.js engine then fails on every send; see `docs/12-troubleshooting-faq.md`.
+>
+> The committed lockfile resolves dependencies from the npm registry and works with npm 12's default
+> Git-dependency block. Do not work around `EALLOWGIT` by changing npm or Git configuration globally;
+> update to a current lockfile instead.
+
 ### Quick Start
 
 ```bash
@@ -615,12 +628,14 @@ export class AllExceptionsFilter implements ExceptionFilter {
 git clone https://github.com/rmyndharis/OpenWA.git
 cd OpenWA
 
-# 2. Install dependencies (also installs dashboard dependencies)
-npm install
+# 2. Install the locked dependencies (also installs dashboard dependencies)
+npm ci
 
 # 3. Start API + dashboard in development mode
 npm run dev
 ```
+
+Use `npm install` only when intentionally changing dependencies and updating the lockfile.
 
 On first boot the API creates `data/.env.generated` with a minimal SQLite/local-storage
 configuration. A project-level `.env` is optional; real process environment variables take precedence
@@ -709,7 +724,8 @@ SESSION_DATA_PATH=./data/sessions
 ENGINE_TYPE=whatsapp-web.js
 PUPPETEER_HEADLESS=true
 
-# Swagger is enabled by default. Set false to disable.
+# Swagger defaults ON outside production and OFF under NODE_ENV=production.
+# Set it explicitly to force either way.
 ENABLE_SWAGGER=true
 ```
 
@@ -793,14 +809,15 @@ ENABLE_SWAGGER=false
 ### Logging Best Practices
 
 ```typescript
-// Use Logger from NestJS
-import { Logger, Inject, Scope } from '@nestjs/common';
+// Use createLogger from the shared LoggerService, not console.*
+import { Inject, Scope } from '@nestjs/common';
 import { REQUEST } from '@nestjs/core';
 import { Request } from 'express';
+import { createLogger } from '../common/services/logger.service';
 
 @Injectable({ scope: Scope.REQUEST })
 export class MyService {
-  private readonly logger = new Logger(MyService.name);
+  private readonly logger = createLogger('MyService');
 
   constructor(@Inject(REQUEST) private readonly request: Request) {}
 
@@ -808,7 +825,7 @@ export class MyService {
     // Log entry with context
     const requestId = this.request?.requestId;
     this.logger.log(`Processing item`, { id, requestId });
-    
+
     try {
       await this.process(id);
       this.logger.log(`Item processed successfully`, { id, requestId });
@@ -867,7 +884,7 @@ async function bootstrap() {
 const client = new Client({
   puppeteer: {
     headless: false, // See browser window
-    devtools: true,  // Open DevTools automatically
+    devtools: true, // Open DevTools automatically
   },
 });
 
@@ -889,17 +906,23 @@ npm test -- session.service.spec.ts
 # Run tests with verbose output
 npm test -- --verbose
 
-# Check for TypeScript errors
-npm run build -- --noEmit
+# Check for TypeScript errors without emitting (the Nest CLI has no --noEmit; call tsc directly).
+# Use the root tsconfig, not tsconfig.build.json — it is the only one that also type-checks the
+# colocated *.spec.ts files, which is what CI gates on.
+npx tsc --noEmit -p tsconfig.json
 
 # Lint with auto-fix
 npm run lint -- --fix
 
-# Debug database queries (TypeORM)
-# Add to .env: DEBUG=typeorm:query
+# Debug database queries (TypeORM) — add to .env:
+# DATABASE_LOGGING=true
+# (there is no DEBUG=typeorm:query switch; both connections read DATABASE_LOGGING)
+# PII warning: this logs full queries WITH bound parameters — message bodies and phone
+# numbers end up in the application log. Use on a local/debug data set only, never in production.
 
-# View Docker logs
-docker compose logs -f app
+# View Docker logs (service is `openwa-api` in docker-compose.yml, `openwa` in
+# docker-compose.dev.yml — there is no service named `app`)
+docker compose logs -f openwa-api
 ```
 
 ## 8.10 Performance Best Practices
@@ -955,19 +978,13 @@ const contact2 = await getContact('id2');
 const contact3 = await getContact('id3');
 
 // ✅ Good: Parallel execution
-const [contact1, contact2, contact3] = await Promise.all([
-  getContact('id1'),
-  getContact('id2'),
-  getContact('id3'),
-]);
+const [contact1, contact2, contact3] = await Promise.all([getContact('id1'), getContact('id2'), getContact('id3')]);
 
 // ✅ Good: Batch processing with concurrency limit
 import pLimit from 'p-limit';
 
 const limit = pLimit(5); // Max 5 concurrent
-const results = await Promise.all(
-  chatIds.map(id => limit(() => sendMessage(id, text)))
-);
+const results = await Promise.all(chatIds.map(id => limit(() => sendMessage(id, text))));
 ```
 
 ### Memory Management
@@ -976,7 +993,7 @@ const results = await Promise.all(
 // Bound teardown so one stuck browser/socket cannot block shutdown.
 @Injectable()
 export class EngineTeardownService {
-  private readonly logger = new Logger(EngineTeardownService.name);
+  private readonly logger = createLogger('EngineTeardownService');
 
   async destroyWithTimeout(sessionId: string, engine: IWhatsAppEngine): Promise<void> {
     const timeout = new Promise<never>((_, reject) => {
@@ -1002,6 +1019,7 @@ export class EngineTeardownService {
 **Symptom:** Session stuck in 'initializing' status
 
 **Causes & Solutions:**
+
 1. **Chrome/Puppeteer issue**
    - Ensure Chrome for Testing is installed: `ls /usr/local/bin/puppeteer-chrome`
    - Check Puppeteer args: `--no-sandbox --disable-setuid-sandbox`
@@ -1016,6 +1034,7 @@ export class EngineTeardownService {
 ## Session Disconnects Randomly
 
 **Causes & Solutions:**
+
 1. **Memory pressure**
    - Monitor memory: `docker stats`
    - Increase container memory limit
@@ -1031,12 +1050,13 @@ export class EngineTeardownService {
 
 ### Database Issues
 
-```markdown
+````markdown
 ## Connection Pool Exhausted
 
 **Symptom:** "too many clients already" error
 
 **Solution:**
+
 ```typescript
 // config/typeorm.config.ts
 {
@@ -1049,12 +1069,14 @@ export class EngineTeardownService {
   },
 }
 ```
+````
 
 ## Migration Fails
 
 **Symptom:** "relation already exists" error
 
 **Solution:**
+
 ```bash
 # Check migration status
 npm run migration:show
@@ -1065,7 +1087,8 @@ npm run migration:revert
 # Regenerate migration
 npm run migration:generate --name=FixMigration
 ```
-```
+
+````
 
 ### TypeScript/NestJS Issues
 
@@ -1089,17 +1112,19 @@ constructor(
   @Inject(forwardRef(() => SessionService))
   private readonly sessionService: SessionService,
 ) {}
-```
+````
 
 ## DI Token Not Found
 
 **Symptom:** "Nest can't resolve dependencies"
 
 **Solution:**
+
 - Ensure provider is exported from its module
 - Check if module is imported where needed
 - Use @Injectable() decorator on services
-```
+
+````
 
 ### Docker Issues
 
@@ -1109,9 +1134,10 @@ constructor(
 **Check logs:**
 ```bash
 docker compose logs openwa-api --tail 100
-```
+````
 
 **Common causes:**
+
 1. Missing environment variables
 2. Database not ready (use depends_on + healthcheck)
 3. Port already in use
@@ -1119,18 +1145,21 @@ docker compose logs openwa-api --tail 100
 ## Chrome Crashes in Docker
 
 **Solution:**
+
 ```dockerfile
 # Add shared memory size
 docker run --shm-size=2gb openwa
 ```
 
 Or in docker-compose.yml:
+
 ```yaml
 services:
   openwa-api:
     shm_size: '2gb'
 ```
-```
+
+````
 
 ## 8.12 Contributing Guide
 
@@ -1146,7 +1175,7 @@ services:
 7. Commit: `git commit -m 'feat(scope): add amazing feature'`
 8. Push: `git push origin feature/amazing-feature`
 9. Open Pull Request
-```
+````
 
 ### Code Review Checklist
 
@@ -1165,6 +1194,7 @@ services:
 
 ```markdown
 **Bug Report Template:**
+
 - **Description:** Clear description of the bug
 - **Steps to Reproduce:** Numbered steps
 - **Expected Behavior:** What should happen
@@ -1172,6 +1202,7 @@ services:
 - **Environment:** Node version, OS, Docker version
 - **Logs:** Relevant error logs
 ```
+
 ---
 
 <div align="center">

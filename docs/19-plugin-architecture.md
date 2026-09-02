@@ -7,25 +7,25 @@
 > The plugin runtime — loader, hook bus, capability facade, permission enforcement, per-session
 > activation, and a `worker_thread` sandbox for untrusted plugins — is shipped and wired.
 
-| Component | Status | Location |
-|-----------|--------|----------|
-| **HookManager** | ✅ Implemented | `src/core/hooks/hook-manager.service.ts` |
-| **PluginLoaderService** | ✅ Implemented | `src/core/plugins/plugin-loader.service.ts` |
-| **PluginStorageService** | ✅ Implemented | `src/core/plugins/plugin-storage.service.ts` |
-| **Manifest loading** | ✅ Implemented | Loads from `plugins/` directory |
-| **Plugin lifecycle** | ✅ Implemented | onLoad, onEnable, onDisable, onUnload, onConfigChange, healthCheck |
-| **Dashboard UI** | ✅ Implemented | `dashboard/src/pages/Plugins.tsx` |
-| **REST API** | ✅ Implemented | `src/modules/plugins/plugins.controller.ts` |
+| Component                | Status         | Location                                                           |
+| ------------------------ | -------------- | ------------------------------------------------------------------ |
+| **HookManager**          | ✅ Implemented | `src/core/hooks/hook-manager.service.ts`                           |
+| **PluginLoaderService**  | ✅ Implemented | `src/core/plugins/plugin-loader.service.ts`                        |
+| **PluginStorageService** | ✅ Implemented | `src/core/plugins/plugin-storage.service.ts`                       |
+| **Manifest loading**     | ✅ Implemented | Loads from `plugins/` directory                                    |
+| **Plugin lifecycle**     | ✅ Implemented | onLoad, onEnable, onDisable, onUnload, onConfigChange, healthCheck |
+| **Dashboard UI**         | ✅ Implemented | `dashboard/src/pages/Plugins.tsx`                                  |
+| **REST API**             | ✅ Implemented | `src/modules/plugins/plugins.controller.ts`                        |
 
-| Component | Status | Notes |
-|-----------|--------|-------|
-| **Sandboxed execution** | ✅ Implemented | Untrusted (disk-loaded) plugins run in a `worker_thread`; see [23 — Plugin Sandboxing](./23-plugin-sandboxing.md). No `vm2`. |
-| **Permission enforcement** | ✅ Implemented | Capability permissions enforced at the call boundary via `assertPermission` |
-| **Per-session activation** | ✅ Implemented | A session-scoped plugin runs only for the sessions an operator activated it for |
-| **Per-session config** | ✅ Implemented | Per-session config overrides shallow-merged over the base config at hook time |
-| **Built-in plugins** | ✅ Implemented | The two engine adapters (`whatsapp-web.js`, `baileys`) register as in-process built-ins |
-| **Plugin install / catalog** | ✅ Implemented | Install a `.zip` by upload or URL, or from the remote catalog |
-| **@openwa/plugin-sdk** | 🔜 Planned | NPM package not yet published; plugins implement `IPlugin` directly today |
+| Component                    | Status         | Notes                                                                                                                        |
+| ---------------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| **Sandboxed execution**      | ✅ Implemented | Untrusted (disk-loaded) plugins run in a `worker_thread`; see [30 — Plugin Sandboxing](./30-plugin-sandboxing.md). No `vm2`. |
+| **Permission enforcement**   | ✅ Implemented | Capability permissions enforced at the call boundary via `assertPermission`                                                  |
+| **Per-session activation**   | ✅ Implemented | A session-scoped plugin runs only for the sessions an operator activated it for                                              |
+| **Per-session config**       | ✅ Implemented | Per-session config overrides shallow-merged over the base config at hook time                                                |
+| **Built-in plugins**         | ✅ Implemented | The two engine adapters (`whatsapp-web.js`, `baileys`) register as in-process built-ins                                      |
+| **Plugin install / catalog** | ✅ Implemented | Install a `.zip` by upload or URL, or from the remote catalog                                                                |
+| **@openwa/plugin-sdk**       | 🔜 Planned     | NPM package not yet published; plugins implement `IPlugin` directly today                                                    |
 
 ---
 
@@ -52,7 +52,7 @@ flowchart TB
     end
 ```
 
-1. **Isolation** - Untrusted plugins (anything loaded from the `plugins/` directory) run in a `worker_thread`, separate from in-process built-ins; capability calls round-trip to the host. First-party built-ins (the engine adapters) run in-process. A `worker_thread` is V8-context isolation in the same OS process, not an OS-level sandbox — see [23 — Plugin Sandboxing](./23-plugin-sandboxing.md) for what it does and does not guarantee, and the OS-containment guidance.
+1. **Isolation** - Untrusted plugins (anything loaded from the `plugins/` directory) run in a `worker_thread`, separate from in-process built-ins; capability calls round-trip to the host. First-party built-ins (the engine adapters) run in-process. A `worker_thread` is V8-context isolation in the same OS process, not an OS-level sandbox — see [30 — Plugin Sandboxing](./30-plugin-sandboxing.md) for what it does and does not guarantee, and the OS-containment guidance.
 2. **Extensibility** - Easy to add new features
 3. **Safety** - Capability permissions are enforced at the call boundary (`assertPermission` throws `PluginCapabilityError`), session scope is enforced per call, and outbound HTTP is SSRF-guarded.
 4. **Performance** - Lazy loading, minimal overhead
@@ -79,13 +79,13 @@ flowchart LR
     INT --> |External| SERVICES[External Services]
 ```
 
-| Type | Description | Examples |
-|------|-------------|----------|
-| Message Handler | Process incoming/outgoing messages | Auto-reply, Translation |
-| Webhook Transformer | Transform webhook payloads | Add metadata, Filter events |
-| Auth Provider | Custom authentication | OAuth, LDAP |
-| Storage Provider | Alternative storage backends | Google Drive, Dropbox |
-| Integration | External service integration | CRM, Analytics, n8n |
+| Type                | Description                        | Examples                    |
+| ------------------- | ---------------------------------- | --------------------------- |
+| Message Handler     | Process incoming/outgoing messages | Auto-reply, Translation     |
+| Webhook Transformer | Transform webhook payloads         | Add metadata, Filter events |
+| Auth Provider       | Custom authentication              | OAuth, LDAP                 |
+| Storage Provider    | Alternative storage backends       | Google Drive, Dropbox       |
+| Integration         | External service integration       | CRM, Analytics, n8n         |
 
 ## 19.3 Plugin Structure
 
@@ -110,7 +110,8 @@ plugins/
 
 `id`, `name`, `version`, `type`, and `main` are required; the rest are optional. There is **no**
 `types` field and **no** version-compatibility (`min`/`maxVersion`) check — the loader does not gate on
-a host version. The config schema is the top-level `configSchema` (note: not nested under `config`).
+a host version, except for the SDK-major check applied to a manifest that declares `ingress` (see the
+`sdkVersion` row). The config schema is the top-level `configSchema` (note: not nested under `config`).
 
 ```json
 {
@@ -152,32 +153,35 @@ a host version. The config schema is the top-level `configSchema` (note: not nes
 }
 ```
 
-| Field | Required | Meaning |
-|-------|----------|---------|
-| `id` | ✅ | Unique identifier (also the plugin's on-disk directory name) |
-| `name` | ✅ | Display name |
-| `version` | ✅ | Semver |
-| `type` | ✅ | One of `engine`, `storage`, `queue`, `auth`, `extension` |
-| `main` | ✅ | Entry file, resolved **inside** the plugin directory (a path that escapes it is rejected) |
-| `permissions` | — | Capability permissions this plugin declares; absent/empty = no capability access |
-| `sessions` | — | Session ids this plugin may act on, or `['*']`. Absent = `['*']`. Static — editing config can't widen it |
-| `sessionScoped` | — | Default `true`. A scoped plugin only sees events for the sessions it's activated for; `false` = always runs |
-| `net.allow` | — | Outbound-HTTP host allowlist for `ctx.net.fetch` (`host`, `host:port`, or `'*'`). Absent = deny all |
-| `configSchema` | — | Declarative config schema the dashboard renders as a form when there is no `configUi`. Still required with one: it defines the fields, their types and which are `secret` |
-| `configUi` | — | Optional self-contained HTML config editor served into a sandboxed iframe. When present it **replaces** the generated form and owns saving — the dashboard renders neither the form nor its Save button |
-| `hooks` | — | Hook events this plugin listens to (informational) |
-| `provides` / `requires` | — | Features this plugin provides / depends on |
-| `i18n` | — | Localized dashboard text per locale (dashboard-only) |
+| Field                   | Required | Meaning                                                                                                                                                                                                                                                                                              |
+| ----------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                    | ✅       | Unique identifier (also the plugin's on-disk directory name)                                                                                                                                                                                                                                         |
+| `name`                  | ✅       | Display name                                                                                                                                                                                                                                                                                         |
+| `version`               | ✅       | Semver                                                                                                                                                                                                                                                                                               |
+| `type`                  | ✅       | The enum has five values (`engine`, `storage`, `queue`, `auth`, `extension`) but only `extension` is installable — an uploaded or hand-placed directory declaring any other type is rejected at install **and** at boot load. The other tiers are reserved for programmatically registered built-ins |
+| `main`                  | ✅       | Entry file, resolved **inside** the plugin directory (a path that escapes it is rejected)                                                                                                                                                                                                            |
+| `permissions`           | —        | Capability permissions this plugin declares; absent/empty = no capability access                                                                                                                                                                                                                     |
+| `sessions`              | —        | Session ids this plugin may act on, or `['*']`. Absent = `['*']`. Static — editing config can't widen it                                                                                                                                                                                             |
+| `sessionScoped`         | —        | Default `true`. A scoped plugin only sees events for the sessions it's activated for; `false` = always runs                                                                                                                                                                                          |
+| `net.allow`             | —        | Outbound-HTTP host allowlist for `ctx.net.fetch` (`host`, `host:port`, or `'*'`). Absent = deny all, unless `net.allowConfigHosts` admits a host                                                                                                                                                     |
+| `net.allowConfigHosts`  | —        | Config keys holding an https URL; each URL's host is admitted at fetch time on top of `net.allow`, so an adapter can reach an operator-configured host without `net.allow: ['*']`. Credentialed or non-https values are ignored, and the SSRF guard still applies                                    |
+| `sdkVersion`            | —        | Integration SDK `major` (or `major.minor`) the plugin was authored against. Absent = `'1'`. Only enforced for a manifest declaring `ingress`: a major other than `1` is refused at load                                                                                                              |
+| `ingress`               | —        | Inbound webhook routes this plugin claims (requires the `webhook:ingress` permission). Validated at load — route uniqueness, signature scheme, ack contract; see [25 — Integration Fabric](./25-integration-fabric.md)                                                                               |
+| `configSchema`          | —        | Declarative config schema the dashboard renders as a form when there is no `configUi`. Still required with one: it defines the fields, their types and which are `secret`                                                                                                                            |
+| `configUi`              | —        | Optional self-contained HTML config editor served into a sandboxed iframe. When present it **replaces** the generated form and owns saving — the dashboard renders neither the form nor its Save button                                                                                              |
+| `hooks`                 | —        | Hook events this plugin listens to (informational)                                                                                                                                                                                                                                                   |
+| `provides` / `requires` | —        | Features this plugin provides / depends on                                                                                                                                                                                                                                                           |
+| `i18n`                  | —        | Localized dashboard text per locale (dashboard-only)                                                                                                                                                                                                                                                 |
 
 **The `configUi` bridge.** The editor is injected as `srcdoc` into a `sandbox="allow-scripts"` iframe, so
 it has an opaque origin and no access to the dashboard. It talks to the host by `postMessage`:
 
-| Direction | Message | Notes |
-| --- | --- | --- |
-| iframe → host | `{ type: 'config:get' }` | Sent on load; the host answers with the current values |
-| host → iframe | `{ type: 'config:value', config, schema, theme }` | `config` is already secret-redacted. `theme` is `'light'` or `'dark'`, resolved by the host |
-| iframe → host | `{ type: 'config:save', config }` | The host makes the authenticated write |
-| host → iframe | `{ type: 'config:saved' }` / `{ type: 'config:error', message }` | Outcome of that write |
+| Direction     | Message                                                          | Notes                                                                                       |
+| ------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| iframe → host | `{ type: 'config:get' }`                                         | Sent on load; the host answers with the current values                                      |
+| host → iframe | `{ type: 'config:value', config, schema, theme }`                | `config` is already secret-redacted. `theme` is `'light'` or `'dark'`, resolved by the host |
+| iframe → host | `{ type: 'config:save', config }`                                | The host makes the authenticated write                                                      |
+| host → iframe | `{ type: 'config:saved' }` / `{ type: 'config:error', message }` | Outcome of that write                                                                       |
 
 `theme` matters because an opaque-origin iframe cannot read the dashboard's theme for itself; without it
 an editor can only guess, and a light-only editor becomes a glaring white panel inside a dark modal. It is
@@ -269,16 +273,23 @@ export interface PluginContext {
   config: Record<string, unknown>;
 
   hookManager: HookManager;
-  logger: PluginLogger;        // log / debug / warn / error
-  storage: PluginStorage;      // get / set / delete / list — scoped to this plugin
+  logger: PluginLogger; // log / debug / warn / error
+  storage: PluginStorage; // get / set / delete / list — requires 'storage:use', scoped to this plugin
 
   // Register a hook handler (optionally with a priority; lower runs first).
   registerHook: (event: HookEvent, handler: HookHandler, priority?: number) => void;
 
+  // Claim one of the manifest's declared ingress routes (requires 'webhook:ingress'). Sandboxed
+  // plugins only — an in-process built-in that calls it throws.
+  registerWebhook: (route: string, handler: WebhookHandler) => void;
+
   // Capability facade (permission- + scope-checked on each call):
   messages: PluginMessagingCapability; // requires 'messages:send'
-  engine: PluginEngineReadCapability;  // requires 'engine:read' (read-only)
-  net: PluginNetCapability;            // requires 'net:fetch' (SSRF-guarded, net.allow-scoped)
+  engine: PluginEngineReadCapability; // requires 'engine:read' (read-only)
+  net: PluginNetCapability; // requires 'net:fetch' (SSRF-guarded, host-allowlisted)
+  conversations: PluginConversationsCapability; // requires 'conversation:send'
+  handover: PluginHandoverCapability; // requires 'conversation:send'
+  mappings: PluginMappingsCapability; // requires 'conversation:send'
 }
 
 export interface PluginLogger {
@@ -289,15 +300,20 @@ export interface PluginLogger {
 }
 ```
 
-There is **no** `ctx.api`, `ctx.router`, or `ctx.events` — plugins do not mount HTTP routes or get an
-event emitter. Hook handlers use the host `HookContext` / `HookResult` shape (see §19.5), not a
-`{ continue, modified }` shape.
+There is **no** `ctx.api`, `ctx.router`, or `ctx.events` — a plugin never binds a port, mounts its own
+route, or gets an event emitter. Inbound HTTP reaches a plugin only through `ctx.registerWebhook`, which
+claims a route the manifest already declared under `ingress`: the host owns the URL (mounted under
+`ingress`), verifies the provider signature, dedups and enqueues, then dispatches to the handler — see
+[25 — Integration Fabric](./25-integration-fabric.md). A sandboxed plugin additionally gets
+`ctx.registerSearchProvider` for answering global-search queries — see
+[27 — Writing a Search-Provider Plugin](./27-plugin-search-providers.md). Hook handlers use the host
+`HookContext` / `HookResult` shape (see §19.5), not a `{ continue, modified }` shape.
 
 ### Capability facade
 
-A plugin reaches WhatsApp, the engine, and the network **only** through these three namespaces. Each
-call is gated by the matching declared permission (and, for `messages`/`engine`, the session scope) —
-a missing grant throws a `PluginCapabilityError`.
+A plugin reaches WhatsApp, the engine, and the network **only** through these namespaces. Each call is
+gated by the matching declared permission (and, for everything except `net`, the session scope) — a
+missing grant throws a `PluginCapabilityError`.
 
 ```typescript
 // ctx.messages — requires 'messages:send'. Routes through MessageService (persistence preserved).
@@ -313,11 +329,31 @@ export interface PluginEngineReadCapability {
   getContactById(sessionId: string, contactId: string): Promise<...>;
   checkNumberExists(sessionId: string, phone: string): Promise<...>;
   getChats(sessionId: string): Promise<...>;
+  // Recent messages for a chat, both directions (history backfill). `limit` is clamped host-side to 1-100.
+  getChatHistory(sessionId: string, chatId: string, limit?: number, includeMedia?: boolean): Promise<...>;
+  // Canonical form of a chat id: resolves a known '@lid' privacy id to its stable '<phone>@c.us',
+  // otherwise returns the id unchanged (best-effort).
+  canonicalChatId(sessionId: string, chatId: string): Promise<string>;
 }
 
-// ctx.net — requires 'net:fetch'. Always through the host SSRF guard, scoped to manifest net.allow.
+// ctx.net — requires 'net:fetch'. Always through the host SSRF guard, scoped to the effective host
+// allowlist (manifest net.allow + the hosts of the net.allowConfigHosts config keys).
 export interface PluginNetCapability {
   fetch(url: string, init?: PluginNetRequestInit): Promise<PluginNetResponse>;
+}
+
+// ctx.conversations / ctx.handover / ctx.mappings — all require 'conversation:send'. The normalized
+// outbound surface an integration adapter uses; sends translate host-side to MessageService.
+export interface PluginConversationsCapability {
+  send(env: ConversationSendEnvelope): Promise<unknown>;
+}
+export interface PluginHandoverCapability {
+  set(key: { sessionId: string; chatId: string; instanceId: string }, state: HandoverState): Promise<unknown>;
+}
+export interface PluginMappingsCapability {
+  upsert(key: { sessionId: string; chatId: string; instanceId: string }, providerConversationId: string): Promise<void>;
+  get(key: { sessionId: string; chatId: string; instanceId: string }): Promise<... | null>;
+  getByProvider(instanceId: string, providerConversationId: string): Promise<... | null>;
 }
 ```
 
@@ -374,6 +410,14 @@ On a **pre-action** event it is a veto, because the action has not been taken ye
 `message:sending` blocks the send (the caller gets a `400`), and on `webhook:before` it cancels that one
 delivery.
 
+> **`message:sending` does not see every attempted send.** With send pacing enabled
+> (`SEND_PACING_ENABLED`), the pacing governor runs _before_ this hook, so a send it refuses never
+> fires `message:sending` — plugins are not asked to moderate, and cannot rewrite, traffic that
+> policy already forbids. Treat the hook as a complete record of sends **actually attempted against
+> WhatsApp**, not of send _requests_. A paced-out request surfaces to the caller as `429` with
+> `code: SEND_PACING_LIMITED`; a plugin veto stays `400`. Pacing is off by default, so a deployment
+> that has not opted in sees the hook fire exactly as before.
+
 > Until 0.10.5, `continue: false` on the two notification events also skipped persistence, the webhook
 > and the websocket emit. An auto-reply plugin returning it for its ordinary purpose therefore erased
 > the triggering message from the dashboard's chat history and from every integration downstream. If you
@@ -400,12 +444,16 @@ export type HookEvent =
   | 'message:sent'
   | 'message:failed'
   | 'message:ack'
+  | 'message:persisted'
+  | 'message:deleted'
   // Webhook lifecycle
   | 'webhook:before'
   | 'webhook:queued'
   | 'webhook:delivered'
   | 'webhook:after'
-  | 'webhook:error';
+  | 'webhook:error'
+  // Ingress (inbound provider webhook -> plugin) lifecycle
+  | 'ingress:error';
 ```
 
 ### Hook context and result
@@ -413,16 +461,16 @@ export type HookEvent =
 ```typescript
 export interface HookContext<T = unknown> {
   event: HookEvent;
-  data: T;             // the event payload (mutate via the returned HookResult.data)
-  sessionId?: string;  // the session the event belongs to (used for activation + capability scope)
+  data: T; // the event payload (mutate via the returned HookResult.data)
+  sessionId?: string; // the session the event belongs to (used for activation + capability scope)
   timestamp: Date;
-  source: string;      // which service emitted this
+  source: string; // which service emitted this
 }
 
 export interface HookResult<T = unknown> {
-  continue: boolean;   // false = stop the chain
-  data?: T;            // replacement payload for the next handler (only applied when error is absent)
-  error?: Error;       // an error to propagate; the handler's data mutation is discarded
+  continue: boolean; // false = stop the chain
+  data?: T; // replacement payload for the next handler (only applied when error is absent)
+  error?: Error; // an error to propagate; the handler's data mutation is discarded
 }
 
 export type HookHandler<T = unknown> = (ctx: HookContext<T>) => Promise<HookResult<T>>;
@@ -445,11 +493,15 @@ also applies the per-session activation gate.
 discovers, loads, and runs plugins.
 
 **Discovery & load.** On `onModuleInit` it registers built-in plugins programmatically (the engine
-adapters; see §19.7), then scans the plugins directory (`plugins.dir`, default `./plugins`). For each
+adapters; see §19.7), then scans the plugins directory (`plugins.dir`, default `<dataDir>/plugins` — the same tree the
+registry and each plugin's `ctx.storage` live in, so code and persisted state stay together on one
+volume; `PLUGINS_DIR` overrides it). For each
 sub-directory with a `manifest.json` it reads the manifest, validates the required fields
 (`id`/`name`/`version`/`type`/`main`), and records an `INSTALLED` plugin plus a persisted registry
 entry — **without running any plugin code**. Persisted config and per-session activation/config are
-read back so an operator's choices survive a restart. There is **no** version-compatibility check.
+read back so an operator's choices survive a restart. There is **no** host version-compatibility check;
+the one version gate is `validateIngressManifest`, which refuses a manifest declaring `ingress` whose
+`sdkVersion` major is not the supported Integration SDK major (`1`).
 
 > Loading a plugin from disk never runs it: a load always yields `INSTALLED`. Enabling is a separate
 > step that runs the lifecycle, and happens either on an explicit ADMIN action or — for a plugin the
@@ -477,19 +529,23 @@ double-enable, and engines must match the configured active engine):
   drive `onLoad`/`onEnable` over the channel. Capability calls and hook dispatches round-trip to the
   host, which runs the **same** permission + session-scope checks. Lifecycle calls are bounded by a
   30 s timeout and hooks by a 5 s timeout; a failure tears the worker back down. See
-  [23 — Plugin Sandboxing](./23-plugin-sandboxing.md).
+  [30 — Plugin Sandboxing](./30-plugin-sandboxing.md).
 
 **Disable / unload / uninstall.** `disablePlugin` runs `onDisable` (force-terminating the worker for a
 sandboxed plugin, even if `onDisable` hangs or throws) and unregisters the plugin's hooks. `onModuleDestroy`
 disables every enabled plugin on graceful shutdown so stateful plugins can flush. `uninstallPlugin`
-disables + unloads, drops the registry entry, and deletes the plugin's directory (built-ins are
-protected and cannot be uninstalled).
+disables + unloads, drops the registry entry, and deletes the plugin's directory and its `ctx.storage`
+data dir (built-ins are protected and cannot be uninstalled). The unload path dispatches `onUnload`:
+for a sandboxed plugin it runs in the worker between `onDisable` and terminate (a plain disable does
+NOT fire `onUnload` — disable is reversible and its cleanup hook is `onDisable`).
 
-**Context.** `createPluginContext` builds the `PluginContext` (§19.4): a per-plugin logger, plugin-scoped
-storage, `registerHook` (wrapped with the per-session activation gate), the live `config` getter, and
-the permission-checked `messages` / `engine` / `net` capabilities. The capability methods call
-`assertPermission` (and, for messages/engine, `resolveEngine` → `assertSessionAllowed`) before doing any
-work, so a missing grant or out-of-scope session fails fast with a `PluginCapabilityError`.
+**Context.** `createPluginContext` builds the `PluginContext` (§19.4): a per-plugin logger,
+`registerHook` (wrapped with the per-session activation gate), `registerWebhook`, the live
+`config` getter, and the permission-checked `messages` / `engine` / `net` / `storage` / `conversations` /
+`handover` / `mappings` capabilities. The capability methods call `assertPermission` before doing any
+work, and — for everything but `net` and `storage`, which are not keyed to a session —
+`assertSessionActive` → `assertSessionAllowed` on the session they act on, so a
+missing grant or out-of-scope session fails with a `PluginCapabilityError`.
 
 > ⚠️ **`ctx.storage` is plugin-scoped, not per-session — unlike `ctx.config`.** `ctx.config` is merged
 > automatically for the firing session, but `ctx.storage` is a single namespace shared across **all** of a
@@ -502,10 +558,10 @@ work, so a missing grant or out-of-scope session fails fast with a `PluginCapabi
 The only plugins **shipped** as built-ins are the two WhatsApp **engine adapters**, registered
 programmatically (not loaded from disk) by `EngineFactory` via `registerBuiltInPlugin`:
 
-| Plugin id | Type | Notes |
-|-----------|------|-------|
+| Plugin id         | Type     | Notes                                  |
+| ----------------- | -------- | -------------------------------------- |
 | `whatsapp-web.js` | `engine` | Default engine adapter (browser-based) |
-| `baileys` | `engine` | WebSocket engine adapter (no browser) |
+| `baileys`         | `engine` | WebSocket engine adapter (no browser)  |
 
 Engines are mutually exclusive: the active one is pinned by `engine.type` config, and `enablePlugin`
 rejects any engine that is not the configured active one. Built-ins run **in-process** (trusted) — they
@@ -514,7 +570,8 @@ are not sandboxed. There is no `auto-reply` / `translation` plugin bundled in th
 ### Example: a hook-based message plugin
 
 A disk-installed extension implements `IPlugin`, registers hooks in `onLoad`, and uses the capability
-facade. This auto-reply sketch needs only `messages:send` in its manifest `permissions`:
+facade. This auto-reply sketch needs `messages:send` and `storage:use` in its manifest `permissions` —
+the latter because it records a counter through `ctx.storage`:
 
 ```typescript
 // plugins/auto-reply/index.ts
@@ -559,22 +616,30 @@ route requires the `ADMIN` role** (`@RequireRole(ApiKeyRole.ADMIN)` — not a ba
 is **no** `POST :id/reload` and **no** `GET :id/config`. Install is a multipart `.zip` upload (or by
 URL / catalog), not an npm/github source descriptor.
 
-| Method & path | Purpose |
-|---------------|---------|
-| `GET /plugins` | List all plugins |
-| `GET /plugins/catalog` | List the remote plugin catalog, annotated with install state |
-| `GET /plugins/:id` | Get a single plugin |
-| `POST /plugins/install` | Install from an uploaded `.zip` (`multipart/form-data`, field `file`, ≤ 5 MB) |
-| `POST /plugins/install-url` | Install by downloading a `.zip` from a URL (SSRF-guarded) |
-| `POST /plugins/:id/update` | Update an installed plugin in place from a URL (preserves config + enabled state) |
-| `POST /plugins/:id/enable` | Enable a plugin |
-| `POST /plugins/:id/disable` | Disable a plugin |
-| `PUT /plugins/:id/config` | Update the plugin's base config |
-| `PUT /plugins/:id/config/:sessionId` | Set (or clear, when empty) a per-session config override |
-| `PUT /plugins/:id/sessions` | Set which sessions a session-scoped plugin is activated for (`['*']` = all) |
-| `GET /plugins/:id/config-ui` | Serve the plugin's sandboxed config-UI HTML (for an iframe `srcdoc`) |
-| `GET /plugins/:id/health` | Run the plugin's `healthCheck` |
-| `DELETE /plugins/:id` | Uninstall a plugin (removes its files; built-ins are protected) |
+> **Installed plugins are trusted code.** The worker sandbox (doc 30) is crash and heap-OOM
+> _containment_, not a security boundary: plugin code runs inside the gateway's OS process and can
+> reach Node built-ins (`fs`, `net`, `child_process`) directly — the capability permission model
+> gates only the `ctx.*` verbs, not raw Node access. The SSRF guard and digest pin on
+> `install-url` protect the _delivery_ of the package, not what the package does once loaded.
+> Install only plugins you trust, and keep the OS-level containment from doc 30 (container,
+> read-only rootfs, dropped capabilities) in place when you do.
+
+| Method & path                        | Purpose                                                                                                    |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| `GET /plugins`                       | List all plugins                                                                                           |
+| `GET /plugins/catalog`               | List the remote plugin catalog, annotated with install state                                               |
+| `GET /plugins/:id`                   | Get a single plugin                                                                                        |
+| `POST /plugins/install`              | Install from an uploaded `.zip` (`multipart/form-data`, field `file`, ≤ 5 MB)                              |
+| `POST /plugins/install-url`          | Install by downloading a `.zip` from an https URL (SSRF-guarded; optional `#sha256=` digest pin)           |
+| `POST /plugins/:id/update`           | Update an installed plugin in place from a URL (staged swap, crash-safe; preserves config + enabled state) |
+| `POST /plugins/:id/enable`           | Enable a plugin                                                                                            |
+| `POST /plugins/:id/disable`          | Disable a plugin                                                                                           |
+| `PUT /plugins/:id/config`            | Update the plugin's base config                                                                            |
+| `PUT /plugins/:id/config/:sessionId` | Set (or clear, when empty) a per-session config override                                                   |
+| `PUT /plugins/:id/sessions`          | Set which sessions a session-scoped plugin is activated for (`['*']` = all)                                |
+| `GET /plugins/:id/config-ui`         | Serve the plugin's sandboxed config-UI HTML (for an iframe `srcdoc`)                                       |
+| `GET /plugins/:id/health`            | Run the plugin's `healthCheck`                                                                             |
+| `DELETE /plugins/:id`                | Uninstall a plugin (removes its files; built-ins are protected)                                            |
 
 > `GET /plugins/:id/config-ui` returns untrusted HTML served with `Content-Security-Policy: sandbox`
 > and `X-Content-Type-Options: nosniff`. The dashboard fetches it **with** the API key and injects the
@@ -586,26 +651,37 @@ URL / catalog), not an npm/github source descriptor.
 
 ### Permission model
 
-There are exactly **three** capability permissions, declared in the manifest `permissions` array and
-enforced at the capability boundary:
+There are exactly **seven** capability permissions, declared in the manifest `permissions` array — five
+enforced at the capability boundary, plus two on the worker-declaration bridges: `webhook:ingress` at
+load and at route subscription, and `search:provide` when the provider declaration reaches the host:
 
 ```typescript
-// src/core/plugins/plugin.interfaces.ts
+// src/core/plugins/plugin.interfaces.ts (doc comments condensed)
 
 export const PluginCapabilityPermission = {
   /** ctx.messages.* — send / reply on a session. */
   MESSAGES_SEND: 'messages:send',
-  /** ctx.engine.* — read-only engine queries (group info, contacts, chats, number check). */
+  /** ctx.engine.* — read-only engine queries (group info, contacts, chats, history, number check). */
   ENGINE_READ: 'engine:read',
   /** ctx.net.fetch — SSRF-guarded outbound HTTP, scoped to the manifest net.allow host list. */
   NET_FETCH: 'net:fetch',
+  /** ctx.storage.* — per-plugin key/value persistence on the host disk (get / set / delete / list).
+   *  A declaration boundary: the per-plugin directory, key check and quota already bound the access. */
+  STORAGE_USE: 'storage:use',
+  /** ctx.registerWebhook — claim an inbound ingress route declared in the manifest. */
+  WEBHOOK_INGRESS: 'webhook:ingress',
+  /** ctx.conversations.send plus ctx.handover.* and ctx.mappings.* — the normalized outbound surface. */
+  CONVERSATION_SEND: 'conversation:send',
+  /** ctx.registerSearchProvider — serve /api/search. Under SEARCH_PROVIDER=auto the provider is also
+   *  made ACTIVE, so an undeclared plugin would see every query the gateway serves. */
+  SEARCH_PROVIDE: 'search:provide',
 } as const;
 ```
 
-There is no `PermissionChecker` class and no `PermissionDeniedError`. Enforcement lives in the loader:
-each capability method calls `assertPermission(manifest, permission)` before doing any work, and a
-plugin whose manifest does not declare the matching permission (or declares none) is rejected with a
-`PluginCapabilityError`:
+There is no `PermissionChecker` class and no `PermissionDeniedError`. Enforcement of the five
+capability-facade permissions lives in the loader: each capability method calls
+`assertPermission(manifest, permission)` before doing any work, and a plugin whose manifest does not
+declare the matching permission (or declares none) is rejected with a `PluginCapabilityError`:
 
 ```typescript
 // src/core/plugins/plugin-loader.service.ts (paraphrased)
@@ -613,19 +689,42 @@ plugin whose manifest does not declare the matching permission (or declares none
 private assertPermission(manifest: PluginManifest, permission: PluginCapabilityPermission): void {
   if (!(manifest.permissions ?? []).includes(permission)) {
     throw new PluginCapabilityError(
-      `Plugin ${manifest.id} is missing the '${permission}' permission required for this capability`,
+      `Plugin ${manifest.id} is missing the '${permission}' permission required for this capability. ` +
+        `Add "${permission}" to the "permissions" array in the plugin's manifest.json, then reload the plugin.`,
     );
   }
 }
 ```
 
+`webhook:ingress` is the exception — nothing passes it to `assertPermission`. It is enforced earlier, in
+two places: at **load**, `validateIngressManifest` throws when a manifest declares `ingress` routes without
+the permission, so the plugin never loads; and at the **ingress-subscribe guard**, a route claim from a
+worker whose manifest lacks the permission is silently dropped (no `PluginCapabilityError`) and the plugin
+simply owns no routes.
+
+`search:provide` is enforced the same way, and for the same reason: a worker declares itself a search
+provider by sending `search-provider-register` over IPC, which never passes through the capability router
+that gates `ctx.messages` / `ctx.net` / `ctx.engine`. `registerPluginSearchProvider` checks the manifest
+before the provider reaches the registry. Unlike the ingress guard this one **warns**
+(`sandbox_search_provider_denied`) rather than dropping silently: there is no manifest `search` array, so
+no load-time validation can catch it, and an operator would otherwise have no signal at all. The warning
+is bounded to one line per enable — `WorkerSearchRegistry` posts the declaration only on the plugin's
+first `ctx.registerSearchProvider` call.
+
 Two further checks apply on top of the permission:
 
-- **Session scope.** `messages` and `engine` calls run `assertSessionAllowed(manifest, sessionId)` —
-  the plugin may only act on sessions in its manifest `sessions` list (`['*']` = all). The `sessionId`
-  comes from the plugin, so this is the security boundary; it is static (editing config can't widen it).
-- **Network allowlist.** `ctx.net.fetch` additionally requires the target host to be in `manifest.net.allow`,
-  and the request always passes through the SSRF guard (which blocks internal IPs even for an allowlisted host).
+- **Session scope.** Every capability but `net` is session-scoped through `assertSessionActive`, which
+  requires **both** that the manifest `sessions` list admits the session (`assertSessionAllowed`; `['*']` =
+  all) and that the operator has activated the plugin for it. Most verbs run it up front, on the
+  `sessionId` the plugin passed; `ctx.mappings.getByProvider` takes no `sessionId`, so it runs the check
+  after the lookup, on the `sessionId` of the row it found (and returns `null` when there is none) — either
+  way an out-of-scope session is never reachable. The `sessionId` comes from the plugin, so this is the
+  security boundary; the manifest half is static (editing config can't widen it).
+- **Network allowlist.** `ctx.net.fetch` additionally requires the target host to be on the plugin's
+  **effective** allowlist: `manifest.net.allow` plus the host of every `net.allowConfigHosts` config key
+  that resolves to an https URL, taken across the base config **and** every per-session override. A host
+  admitted only through `allowConfigHosts` is therefore allowed while absent from `net.allow`. The request
+  always passes through the SSRF guard (which blocks internal IPs even for an allowlisted host).
 
 ### Sandboxed execution
 
@@ -646,7 +745,7 @@ tier automatically. Key properties:
 This is V8-context isolation in the same OS process, not an OS-level sandbox: a worker can still reach
 Node built-ins (`fs`, `process`, sockets). For genuinely untrusted plugins, combine it with OS
 containment (the shipped Docker image runs read-only rootfs, non-root, `cap_drop: ALL`). See
-[23 — Plugin Sandboxing](./23-plugin-sandboxing.md) for the full security model and author rules.
+[30 — Plugin Sandboxing](./30-plugin-sandboxing.md) for the full security model and author rules.
 
 ---
 

@@ -103,6 +103,20 @@ export function MessageTester() {
   // exclusive with mediaUrl: picking a file clears the URL field; typing a URL drops the file.
   const [mediaFile, setMediaFile] = useState<{ base64: string; mimetype: string; filename: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const bulkFileInputRef = useRef<HTMLInputElement>(null);
+  // Monotonic token invalidating an in-flight FileReader: a second pick, a URL edit, a removal,
+  // or an unmount before `onload` fires must win over the late-arriving bytes — otherwise the
+  // slower read overwrites the newer state (and re-clears a URL the user just typed).
+  const mediaReadSeq = useRef(0);
+  const clearMediaFile = () => {
+    mediaReadSeq.current += 1;
+    setMediaFile(null);
+  };
+  useEffect(() => {
+    return () => {
+      mediaReadSeq.current += 1;
+    };
+  }, []);
   // Per-type fields for the non-media types; text/media keep using `content`/`mediaUrl` above.
   const [latitude, setLatitude] = useState('');
   const [longitude, setLongitude] = useState('');
@@ -176,6 +190,23 @@ export function MessageTester() {
     }, 2000);
   };
 
+  const handleBulkFileChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = reader.result;
+      if (typeof text !== 'string' || !text.trim()) return;
+      setBulkRecipients(prev => (prev.trim() ? `${prev.trimEnd()}\n` : '') + text.trim());
+    };
+    reader.onerror = () => {
+      setResponse({ success: false, timestamp: new Date().toISOString(), error: t('messageTester.fileReadError') });
+    };
+    reader.readAsText(file);
+  };
+
   const handleCancelBatch = async () => {
     if (!batchStatus || !batchSessionRef.current) return;
     setBatchCancelling(true);
@@ -201,8 +232,12 @@ export function MessageTester() {
       setResponse({ success: false, timestamp: new Date().toISOString(), error: t('messageTester.fileTooLarge') });
       return;
     }
+    const myRead = ++mediaReadSeq.current;
     const reader = new FileReader();
     reader.onload = () => {
+      // A newer pick, a URL edit, a removal, or an unmount since the read started supersedes
+      // these bytes — drop them.
+      if (mediaReadSeq.current !== myRead) return;
       const dataUrl = reader.result;
       if (typeof dataUrl !== 'string') return;
       // readAsDataURL yields "data:<mime>;base64,<payload>"; the engine expects raw base64, so strip the prefix.
@@ -213,6 +248,7 @@ export function MessageTester() {
       if (messageType === 'document') setContent(file.name);
     };
     reader.onerror = () => {
+      if (mediaReadSeq.current !== myRead) return;
       setResponse({ success: false, timestamp: new Date().toISOString(), error: t('messageTester.fileReadError') });
     };
     reader.readAsDataURL(file);
@@ -297,6 +333,7 @@ export function MessageTester() {
           batchId: batch.batchId,
           status: 'pending',
           progress: { total: batch.totalMessages, sent: 0, failed: 0, pending: batch.totalMessages, cancelled: 0 },
+          results: [],
         });
         startBatchPolling(session, batch.batchId);
         return;
@@ -426,8 +463,8 @@ export function MessageTester() {
           <h2 className="eyebrow">{t('messageTester.compose')}</h2>
 
           <div className="form-group">
-            <label>{t('messageTester.session')}</label>
-            <select value={session} onChange={e => setSession(e.target.value)}>
+            <label htmlFor="mt-1">{t('messageTester.session')}</label>
+            <select id="mt-1" value={session} onChange={e => setSession(e.target.value)}>
               {sessions.length === 0 && <option value="">{t('messageTester.noReadySessions')}</option>}
               {sessions.map(s => (
                 <option key={s.id} value={s.id}>
@@ -441,15 +478,23 @@ export function MessageTester() {
           {messageType !== 'bulk' && (
             <>
               <div className="form-group">
-                <label>{t('messageTester.recipientType')}</label>
-                <div className="toggle-group">
+                {/* A caption, not a label: it names the group, and there is no single control to bind
+                    it to. The buttons are exclusive choices, so each reports its own pressed state. */}
+                <span className="group-label" id="recipient-type-label">
+                  {t('messageTester.recipientType')}
+                </span>
+                <div className="toggle-group" role="group" aria-labelledby="recipient-type-label">
                   <button
+                    type="button"
+                    aria-pressed={recipientType === 'personal'}
                     className={recipientType === 'personal' ? 'active' : ''}
                     onClick={() => setRecipientType('personal')}
                   >
                     {t('messageTester.personal')}
                   </button>
                   <button
+                    type="button"
+                    aria-pressed={recipientType === 'group'}
                     className={recipientType === 'group' ? 'active' : ''}
                     onClick={() => setRecipientType('group')}
                   >
@@ -459,12 +504,13 @@ export function MessageTester() {
               </div>
 
               <div className="form-group">
-                <label>
+                <label htmlFor="mt-13">
                   {recipientType === 'group' ? t('messageTester.selectGroup') : t('messageTester.recipientPhone')}
                 </label>
                 {recipientType === 'group' ? (
                   <>
                     <select
+                      id="mt-13"
                       value={selectedGroup}
                       onChange={e => setSelectedGroup(e.target.value)}
                       disabled={loadingGroups || groups.length === 0}
@@ -497,16 +543,20 @@ export function MessageTester() {
           )}
 
           <div className="form-group">
-            <label>{t('messageTester.messageType')}</label>
-            <div className="toggle-group toggle-group-wrap">
+            <span className="group-label" id="message-type-label">
+              {t('messageTester.messageType')}
+            </span>
+            <div className="toggle-group toggle-group-wrap" role="group" aria-labelledby="message-type-label">
               {messageTypes.map(type => (
                 <button
                   key={type}
+                  type="button"
+                  aria-pressed={messageType === type}
                   className={messageType === type ? 'active' : ''}
                   onClick={() => {
                     // A picked file's mimetype is bound to the category active at pick time, so dropping the
                     // category would route stale bytes to the wrong send-${type} endpoint — clear it.
-                    if (type !== messageType) setMediaFile(null);
+                    if (type !== messageType) clearMediaFile();
                     setMessageType(type);
                   }}
                 >
@@ -518,8 +568,9 @@ export function MessageTester() {
 
           {messageType === 'text' && (
             <div className="form-group">
-              <label>{t('messageTester.messageContent')}</label>
+              <label htmlFor="mt-2">{t('messageTester.messageContent')}</label>
               <textarea
+                id="mt-2"
                 value={content}
                 onChange={e => setContent(e.target.value)}
                 placeholder={t('messageTester.messagePlaceholder')}
@@ -531,12 +582,16 @@ export function MessageTester() {
           {isMediaMessageType && (
             <>
               <div className="form-group">
-                <label>{t('messageTester.mediaUrl')}</label>
+                <label htmlFor="mt-3">{t('messageTester.mediaUrl')}</label>
                 <input
+                  id="mt-3"
                   type="text"
                   value={mediaUrl}
                   onChange={e => {
                     setMediaUrl(e.target.value);
+                    // Typing a URL supersedes the file: drop the picked file AND any read still
+                    // in flight (its late onload would otherwise re-clear this URL).
+                    mediaReadSeq.current += 1;
                     if (mediaFile) setMediaFile(null);
                   }}
                   placeholder="https://example.com/file.jpg"
@@ -550,7 +605,7 @@ export function MessageTester() {
                     <span className="file-name" title={mediaFile.filename}>
                       {mediaFile.filename}
                     </span>
-                    <button type="button" className="remove-file-btn" onClick={() => setMediaFile(null)}>
+                    <button type="button" className="remove-file-btn" onClick={clearMediaFile}>
                       <X size={14} /> {t('messageTester.removeFile')}
                     </button>
                   </div>
@@ -569,11 +624,12 @@ export function MessageTester() {
               </div>
               {messageType !== 'audio' && messageType !== 'sticker' && (
                 <div className="form-group">
-                  <label>
+                  <label htmlFor="mt-14">
                     {messageType === 'document' ? t('messageTester.filename') : t('messageTester.caption')} (
                     {t('common.optional')})
                   </label>
                   <input
+                    id="mt-14"
                     type="text"
                     value={content}
                     onChange={e => setContent(e.target.value)}
@@ -592,8 +648,9 @@ export function MessageTester() {
             <>
               <div className="form-row">
                 <div className="form-group">
-                  <label>{t('messageTester.locationLatitude')}</label>
+                  <label htmlFor="mt-4">{t('messageTester.locationLatitude')}</label>
                   <input
+                    id="mt-4"
                     type="number"
                     step="any"
                     min={-90}
@@ -604,8 +661,9 @@ export function MessageTester() {
                   />
                 </div>
                 <div className="form-group">
-                  <label>{t('messageTester.locationLongitude')}</label>
+                  <label htmlFor="mt-5">{t('messageTester.locationLongitude')}</label>
                   <input
+                    id="mt-5"
                     type="number"
                     step="any"
                     min={-180}
@@ -617,16 +675,26 @@ export function MessageTester() {
                 </div>
               </div>
               <div className="form-group">
-                <label>
+                <label htmlFor="mt-15">
                   {t('messageTester.locationDescription')} ({t('common.optional')})
                 </label>
-                <input type="text" value={locationDescription} onChange={e => setLocationDescription(e.target.value)} />
+                <input
+                  id="mt-15"
+                  type="text"
+                  value={locationDescription}
+                  onChange={e => setLocationDescription(e.target.value)}
+                />
               </div>
               <div className="form-group">
-                <label>
+                <label htmlFor="mt-16">
                   {t('messageTester.locationAddress')} ({t('common.optional')})
                 </label>
-                <input type="text" value={locationAddress} onChange={e => setLocationAddress(e.target.value)} />
+                <input
+                  id="mt-16"
+                  type="text"
+                  value={locationAddress}
+                  onChange={e => setLocationAddress(e.target.value)}
+                />
               </div>
             </>
           )}
@@ -634,8 +702,9 @@ export function MessageTester() {
           {messageType === 'contact' && (
             <>
               <div className="form-group">
-                <label>{t('messageTester.contactName')}</label>
+                <label htmlFor="mt-6">{t('messageTester.contactName')}</label>
                 <input
+                  id="mt-6"
                   type="text"
                   value={contactName}
                   onChange={e => setContactName(e.target.value)}
@@ -643,8 +712,9 @@ export function MessageTester() {
                 />
               </div>
               <div className="form-group">
-                <label>{t('messageTester.contactNumber')}</label>
+                <label htmlFor="mt-7">{t('messageTester.contactNumber')}</label>
                 <input
+                  id="mt-7"
                   type="text"
                   value={contactNumber}
                   onChange={e => setContactNumber(e.target.value)}
@@ -657,8 +727,9 @@ export function MessageTester() {
           {messageType === 'poll' && (
             <>
               <div className="form-group">
-                <label>{t('messageTester.pollQuestion')}</label>
+                <label htmlFor="mt-8">{t('messageTester.pollQuestion')}</label>
                 <input
+                  id="mt-8"
                   type="text"
                   value={pollQuestion}
                   onChange={e => setPollQuestion(e.target.value)}
@@ -712,10 +783,11 @@ export function MessageTester() {
           {messageType === 'forward' && (
             <>
               <div className="form-group">
-                <label>
+                <label htmlFor="mt-17">
                   {t('messageTester.forwardFromChatId')} ({t('common.optional')})
                 </label>
                 <input
+                  id="mt-17"
                   type="text"
                   value={forwardFrom}
                   onChange={e => setForwardFrom(e.target.value)}
@@ -726,8 +798,9 @@ export function MessageTester() {
                 <span className="hint">{t('messageTester.forwardFromHint')}</span>
               </div>
               <div className="form-group">
-                <label>{t('messageTester.forwardToChatId')}</label>
+                <label htmlFor="mt-9">{t('messageTester.forwardToChatId')}</label>
                 <input
+                  id="mt-9"
                   type="text"
                   value={forwardTo}
                   onChange={e => setForwardTo(e.target.value)}
@@ -735,8 +808,13 @@ export function MessageTester() {
                 />
               </div>
               <div className="form-group">
-                <label>{t('messageTester.forwardMessageId')}</label>
-                <input type="text" value={forwardMessageId} onChange={e => setForwardMessageId(e.target.value)} />
+                <label htmlFor="mt-10">{t('messageTester.forwardMessageId')}</label>
+                <input
+                  id="mt-10"
+                  type="text"
+                  value={forwardMessageId}
+                  onChange={e => setForwardMessageId(e.target.value)}
+                />
                 <span className="hint">{t('messageTester.forwardMessageIdHint')}</span>
               </div>
             </>
@@ -745,8 +823,30 @@ export function MessageTester() {
           {messageType === 'bulk' && (
             <>
               <div className="form-group">
-                <label>{t('messageTester.bulkRecipients')}</label>
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    marginBottom: '0.5rem',
+                  }}
+                >
+                  <label htmlFor="mt-11" style={{ marginBottom: 0 }}>
+                    {t('messageTester.bulkRecipients')}
+                  </label>
+                  <button type="button" className="browse-btn" onClick={() => bulkFileInputRef.current?.click()}>
+                    <Upload size={14} /> {t('messageTester.bulkRecipientsUpload')}
+                  </button>
+                  <input
+                    ref={bulkFileInputRef}
+                    type="file"
+                    accept=".txt,.csv"
+                    style={{ display: 'none' }}
+                    onChange={handleBulkFileChange}
+                  />
+                </div>
                 <textarea
+                  id="mt-11"
                   value={bulkRecipients}
                   onChange={e => setBulkRecipients(e.target.value)}
                   placeholder={t('messageTester.bulkRecipientsPlaceholder')}
@@ -758,8 +858,9 @@ export function MessageTester() {
                 </span>
               </div>
               <div className="form-group">
-                <label>{t('messageTester.messageContent')}</label>
+                <label htmlFor="mt-12">{t('messageTester.messageContent')}</label>
                 <textarea
+                  id="mt-12"
                   value={content}
                   onChange={e => setContent(e.target.value)}
                   placeholder={t('messageTester.messagePlaceholder')}
@@ -767,10 +868,11 @@ export function MessageTester() {
                 />
               </div>
               <div className="form-group">
-                <label>
+                <label htmlFor="mt-18">
                   {t('messageTester.bulkDelay')} ({t('common.optional')})
                 </label>
                 <input
+                  id="mt-18"
                   type="number"
                   min={1000}
                   max={60000}

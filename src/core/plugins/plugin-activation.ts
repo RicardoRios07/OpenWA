@@ -35,6 +35,27 @@ function deepMerge(base: Record<string, unknown>, override: Record<string, unkno
 }
 
 /**
+ * Layer one integration instance's own config over whatever resolution produced.
+ *
+ * Provisioning projects each instance's config into the scope-keyed store, so two enabled instances
+ * sharing a session scope collapse onto one key and the later write wins. The scope therefore cannot
+ * say WHOSE credentials a delivery must run with; only the instance row can. Applied last so it beats
+ * both the base config and an operator's per-session override, and deep-merged so a sparse instance
+ * config keeps the keys it did not set.
+ *
+ * This merge alone does NOT isolate two instances: it corrects the keys the row defines, and every
+ * key the row leaves unset still resolves from the layer underneath. Whether that layer can be
+ * attributed to this instance is the caller's decision — `PluginSandboxBridge` withholds the
+ * scope slice once siblings exist, for exactly that reason.
+ */
+export function resolveInstanceConfig(
+  resolved: Record<string, unknown>,
+  instanceConfig: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  return instanceConfig ? deepMerge(resolved, instanceConfig) : resolved;
+}
+
+/**
  * Resolve the config a plugin sees for a given session: the per-session override (if any) deep-merged
  * over the base ('*') config, so an override only changes the keys it specifies (at any depth) and
  * inherits the rest from the base — a sparse override can't drop a base key (e.g. a nested secret) it

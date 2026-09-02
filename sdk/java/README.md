@@ -16,14 +16,14 @@ Java 17+, one runtime dependency ([Gson](https://github.com/google/gson)).
 <dependency>
   <groupId>com.rmyndharis</groupId>
   <artifactId>openwa</artifactId>
-  <version>0.1.1</version>
+  <version>0.5.0</version>
 </dependency>
 ```
 
 **Gradle**
 
 ```groovy
-implementation 'com.rmyndharis:openwa:0.1.1'
+implementation 'com.rmyndharis:openwa:0.5.0'
 ```
 
 ## Quickstart
@@ -67,7 +67,7 @@ and PHP SDKs:
 
 `sessions` · `messages` · `contacts` · `groups` · `webhooks` · `chats` ·
 `labels` · `channels` · `catalog` · `status` · `templates` · `health` · `search` ·
-`profile` · `calls`,
+`profile` · `calls` · `media`,
 plus `client.auth()`.
 
 Operator-only modules (`docker`, `metrics`, `infra`, `plugins`, `mcp`) are
@@ -91,16 +91,17 @@ try {
 }
 ```
 
-| Class                        | HTTP | Meaning                                  |
-| ---------------------------- | ---- | ---------------------------------------- |
-| `OpenWAAuthError`            | 401  | Missing or invalid API key               |
-| `OpenWAForbiddenError`       | 403  | API key role insufficient                |
-| `OpenWANotFoundError`        | 404  | Resource not found                       |
-| `OpenWAConflictError`        | 409  | Engine not ready                         |
-| `OpenWARateLimitError`       | 429  | Rate limited                             |
-| `OpenWANotImplementedError`  | 501  | Active engine does not support the call  |
-| `OpenWAApiError`             | —    | Any other non-2xx (carries `.status()`)  |
-| `OpenWATimeoutError`         | —    | Request exceeded the configured timeout  |
+| Class                           | HTTP | Meaning                                                 |
+| ------------------------------- | ---- | ------------------------------------------------------- |
+| `OpenWAAuthError`               | 401  | Missing or invalid API key                              |
+| `OpenWAForbiddenError`          | 403  | API key role insufficient                               |
+| `OpenWANotFoundError`           | 404  | Resource not found                                      |
+| `OpenWAConflictError`           | 409  | Engine not ready                                        |
+| `OpenWARateLimitError`          | 429  | Rate limited                                            |
+| `OpenWANotImplementedError`     | 501  | Active engine does not support the call                 |
+| `OpenWAServiceUnavailableError` | 503  | Engine did not confirm in time — the only retryable one |
+| `OpenWAApiError`                | —    | Any other non-2xx (carries `.status()`)                 |
+| `OpenWATimeoutError`            | —    | Request exceeded the configured timeout                 |
 
 All extend `OpenWAError` (a `RuntimeException`).
 
@@ -129,3 +130,32 @@ mvn -B verify        # compile + run the full test suite
 Tests inject a recording `HttpTransport` and assert on the exact path — so the
 regression that would ship a broken `messages/text` path (the real path is
 `messages/send-text`) can never recur silently.
+
+## Releasing
+
+Publishing to Maven Central is done by the
+[`java-sdk-release.yml`](../../.github/workflows/java-sdk-release.yml) workflow,
+which deploys with `mvn -B -Prelease deploy`. The `release` profile attaches the
+sources/javadoc jars, GPG-signs every artifact, and auto-publishes via the
+Sonatype Central Publishing plugin — a plain `mvn verify` never runs any of it.
+
+One-time setup (repository secrets):
+
+- `MAVEN_CENTRAL_USERNAME` / `MAVEN_CENTRAL_PASSWORD` — the two halves of a
+  Sonatype Central Portal user token for the verified `com.rmyndharis`
+  namespace.
+- `GPG_PRIVATE_KEY` — ASCII-armored signing key.
+- `GPG_PASSPHRASE` — passphrase for that key.
+
+All four secrets are checked before anything is built, and a missing one **fails
+the run**. That is deliberate: skipping the deploy and reporting green is
+indistinguishable from a real release in the run list, so configure the secrets
+before tagging rather than tagging to see what happens.
+
+Cutting a release:
+
+1. Bump `<version>` in `pom.xml` and land it on `main`.
+2. Tag that commit `java-sdk-v<version>` (e.g. `java-sdk-v0.5.0`) and push the
+   tag. The SDK has its own version line — the monorepo's `v*` tags are the app
+   version and never trigger an SDK publish.
+3. The workflow builds, signs, and publishes; Central syncs within a few hours.

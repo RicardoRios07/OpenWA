@@ -1,8 +1,12 @@
 /**
- * WhatsApp Web build resolution for the whatsapp-web.js engine — kept dependency-free (process.env +
- * fetch only) so the infra status endpoint can import it without pulling in the heavy whatsapp-web.js
- * module and breaking engine lazy-loading.
+ * WhatsApp Web build resolution for the whatsapp-web.js engine — kept free of whatsapp-web.js
+ * imports (env + fetch + the app logger only) so the infra status endpoint can import it without
+ * pulling in the heavy whatsapp-web.js module and breaking engine lazy-loading.
  */
+
+import { createLogger } from '../common/services/logger.service';
+
+const logger = createLogger('WebVersion');
 
 export type WebVersionPin = { webVersion: string; webVersionCache: { type: 'remote'; remotePath: string } };
 
@@ -30,11 +34,61 @@ let cachedCurrentVersion: string | undefined;
 let inFlight: Promise<string | null> | null = null;
 let lastFailureAt = 0;
 
+let warnedRemoteTrust = false;
+
 /** Test-only: reset the resolved-version cache between cases. */
 export function __resetWebVersionCache(): void {
   cachedCurrentVersion = undefined;
   inFlight = null;
   lastFailureAt = 0;
+  warnedRemoteTrust = false;
+}
+
+/**
+ * Warn once per process when a remote-HTML pin takes effect. The pinned HTML is fetched over the
+ * network and executed inside the authenticated web.whatsapp.com origin with no integrity check,
+ * so pinning is a trust decision the operator must make knowingly — the log states the source and
+ * the opt-outs. Once-only: resolveWebVersionPin runs on every session (re)start.
+ */
+function warnRemoteTrustOnce(pin: WebVersionPin): void {
+  if (warnedRemoteTrust) return;
+  warnedRemoteTrust = true;
+  logger.warn(
+    'WhatsApp Web build pinned to remote HTML served into the web.whatsapp.com origin WITHOUT an integrity check',
+    {
+      action: 'web_version_remote_pin',
+      webVersion: pin.webVersion,
+      remotePath: pin.webVersionCache.remotePath,
+      optOut:
+        'set WWEBJS_WEB_VERSION=off for the first-party build served by WhatsApp, or point WWEBJS_WEB_VERSION_REMOTE_PATH at an operator-controlled copy',
+    },
+  );
+}
+
+/**
+ * Report a failed registry resolve. Without this the degradation is invisible: the fetch is
+ * swallowed, `resolveWebVersionPin` returns undefined, and the adapter logs only inside
+ * `if (versionPin)` — so a host that cannot reach the registry silently falls back to
+ * whatsapp-web.js's own version selection, which is the failure class the pin exists to prevent
+ * (#488), with nothing in the log to grep for.
+ *
+ * Deliberately NOT once-per-process like `warnRemoteTrustOnce`. The state is ongoing rather than a
+ * one-time decision, and an operator diagnosing a session days into a container's life reads a
+ * bounded log window (`docker compose logs --tail=…`) — a warning emitted only at first failure
+ * would have scrolled away exactly when it is needed. Repetition is already bounded: the
+ * `lastFailureAt` backoff returns before the fetch, so at most one attempt (hence one warning) per
+ * FAILURE_BACKOFF_MS.
+ */
+function warnResolveFailed(reason: string): void {
+  logger.warn('Could not resolve a WhatsApp Web build from the wa-version registry — continuing WITHOUT a pin', {
+    action: 'web_version_resolve_failed',
+    reason,
+    registry: WA_VERSION_REGISTRY_URL,
+    consequence:
+      "whatsapp-web.js selects the build itself, which on some setups authenticates then never reaches 'ready'",
+    remedy:
+      'confirm the host can reach the registry URL, or set WWEBJS_WEB_VERSION to an exact build (or "off" to accept the first-party build)',
+  });
 }
 
 function buildRemotePin(version: string): WebVersionPin {
@@ -101,12 +155,14 @@ export async function resolveCurrentWebVersion(fetcher: typeof fetch = fetch): P
           return picked;
         }
         lastFailureAt = Date.now(); // nothing usable — back off, then retry
+        warnResolveFailed('the registry carried no usable build');
         return null;
       } finally {
         clearTimeout(timer);
       }
-    } catch {
+    } catch (error) {
       lastFailureAt = Date.now(); // fetch failed — back off, then retry
+      warnResolveFailed(error instanceof Error ? error.message : String(error));
       return null;
     } finally {
       inFlight = null;
@@ -129,11 +185,16 @@ export async function resolveWebVersionPin(fetcher: typeof fetch = fetch): Promi
   const raw = process.env.WWEBJS_WEB_VERSION?.trim();
   const lc = raw?.toLowerCase();
   if (raw && lc !== 'off' && lc !== 'latest' && lc !== 'auto') {
-    return buildRemotePin(raw); // operator-pinned exact version
+    const pin = buildRemotePin(raw); // operator-pinned exact version
+    warnRemoteTrustOnce(pin);
+    return pin;
   }
   if (lc === 'off') return undefined; // explicit escape hatch → native auto-select
   const current = await resolveCurrentWebVersion(fetcher);
-  return current ? buildRemotePin(current) : undefined;
+  if (!current) return undefined;
+  const pin = buildRemotePin(current);
+  warnRemoteTrustOnce(pin);
+  return pin;
 }
 
 /**

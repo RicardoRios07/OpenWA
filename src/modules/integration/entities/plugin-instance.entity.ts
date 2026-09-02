@@ -7,34 +7,34 @@ import { jsonColumnType } from '../../../common/utils/column-types';
 @Index('UQ_plugin_instances_plugin_instance', ['pluginId', 'instanceId'], { unique: true })
 export class PluginInstance {
   @PrimaryColumn()
-  id: string; // `${pluginId}:${instanceId}`
+  id!: string; // `${pluginId}:${instanceId}`
 
   @Column()
-  pluginId: string;
+  pluginId!: string;
 
   @Column()
-  instanceId: string;
+  instanceId!: string;
 
   @Column({ type: 'varchar', nullable: true })
-  sessionScope: string | null; // resolved session id this instance acts on; null = inherit manifest.sessions
+  sessionScope!: string | null; // resolved session id this instance acts on; null = inherit manifest.sessions
 
   @Column()
-  secret: string; // host-minted ingress HMAC secret; stored plaintext, masked to '***' on API reads
+  secret!: string; // host-minted ingress HMAC secret; stored plaintext, masked to '***' on API reads
   // (via PluginInstanceService.maskedView + the provisioning controller's reveal flag), exposed
   // in full only on mint and regenerate-secret. Note: instance `config` is NOT secret-redacted.
 
   @Column({ type: 'varchar', nullable: true })
-  verifyToken: string | null; // optional provider challenge token
+  verifyToken!: string | null; // optional provider challenge token
 
   @Column({ type: jsonColumnType(), nullable: true })
-  config: Record<string, unknown> | null;
+  config!: Record<string, unknown> | null;
 
   @Column({ default: true })
-  enabled: boolean;
+  enabled!: boolean;
 
   @CreateDateColumn()
-  createdAt: Date;
+  createdAt!: Date;
 
   @UpdateDateColumn()
-  updatedAt: Date;
+  updatedAt!: Date;
 }

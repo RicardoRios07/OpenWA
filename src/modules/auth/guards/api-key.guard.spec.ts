@@ -1,4 +1,5 @@
 import { ExecutionContext, UnauthorizedException, ForbiddenException } from '@nestjs/common';
+import { runWithRequestId, getRequestActor } from '../../../common/services/request-context';
 import { Reflector } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { ApiKeyGuard } from './api-key.guard';
@@ -187,6 +188,119 @@ describe('ApiKeyGuard', () => {
     const context = createMockContext({ 'x-api-key': 'viewer-key' });
 
     await expect(guard.canActivate(context)).rejects.toThrow(ForbiddenException);
+  });
+
+  it('rejects a session-scoped key on a @RequireUnscopedKey route, whatever its role', async () => {
+    reflector.getAllAndOverride
+      .mockReturnValueOnce(false) // not public
+      .mockReturnValueOnce(ApiKeyRole.ADMIN) // required role = ADMIN
+      .mockReturnValueOnce(undefined) // not @SessionScoped
+      .mockReturnValueOnce(true); // @RequireUnscopedKey
+
+    const apiKey = createMockApiKey({ role: ApiKeyRole.ADMIN, allowedSessions: ['sess-A'] });
+    (authService.validateApiKey as jest.Mock).mockResolvedValue(apiKey);
+    (authService.hasPermission as jest.Mock).mockReturnValue(true);
+
+    const context = createMockContext({ 'x-api-key': 'scoped-admin-key' }, {}, '203.0.113.44');
+
+    await expect(guard.canActivate(context)).rejects.toThrow('Session-scoped API keys are not permitted on this route');
+    await new Promise(resolve => setImmediate(resolve)); // let the fire-and-forget audit write settle
+    expect(auditService.logWarn).toHaveBeenCalledWith(
+      AuditAction.API_KEY_AUTH_FAILED,
+      expect.objectContaining({ ipAddress: '203.0.113.44' }),
+    );
+  });
+
+  // Both post-authentication denials threw BEFORE the actor was stamped, so every 403 the guard
+  // raises wrote an audit row whose apiKeyId/apiKeyName were null — attributable to an IP that,
+  // behind NAT or a proxy without TRUSTED_PROXIES, is common to every tenant. The operator could
+  // see that a key was denied but not WHICH key, so could not revoke it.
+  describe('a post-authentication denial is attributable to the credential', () => {
+    const actorAfterDenial = async (setupReflector: () => void, apiKey: ReturnType<typeof createMockApiKey>) => {
+      setupReflector();
+      (authService.validateApiKey as jest.Mock).mockResolvedValue(apiKey);
+      const context = createMockContext({ 'x-api-key': 'k' }, {}, '203.0.113.44');
+      let actor: ReturnType<typeof getRequestActor>;
+      await runWithRequestId('req-1', async () => {
+        await expect(guard.canActivate(context)).rejects.toThrow(ForbiddenException);
+        actor = getRequestActor();
+      });
+      return actor;
+    };
+
+    it('stamps the key on an insufficient-role denial', async () => {
+      const apiKey = createMockApiKey({ id: 'key-uuid-1', name: 'Reporting key', role: ApiKeyRole.VIEWER });
+      (authService.hasPermission as jest.Mock).mockReturnValue(false);
+
+      const actor = await actorAfterDenial(() => {
+        reflector.getAllAndOverride.mockReturnValueOnce(false).mockReturnValueOnce(ApiKeyRole.ADMIN);
+      }, apiKey);
+
+      expect(actor).toMatchObject({ apiKeyId: 'key-uuid-1', apiKeyName: 'Reporting key', ipAddress: '203.0.113.44' });
+    });
+
+    it('stamps the key on a session-scoped-key denial', async () => {
+      const apiKey = createMockApiKey({ id: 'key-uuid-2', name: 'Tenant A', allowedSessions: ['sess-A'] });
+      (authService.hasPermission as jest.Mock).mockReturnValue(true);
+
+      const actor = await actorAfterDenial(() => {
+        reflector.getAllAndOverride
+          .mockReturnValueOnce(false)
+          .mockReturnValueOnce(ApiKeyRole.ADMIN)
+          .mockReturnValueOnce(undefined)
+          .mockReturnValueOnce(true);
+      }, apiKey);
+
+      expect(actor).toMatchObject({ apiKeyId: 'key-uuid-2', apiKeyName: 'Tenant A' });
+    });
+
+    // Negative twin: a denial BEFORE the key resolves still has no key to name, and must not
+    // invent one — the IP is genuinely all there is.
+    it('leaves an unauthenticated denial attributable to the IP alone', async () => {
+      reflector.getAllAndOverride.mockReturnValueOnce(false).mockReturnValueOnce(undefined);
+      (authService.validateApiKey as jest.Mock).mockRejectedValue(new UnauthorizedException('bad key'));
+      const context = createMockContext({ 'x-api-key': 'nope' }, {}, '203.0.113.44');
+
+      let actor: ReturnType<typeof getRequestActor>;
+      await runWithRequestId('req-2', async () => {
+        await expect(guard.canActivate(context)).rejects.toThrow(UnauthorizedException);
+        actor = getRequestActor();
+      });
+
+      expect(actor?.apiKeyId).toBeUndefined();
+      expect(actor?.ipAddress).toBe('203.0.113.44');
+    });
+  });
+
+  it('admits an unrestricted key on a @RequireUnscopedKey route', async () => {
+    reflector.getAllAndOverride
+      .mockReturnValueOnce(false) // not public
+      .mockReturnValueOnce(ApiKeyRole.ADMIN) // required role = ADMIN
+      .mockReturnValueOnce(undefined) // not @SessionScoped
+      .mockReturnValueOnce(true); // @RequireUnscopedKey
+
+    const apiKey = createMockApiKey({ role: ApiKeyRole.ADMIN, allowedSessions: null });
+    (authService.validateApiKey as jest.Mock).mockResolvedValue(apiKey);
+    (authService.hasPermission as jest.Mock).mockReturnValue(true);
+
+    const context = createMockContext({ 'x-api-key': 'admin-key' });
+
+    await expect(guard.canActivate(context)).resolves.toBe(true);
+  });
+
+  it('admits a session-scoped key on routes WITHOUT the @RequireUnscopedKey marker', async () => {
+    reflector.getAllAndOverride
+      .mockReturnValueOnce(false) // not public
+      .mockReturnValueOnce(undefined) // no required role
+      .mockReturnValueOnce(undefined) // not @SessionScoped
+      .mockReturnValueOnce(undefined); // not @RequireUnscopedKey
+
+    const apiKey = createMockApiKey({ allowedSessions: ['sess-A'] });
+    (authService.validateApiKey as jest.Mock).mockResolvedValue(apiKey);
+
+    const context = createMockContext({ 'x-api-key': 'scoped-key' });
+
+    await expect(guard.canActivate(context)).resolves.toBe(true);
   });
 
   it('should pass session ID from route params to validateApiKey', async () => {

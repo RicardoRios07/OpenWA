@@ -7,6 +7,7 @@ import com.rmyndharis.openwa.ClientConfig;
 import com.rmyndharis.openwa.OpenWAClient;
 import com.rmyndharis.openwa.http.HttpMethod;
 import com.rmyndharis.openwa.model.RequestPairingCodeRequest;
+import com.rmyndharis.openwa.model.SetOwnPresenceRequest;
 import com.rmyndharis.openwa.support.MockTransport;
 import org.junit.jupiter.api.Test;
 
@@ -39,6 +40,14 @@ class SessionsResourceTest {
     }
 
     @Test
+    void logoutHitsLogoutPath() {
+        tx.respond(200, "{\"id\":\"s\",\"name\":\"n\",\"status\":\"disconnected\"}");
+        client.sessions.logout("s");
+        assertEquals("http://h/api/sessions/s/logout", tx.lastRequest().url());
+        assertEquals(HttpMethod.POST, tx.lastRequest().method());
+    }
+
+    @Test
     void requestPairingCodeSendsBody() {
         tx.respond(200, "{\"pairingCode\":\"ABCD1234\",\"status\":\"qr_ready\"}");
         client.sessions.requestPairingCode("s", RequestPairingCodeRequest.builder().phoneNumber("628123").build());
@@ -52,4 +61,15 @@ class SessionsResourceTest {
         client.sessions.stats();
         assertEquals("http://h/api/sessions/stats/overview", tx.lastRequest().url());
     }
+
+    @Test
+    void setOnlinePresenceSendsPutWithFlag() {
+        tx.respond(200, "{\"success\":true}");
+        client.sessions.setOnlinePresence("s", SetOwnPresenceRequest.builder().available(false).build());
+        // The account's own presence: no chat id in the path and no /subscribe suffix.
+        assertEquals("http://h/api/sessions/s/presence", tx.lastRequest().url());
+        assertEquals(HttpMethod.PUT, tx.lastRequest().method());
+        assertTrue(tx.lastRequest().body().contains("\"available\":false"));
+    }
+
 }

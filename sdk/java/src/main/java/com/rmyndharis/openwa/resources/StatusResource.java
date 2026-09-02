@@ -3,10 +3,12 @@ package com.rmyndharis.openwa.resources;
 import static com.rmyndharis.openwa.http.Http.encodeSegment;
 
 import com.rmyndharis.openwa.OpenWAClient;
+import com.rmyndharis.openwa.http.BinaryResponse;
 import com.rmyndharis.openwa.http.HttpMethod;
 import com.rmyndharis.openwa.model.SendImageStatusRequest;
 import com.rmyndharis.openwa.model.SendTextStatusRequest;
 import com.rmyndharis.openwa.model.SendVideoStatusRequest;
+import com.rmyndharis.openwa.model.SendVoiceStatusRequest;
 import com.rmyndharis.openwa.model.StatusListResult;
 import com.rmyndharis.openwa.model.StatusResult;
 
@@ -42,6 +44,14 @@ public final class StatusResource {
             StatusListResult.class);
     }
 
+    /** Fetch the stored media bytes for a status update (404 when there is no stored media). */
+    public BinaryResponse media(String sessionId, String statusId) {
+        return client.requestBytes(
+            HttpMethod.GET,
+            "/api/sessions/" + encodeSegment(sessionId) + "/status/" + encodeSegment(statusId) + "/media",
+            null);
+    }
+
     /** Post a text status update. */
     public StatusResult sendText(String sessionId, SendTextStatusRequest body) {
         return client.request(
@@ -67,6 +77,19 @@ public final class StatusResource {
         return client.request(
             HttpMethod.POST,
             "/api/sessions/" + encodeSegment(sessionId) + "/status/send-video",
+            null,
+            body,
+            StatusResult.class);
+    }
+
+    /**
+     * Post an audio status as a voice note. WhatsApp plays one only as Ogg/Opus and neither engine
+     * transcodes, so convert first with {@code MediaResource.convertVoice}. Requires an OPERATOR key.
+     */
+    public StatusResult sendVoice(String sessionId, SendVoiceStatusRequest body) {
+        return client.request(
+            HttpMethod.POST,
+            "/api/sessions/" + encodeSegment(sessionId) + "/status/send-voice",
             null,
             body,
             StatusResult.class);

@@ -66,6 +66,11 @@ func (s *MessagesService) SendTemplate(ctx context.Context, sessionID string, bo
 	return s.send(ctx, sessionID, "send-template", body)
 }
 
+// SendPoll sends a native WhatsApp poll (2–12 options).
+func (s *MessagesService) SendPoll(ctx context.Context, sessionID string, body SendPollRequest) (*MessageResponse, error) {
+	return s.send(ctx, sessionID, "send-poll", body)
+}
+
 func (s *MessagesService) send(ctx context.Context, sessionID, segment string, body any) (*MessageResponse, error) {
 	var out MessageResponse
 	err := s.client.do(ctx, "POST", s.base(sessionID)+"/"+segment, nil, body, &out)
@@ -130,6 +135,55 @@ func (s *MessagesService) Reactions(ctx context.Context, sessionID, chatID, mess
 	path := s.base(sessionID) + "/" + pathEscape(chatID) + "/" + pathEscape(messageID) + "/reactions"
 	err := s.client.do(ctx, "GET", path, nil, nil, &out)
 	return out, err
+}
+
+// Pin pins a message in its chat for a bounded window.
+func (s *MessagesService) Pin(ctx context.Context, sessionID string, body PinMessageRequest) (*SuccessResult, error) {
+	var out SuccessResult
+	if err := s.client.do(ctx, "POST", s.base(sessionID)+"/pin", nil, body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// VotePoll casts a vote on a poll. Not supported on the Baileys engine (501).
+func (s *MessagesService) VotePoll(ctx context.Context, sessionID string, body VotePollRequest) (*SuccessResult, error) {
+	var out SuccessResult
+	if err := s.client.do(ctx, "POST", s.base(sessionID)+"/vote-poll", nil, body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// Star stars or unstars a message.
+func (s *MessagesService) Star(ctx context.Context, sessionID string, body StarMessageRequest) (*SuccessResult, error) {
+	var out SuccessResult
+	if err := s.client.do(ctx, "POST", s.base(sessionID)+"/star", nil, body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// Unpin removes a message's pin.
+func (s *MessagesService) Unpin(ctx context.Context, sessionID string, body UnpinMessageRequest) (*SuccessResult, error) {
+	var out SuccessResult
+	if err := s.client.do(ctx, "POST", s.base(sessionID)+"/unpin", nil, body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// Media fetches a message's stored media bytes: the archived file when one
+// exists, else the inline copy on the message row — which covers media sent by
+// this account. The server answers 404 when neither holds bytes (no media, a
+// size-only marker, or a URL-based send whose bytes were never stored).
+func (s *MessagesService) Media(ctx context.Context, sessionID, chatID, messageID string) (*MessageMedia, error) {
+	path := s.base(sessionID) + "/" + pathEscape(chatID) + "/" + pathEscape(messageID) + "/media"
+	data, contentType, err := s.client.doRaw(ctx, "GET", path, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &MessageMedia{Data: data, ContentType: contentType}, nil
 }
 
 // SendBulk queues a batch of messages.

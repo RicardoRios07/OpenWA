@@ -6,5 +6,5 @@ export class SubscribeChannelDto {
   @ApiProperty({ description: 'Channel invite code' })
   @IsString()
   @IsNotEmpty()
-  inviteCode: string;
+  inviteCode!: string;
 }

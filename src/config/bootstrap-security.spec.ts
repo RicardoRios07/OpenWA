@@ -7,6 +7,7 @@ import {
   resolveBodyLimit,
   assertNoDefaultSecretsInProduction,
   isApiKeyPepperMissingInProduction,
+  isNodeEnvUnset,
 } from './bootstrap-security';
 
 describe('resolveCorsPolicy', () => {
@@ -147,6 +148,34 @@ describe('assertNoDefaultSecretsInProduction', () => {
     ).not.toThrow();
   });
 
+  // main.ts runs this guard BEFORE NestFactory.create, i.e. before ConfigModule validates NODE_ENV,
+  // so at this point the value is still arbitrary. Recognising only 'production' made every
+  // unrecognised value skip the guard entirely; it now recognises only the values that are
+  // deliberately NOT production and treats everything else as production.
+  it('treats an unrecognised NODE_ENV as production rather than skipping the guard', () => {
+    expect(() => assertNoDefaultSecretsInProduction({ nodeEnv: 'prod', allowDevApiKey: 'true' })).toThrow(
+      /ALLOW_DEV_API_KEY/,
+    );
+    expect(() =>
+      assertNoDefaultSecretsInProduction({ nodeEnv: 'staging', databaseType: 'postgres', databasePassword: 'openwa' }),
+    ).toThrow(/DATABASE_PASSWORD/);
+  });
+
+  // Boot validation treats a blank NODE_ENV as UNSET and lets it through, so this guard must agree:
+  // otherwise `NODE_ENV=` boots clean and then gets production-grade enforcement, and the two halves
+  // of the same rule disagree about the same string.
+  it('treats a blank NODE_ENV the way boot validation does — as unset', () => {
+    for (const nodeEnv of ['', '   ']) {
+      expect(() => assertNoDefaultSecretsInProduction({ nodeEnv, allowDevApiKey: 'true' })).not.toThrow();
+    }
+  });
+
+  it('still skips the guard for the two environments that are deliberately not production', () => {
+    for (const nodeEnv of ['development', 'test', undefined]) {
+      expect(() => assertNoDefaultSecretsInProduction({ nodeEnv, allowDevApiKey: 'true' })).not.toThrow();
+    }
+  });
+
   it('refuses prod with a default Postgres password', () => {
     expect(() =>
       assertNoDefaultSecretsInProduction({
@@ -274,6 +303,39 @@ describe('assertNoDefaultSecretsInProduction', () => {
     );
   });
 
+  it('refuses prod with an API_MASTER_KEY below the 32-character floor, however unique it looks', () => {
+    expect(() =>
+      assertNoDefaultSecretsInProduction({ nodeEnv: 'production', apiMasterKey: 'short-but-unique' }),
+    ).toThrow(/API_MASTER_KEY/);
+    // One character under the floor still fails; the floor itself passes.
+    expect(() => assertNoDefaultSecretsInProduction({ nodeEnv: 'production', apiMasterKey: 'k'.repeat(31) })).toThrow(
+      /API_MASTER_KEY \(below the 32-character minimum\)/,
+    );
+    expect(() =>
+      assertNoDefaultSecretsInProduction({ nodeEnv: 'production', apiMasterKey: 'k'.repeat(32) }),
+    ).not.toThrow();
+  });
+
+  it('measures the master key trimmed — surrounding whitespace is not key material', () => {
+    // validateApiKey trims before hashing, so a padded 31-char key authenticates as 31 chars.
+    expect(() =>
+      assertNoDefaultSecretsInProduction({ nodeEnv: 'production', apiMasterKey: ` ${'k'.repeat(31)} ` }),
+    ).toThrow(/API_MASTER_KEY/);
+  });
+
+  it('does not length-check API_MASTER_KEY outside production (dev keeps its short keys)', () => {
+    for (const nodeEnv of ['development', 'test', undefined]) {
+      expect(() => assertNoDefaultSecretsInProduction({ nodeEnv, apiMasterKey: 'short' })).not.toThrow();
+    }
+  });
+
+  it('allows prod with a strong generated-shape API_MASTER_KEY', () => {
+    // The shape the first-boot generator emits: `owa_k1_` + 32 bytes hex (71 chars).
+    expect(() =>
+      assertNoDefaultSecretsInProduction({ nodeEnv: 'production', apiMasterKey: `owa_k1_${'ab'.repeat(32)}` }),
+    ).not.toThrow();
+  });
+
   it('allows ALLOW_DEV_API_KEY=true outside production (the dev opt-in still works)', () => {
     expect(() => assertNoDefaultSecretsInProduction({ nodeEnv: 'development', allowDevApiKey: 'true' })).not.toThrow();
   });
@@ -349,7 +411,10 @@ describe('assertNoDefaultSecretsInProduction', () => {
       }),
     ).not.toThrow();
     expect(() =>
-      assertNoDefaultSecretsInProduction({ nodeEnv: 'production', apiMasterKey: 'root-pw-8821x' }),
+      assertNoDefaultSecretsInProduction({
+        nodeEnv: 'production',
+        apiMasterKey: 'root-pw-8821x-and-the-rest-of-entropy',
+      }),
     ).not.toThrow();
   });
 });
@@ -368,5 +433,19 @@ describe('isApiKeyPepperMissingInProduction', () => {
   it('is false outside production regardless of pepper (no dev warning noise)', () => {
     expect(isApiKeyPepperMissingInProduction('development', undefined)).toBe(false);
     expect(isApiKeyPepperMissingInProduction(undefined, undefined)).toBe(false);
+  });
+});
+
+describe('isNodeEnvUnset', () => {
+  it('is true when NODE_ENV is unset or blank (incl. whitespace-only)', () => {
+    expect(isNodeEnvUnset(undefined)).toBe(true);
+    expect(isNodeEnvUnset('')).toBe(true);
+    expect(isNodeEnvUnset('   ')).toBe(true);
+  });
+
+  it('is false for any set value, including an unrecognised one (no warning noise)', () => {
+    expect(isNodeEnvUnset('development')).toBe(false);
+    expect(isNodeEnvUnset('production')).toBe(false);
+    expect(isNodeEnvUnset('staging')).toBe(false);
   });
 });

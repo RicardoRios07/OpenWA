@@ -14,7 +14,7 @@ export class CreateInstanceDto {
   })
   @IsString()
   @Matches(INSTANCE_ID_PATTERN, { message: 'instanceId must match ^[a-zA-Z0-9_-]{1,64}$' })
-  instanceId: string;
+  instanceId!: string;
 
   @ApiPropertyOptional({
     description: 'Session id the instance is scoped to. Omit for all sessions.',
@@ -86,54 +86,68 @@ export class UpdateInstanceDto {
 // integration-instance responses are otherwise opaque to generated clients.
 export class InstanceView {
   @ApiProperty({ description: 'Instance row id.' })
-  id: string;
+  id!: string;
 
   @ApiProperty({ description: 'Plugin id this instance belongs to.' })
-  pluginId: string;
+  pluginId!: string;
 
   @ApiProperty({ description: 'Operator-chosen instance id (unique within the plugin).' })
-  instanceId: string;
+  instanceId!: string;
 
   @ApiPropertyOptional({
     description: 'Session id the instance is scoped to, or null for all sessions.',
     nullable: true,
+    // `string | null` reduces to `Object` under emitDecoratorMetadata; declare the real type.
+    type: String,
   })
-  sessionScope: string | null;
+  sessionScope!: string | null;
 
   @ApiProperty({
     description:
       "Ingress HMAC secret. Masked ('***') on every read; plaintext returned only once on create/regenerate-secret.",
   })
-  secret: string;
+  secret!: string;
 
   @ApiPropertyOptional({
     description: "Provider verify-token. Masked ('***') on reads when set; plaintext on create/regenerate-secret.",
     nullable: true,
+    type: String,
   })
-  verifyToken: string | null;
+  verifyToken!: string | null;
 
   @ApiPropertyOptional({
-    description: 'Per-instance config slice passed to the adapter, or null.',
+    description:
+      "Per-instance config slice passed to the adapter, or null. Fields flagged `secret` in the plugin's config schema are masked ('***') on EVERY response — including create/regenerate-secret; only the ingress secret and verifyToken are ever revealed once.",
     nullable: true,
     type: Object,
   })
-  config: Record<string, unknown> | null;
+  config!: Record<string, unknown> | null;
 
   @ApiProperty({ description: 'Whether ingress is accepted and dispatch is active.' })
-  enabled: boolean;
+  enabled!: boolean;
 
   @ApiProperty({ description: 'Creation timestamp.' })
-  createdAt: Date;
+  createdAt!: Date;
 
   @ApiProperty({ description: 'Last update timestamp.' })
-  updatedAt: Date;
+  updatedAt!: Date;
 
   @ApiProperty({
     description: 'Ingress URLs the provider posts webhook deliveries to.',
     type: () => IngressUrl,
     isArray: true,
   })
-  ingressUrls: IngressUrl[];
+  ingressUrls!: IngressUrl[];
 }
 
-export type MintedInstance = InstanceView; // identical shape; `secret` carries the plaintext once
+/** Outcome of one redrive batch over an instance's dead-lettered ingress deliveries. */
+export class RedriveResultDto {
+  @ApiProperty({ description: 'Deliveries re-dispatched by this call.', example: 25 })
+  redriven!: number;
+
+  @ApiProperty({ description: 'Dead-lettered deliveries still retained after this batch.', example: 75 })
+  remaining!: number;
+
+  @ApiProperty({ description: 'The bounded batch size this call processed.', example: 25 })
+  batchSize!: number;
+}

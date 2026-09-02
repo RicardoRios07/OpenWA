@@ -10,6 +10,11 @@ export interface BaileysMessageStore {
   put(sessionId: string, msg: WAMessage): Promise<void>;
   /** Look up a previously-seen message by its id, or null. */
   getMessage(sessionId: string, messageId: string): Promise<WAMessage | null>;
+  /**
+   * Look up many messages in one query. Ids the store has never seen are simply absent from the
+   * result, so the caller cannot assume the order or the length matches its input.
+   */
+  getMessages(sessionId: string, messageIds: string[]): Promise<WAMessage[]>;
   /** Remove all stored messages for a session (called on logout). */
   clearSession(sessionId: string): Promise<void>;
 }

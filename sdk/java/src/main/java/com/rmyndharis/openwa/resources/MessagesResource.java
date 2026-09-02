@@ -3,6 +3,7 @@ package com.rmyndharis.openwa.resources;
 import static com.rmyndharis.openwa.http.Http.encodeSegment;
 
 import com.rmyndharis.openwa.OpenWAClient;
+import com.rmyndharis.openwa.http.BinaryResponse;
 import com.rmyndharis.openwa.http.HttpMethod;
 import com.rmyndharis.openwa.model.BatchStatusResponse;
 import com.rmyndharis.openwa.model.BulkMessageResponse;
@@ -14,6 +15,7 @@ import com.rmyndharis.openwa.model.ListMessagesQuery;
 import com.rmyndharis.openwa.model.MessageHistoryQuery;
 import com.rmyndharis.openwa.model.MessageListResponse;
 import com.rmyndharis.openwa.model.MessageResponse;
+import com.rmyndharis.openwa.model.PinMessageRequest;
 import com.rmyndharis.openwa.model.ReactMessageRequest;
 import com.rmyndharis.openwa.model.ReactionRecord;
 import com.rmyndharis.openwa.model.ReplyMessageRequest;
@@ -22,9 +24,13 @@ import com.rmyndharis.openwa.model.SendContactRequest;
 import com.rmyndharis.openwa.model.SendLocationRequest;
 import com.rmyndharis.openwa.model.SendMediaRequest;
 import com.rmyndharis.openwa.model.SendAudioRequest;
+import com.rmyndharis.openwa.model.SendPollRequest;
 import com.rmyndharis.openwa.model.SendTemplateRequest;
 import com.rmyndharis.openwa.model.SendTextRequest;
+import com.rmyndharis.openwa.model.StarMessageRequest;
+import com.rmyndharis.openwa.model.VotePollRequest;
 import com.rmyndharis.openwa.model.SuccessResult;
+import com.rmyndharis.openwa.model.UnpinMessageRequest;
 import java.util.List;
 
 /**
@@ -114,6 +120,16 @@ public final class MessagesResource {
             MessageResponse.class);
     }
 
+    /** Send a native WhatsApp poll (2–12 options). */
+    public MessageResponse sendPoll(String sessionId, SendPollRequest body) {
+        return client.request(
+            HttpMethod.POST,
+            "/api/sessions/" + encodeSegment(sessionId) + "/messages/send-poll",
+            null,
+            body,
+            MessageResponse.class);
+    }
+
     /** Reply to a specific message. */
     public MessageResponse reply(String sessionId, ReplyMessageRequest body) {
         return client.request(
@@ -139,6 +155,52 @@ public final class MessagesResource {
         return client.request(
             HttpMethod.POST,
             "/api/sessions/" + encodeSegment(sessionId) + "/messages/react",
+            null,
+            body,
+            SuccessResult.class);
+    }
+
+    /**
+     * Pin a message in its chat. durationSeconds must be 86400 (24h), 604800 (7d) or 2592000 (30d);
+     * omit it for the server default of 24h. In a group only admins may pin.
+     */
+    public SuccessResult pin(String sessionId, PinMessageRequest body) {
+        return client.request(
+            HttpMethod.POST,
+            "/api/sessions/" + encodeSegment(sessionId) + "/messages/pin",
+            null,
+            body,
+            SuccessResult.class);
+    }
+
+    /** Cast a vote on a poll. Not supported on the Baileys engine (501). */
+    public SuccessResult votePoll(String sessionId, VotePollRequest body) {
+        return client.request(
+            HttpMethod.POST,
+            "/api/sessions/" + encodeSegment(sessionId) + "/messages/vote-poll",
+            null,
+            body,
+            SuccessResult.class);
+    }
+
+    /**
+     * Star or unstar a message. Best-effort on whatsapp-web.js, which silently ignores a message it
+     * will not star.
+     */
+    public SuccessResult star(String sessionId, StarMessageRequest body) {
+        return client.request(
+            HttpMethod.POST,
+            "/api/sessions/" + encodeSegment(sessionId) + "/messages/star",
+            null,
+            body,
+            SuccessResult.class);
+    }
+
+    /** Remove a message's pin. */
+    public SuccessResult unpin(String sessionId, UnpinMessageRequest body) {
+        return client.request(
+            HttpMethod.POST,
+            "/api/sessions/" + encodeSegment(sessionId) + "/messages/unpin",
             null,
             body,
             SuccessResult.class);
@@ -172,6 +234,23 @@ public final class MessagesResource {
             query,
             null,
             ChatHistoryMessage.class);
+    }
+
+    /**
+     * Fetch a message's stored media bytes: the archived file when one exists, else the inline
+     * copy on the message row (covers media sent by this account); 404 when neither holds bytes.
+     */
+    public BinaryResponse media(String sessionId, String chatId, String messageId) {
+        return client.requestBytes(
+            HttpMethod.GET,
+            "/api/sessions/"
+                + encodeSegment(sessionId)
+                + "/messages/"
+                + encodeSegment(chatId)
+                + "/"
+                + encodeSegment(messageId)
+                + "/media",
+            null);
     }
 
     /** Get reactions for a specific message. */

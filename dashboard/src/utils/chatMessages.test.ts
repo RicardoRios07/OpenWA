@@ -1,6 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mapEngineHistoryMessage, mergeChatMessages, type EngineHistoryMessage } from './chatMessages.ts';
+import {
+  mapEngineHistoryMessage,
+  mergeChatMessages,
+  mergeReactionSnapshot,
+  type EngineHistoryMessage,
+} from './chatMessages.ts';
 import type { ChatMessage } from '../services/api';
 
 const hist = (over: Partial<EngineHistoryMessage> = {}): EngineHistoryMessage => ({
@@ -12,6 +17,8 @@ const hist = (over: Partial<EngineHistoryMessage> = {}): EngineHistoryMessage =>
   type: 'text',
   timestamp: 1782053533,
   fromMe: false,
+  isGroup: true,
+  kind: 'group',
   ...over,
 });
 
@@ -147,7 +154,7 @@ test('mergeOrAppend keeps existing metadata when the incoming copy carries none'
 });
 
 test('mergeOrAppend: an omitted-media echo does NOT clobber the copy holding the payload', () => {
-  // The optimistic send bubble holds the only base64 copy; the engine's own-send echo carries just
+  // The optimistic send bubble holds the only base64 copy; a Baileys API-send echo carries just
   // `{media: {omitted: true}}` (no data). Replacing wholesale would blank the sent image.
   const optimistic = msg({
     id: 'm-1',
@@ -318,4 +325,95 @@ test('senderKey prefers the participant JID and falls back to the display name',
   assert.equal(senderKey({ author: '628111@c.us', chatName: 'Alice' }), '628111@c.us');
   assert.equal(senderKey({ chatName: 'Alice' }), 'Alice');
   assert.equal(senderKey({}), undefined);
+});
+
+import { capMediaPayloads, MEDIA_PAYLOAD_CACHE_LIMIT } from './chatMessages.ts';
+
+const mediaMsg = (id: string, data?: string): ChatMessageView =>
+  msg({ id, type: 'image', metadata: { media: { mimetype: 'image/jpeg', filename: `${id}.jpg`, data } } });
+
+test('capMediaPayloads: under the limit the list is returned untouched (stable reference)', () => {
+  const list = [mediaMsg('m-1', 'AAA'), mediaMsg('m-2', 'BBB'), msg({ id: 'm-3' })];
+  assert.equal(capMediaPayloads(list), list);
+});
+
+test('the media cap covers the whole fetch window (no dead-end placeholder inside it)', () => {
+  // useChatMessages fetches a 100-message slice WITH media and caches it at staleTime: Infinity.
+  // A cap below the window strips payloads the user can scroll to, with no refetch path — the
+  // stripped rows render the 📎 placeholder forever even though the payload was fetched.
+  assert.ok(MEDIA_PAYLOAD_CACHE_LIMIT >= 100);
+});
+
+test('capMediaPayloads: past the limit the OLDEST payloads strip to the omitted marker, newest stay', () => {
+  // One over the cap, so exactly the oldest payload must go.
+  const list = Array.from({ length: MEDIA_PAYLOAD_CACHE_LIMIT + 1 }, (_, i) => mediaMsg(`m-${i}`, `PAYLOAD_${i}`));
+  const capped = capMediaPayloads(list);
+  const stripped = capped[0].metadata?.media;
+  assert.equal(stripped?.data, undefined);
+  assert.equal(stripped?.omitted, true); // renders the 📎 placeholder, not an empty bubble
+  assert.equal(stripped?.mimetype, 'image/jpeg'); // type/filename survive the strip
+  assert.equal(capped[1].metadata?.media?.data, 'PAYLOAD_1');
+  assert.equal(capped[MEDIA_PAYLOAD_CACHE_LIMIT].metadata?.media?.data, `PAYLOAD_${MEDIA_PAYLOAD_CACHE_LIMIT}`);
+  // The retained payload count is exactly the cap.
+  assert.equal(capped.filter(m => m.metadata?.media?.data).length, MEDIA_PAYLOAD_CACHE_LIMIT);
+  // Input is not mutated.
+  assert.equal(list[0].metadata?.media?.data, 'PAYLOAD_0');
+});
+
+test('capMediaPayloads: rows already carrying only the omitted marker are not counted as payloads', () => {
+  const omitted = mediaMsg('m-0', undefined);
+  omitted.metadata = { media: { mimetype: '', omitted: true } };
+  const list = [omitted, ...Array.from({ length: MEDIA_PAYLOAD_CACHE_LIMIT }, (_, i) => mediaMsg(`m-${i}`, 'X'))];
+  const capped = capMediaPayloads(list);
+  assert.equal(capped.filter(m => m.metadata?.media?.data).length, MEDIA_PAYLOAD_CACHE_LIMIT);
+  assert.equal(capped[0].metadata?.media?.omitted, true);
+});
+
+test('mergeOrAppend enforces the payload cap on a live media append', () => {
+  const list = Array.from({ length: MEDIA_PAYLOAD_CACHE_LIMIT }, (_, i) => mediaMsg(`m-${i}`, `PAYLOAD_${i}`));
+  const after = mergeOrAppend(list, mediaMsg('m-new', 'NEW'));
+  assert.equal(after.filter(m => m.metadata?.media?.data).length, MEDIA_PAYLOAD_CACHE_LIMIT);
+  assert.equal(after[0].metadata?.media?.data, undefined); // oldest stripped
+  assert.equal(after[0].metadata?.media?.omitted, true);
+  assert.equal(after[after.length - 1].metadata?.media?.data, 'NEW'); // fresh append keeps its payload
+});
+
+test('mergeChatMessages enforces the payload cap on the initial load', () => {
+  const rows = Array.from({ length: MEDIA_PAYLOAD_CACHE_LIMIT + 2 }, (_, i) =>
+    db({
+      id: `row-${i}`,
+      waMessageId: `WA_${i}`,
+      type: 'image',
+      timestamp: 1782053999 + i,
+      metadata: { media: { mimetype: 'image/jpeg', data: `DB_${i}` } },
+    }),
+  );
+  const merged = mergeChatMessages(rows, []);
+  assert.equal(merged.filter(m => m.metadata?.media?.data).length, MEDIA_PAYLOAD_CACHE_LIMIT);
+  assert.equal(merged[0].metadata?.media?.omitted, true);
+  assert.equal(merged[1].metadata?.media?.omitted, true);
+  assert.equal(merged[2].metadata?.media?.data, 'DB_2'); // newest MEDIA_PAYLOAD_CACHE_LIMIT survive
+});
+
+// A `message.reaction` frame omits `reactions` when the gateway holds no stored copy of the message
+// to snapshot from. Absent means "unknown", not "there are none" — and the difference is visible:
+// the local user's own optimistic reaction lives under the `me` key in exactly that map.
+test('mergeReactionSnapshot keeps the known map when the event carries no snapshot', () => {
+  assert.deepEqual(mergeReactionSnapshot({ me: '👍' }, undefined), { me: '👍' });
+});
+
+test('mergeReactionSnapshot takes the snapshot when the event carries one', () => {
+  assert.deepEqual(mergeReactionSnapshot({ me: '👍' }, { '628@c.us': '❤️' }), { '628@c.us': '❤️' });
+});
+
+test('mergeReactionSnapshot treats an EMPTY snapshot as an answer, not as absence', () => {
+  // The last reaction being withdrawn is a real state the gateway reports as `{}`, and it must clear
+  // the badge rather than fall back to the stale map. Note `{}` is truthy, so `||` and `??` agree
+  // here — the absent-vs-empty distinction is destroyed one layer up if the socket mapper coerces
+  // an absent key with `|| {}`, which is exactly the defect this function was extracted to expose.
+  assert.deepEqual(mergeReactionSnapshot({ me: '👍' }, {}), {});
+});
+
+test('mergeReactionSnapshot stays undefined when neither side knows anything', () => {
+  assert.equal(mergeReactionSnapshot(undefined, undefined), undefined);
 });

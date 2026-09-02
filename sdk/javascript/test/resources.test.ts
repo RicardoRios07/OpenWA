@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { OpenWAClient } from '../src';
+import type { WebhookFilters } from '../src/types';
 import { MockTransport } from './helpers';
 
 function client(t: MockTransport): OpenWAClient {
@@ -58,6 +59,29 @@ describe('GroupsResource — exact paths and bodies', () => {
     expect(t.lastCall!.url).toContain('/invite-code/revoke');
   });
 
+  it('membership requests — list, approve, reject', async () => {
+    const t = new MockTransport()
+      .on('GET', /\/membership-requests$/, { body: [{ participantId: 'a@c.us', method: 'invite_link' }] })
+      .on('POST', /\/membership-requests\/approve$/, { body: { success: true, message: 'ok', results: [] } })
+      .on('POST', /\/membership-requests\/reject$/, { body: { success: true, message: 'ok', results: [] } });
+    const c = client(t);
+
+    const pending = await c.groups.getMembershipRequests('s', 'g1@g.us');
+    expect(t.lastCall!.method).toBe('GET');
+    expect(t.lastCall!.url).toContain('/groups/g1@g.us/membership-requests');
+    expect(pending[0].participantId).toBe('a@c.us');
+
+    await c.groups.approveMembershipRequests('s', 'g1@g.us', ['a@c.us']);
+    expect(t.lastCall!.url).toContain('/membership-requests/approve');
+    expect(t.lastCall!.body).toEqual({ participants: ['a@c.us'] });
+
+    // Omitting the list means "every pending request" — it must send an empty object, not
+    // `{ participants: undefined }`, which would read as an explicit empty selection.
+    await c.groups.rejectMembershipRequests('s', 'g1@g.us');
+    expect(t.lastCall!.url).toContain('/membership-requests/reject');
+    expect(t.lastCall!.body).toEqual({});
+  });
+
   it('joinGroup posts the invite code to /groups/join', async () => {
     const t = new MockTransport().on('POST', /\/groups\/join$/, { body: { success: true, groupId: 'g1@g.us' } });
     const res = await client(t).groups.joinGroup('s', { inviteCode: 'AbCdEf' });
@@ -104,6 +128,13 @@ describe('ProfileResource — exact paths and bodies', () => {
     await client(t).profile.setProfilePicture('s', { base64: 'aGVsbG8=', mimetype: 'image/png' });
     expect(t.lastCall!.body).toEqual({ base64: 'aGVsbG8=', mimetype: 'image/png' });
   });
+  it('deleteProfilePicture sends DELETE to the picture route with no body', async () => {
+    const t = new MockTransport().on('DELETE', /\/profile\/picture$/, { body: { success: true } });
+    await client(t).profile.deleteProfilePicture('s');
+    expect(t.lastCall!.method).toBe('DELETE');
+    expect(t.lastCall!.url).toBe('http://x/api/sessions/s/profile/picture');
+    expect(t.lastCall!.body).toBeUndefined();
+  });
 });
 
 describe('CallsResource — exact paths', () => {
@@ -113,6 +144,34 @@ describe('CallsResource — exact paths', () => {
     expect(t.lastCall!.url).toBe('http://x/api/sessions/s/calls/CALL123/reject');
     expect(t.lastCall!.body).toBeUndefined();
     expect(res.success).toBe(true);
+  });
+});
+
+describe('MediaResource — exact paths', () => {
+  it('conversionStatus GETs the convert root', async () => {
+    const t = new MockTransport().on('GET', /\/media\/convert$/, { body: { available: true } });
+    const res = await client(t).media.conversionStatus('s');
+    expect(t.lastCall!.url).toBe('http://x/api/sessions/s/media/convert');
+    expect(res.available).toBe(true);
+  });
+
+  it('convertVoice POSTs the media to /convert/voice and returns the converted bytes', async () => {
+    const t = new MockTransport().on('POST', /\/media\/convert\/voice$/, {
+      body: { base64: 'T2dnUw==', mimetype: 'audio/ogg; codecs=opus', bytes: 8 },
+    });
+    const res = await client(t).media.convertVoice('s', { base64: 'SUQz' });
+    expect(t.lastCall!.url).toBe('http://x/api/sessions/s/media/convert/voice');
+    expect(t.lastCall!.body).toEqual({ base64: 'SUQz' });
+    expect(res.mimetype).toBe('audio/ogg; codecs=opus');
+  });
+
+  it('convertVideo forwards a url variant verbatim', async () => {
+    const t = new MockTransport().on('POST', /\/media\/convert\/video$/, {
+      body: { base64: 'AAAA', mimetype: 'video/mp4', bytes: 4 },
+    });
+    await client(t).media.convertVideo('s', { url: 'https://example.com/clip.mov' });
+    expect(t.lastCall!.url).toBe('http://x/api/sessions/s/media/convert/video');
+    expect(t.lastCall!.body).toEqual({ url: 'https://example.com/clip.mov' });
   });
 });
 
@@ -144,6 +203,27 @@ describe('ContactsResource — exact paths', () => {
     await c.contacts.unblock('s', 'a@c.us');
     expect(t.lastCall!.method).toBe('DELETE');
   });
+
+  it('listBlocked — GET the session-wide blocked list, no contact id and no body', async () => {
+    const t = new MockTransport().on('GET', /\/contacts\/blocked$/, { body: ['a@c.us', 'b@c.us'] });
+    const res = await client(t).contacts.listBlocked('s');
+
+    expect(t.lastCall!.method).toBe('GET');
+    // Session-wide: no contact id in the path, and not the /contacts list route either.
+    expect(t.lastCall!.url).toBe('http://x/api/sessions/s/contacts/blocked');
+    expect(t.lastCall!.body).toBeUndefined();
+    expect(res).toEqual(['a@c.us', 'b@c.us']);
+  });
+
+  it('profilePictures batch-resolves ids via the ids query param', async () => {
+    const t = new MockTransport().on('GET', /\/contacts\/profile-pictures$/, {
+      body: { pictures: { 'a@c.us': 'http://p/a', 'b@c.us': null } },
+    });
+    const res = await client(t).contacts.profilePictures('s', ['a@c.us', 'b@c.us']);
+    expect(t.lastCall!.method).toBe('GET');
+    expect(t.lastCall!.url).toBe('http://x/api/sessions/s/contacts/profile-pictures?ids=a%40c.us%2Cb%40c.us');
+    expect(res.pictures).toEqual({ 'a@c.us': 'http://p/a', 'b@c.us': null });
+  });
 });
 
 describe('WebhooksResource — exact paths', () => {
@@ -154,7 +234,17 @@ describe('WebhooksResource — exact paths', () => {
         body: { id: 'w1', sessionId: 's', url: 'u', events: ['*'], active: true, createdAt: '', updatedAt: '' },
       })
       .on('POST', /\/webhooks$/, {
-        body: { id: 'w1', sessionId: 's', url: 'u', events: ['*'], active: true, retryCount: 5, lastTriggeredAt: null, createdAt: '', updatedAt: '' },
+        body: {
+          id: 'w1',
+          sessionId: 's',
+          url: 'u',
+          events: ['*'],
+          active: true,
+          retryCount: 5,
+          lastTriggeredAt: null,
+          createdAt: '',
+          updatedAt: '',
+        },
       })
       .on('PUT', /\/webhooks\/w1$/, {
         body: { id: 'w1', sessionId: 's', url: 'u', events: ['*'], active: false, createdAt: '', updatedAt: '' },
@@ -176,18 +266,91 @@ describe('WebhooksResource — exact paths', () => {
     await c.webhooks.test('s', 'w1');
     expect(t.lastCall!.url).toContain('/webhooks/w1/test');
   });
+
+  it('create forwards polymorphic filter values (string, string[], boolean) verbatim', async () => {
+    const t = new MockTransport().on('POST', /\/webhooks$/, {
+      body: { id: 'w1', sessionId: 's', url: 'u', events: ['*'], active: true, createdAt: '', updatedAt: '' },
+    });
+    const filters: WebhookFilters = {
+      conditions: [
+        { field: 'sender', operator: 'is', value: ['123@c.us'] },
+        { field: 'body', operator: 'contains', value: 'invoice', caseSensitive: true },
+        { field: 'isGroup', operator: 'is', value: false },
+      ],
+    };
+    await client(t).webhooks.create('s', { url: 'u', events: ['message.received'], filters });
+    expect(t.lastCall!.body).toEqual({ url: 'u', events: ['message.received'], filters });
+  });
 });
 
 describe('StatusResource — nested media bodies', () => {
   it('sendImage/sendVideo forward the server-required nested {image|video:{...}} shape', async () => {
     const t = new MockTransport()
-      .on('POST', /\/status\/send-image$/, { body: { statusId: 's1', timestamp: '2025-01-01T00:00:00.000Z', expiresAt: '2025-01-02T00:00:00.000Z' } })
-      .on('POST', /\/status\/send-video$/, { body: { statusId: 's2', timestamp: '2025-01-01T00:00:00.000Z', expiresAt: '2025-01-02T00:00:00.000Z' } });
+      .on('POST', /\/status\/send-image$/, {
+        body: { statusId: 's1', timestamp: '2025-01-01T00:00:00.000Z', expiresAt: '2025-01-02T00:00:00.000Z' },
+      })
+      .on('POST', /\/status\/send-video$/, {
+        body: { statusId: 's2', timestamp: '2025-01-01T00:00:00.000Z', expiresAt: '2025-01-02T00:00:00.000Z' },
+      });
     const c = client(t);
     await c.status.sendImage('s', { image: { url: 'http://img' }, recipients: ['a@c.us'], caption: 'hi' });
     expect(t.lastCall!.body).toEqual({ image: { url: 'http://img' }, recipients: ['a@c.us'], caption: 'hi' });
     await c.status.sendVideo('s', { video: { url: 'http://vid' }, recipients: ['a@c.us'] });
     expect(t.lastCall!.body).toEqual({ video: { url: 'http://vid' }, recipients: ['a@c.us'] });
+  });
+
+  // A voice status wraps its media under `audio` and carries no caption at all.
+  it('sendVoice forwards the audio wrapper to send-voice', async () => {
+    const t = new MockTransport().on('POST', /\/status\/send-voice$/, {
+      body: { statusId: 's3', timestamp: '2025-01-01T00:00:00.000Z', expiresAt: '2025-01-02T00:00:00.000Z' },
+    });
+    await client(t).status.sendVoice('s', { audio: { base64: 'T2dnUw==' }, recipients: ['a@c.us'] });
+    expect(t.lastCall!.url).toBe('http://x/api/sessions/s/status/send-voice');
+    expect(t.lastCall!.body).toEqual({ audio: { base64: 'T2dnUw==' }, recipients: ['a@c.us'] });
+  });
+
+  it('votePoll posts the option texts', async () => {
+    const t = new MockTransport().on('POST', /\/messages\/vote-poll$/, { body: { success: true } });
+    await client(t).messages.votePoll('s', { chatId: 'c1', pollMessageId: 'p1', options: ['Pizza'] });
+    expect(t.lastCall!.url).toBe('http://x/api/sessions/s/messages/vote-poll');
+    expect(t.lastCall!.body).toEqual({ chatId: 'c1', pollMessageId: 'p1', options: ['Pizza'] });
+  });
+
+  it('star posts the boolean through', async () => {
+    const t = new MockTransport().on('POST', /\/messages\/star$/, { body: { success: true } });
+    await client(t).messages.star('s', { chatId: 'c1', messageId: 'm1', star: false });
+    expect(t.lastCall!.url).toBe('http://x/api/sessions/s/messages/star');
+    expect(t.lastCall!.body).toEqual({ chatId: 'c1', messageId: 'm1', star: false });
+  });
+
+  it('pin and unpin post to their own routes', async () => {
+    const t = new MockTransport().on('POST', /\/messages\/(un)?pin$/, { body: { success: true } });
+    const c = client(t);
+    await c.messages.pin('s', { chatId: 'c1', messageId: 'm1', durationSeconds: 604800 });
+    expect(t.lastCall!.url).toBe('http://x/api/sessions/s/messages/pin');
+    expect(t.lastCall!.body).toEqual({ chatId: 'c1', messageId: 'm1', durationSeconds: 604800 });
+    await c.messages.unpin('s', { chatId: 'c1', messageId: 'm1' });
+    expect(t.lastCall!.url).toBe('http://x/api/sessions/s/messages/unpin');
+  });
+
+  it('message media fetches the archived bytes with their content type', async () => {
+    const t = new MockTransport().on('GET', /\/messages\/c1\/m1\/media$/, {
+      text: 'PNG_BYTES',
+      contentType: 'image/png',
+    });
+    const res = await client(t).messages.media('s', 'c1', 'm1');
+    expect(t.lastCall!.method).toBe('GET');
+    expect(t.lastCall!.url).toBe('http://x/api/sessions/s/messages/c1/m1/media');
+    expect(res.contentType).toBe('image/png');
+  });
+
+  it('media fetches the stored status bytes with their content type', async () => {
+    const t = new MockTransport().on('GET', /\/status\/w1\/media$/, { text: 'PNG_BYTES', contentType: 'image/png' });
+    const res = await client(t).status.media('s', 'w1');
+    expect(t.lastCall!.method).toBe('GET');
+    expect(t.lastCall!.url).toBe('http://x/api/sessions/s/status/w1/media');
+    expect(new TextDecoder().decode(res.data)).toBe('PNG_BYTES');
+    expect(res.contentType).toBe('image/png');
   });
 });
 
@@ -210,6 +373,88 @@ describe('ChatsResource — exact paths', () => {
   });
 });
 
+describe('ChatsResource.clearMessages', () => {
+  it('DELETEs the chat messages sub-resource', async () => {
+    const t = new MockTransport().on('DELETE', /\/chats\/.+\/messages$/, { body: { success: true } });
+    await client(t).chats.clearMessages('s', 'a@c.us');
+    expect(t.lastCall!.method).toBe('DELETE');
+    expect(t.lastCall!.url).toBe('http://x/api/sessions/s/chats/a@c.us/messages');
+  });
+});
+
+describe('GroupsResource picture', () => {
+  it('GETs, PUTs and DELETEs the picture sub-resource', async () => {
+    const t = new MockTransport()
+      .on('GET', /\/groups\/[^/]+\/picture$/, { body: { url: 'https://x/p.jpg' } })
+      .on('PUT', /\/groups\/[^/]+\/picture$/, { body: { success: true } })
+      .on('DELETE', /\/groups\/[^/]+\/picture$/, { body: { success: true } });
+    const c = client(t);
+    expect(await c.groups.getPicture('s', 'g@g.us')).toEqual({ url: 'https://x/p.jpg' });
+    await c.groups.setPicture('s', 'g@g.us', { url: 'https://x/new.jpg' });
+    expect(t.lastCall!.method).toBe('PUT');
+    expect(t.lastCall!.url).toBe('http://x/api/sessions/s/groups/g@g.us/picture');
+    await c.groups.deletePicture('s', 'g@g.us');
+    expect(t.lastCall!.method).toBe('DELETE');
+  });
+});
+
+describe('ContactsResource addressbook', () => {
+  it('PUTs the contact and DELETEs it by the same path', async () => {
+    const t = new MockTransport()
+      .on('PUT', /\/contacts\/[^/]+$/, { body: { success: true } })
+      .on('DELETE', /\/contacts\/[^/]+$/, { body: { success: true } });
+    const c = client(t);
+    await c.contacts.upsert('s', 'a@c.us', { firstName: 'Ada' });
+    expect(t.lastCall!.method).toBe('PUT');
+    expect(t.lastCall!.url).toBe('http://x/api/sessions/s/contacts/a@c.us');
+    expect(t.lastCall!.body).toEqual({ firstName: 'Ada' });
+    await c.contacts.delete('s', 'a@c.us');
+    expect(t.lastCall!.method).toBe('DELETE');
+  });
+});
+
+describe('ChatsResource.archive', () => {
+  it('posts chatId and the archive flag', async () => {
+    const t = new MockTransport().on('POST', /\/chats\/archive$/, { body: { success: true } });
+    await client(t).chats.archive('s', { chatId: 'a@c.us', archive: true });
+    expect(t.lastCall!.url).toBe('http://x/api/sessions/s/chats/archive');
+    expect(t.lastCall!.body).toEqual({ chatId: 'a@c.us', archive: true });
+  });
+});
+
+describe('ChatsResource.pin', () => {
+  it('posts chatId and the pin flag', async () => {
+    const t = new MockTransport().on('POST', /\/chats\/pin$/, { body: { success: true } });
+    await client(t).chats.pin('s', { chatId: 'a@c.us', pin: true });
+    expect(t.lastCall!.url).toBe('http://x/api/sessions/s/chats/pin');
+    expect(t.lastCall!.body).toEqual({ chatId: 'a@c.us', pin: true });
+  });
+
+  it('reports the three-pin refusal rather than throwing', async () => {
+    const t = new MockTransport().on('POST', /\/chats\/pin$/, { body: { success: false } });
+    await expect(client(t).chats.pin('s', { chatId: 'a@c.us', pin: true })).resolves.toEqual({ success: false });
+  });
+});
+
+describe('ChatsResource.mute', () => {
+  // muteUntil must survive as the exact epoch-millisecond number given. A client that divided by
+  // 1000, or stringified it, would still get a 200 back — the wrong unit is only visible here.
+  it('sends muteUntil as epoch milliseconds, unchanged', async () => {
+    const t = new MockTransport().on('POST', /\/chats\/mute$/, { body: { success: true } });
+    await client(t).chats.mute('s', { chatId: 'a@c.us', muteUntil: 1893456000000 });
+    expect(t.lastCall!.url).toBe('http://x/api/sessions/s/chats/mute');
+    expect(t.lastCall!.body).toEqual({ chatId: 'a@c.us', muteUntil: 1893456000000 });
+  });
+
+  // null is the unmute signal and is NOT the same as omitting the field, which the route rejects.
+  it('sends an explicit null to unmute rather than dropping the key', async () => {
+    const t = new MockTransport().on('POST', /\/chats\/mute$/, { body: { success: true } });
+    await client(t).chats.mute('s', { chatId: 'a@c.us', muteUntil: null });
+    expect(t.lastCall!.body).toEqual({ chatId: 'a@c.us', muteUntil: null });
+    expect(Object.keys(t.lastCall!.body as object)).toContain('muteUntil');
+  });
+});
+
 describe('HealthResource + auth — exact paths', () => {
   it('health/live/ready and auth validate', async () => {
     const t = new MockTransport()
@@ -225,6 +470,21 @@ describe('HealthResource + auth — exact paths', () => {
     await c.auth();
     expect(t.lastCall!.method).toBe('POST');
     expect(t.lastCall!.url).toBe('http://x/api/auth/validate');
+  });
+});
+
+describe('CallsResource — call link', () => {
+  it('createLink posts to /calls/link with the type and start time', async () => {
+    const t = new MockTransport().on('POST', /\/calls\/link$/, {
+      body: { link: 'https://call.whatsapp.com/video/AbC' },
+    });
+    const res = await client(t).calls.createLink('s', { type: 'video', startTime: 1800000000000 });
+
+    expect(t.lastCall!.method).toBe('POST');
+    // Session-wide: no call id in the path, and not the reject route.
+    expect(t.lastCall!.url).toBe('http://x/api/sessions/s/calls/link');
+    expect(t.lastCall!.body).toEqual({ type: 'video', startTime: 1800000000000 });
+    expect(res.link).toContain('call.whatsapp.com');
   });
 });
 

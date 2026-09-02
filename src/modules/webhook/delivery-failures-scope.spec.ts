@@ -20,7 +20,9 @@ describe('WebhookService.listDeliveryFailures session scoping', () => {
     await ds.initialize();
     const failureRepo = ds.getRepository(WebhookDeliveryFailure);
     const cfg = { get: () => false };
-    service = new WebhookService({} as never, failureRepo, cfg as never, {} as never, undefined);
+    // 2nd arg is the delivery-failure repo; the webhook/session repos and the delivery service
+    // (5th arg) are never touched by the scoping paths under test.
+    service = new WebhookService({} as never, failureRepo, {} as never, cfg as never, {} as never);
     for (const sessionId of ['sessA', 'sessB']) {
       await failureRepo.save(
         failureRepo.create({

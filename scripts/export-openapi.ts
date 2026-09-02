@@ -12,7 +12,7 @@ import { SwaggerModule } from '@nestjs/swagger';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createSwaggerConfig, exemptPublicOperations } from '../src/config/swagger.config';
+import { createSwaggerConfig, dropUnexpressibleOperations, exemptPublicOperations } from '../src/config/swagger.config';
 
 // Pin a hermetic env BEFORE AppModule is imported. AppModule reads QUEUE_ENABLED / MCP_ENABLED at
 // module top-level (its conditional module mounts) and TypeORM reads the DB settings during
@@ -24,6 +24,13 @@ process.env.QUEUE_ENABLED = 'false';
 process.env.MCP_ENABLED = 'false';
 process.env.AUTO_START_SESSIONS = 'false';
 process.env.DATABASE_TYPE = 'sqlite';
+// Keep the throttler storage in-memory: with REDIS_ENABLED=true in the caller's env the export
+// would open a Redis connection for no benefit (the document doesn't change either way).
+process.env.REDIS_ENABLED = 'false';
+// The search module mounts conditionally on SEARCH_ENABLED (app.module.ts top-level), so an
+// export run with SEARCH_ENABLED=false in the caller's env would silently drop /api/search from
+// the snapshot. Pin it on — the committed snapshot documents the full default surface.
+process.env.SEARCH_ENABLED = 'true';
 // The 'data' connection must use a real SQLite file path to satisfy env-validation (an in-memory or
 // bare value is rejected to catch PostgreSQL db-name leaks — see env.validation.ts). Use a temp dir
 // so the export stays hermetic; the whole dir is removed in main()'s finally, and recursive rmSync
@@ -54,16 +61,20 @@ async function main() {
   app.setGlobalPrefix('api');
   try {
     const doc = SwaggerModule.createDocument(app, createSwaggerConfig());
+    // Before the exemption pass, so it never spends work on an operation about to be removed.
+    dropUnexpressibleOperations(doc);
     exemptPublicOperations(doc);
     writeFileSync(out, JSON.stringify(doc, null, 2) + '\n');
-    console.log(`✓ OpenAPI snapshot written to ${out} (version ${doc.info.version}, ${Object.keys(doc.paths).length} paths)`);
+    console.log(
+      `✓ OpenAPI snapshot written to ${out} (version ${doc.info.version}, ${Object.keys(doc.paths).length} paths)`,
+    );
   } finally {
     await app.close();
     rmSync(exportDataDir, { recursive: true, force: true });
   }
 }
 
-void main().catch((e) => {
+void main().catch(e => {
   console.error(e);
   process.exit(1);
 });

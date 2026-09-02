@@ -1,11 +1,13 @@
 import {
   capInboundMedia,
+  chatHistoryMediaBudgetBytes,
   inboundMediaMaxBytes,
   inboundMediaConcurrency,
   inboundMediaTimeoutMs,
   withInboundDownloadTimeout,
   coerceDeclaredSize,
   isMediaDownloadEnabled,
+  ingestMediaBudgetBytes,
 } from './inbound-media-cap';
 
 describe('inbound media cap', () => {
@@ -171,6 +173,30 @@ describe('inbound media cap', () => {
     });
   });
 
+  describe('chatHistoryMediaBudgetBytes', () => {
+    const ENV = 'CHAT_HISTORY_MEDIA_BUDGET_BYTES';
+    const orig = process.env[ENV];
+    afterEach(() => {
+      if (orig === undefined) delete process.env[ENV];
+      else process.env[ENV] = orig;
+    });
+
+    it('defaults to 25 MiB', () => {
+      delete process.env[ENV];
+      expect(chatHistoryMediaBudgetBytes()).toBe(25 * 1024 * 1024);
+    });
+    it('honors a positive override', () => {
+      process.env[ENV] = '1024';
+      expect(chatHistoryMediaBudgetBytes()).toBe(1024);
+    });
+    it('falls back to the default for a non-positive/garbage override', () => {
+      process.env[ENV] = '0';
+      expect(chatHistoryMediaBudgetBytes()).toBe(25 * 1024 * 1024);
+      process.env[ENV] = 'abc';
+      expect(chatHistoryMediaBudgetBytes()).toBe(25 * 1024 * 1024);
+    });
+  });
+
   describe('capInboundMedia', () => {
     it('keeps media within the cap, encoding base64 exactly once', () => {
       const toBase64 = jest.fn(() => 'BASE64DATA');
@@ -204,5 +230,28 @@ describe('inbound media cap', () => {
       expect(res.data).toBe('D');
       expect(res.omitted).toBeUndefined();
     });
+  });
+});
+
+describe('ingestMediaBudgetBytes', () => {
+  // An ingest caller (the status seed) needs more headroom than one HTTP response, but "more" must
+  // never mean unbounded: at a 10 MiB per-item cap a 50-item seed would otherwise stack ~650 MiB of
+  // base64 on the heap at connect time.
+  it('stays finite and scales with the per-item cap', () => {
+    const budget = ingestMediaBudgetBytes(10 * 1024 * 1024);
+    expect(Number.isFinite(budget)).toBe(true);
+    expect(budget).toBeGreaterThan(ingestMediaBudgetBytes(1024));
+  });
+
+  it('leaves room for several full-size items (the two-videos case that motivated it)', () => {
+    const perItem = 10 * 1024 * 1024;
+    // ~1.37x accounts for base64 inflation of the decoded cap.
+    expect(ingestMediaBudgetBytes(perItem)).toBeGreaterThan(2 * perItem * 1.37);
+  });
+
+  it('never drops below the response budget, and falls back to it for a garbage cap', () => {
+    expect(ingestMediaBudgetBytes(1)).toBe(chatHistoryMediaBudgetBytes());
+    expect(ingestMediaBudgetBytes(0)).toBe(chatHistoryMediaBudgetBytes());
+    expect(ingestMediaBudgetBytes(Number.NaN)).toBe(chatHistoryMediaBudgetBytes());
   });
 });

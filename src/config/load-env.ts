@@ -2,7 +2,7 @@ import * as dotenv from 'dotenv';
 import * as fs from 'fs';
 import * as path from 'path';
 import { writeSecretFile } from '../common/utils/secret-file';
-import { clearBlankEnv, BLANK_SHADOWED_ENV_KEYS } from './env-precedence';
+import { clearBlankEnv, recordOsEnvKeys, recordPinnedEnvKeys, BLANK_SHADOWED_ENV_KEYS } from './env-precedence';
 
 /**
  * Load configuration into process.env BEFORE any application module is imported.
@@ -49,11 +49,22 @@ export function loadEnvironment(): void {
   // selection and the external-Postgres password).
   clearBlankEnv(process.env, BLANK_SHADOWED_ENV_KEYS);
 
+  // Snapshot what the HOST supplied, before the two file layers below are merged in. Afterwards a
+  // file value is indistinguishable from an orchestrator override — both just sit in process.env —
+  // so anything asking "is this key overridden?" (the save-config boot guard) needs this record.
+  recordOsEnvKeys(process.env);
+
   // 2. User-managed .env (does not override real process env)
   if (fs.existsSync(userEnvPath)) {
     console.log('[Bootstrap] Loading .env from:', userEnvPath);
     dotenv.config({ path: userEnvPath, override: false });
   }
+
+  // Snapshot the layers that will SHADOW the dashboard-saved file — process env plus the .env just
+  // merged above. Taken here rather than reconstructed later because once the file is merged in, all
+  // three layers are indistinguishable inside process.env, and the Infrastructure page needs to tell
+  // "an environment variable pins this" apart from "saved, pending a restart" (#1082).
+  recordPinnedEnvKeys(process.env);
 
   // 3. Dashboard-saved config (does not override .env or process env)
   if (fs.existsSync(generatedEnvPath)) {
