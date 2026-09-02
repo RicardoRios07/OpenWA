@@ -268,7 +268,7 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 EXPOSE 2785
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=240s --retries=3 \
     CMD curl -f http://localhost:2785/api/health/ready || exit 1
 
 # dumb-init is PID 1 and handles signal forwarding.
