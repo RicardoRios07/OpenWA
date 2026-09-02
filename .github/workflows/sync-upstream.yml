@@ -47,5 +47,8 @@ jobs:
       - name: Push to fork
         if: steps.sync.outputs.before != steps.sync.outputs.after
         run: |
+          # actions/checkout registra el GITHUB_TOKEN de la App como extraheader
+          # que gana sobre el PAT de la URL (matchea https://github.com/ completo).
+          git config --unset-all http.https://github.com/.extraheader || true
           git remote set-url origin "https://x-access-token:${{ secrets.OPENWA_SYNC_PAT }}@github.com/RicardoRios07/OpenWA.git"
           git push origin main
