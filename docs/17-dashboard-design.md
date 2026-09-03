@@ -102,7 +102,8 @@ a non-admin hitting the path falls through to the `*` redirect.
 /                  → Dashboard (overview + charts)
 /sessions          → Sessions (create / start / stop / QR / delete)
 /chats             → Chats (Chats / Channels / Status tabs; chat list + message thread live via
-                     WebSocket; read-only channel feed on whatsapp-web.js)
+                     WebSocket; thread pages older history in on scroll-up; read-only channel
+                     feed on whatsapp-web.js)
 /webhooks          → Webhooks (per-session webhook endpoints)
 /templates         → Message Templates
 /message-tester    → Message Tester (ad-hoc send-* + check-number)
@@ -401,6 +402,13 @@ package to pull from.
 Chat-specific pieces live one level down in `components/chats/`: `MessageBody` (WhatsApp text
 formatting + link detection) and `MediaLightbox` (the media viewer, built on
 `yet-another-react-lightbox`).
+
+The message thread is paged. `useChatMessages` is a `useInfiniteQuery` whose cursor is the number
+of DB rows fetched so far, not the length of the rendered list — the thread also carries engine
+history and drops the duplicates between the two, so its length is not an offset the gateway would
+agree with. Reaching the top requests the next page; the reading position is held across the
+prepend rather than jumping. Both rules are pure functions with tests: `utils/messagePages.ts` for
+the cursor, `shouldFetchOlderMessages` in `utils/scrollDecision.ts` for when to ask.
 
 Pages live under `dashboard/src/pages/`, each as a `*.tsx` + `*.css` pair (e.g. `Sessions.tsx` +
 `Sessions.css`). Pages are lazy-loaded in `App.tsx` via `React.lazy` + `Suspense`.

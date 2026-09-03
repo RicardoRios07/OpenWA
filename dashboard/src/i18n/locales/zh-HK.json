@@ -88,6 +88,8 @@
     "unreadBadge": "{{count}} 條未讀訊息",
     "unreadBadge_other": "{{count}} 條未讀訊息",
     "loadingMessages": "正在載入訊息...",
+    "loadingOlderMessages": "正在載入較舊的訊息...",
+    "loadOlderMessagesError": "無法載入較舊的訊息。向上捲動重試。",
     "noMessagesInChat": "尚無訊息。傳送第一則訊息即可開始！",
     "downloadDocument": "下載文件",
     "actions": {

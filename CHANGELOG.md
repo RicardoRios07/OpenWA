@@ -41,6 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ([#1474](https://github.com/rmyndharis/OpenWA/issues/1474)). Thanks @vitusan.
 - Sessions dashboard: set a proxy when creating a session, and view, change or clear it afterwards.
   Thanks @vitusan.
+- The dashboard chat room loads older history as you scroll up. It used to show one fixed window —
+  the newest 100 persisted rows plus up to 100 rows of engine history merged in, so roughly 200
+  messages — with no way to reach anything older. Pages are requested by the number of DB rows
+  already fetched, not by the length of the rendered thread, which also carries engine-history
+  items, so no row is skipped between pages; and the reading position is held when a page is
+  prepended rather than jumping. Thanks @JuanGalzerano.
 
 ### Changed
 
@@ -93,6 +99,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   check. Ten of these routes now declare `503` in the API contract; the message send routes keep
   answering `500` deliberately, because `503` is replay-safe in the SDK clients and a replayed send
   would duplicate the message.
+- The seven routes that answer the media byte cap's `413` now declare it: the five media sends,
+  `send-bulk` and the group picture. Only the media conversions, the status sends and the profile
+  picture declared it before, and `docs/06` described the same rejection as a `400` on two of them, so
+  a client written against the contract handled a status the gateway never sends. Behaviour is
+  unchanged. Thanks @onepay-ye for the report.
+- `.env.example` no longer describes an oversized base64 send as a `400` (it is `413`), and its S3
+  block no longer implies `MINIO_BUILTIN=true` fills in the credentials. Only saving storage from the
+  dashboard writes them, so a hand-edited file gets the bundled MinIO container and no keys, and media
+  is written to local disk while the bucket stays empty. Thanks @onepay-ye for the report.
 
 ### Dependencies
 

@@ -3,10 +3,10 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Loader2, Paperclip, Send, Smile, X } from 'lucide-react';
 import { messageApi, type Chat, type MessageType } from '../../services/api';
-import { mergeOrAppend, type ChatMessageView } from '../../utils/chatMessages';
+import { type ChatMessageView } from '../../utils/chatMessages';
 import { promoteChatWithSnippet } from '../../utils/chatList';
 import { buildMediaSendPayload, buildOptimisticMetadata, quotedIdOf } from '../../utils/composerSend';
-import { messagesQueryKey, useChatMessagesActions } from '../../hooks/useChatMessages';
+import { messagesQueryKey, useChatMessagesActions, upsertCachedMessage } from '../../hooks/useChatMessages';
 import { useRole } from '../../hooks/useRole';
 import { useToast } from '../../hooks/useToast';
 import type { ScrollDirection } from '../../utils/scrollDecision';
@@ -235,22 +235,13 @@ function ChatComposer({
       // payload (a Baileys API send echoes only a marker), so dropping the placeholder would erase
       // the attachment's base64 and leave a bare "📎 Media" bubble until the next refetch.
       const sendKey = messagesQueryKey(selectedSessionId, activeChat.id);
-      queryClient.setQueryData<ChatMessageView[]>(sendKey, (prev = []) => {
-        const reconciled: ChatMessageView = {
-          ...tempMessage,
-          id: result.messageId,
-          waMessageId: result.messageId,
-          status: 'sent',
-        };
-        const echoAlreadyAdded = prev.some(m => m.id === result.messageId || m.waMessageId === result.messageId);
-        if (echoAlreadyAdded) {
-          return mergeOrAppend(
-            prev.filter(m => m.id !== tempId),
-            reconciled,
-          );
-        }
-        return prev.map(m => (m.id === tempId ? reconciled : m));
-      });
+      const reconciled: ChatMessageView = {
+        ...tempMessage,
+        id: result.messageId,
+        waMessageId: result.messageId,
+        status: 'sent',
+      };
+      upsertCachedMessage(queryClient, sendKey, reconciled, { dropId: tempId });
 
       // Update sidebar chat list (move active chat to the top with the new snippet)
       const snippet = currentAttachment ? `[${currentAttachment.mimetype.split('/')[0]}]` : textToSend;

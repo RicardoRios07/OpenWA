@@ -810,9 +810,13 @@ export const sessionApi = {
       method: 'POST',
       body: JSON.stringify({ chatId }),
     }),
-  getChatMessages: (id: string, chatId: string, limit = 100) =>
+  // `offset` counts DB rows already fetched for this chat, never rendered rows: the thread merges
+  // these with engine history, so paging by the merged length would skip DB rows. `total` is not
+  // read to decide whether an older page exists — a page short of `limit` is; a chat with live
+  // traffic keeps growing `total` after the fact, so comparing rows-held against it stops early.
+  getChatMessages: (id: string, chatId: string, limit = 100, offset = 0) =>
     request<{ messages: ChatMessage[]; total: number }>(
-      `/sessions/${id}/messages?chatId=${encodeURIComponent(chatId)}&limit=${limit}`,
+      `/sessions/${id}/messages?chatId=${encodeURIComponent(chatId)}&limit=${limit}&offset=${offset}`,
     ),
   // Live history straight from WhatsApp (bypasses the DB) — backfills a thread the gateway never
   // captured, e.g. a freshly paired session whose persisted store is still empty.

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState, type RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, CornerUpLeft, Loader2, MessageSquare, Smile, Trash2 } from 'lucide-react';
+import { AlertCircle, ChevronDown, CornerUpLeft, Loader2, MessageSquare, Smile, Trash2 } from 'lucide-react';
 import { sessionApi, type Chat } from '../../services/api';
 import { getMediaSrc, senderKey, type ChatMessageView } from '../../utils/chatMessages';
+import { shouldFetchOlderMessages } from '../../utils/scrollDecision';
 import MessageBody from './MessageBody';
 
 // Stable per-sender colour for group message labels, like WhatsApp gives each participant a colour.
@@ -23,7 +24,11 @@ interface ChatThreadProps {
   loadingMessages: boolean;
   messagesError: boolean;
   messagesContainerRef: RefObject<HTMLDivElement | null>;
-  onMediaLoad: () => void;
+  /** Whether an older page of this chat's history exists. */
+  hasMoreMessages: boolean;
+  loadingOlderMessages: boolean;
+  onLoadOlderMessages: () => void;
+  onMediaLoad: (event?: { currentTarget: Element | null }) => void;
   onOpenImage: (messageId: string) => void;
   onReply: (message: ChatMessageView) => void;
   onReact: (message: ChatMessageView, emoji: string) => void;
@@ -41,6 +46,9 @@ function ChatThread({
   loadingMessages,
   messagesError,
   messagesContainerRef,
+  hasMoreMessages,
+  loadingOlderMessages,
+  onLoadOlderMessages,
   onMediaLoad,
   onOpenImage,
   onReply,
@@ -98,9 +106,20 @@ function ChatThread({
   useEffect(() => {
     const el = messagesContainerRef.current;
     if (!el) return undefined;
-    const onScroll = () => {
+    const onScroll = (event?: Event) => {
       // 120px gap = a couple of message bubbles before counting as "scrolled up".
       setShowJumpToBottom(el.scrollHeight - el.scrollTop - el.clientHeight > 120);
+      const geometry = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight };
+      if (
+        shouldFetchOlderMessages({
+          isUserScroll: Boolean(event),
+          geometry,
+          hasMore: hasMoreMessages,
+          isFetching: loadingOlderMessages,
+        })
+      ) {
+        onLoadOlderMessages();
+      }
     };
     onScroll(); // sync initial position (e.g. saved restore landed above the bottom)
     el.addEventListener('scroll', onScroll, { passive: true });
@@ -141,12 +160,34 @@ function ChatThread({
           <ChevronDown size={22} />
         </button>
       )}
+      {/* Older-page spinner, or the failure in its place. An in-flow sibling before the thread, not
+          an overlay — it pushes the oldest bubble down, which is why useChatScrollPosition reads
+          this container's height at REQUEST time (before this renders), not on whichever commit
+          happens to change it first. Shown whenever there IS a thread to sit above — including a
+          failed older-page fetch with messages already loaded, which must not fall through to the
+          full-screen error below: that would replace the loaded thread with a placeholder,
+          collapsing the scroll container so the failed page can never be retried by scrolling. */}
+      {!loadingMessages && (loadingOlderMessages || (messagesError && messages.length > 0)) && (
+        <div className="messages-loading-older">
+          {loadingOlderMessages ? (
+            <>
+              <Loader2 className="animate-spin" size={18} />
+              <span>{t('chats.loadingOlderMessages')}</span>
+            </>
+          ) : (
+            <>
+              <AlertCircle size={18} />
+              <span>{t('chats.loadOlderMessagesError')}</span>
+            </>
+          )}
+        </div>
+      )}
       {loadingMessages ? (
         <div className="messages-loading">
           <Loader2 className="animate-spin" size={32} />
           <span>{t('chats.loadingMessages')}</span>
         </div>
-      ) : messagesError ? (
+      ) : messagesError && messages.length === 0 ? (
         <div className="messages-empty">
           <MessageSquare size={32} />
           <span>{t('chats.loadMessagesError')}</span>

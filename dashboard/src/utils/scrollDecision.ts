@@ -30,3 +30,30 @@ export function decideScroll(
   const gap = geometry.scrollHeight - geometry.scrollTop - geometry.clientHeight;
   return gap < nearBottomThreshold ? 'bottom' : 'preserve';
 }
+
+/** How close to the top counts as "reading back through the thread". */
+const NEAR_TOP_THRESHOLD = 100;
+
+/**
+ * Decide whether reaching the top of the thread should pull the next older page.
+ *
+ * `isUserScroll` is load-bearing, not defensive. The thread's listener also runs a sync call on
+ * every render to refresh the scroll-to-bottom button, and a freshly opened room reports
+ * `scrollTop` 0 there — which reads as "at the top". Paging from that call cascaded: each page
+ * re-rendered, re-ran the sync call at scrollTop 0 and asked for the next one, so opening a chat
+ * pulled its whole history in one burst instead of a page at a time.
+ *
+ * The scrollable check covers the same shape from the other side: a thread shorter than its
+ * viewport sits at scrollTop 0 permanently and would page forever on any stray event.
+ */
+export function shouldFetchOlderMessages(args: {
+  isUserScroll: boolean;
+  geometry: ScrollGeometry;
+  hasMore: boolean;
+  isFetching: boolean;
+}): boolean {
+  const { isUserScroll, geometry, hasMore, isFetching } = args;
+  if (!isUserScroll || !hasMore || isFetching) return false;
+  if (geometry.scrollHeight <= geometry.clientHeight) return false;
+  return geometry.scrollTop < NEAR_TOP_THRESHOLD;
+}

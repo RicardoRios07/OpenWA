@@ -52,6 +52,7 @@ import {
   CUSTOM_LINK_PREVIEW_501,
   ENGINE_NOT_READY_409,
   ENGINE_NOT_SUPPORTED_501,
+  MEDIA_TOO_LARGE_413,
   MESSAGE_NOT_FOUND_404,
   RECIPIENT_UNREACHABLE_400,
 } from '../../common/openapi/engine-status-responses';
@@ -180,6 +181,7 @@ export class MessageController {
   })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   @ApiResponse({ status: 501, description: CHANNEL_MEDIA_501 })
+  @ApiResponse({ status: 413, description: MEDIA_TOO_LARGE_413 })
   async sendImage(
     @Param('sessionId') sessionId: string,
     @Body() dto: SendMediaMessageDto,
@@ -203,6 +205,7 @@ export class MessageController {
   })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   @ApiResponse({ status: 501, description: CHANNEL_MEDIA_501 })
+  @ApiResponse({ status: 413, description: MEDIA_TOO_LARGE_413 })
   async sendVideo(
     @Param('sessionId') sessionId: string,
     @Body() dto: SendMediaMessageDto,
@@ -226,6 +229,7 @@ export class MessageController {
   })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   @ApiResponse({ status: 501, description: CHANNEL_MEDIA_501 })
+  @ApiResponse({ status: 413, description: MEDIA_TOO_LARGE_413 })
   async sendAudio(
     @Param('sessionId') sessionId: string,
     @Body() dto: SendAudioMessageDto,
@@ -249,6 +253,7 @@ export class MessageController {
   })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   @ApiResponse({ status: 501, description: CHANNEL_MEDIA_501 })
+  @ApiResponse({ status: 413, description: MEDIA_TOO_LARGE_413 })
   async sendDocument(
     @Param('sessionId') sessionId: string,
     @Body() dto: SendMediaMessageDto,
@@ -303,6 +308,7 @@ export class MessageController {
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   @ApiResponse({ status: 400, description: RECIPIENT_UNREACHABLE_400 })
   @ApiResponse({ status: 501, description: CHANNEL_MEDIA_501 })
+  @ApiResponse({ status: 413, description: MEDIA_TOO_LARGE_413 })
   async sendSticker(
     @Param('sessionId') sessionId: string,
     @Body() dto: SendMediaMessageDto,
@@ -702,6 +708,7 @@ export class MessageController {
     status: 400,
     description: 'Session not active or invalid request',
   })
+  @ApiResponse({ status: 413, description: MEDIA_TOO_LARGE_413 })
   async sendBulk(
     @Param('sessionId') sessionId: string,
     @Body() dto: SendBulkMessageDto,

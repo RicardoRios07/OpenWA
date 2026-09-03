@@ -88,6 +88,8 @@
     "unreadBadge": "{{count}} okunmamış mesaj",
     "unreadBadge_other": "{{count}} okunmamış mesaj",
     "loadingMessages": "Mesajlar yükleniyor...",
+    "loadingOlderMessages": "Daha eski mesajlar yükleniyor...",
+    "loadOlderMessagesError": "Daha eski mesajlar yüklenemedi. Tekrar denemek için yukarı kaydırın.",
     "noMessagesInChat": "Henüz mesaj yok. Başlamak için ilk mesajı gönderin!",
     "downloadDocument": "Belgeyi indir",
     "actions": {

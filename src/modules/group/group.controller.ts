@@ -30,6 +30,7 @@ import {
   ENGINE_NOT_READY_409,
   ENGINE_REFUSED_403,
   GROUP_NOT_FOUND_404,
+  MEDIA_TOO_LARGE_413,
 } from '../../common/openapi/engine-status-responses';
 
 // Reading an invite code is admin-only, but the groups list returns every group the account
@@ -477,6 +478,7 @@ export class GroupController {
   })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   @ApiResponse({ status: 404, description: GROUP_NOT_FOUND_404 })
+  @ApiResponse({ status: 413, description: MEDIA_TOO_LARGE_413 })
   async setPicture(
     @Param('sessionId') sessionId: string,
     @Param('groupId') groupId: string,
