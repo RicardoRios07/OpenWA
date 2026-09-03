@@ -33,6 +33,10 @@ LOG_FILE="${OPENWA_HEALTH_LOG:-/var/log/vendi/openwa-health.log}"
 FORCE=0
 [ "${1:-}" = "--force" ] && FORCE=1
 
+# Lock: el canary gate puede tardar ~10 min; el cron */5 no debe lanzar otro pin.sh en paralelo.
+exec 9>"${OPENWA_PIN_LOCK:-/tmp/openwa-pin.lock}"
+flock -n 9 || { log "pin skip lock (otro pin.sh en curso)"; exit 0; }
+
 mkdir -p "$(dirname "$LOG_FILE")"
 log() { echo "$(date -u +%FT%TZ) $*" >> "$LOG_FILE"; }
 
@@ -71,6 +75,7 @@ LAST_STABLE_V="$(cat "$LAST_STABLE" 2>/dev/null || echo "")"
 if [ -n "$PIN" ] && [ -n "$LAST_STABLE_V" ] && [ "$LAST_STABLE_V" != "$PIN" ] \
    && grep -qx "$PIN" "$BAD_FILE" 2>/dev/null; then
   log "pin ROLLBACK $PIN -> $LAST_STABLE_V (pin marcado roto, auto-rollback a última estable)"
+  /usr/local/bin/openwa-notify.sh "🔁 WhatsApp: auto-rollback del pin $PIN -> $LAST_STABLE_V (build en loop de LOGOUT). Si la sesión pide QR: Admin → WhatsApp." &
   if [ "${DRY_RUN:-0}" = "1" ]; then
     echo "DRY-RUN: rollback $PIN -> $LAST_STABLE_V"
     exit 0
@@ -100,6 +105,27 @@ fi
 
 if [ "$PIN" = "$CUR" ]; then log "pin OK current=$CUR"; exit 0; fi
 
+# Gate de canary: una build NUEVA no se bumpea a prod sin test empírico
+# (incidente 02-sep: builds rotas llegaron a prod directamente). El canary
+# testea stable + la build candidata en un contenedor desechable (número
+# desechable + volumen aparte — cero riesgo para prod).
+CANARY_OK_FILE="${OPENWA_CANARY_OK_FILE:-/var/lib/vendi/openwa-canary-ok.txt}"
+CANARY_SCRIPT="${OPENWA_CANARY_SCRIPT:-/usr/local/bin/openwa-canary.sh}"
+if [ "$PIN" != "$CUR" ] && ! grep -qx "$CUR" "$CANARY_OK_FILE" 2>/dev/null; then
+  if [ "${DRY_RUN:-0}" = "1" ]; then echo "DRY-RUN: canary test para $CUR"; exit 0; fi
+  log "pin canary-gate build=$CUR nueva — corriendo canary test (origin/stable + build) antes del bump"
+  if "$CANARY_SCRIPT" test origin/stable >> "$LOG_FILE" 2>&1; then
+    echo "$CUR" >> "$CANARY_OK_FILE"
+    log "pin canary PASS build=$CUR — bump autorizado"
+    /usr/local/bin/openwa-notify.sh "✅ WhatsApp: build $CUR validada por canary — bumpeando a prod." &
+  else
+    grep -qx "$CUR" "$BAD_FILE" 2>/dev/null || echo "$CUR" >> "$BAD_FILE"
+    log "pin canary FAIL build=$CUR — marcada rota, NO se bumpea"
+    /usr/local/bin/openwa-notify.sh "❌ WhatsApp: build nueva $CUR FALLÓ el canary — marcada rota, prod NO se tocó (sigue en $PIN)." &
+    exit 0
+  fi
+fi
+
 # 3. Rate-limit.
 NOW=$(date +%s); LAST=0
 [ -f "$STATE_FILE" ] && LAST="$(cat "$STATE_FILE" 2>/dev/null || echo 0)"
@@ -107,6 +133,10 @@ if [ "$FORCE" != "1" ] && [ $(( NOW - LAST )) -lt "$MIN_INTERVAL_S" ]; then
   log "pin skip rate-limit pinned=$PIN current=$CUR next_in=$(( MIN_INTERVAL_S - (NOW-LAST) ))s"
   exit 0
 fi
+
+# ── Ventana 6h abierta: notifica el inicio del ciclo ──
+/usr/local/bin/openwa-notify.sh "🔄 WhatsApp pipeline 6h: revisión de versiones — pin=${PIN:-?}, registry=${CUR:-?}" &
+
 
 if [ "${DRY_RUN:-0}" = "1" ]; then
   log "pin DRY_RUN bump $PIN -> $CUR"
@@ -128,3 +158,4 @@ try: print(json.load(sys.stdin).get("deployments",[{}])[0].get("deployment_uuid"
 except Exception: print("")' 2>/dev/null)"
 echo "$NOW" > "$STATE_FILE"
 log "pin deployed deployment=$DEP"
+/usr/local/bin/openwa-notify.sh "🚀 WhatsApp: pin actualizado a $CUR — deploy en curso ($DEP). Si la sesión pide QR: Admin → WhatsApp." &

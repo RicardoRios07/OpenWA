@@ -118,6 +118,7 @@ if [ "${CTX_DESTROYED:-0}" -gt 0 ] || [ "${LOGOUTS:-0}" -gt 3 ]; then
   mkdir -p "$(dirname "$BAD_FILE")" 2>/dev/null || true
   [ -n "$PINNED" ] && ! grep -qx "$PINNED" "$BAD_FILE" 2>/dev/null && echo "$PINNED" >> "$BAD_FILE"
   log "ALERT engine_in_loop (logouts=$LOGOUTS ctx_destroyed=$CTX_DESTROYED) — probable version de WhatsApp Web rota. Bump WWEBJS_WEB_VERSION a $CURRENT y redeploy del OpenWA."
+  /usr/local/bin/openwa-notify.sh "🚨 WhatsApp: engine en loop de LOGOUT (logouts=$LOGOUTS ctx_destroyed=$CTX_DESTROYED) — build pineada $PINNED marcada rota. El auto-rollback/pin gestionará; revisa Admin → WhatsApp." &
 fi
 
 if [ -n "$STALE" ]; then
@@ -127,6 +128,28 @@ if [ -n "$STALE" ]; then
   else
     log "WARN version_pin_stale pinned=$PINNED current=$CURRENT — considerar bump (ver runbook en AGENTS.md)."
   fi
+fi
+
+# ── Ventana limpia (incidente 02-sep): qr_ready = esperando escaneo humano.
+# reconnect/redeploy en loop mata la sesión que se está emparejando y alimenta
+# el flagging de WhatsApp. Durante 30 min desde el primer qr_pending: NO tocar.
+QR_SINCE_FILE="${OPENWA_QR_SINCE:-/var/lib/vendi/openwa-qr-since}"
+if [ "$SESSION_STATUS" = "qr_ready" ]; then
+  NOW_E="$(date +%s)"
+  if [ ! -f "$QR_SINCE_FILE" ]; then
+    echo "$NOW_E" > "$QR_SINCE_FILE"
+    /usr/local/bin/openwa-notify.sh "⚠️ WhatsApp: la sesión pide QR — escanea en Admin → WhatsApp. Ventana limpia 30 min activada (sin reconnect/redeploy)." &
+  fi
+  QR_SINCE="$(cat "$QR_SINCE_FILE" 2>/dev/null || echo 0)"
+  if [ $(( NOW_E - QR_SINCE )) -lt 1800 ]; then
+    log "INFO qr_pending ventana limpia activa — escanear en Admin → WhatsApp (sin reconnect/redeploy)"
+    rm -f "$SESSIONS_FILE"
+    exit 0
+  fi
+  # >30 min esperando: limpiar la ventana y dejar que el watchdog actúe normal.
+  rm -f "$QR_SINCE_FILE"
+else
+  rm -f "$QR_SINCE_FILE" 2>/dev/null || true
 fi
 
 # ── Watchdog ──
