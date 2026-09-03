@@ -5,7 +5,7 @@ import { isChannelJid, chatKind } from '../identity/wa-id';
 import { ChatLabelsUnsupportedError } from '../../common/errors/chat-labels-unsupported.error';
 import { LabelNotFoundError } from '../../common/errors/label-not-found.error';
 import { EngineTransportError } from '../../common/errors/engine-transport.error';
-import { type WwebjsEngineHost } from './wwebjs-host';
+import { type WwebjsEngineHost, withPage } from './wwebjs-host';
 
 /**
  * Chat-label operations (WhatsApp Business only) extracted from WhatsAppWebJsAdapter. The adapter
@@ -22,7 +22,9 @@ export class WwebjsLabels {
 
   async getLabels(): Promise<Label[]> {
     this.host.ensureReady();
-    const labels = await (this.client() as unknown as BusinessClient).getLabels();
+    const labels = await withPage(this.host, 'getLabels', () =>
+      (this.client() as unknown as BusinessClient).getLabels(),
+    );
     if (!labels) {
       return [];
     }
@@ -81,7 +83,9 @@ export class WwebjsLabels {
 
   async getLabelById(labelId: string): Promise<Label | null> {
     this.host.ensureReady();
-    const label = await (this.client() as unknown as BusinessClient).getLabelById(labelId);
+    const label = await withPage(this.host, 'getLabelById', () =>
+      (this.client() as unknown as BusinessClient).getLabelById(labelId),
+    );
     if (!label) {
       return null;
     }
@@ -99,8 +103,10 @@ export class WwebjsLabels {
       // Return empty instead of letting the unguarded call throw a TypeError (HTTP 500).
       return [];
     }
-    const chat = await this.client().getChatById(chatId);
-    const labels = await (chat as unknown as GroupChat).getLabels();
+    const labels = await withPage(this.host, 'getChatLabels', async () => {
+      const chat = await this.client().getChatById(chatId);
+      return (chat as unknown as GroupChat).getLabels();
+    });
     if (!labels) {
       return [];
     }
@@ -144,7 +150,7 @@ export class WwebjsLabels {
       ids.delete(labelId);
     }
     try {
-      await this.client().addOrRemoveLabels([...ids], [chatId]);
+      await withPage(this.host, 'changeChatLabel', () => this.client().addOrRemoveLabels([...ids], [chatId]));
     } catch (error) {
       // whatsapp-web.js throws `[LT01] Only Whatsapp business` from the page context on a personal account.
       if (String(error instanceof Error ? error.message : error).includes('LT01')) {

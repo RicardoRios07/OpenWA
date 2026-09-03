@@ -376,6 +376,12 @@ export class MessageController {
   })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   @ApiResponse({ status: 404, description: MESSAGE_NOT_FOUND_404 })
+  @ApiResponse({
+    status: 503,
+    description:
+      'The whatsapp-web.js page connection died mid-request. The change may or may not have been applied; ' +
+      'repeating the request is safe, since it converges on the same state.',
+  })
   async react(@Param('sessionId') sessionId: string, @Body() dto: ReactMessageDto): Promise<{ success: boolean }> {
     await this.messageService.reactToMessage(sessionId, dto);
     return { success: true };
@@ -409,6 +415,12 @@ export class MessageController {
   @ApiResponse({ status: 200, description: 'Chat history (most recent messages)', type: [ChatHistoryMessageDto] })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   @ApiResponse({ status: 501, description: ENGINE_NOT_SUPPORTED_501 })
+  @ApiResponse({
+    status: 503,
+    description:
+      'The whatsapp-web.js page connection died mid-read, so nothing could be read. Retry once the ' +
+      'session is ready again.',
+  })
   async getChatHistory(
     @Param('sessionId') sessionId: string,
     @Param('chatId') chatId: string,
@@ -448,6 +460,12 @@ export class MessageController {
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   @ApiResponse({ status: 404, description: MESSAGE_NOT_FOUND_404 })
   @ApiResponse({ status: 501, description: ENGINE_NOT_SUPPORTED_501 })
+  @ApiResponse({
+    status: 503,
+    description:
+      'The whatsapp-web.js page connection died mid-read, so nothing could be read. Retry once the ' +
+      'session is ready again.',
+  })
   async getReactions(
     @Param('sessionId') sessionId: string,
     @Param('chatId') chatId: string,
@@ -537,6 +555,12 @@ export class MessageController {
   @ApiResponse({ status: 404, description: 'Poll not found in the chat’s recent history' })
   @ApiResponse({ status: 501, description: 'Not supported on the Baileys engine' })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
+  @ApiResponse({
+    status: 503,
+    description:
+      'The whatsapp-web.js page connection died mid-request. The change may or may not have been applied; ' +
+      'repeating the request is safe, since it converges on the same state.',
+  })
   async votePoll(@Param('sessionId') sessionId: string, @Body() dto: VotePollDto): Promise<{ success: boolean }> {
     return this.messageService.votePoll(sessionId, dto);
   }
@@ -561,6 +585,12 @@ export class MessageController {
   })
   @ApiResponse({ status: 404, description: 'Message not found in the chat' })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
+  @ApiResponse({
+    status: 503,
+    description:
+      'The whatsapp-web.js page connection died mid-request. The pin may or may not have been applied; a ' +
+      'retry is safe, but it restarts the pin duration from the moment it succeeds.',
+  })
   async pinMessage(@Param('sessionId') sessionId: string, @Body() dto: PinMessageDto): Promise<{ success: boolean }> {
     return this.messageService.pinMessage(sessionId, dto);
   }
@@ -580,6 +610,12 @@ export class MessageController {
   })
   @ApiResponse({ status: 404, description: 'Message not found in the chat' })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
+  @ApiResponse({
+    status: 503,
+    description:
+      'The whatsapp-web.js page connection died mid-request. The change may or may not have been applied; ' +
+      'repeating the request is safe, since it converges on the same state.',
+  })
   async unpinMessage(
     @Param('sessionId') sessionId: string,
     @Body() dto: UnpinMessageDto,
@@ -637,6 +673,12 @@ export class MessageController {
   })
   @ApiResponse({ status: 404, description: 'Message not found' })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
+  @ApiResponse({
+    status: 503,
+    description:
+      'The whatsapp-web.js page connection died mid-request. The change may or may not have been applied; ' +
+      'repeating the request is safe, since it converges on the same state.',
+  })
   async edit(@Param('sessionId') sessionId: string, @Body() dto: EditMessageDto): Promise<MessageResponseDto> {
     return this.messageService.editMessage(sessionId, dto);
   }

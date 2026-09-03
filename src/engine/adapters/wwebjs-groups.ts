@@ -18,7 +18,7 @@ import { EngineNotSupportedError } from '../../common/errors/engine-not-supporte
 import { GroupNotFoundError } from '../../common/errors/group-not-found.error';
 import { InvalidInviteCodeError } from '../../common/errors/invalid-invite-code.error';
 import { toMessageMedia } from './wwebjs-messaging';
-import { type WwebjsEngineHost } from './wwebjs-host';
+import { type WwebjsEngineHost, withPage } from './wwebjs-host';
 
 /**
  * Extracts the JID of the parent community a group is linked to, if any.
@@ -81,7 +81,7 @@ export class WwebjsGroups {
 
   async getGroups(): Promise<Group[]> {
     this.host.ensureReady();
-    try {
+    return withPage(this.host, 'getGroups', async () => {
       const client = this.client();
       const chats = await client.getChats();
 
@@ -105,10 +105,7 @@ export class WwebjsGroups {
           linkedParentJID: extractLinkedParentJID(groupChat.groupMetadata),
         };
       });
-    } catch (error) {
-      this.host.reportIfPageTransportError(error, 'getGroups');
-      throw error;
-    }
+    });
   }
 
   async getGroupInfo(groupId: string): Promise<GroupInfo | null> {
@@ -524,7 +521,7 @@ export class WwebjsGroups {
     // non-group jid answered 200 with an empty list, which reads as "this group has no pending
     // requests" rather than "there is no such group"; Baileys answers the refusal.
     await this.requireGroupChat(groupId);
-    try {
+    return withPage(this.host, 'getGroupMembershipRequests', async () => {
       const raw = await this.client().getGroupMembershipRequests(groupId);
       // Raw page-context store objects: wids can arrive as {_serialized} OR {$1} (the #747
       // minifier rename), so every id goes through readWid; a requester whose wid is unreadable
@@ -551,10 +548,7 @@ export class WwebjsGroups {
           },
         ];
       });
-    } catch (error) {
-      this.host.reportIfPageTransportError(error, 'getGroupMembershipRequests');
-      throw error;
-    }
+    });
   }
 
   approveGroupMembershipRequests(groupId: string, participants?: string[]): Promise<ParticipantOperationResult[]> {

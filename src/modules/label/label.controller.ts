@@ -24,6 +24,12 @@ export class LabelController {
   @ApiResponse({ status: 400, description: 'Session not ready or not a business account' })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   @ApiResponse({ status: 501, description: ENGINE_NOT_SUPPORTED_501 })
+  @ApiResponse({
+    status: 503,
+    description:
+      'The whatsapp-web.js page connection died mid-read, so nothing could be read. Retry once the ' +
+      'session is ready again.',
+  })
   async findAll(@Param('sessionId') sessionId: string) {
     return this.labelService.getLabels(sessionId);
   }
@@ -36,6 +42,12 @@ export class LabelController {
   @ApiResponse({ status: 404, description: 'Label not found' })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   @ApiResponse({ status: 501, description: ENGINE_NOT_SUPPORTED_501 })
+  @ApiResponse({
+    status: 503,
+    description:
+      'The whatsapp-web.js page connection died mid-read, so nothing could be read. Retry once the ' +
+      'session is ready again.',
+  })
   async findOne(@Param('sessionId') sessionId: string, @Param('labelId') labelId: string) {
     return this.labelService.getLabelById(sessionId, labelId);
   }
@@ -135,6 +147,12 @@ export class LabelController {
   @ApiResponse({ status: 200, description: 'List of labels for the chat', type: [LabelDto] })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   @ApiResponse({ status: 501, description: ENGINE_NOT_SUPPORTED_501 })
+  @ApiResponse({
+    status: 503,
+    description:
+      'The whatsapp-web.js page connection died mid-read, so nothing could be read. Retry once the ' +
+      'session is ready again.',
+  })
   async getChatLabels(@Param('sessionId') sessionId: string, @Param('chatId') chatId: string) {
     return this.labelService.getChatLabels(sessionId, chatId);
   }
