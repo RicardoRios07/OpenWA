@@ -235,6 +235,7 @@ export function Chats() {
     containerRef: messagesContainerRef,
     onMessageAppended,
     onMediaLoad,
+    measureMedia,
     onOlderMessagesRequested,
   } = useChatScrollPosition(activeChat?.id ?? null, messages.length > 0, loadingOlderMessages);
 
@@ -927,6 +928,7 @@ export function Chats() {
                   loadingOlderMessages={loadingOlderMessages}
                   onLoadOlderMessages={handleLoadOlderMessages}
                   onMediaLoad={onMediaLoad}
+                  measureMedia={measureMedia}
                   onOpenImage={messageId => {
                     const idx = imageMedia.findIndex(x => x.id === messageId);
                     if (idx >= 0) setLightboxIndex(idx);

@@ -1,4 +1,5 @@
 import type { Client } from 'whatsapp-web.js';
+import { HttpException } from '@nestjs/common';
 import { WwebjsContacts } from './wwebjs-contacts';
 import { EngineTransportError } from '../../common/errors/engine-transport.error';
 import { createLogger } from '../../common/services/logger.service';
@@ -33,7 +34,11 @@ function makeContacts(client: Partial<Record<string, jest.Mock>>): {
   reported: string[];
 } {
   const reported: string[] = [];
+  // Mirrors WwebjsLifecycle.isPageTransportError, including its HttpException exclusion: an error
+  // this application built is never a dead page, and without the guard here the stub would classify
+  // a domain 404 the real adapter no longer does.
   const isPageTransportError = (error: unknown): boolean =>
+    !(error instanceof HttpException) &&
     PAGE_TRANSPORT_ERROR_PATTERN.test(error instanceof Error ? error.message : String(error));
   const host = {
     ensureReady: jest.fn(),

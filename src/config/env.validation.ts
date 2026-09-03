@@ -291,6 +291,17 @@ export function validateEnv(config: EnvConfig): EnvConfig {
     // Positive-only is the POINT here, not a convention: 0 arms no Puppeteer timer at all, so a
     // wedged renderer holds the request forever (see wwebjs-lifecycle.ts).
     'PUPPETEER_PROTOCOL_TIMEOUT_MS',
+    // The media knobs take RAW numbers while their neighbours in .env.example and docs/12 take unit
+    // strings (`BODY_SIZE_LIMIT=25mb`), and their read sites parse with `Number.parseInt`. That
+    // accepts the leading digits of a unit-suffixed value and discards the unit, so
+    // `MEDIA_DOWNLOAD_MAX_BYTES=50mb` became a 50 BYTE cap and `MEDIA_DOWNLOAD_TIMEOUT_MS=30s`
+    // became 30 ms: every download fails, and the "garbage falls back to the default" the helpers
+    // promise never fires because 50 is a perfectly good positive integer. Reject at boot instead,
+    // which is what the two inline-media budgets below already do.
+    'MEDIA_DOWNLOAD_MAX_BYTES',
+    'MEDIA_DOWNLOAD_TIMEOUT_MS',
+    'INBOUND_MEDIA_CONCURRENCY',
+    'CHAT_HISTORY_MEDIA_BUDGET_BYTES',
   ]) {
     checkPositiveInt(key);
   }

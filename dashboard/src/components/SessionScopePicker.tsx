@@ -41,6 +41,16 @@ export function SessionScopePicker({ sessions, selectedIds, onChange, disabled }
             {t('apiKeys.sessions.leaveAll')}
           </button>
           <p className="session-scope-hint">{t('apiKeys.sessions.hint')}</p>
+          {/*
+            An empty selection WIDENS the key to every session, which is the opposite of what
+            unticking the last box looks like it does. The explicit button above says so; reaching
+            the same state one checkbox at a time did not, so say it here the moment it is true.
+          */}
+          {rows.length > 0 && selectedIds.length === 0 && (
+            <p className="session-scope-widened" role="status">
+              {t('apiKeys.sessions.all')}
+            </p>
+          )}
           {rows.length === 0 ? (
             <p className="session-scope-empty">{t('apiKeys.sessions.empty')}</p>
           ) : (

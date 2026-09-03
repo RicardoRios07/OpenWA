@@ -37,6 +37,34 @@ describe('validateEnv', () => {
     expect(() => validateEnv({ DATABASE_TYPE: 'sqlite', POSTGRES_SCHEMA: '1bad' })).not.toThrow();
   });
 
+  /**
+   * The media knobs take RAW numbers while `BODY_SIZE_LIMIT` beside them in .env.example takes a
+   * unit string. Their read sites use `Number.parseInt`, which takes the leading digits and drops
+   * the unit, so `50mb` was accepted as 50: a 50-byte cap, and `30s` a 30 ms timeout. Both are
+   * positive integers, so the "garbage falls back to the default" those helpers promise never
+   * fired. Boot has to be the place this stops.
+   */
+  it('rejects a unit-suffixed media knob instead of reading its leading digits', () => {
+    expect(() => validateEnv({ MEDIA_DOWNLOAD_MAX_BYTES: '50mb' })).toThrow(/MEDIA_DOWNLOAD_MAX_BYTES/);
+    expect(() => validateEnv({ MEDIA_DOWNLOAD_TIMEOUT_MS: '30s' })).toThrow(/MEDIA_DOWNLOAD_TIMEOUT_MS/);
+    expect(() => validateEnv({ CHAT_HISTORY_MEDIA_BUDGET_BYTES: '25mb' })).toThrow(/CHAT_HISTORY_MEDIA_BUDGET_BYTES/);
+    expect(() => validateEnv({ INBOUND_MEDIA_CONCURRENCY: '4x' })).toThrow(/INBOUND_MEDIA_CONCURRENCY/);
+  });
+
+  it('rejects a non-positive media knob and accepts a plain byte count', () => {
+    expect(() => validateEnv({ MEDIA_DOWNLOAD_MAX_BYTES: '0' })).toThrow(/MEDIA_DOWNLOAD_MAX_BYTES/);
+    expect(() => validateEnv({ MEDIA_DOWNLOAD_MAX_BYTES: '-1' })).toThrow(/MEDIA_DOWNLOAD_MAX_BYTES/);
+    expect(() => validateEnv({ INBOUND_MEDIA_CONCURRENCY: 'abc' })).toThrow(/INBOUND_MEDIA_CONCURRENCY/);
+    expect(() => validateEnv({ MEDIA_DOWNLOAD_MAX_BYTES: '52428800' })).not.toThrow();
+    expect(() => validateEnv({ MEDIA_DOWNLOAD_TIMEOUT_MS: '30000' })).not.toThrow();
+  });
+
+  // Unset and empty stay the operator's way of taking the default; compose forwards a blank.
+  it('leaves an unset or blank media knob alone', () => {
+    expect(() => validateEnv({})).not.toThrow();
+    expect(() => validateEnv({ MEDIA_DOWNLOAD_MAX_BYTES: '', MEDIA_DOWNLOAD_TIMEOUT_MS: '   ' })).not.toThrow();
+  });
+
   it('rejects a non-integer / out-of-range port', () => {
     expect(() => validateEnv({ DATABASE_PORT: 'abc' })).toThrow(/DATABASE_PORT/);
     expect(() => validateEnv({ PORT: '70000' })).toThrow(/PORT/);

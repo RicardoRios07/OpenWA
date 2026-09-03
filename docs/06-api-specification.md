@@ -1241,11 +1241,14 @@ Get persisted message history for a session from the local DB (paginated, filter
 }
 ```
 
-Each `Message`: `{ id (uuid), sessionId, waMessageId (string|null), chatId, from, to, body (string|null), type, direction ('incoming'|'outgoing'), timestamp (number|null), metadata (object|null), status ('pending'|'sent'|'delivered'|'read'|'failed'), createdAt (ISO date) }`. Ordered by `createdAt` DESC, then `id` DESC. The tiebreaker matters: `createdAt` is not unique (SQLite stores whole seconds, a PostgreSQL bulk write ties every row it inserts, and a history backfill carries WhatsApp's own second-resolution timestamp), and without a total order two pages of one walk can repeat a row and omit another. Note that `offset` still addresses a position by count, so a list taking concurrent writes can shift under a walk: a message arriving mid-walk pushes every older row down one, and the next page re-serves a row the previous one already returned. Pass `after` instead to walk a live chat safely; it anchors on the last row you received, which an arriving message cannot move. The response is the raw service object (no envelope). Unlike the live `IncomingMessage` shape below, this persisted `Message` does **not** carry `kind` — re-derive the chat kind from `chatId` (see `ChatKind` / `chatKind()`) if needed.
+Each `Message`: `{ id (uuid), sessionId, waMessageId (string|null), chatId, from, to, body (string|null), type, direction ('incoming'|'outgoing'), timestamp (number|null), metadata (object|null), status ('pending'|'sent'|'delivered'|'read'|'failed'), createdAt (ISO date) }`. Ordered by `createdAt` DESC, then by a dialect-dependent second key. The tiebreaker matters: `createdAt` is not unique (SQLite stores whole seconds, a PostgreSQL bulk write ties every row it inserts, and a history backfill carries WhatsApp's own second-resolution timestamp), and without a total order two pages of one walk can repeat a row and omit another. On SQLite the second key is `rowid`, the stored insertion sequence, so messages sharing a second come back in the order they arrived. PostgreSQL has no equivalent (`ctid` moves on every ack update), so it keeps `id`, a random uuid: the walk is equally correct there, but a same-second group is not in arrival order. Note that `offset` still addresses a position by count, so a list taking concurrent writes can shift under a walk: a message arriving mid-walk pushes every older row down one, and the next page re-serves a row the previous one already returned. Pass `after` instead to walk a live chat safely; it anchors on the last row you received, which an arriving message cannot move. The response is the raw service object (no envelope). Unlike the live `IncomingMessage` shape below, this persisted `Message` does **not** carry `kind` — re-derive the chat kind from `chatId` (see `ChatKind` / `chatKind()`) if needed.
 
 > **Inline media is carried up to a budget, then omitted.** `MESSAGE_LIST_INLINE_MEDIA_BUDGET_BYTES` (8 MiB of encoded base64 by default) bounds how much inline media one response may hold across its rows. A row is not a bounded object — `limit` is clamped to `[1,100]` but each row can carry its base64 in `metadata.media.data`, so a page of media rows could otherwise reach hundreds of megabytes and fail the read outright. The budget is spent newest-first, matching the `createdAt` DESC order above, so a page that cannot carry everything keeps the most recent media. Past it a payload is replaced with `{ mimetype, filename?, omitted: true, sizeBytes }` — the same marker the engine emits for inbound media over `MEDIA_DOWNLOAD_MAX_BYTES` — and the bytes remain available from [`GET /messages/:chatId/:messageId/media`](#get-apisessionssessionidmessageschatidmessageidmedia). Two rules bound the edges: the newest payload is always inlined even when it alone exceeds the budget (otherwise a single large photo would be permanently unreadable through this route), and a budget of `0` means "never inline" and grants no such allowance. The knob is validated at boot — `8MiB` would parse to 8 bytes — and is forwarded by both compose files. The MCP `MessageList` tool shares this path and the same budget.
 
-**Errors:** `401` missing/invalid API key
+**Errors:** `400` `after` names no message in this session · `401` missing/invalid API key
+
+A blank `after` is treated as absent, the way a blank `limit` or `offset` already is, so a client
+templating a cursor it has not got yet keeps the unfiltered first page rather than a `400`.
 
 #### GET /api/sessions/:sessionId/messages/:chatId/history
 
@@ -2355,7 +2358,7 @@ Get a single contact by its WhatsApp id.
 }
 ```
 
-**Errors:** `400` session is not started · `401` missing/invalid API key · `404` `Contact <id> not found` (engine returned null) · `409` conflict or engine not ready (retryable)
+**Errors:** `400` session is not started · `401` missing/invalid API key · `404` `Contact <id> not found` (engine returned null) · `409` conflict or engine not ready (retryable) · `503` the whatsapp-web.js page died mid-read, so the lookup reached no answer (distinct from the `404`, which asserts the contact does not exist)
 
 #### GET /api/sessions/:sessionId/contacts/:contactId/profile-picture
 
@@ -4334,7 +4337,12 @@ Delete one of the session's own posted statuses.
 
 The service returns `void`; the controller returns a fixed success object. DELETE default status is `200`.
 
-**Errors:** `401` missing/invalid API key · `403` key lacks `OPERATOR` role · `404` `Session {id} not found or not connected` · `409` conflict or engine not ready (retryable)
+**Errors:** `401` missing/invalid API key · `403` key lacks `OPERATOR` role · `404` `Session {id} not found or not connected` · `409` conflict or engine not ready (retryable) · `503` the whatsapp-web.js page died mid-request, so the revoke did not complete
+
+Safe to retry: revoking an already-revoked status converges. The status POST routes deliberately do
+NOT answer `503` for the same failure, because whatsapp-web.js can throw after the request is on the
+wire and a client replaying on `503` would publish the status a second time. They answer an opaque
+`500` there, exactly as the message sends do.
 
 ### 6.4.8 Webhooks (management)
 

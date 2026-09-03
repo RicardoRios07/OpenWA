@@ -34,3 +34,33 @@ test('returns an empty list for empty input', () => {
   assert.deepEqual(parseBulkRecipients(''), []);
   assert.deepEqual(parseBulkRecipients('  \n \n'), []);
 });
+
+// A real spreadsheet export. The digit strip used to run over the WHOLE line, so the index column
+// and the number were concatenated into a different number that still looked plausible.
+test('a multi-column CSV row yields the phone column, not the columns concatenated', () => {
+  const csv = 'id,phone\n1,628123456789\n2,628987654321';
+  assert.deepEqual(parseBulkRecipients(csv), ['628123456789@c.us', '628987654321@c.us']);
+});
+
+test('a comma-separated list on one line is several recipients', () => {
+  assert.deepEqual(parseBulkRecipients('628111222333, 628222333444'), ['628111222333@c.us', '628222333444@c.us']);
+});
+
+test('semicolon and tab separate entries too', () => {
+  assert.deepEqual(parseBulkRecipients('628111222333;628222333444'), ['628111222333@c.us', '628222333444@c.us']);
+  assert.deepEqual(parseBulkRecipients('628111222333\t628222333444'), ['628111222333@c.us', '628222333444@c.us']);
+});
+
+// The formatting characters must NOT split: this is one number, and the existing test above pins it.
+test('phone formatting is not a field separator', () => {
+  assert.deepEqual(parseBulkRecipients('+62 (812) 345-6789'), ['628123456789@c.us']);
+});
+
+test('a chat ID sitting in a CSV column still passes through', () => {
+  assert.deepEqual(parseBulkRecipients('alice,4567890-1234@g.us'), ['4567890-1234@g.us']);
+});
+
+test('a number too short to be a phone is dropped rather than sent', () => {
+  assert.deepEqual(parseBulkRecipients('12345'), []);
+  assert.deepEqual(parseBulkRecipients('123456'), ['123456@c.us']);
+});

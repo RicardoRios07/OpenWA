@@ -3,7 +3,13 @@ import type { IncomingMessage } from '../interfaces/whatsapp-engine.interface';
 /** Default inbound media cap: 50 MiB. Shares MEDIA_DOWNLOAD_MAX_BYTES with the outbound download cap. */
 const DEFAULT_INBOUND_MEDIA_MAX_BYTES = 50 * 1024 * 1024;
 
-/** Resolved inbound media byte cap; a non-positive/garbage override falls back to the default. */
+/**
+ * Resolved inbound media byte cap.
+ *
+ * The fallback below only covers unset and empty: boot validation rejects anything else, including
+ * the unit-suffixed form its neighbours accept. `parseInt` would read `50mb` as 50 and this helper
+ * would take it, since 50 is a positive integer, capping every download at 50 bytes.
+ */
 export function inboundMediaMaxBytes(): number {
   const parsed = Number.parseInt(process.env.MEDIA_DOWNLOAD_MAX_BYTES ?? '', 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_INBOUND_MEDIA_MAX_BYTES;
@@ -15,7 +21,8 @@ const DEFAULT_INBOUND_MEDIA_CONCURRENCY = 4;
 /**
  * Max inbound media downloads processed concurrently. Each download materialises a full decrypted
  * buffer in heap, so an unbounded fire-and-forget loop lets a sender flood the gateway with N parallel
- * multi-MB allocations; this bounds N. Override via INBOUND_MEDIA_CONCURRENCY; garbage falls back.
+ * multi-MB allocations; this bounds N. Override via INBOUND_MEDIA_CONCURRENCY; boot validation
+ * rejects a malformed value, so the fallback below only covers unset and empty.
  */
 export function inboundMediaConcurrency(): number {
   const parsed = Number.parseInt(process.env.INBOUND_MEDIA_CONCURRENCY ?? '', 10);
@@ -25,7 +32,11 @@ export function inboundMediaConcurrency(): number {
 /** Default inbound media download timeout: 30s. Shares MEDIA_DOWNLOAD_TIMEOUT_MS with the outbound download. */
 const DEFAULT_INBOUND_MEDIA_TIMEOUT_MS = 30_000;
 
-/** Resolved per-download wall-clock timeout; a non-positive/garbage override falls back to the default. */
+/**
+ * Resolved per-download wall-clock timeout. Boot validation rejects a malformed override, so the
+ * fallback only covers unset and empty: `parseInt` would read `30s` as 30 and this helper would take
+ * it, timing out every download after 30 ms.
+ */
 export function inboundMediaTimeoutMs(): number {
   const parsed = Number.parseInt(process.env.MEDIA_DOWNLOAD_TIMEOUT_MS ?? '', 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_INBOUND_MEDIA_TIMEOUT_MS;
@@ -81,7 +92,8 @@ const DEFAULT_CHAT_HISTORY_MEDIA_BUDGET_BYTES = 25 * 1024 * 1024;
 /**
  * Aggregate budget (counted in base64 characters, the actual response/heap payload) for media inlined
  * by one getChatHistory pass. Once the running total crosses it, remaining media messages carry the
- * usual `omitted` marker instead of a download. A non-positive/garbage override falls back to the default.
+ * usual `omitted` marker instead of a download. Boot validation rejects a malformed override, so the
+ * fallback covers unset and empty only.
  */
 export function chatHistoryMediaBudgetBytes(): number {
   const parsed = Number.parseInt(process.env.CHAT_HISTORY_MEDIA_BUDGET_BYTES ?? '', 10);

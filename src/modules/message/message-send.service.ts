@@ -577,8 +577,12 @@ export class MessageSendService {
     const saved = await this.messageRepository.save(message).catch(async (err: unknown) => {
       const waMessageId = message.waMessageId;
       if (!waMessageId || !isUniqueViolation(err)) throw err;
+      // No `status` here on purpose. The row this collides with is the own-send echo's, inserted
+      // SENT, and the ack path advances it forward-only (ackStatusTransitionFrom). This write only
+      // ever carries PENDING or SENT, so it can never be an upgrade: it is a no-op, or it drags a
+      // DELIVERED/READ row back to SENT when an ack won the race. Leave the delivery state to the
+      // one writer that owns it.
       const patch: QueryDeepPartialEntity<Message> = {
-        status: message.status,
         timestamp: message.timestamp,
       };
       // Only when this write actually carries metadata worth merging: a text item must not blank
@@ -673,7 +677,10 @@ export class MessageSendService {
             messageId: message.id,
           },
         );
-        const patch: QueryDeepPartialEntity<Message> = { status: MessageStatus.SENT, timestamp: result.timestamp };
+        // `status` is deliberately absent: the echo row is already SENT, and an ack that landed
+        // first has advanced it further. Writing SENT here would undo that. See the sibling merge
+        // in saveOutgoingMessage.
+        const patch: QueryDeepPartialEntity<Message> = { timestamp: result.timestamp };
         if (message.metadata && !isUrlPointerMetadata(message.metadata)) {
           patch.metadata = message.metadata as QueryDeepPartialEntity<Record<string, unknown>>;
         }

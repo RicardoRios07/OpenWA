@@ -11,6 +11,44 @@ import { engineCapabilityMatrix } from './engine-capability-matrix';
  * nothing noticed: the parity gates compare the matrix to the interface, and no check reads the
  * prose. This binds every count-shaped claim in the file to the source it restates.
  */
+/**
+ * The same document also names the two engine LIBRARY versions, in the intro and again in the
+ * architecture mermaid node. Those are hand-written too, and nothing read them: the Baileys pin
+ * moved to 7.0.0-rc14 while both places still said rc13, so the file that exists to be the
+ * authority on engine capability was describing a build the tree does not install.
+ */
+describe('docs/29 names the engine library versions the tree pins', () => {
+  const repoRoot = join(__dirname, '..', '..');
+  const doc = readFileSync(join(repoRoot, 'docs', '29-engine-capability-matrix.md'), 'utf8');
+  const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')) as {
+    dependencies: Record<string, string>;
+  };
+
+  it.each([
+    ['whatsapp-web.js', 'whatsapp-web.js'],
+    ['@whiskeysockets/baileys', '@whiskeysockets/baileys'],
+  ])('states the installed %s version', (_label, dependency) => {
+    const pinned = pkg.dependencies[dependency];
+    expect(pinned).toBeTruthy();
+
+    // Exact pins, not ranges: a caret here would make "the version docs/29 must name" ambiguous.
+    expect(pinned).toMatch(/^\d/);
+    expect(doc).toContain(pinned);
+  });
+
+  it('names no other exact version of either library', () => {
+    // Non-vacuity, and the actual failure mode: the stale rc13 sat beside a correct figure
+    // elsewhere in the file, so a containment check alone would have passed.
+    //
+    // Only COMPLETE versions count. `1.34.x` names a release line rather than a build and is
+    // ordinary prose, so a major.minor.x form is not a claim this gate can adjudicate.
+    const mentioned = [...doc.matchAll(/(?:baileys|whatsapp-web\.js)\s+(\d+\.\d+\.\d[\w.-]*)/gi)].map(m => m[1]);
+    const allowed = new Set([pkg.dependencies['whatsapp-web.js'], pkg.dependencies['@whiskeysockets/baileys']]);
+    expect(mentioned.length).toBeGreaterThan(0);
+    expect(mentioned.filter(v => !allowed.has(v))).toEqual([]);
+  });
+});
+
 describe('docs/29 counts match the capability matrix', () => {
   const read = (...parts: string[]): string => readFileSync(join(__dirname, '..', '..', ...parts), 'utf8');
 

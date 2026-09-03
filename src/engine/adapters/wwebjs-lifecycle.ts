@@ -1,5 +1,6 @@
 import * as qrcode from 'qrcode';
 import * as path from 'path';
+import { HttpException } from '@nestjs/common';
 import { Client, LocalAuth, WAState } from 'whatsapp-web.js';
 import {
   type AccountRestriction,
@@ -682,6 +683,23 @@ export class WwebjsLifecycle {
 
   /** Whether the error carries a dead page/transport signature (see PAGE_TRANSPORT_ERROR_PATTERN). */
   isPageTransportError(error: unknown): boolean {
+    // An HttpException is never a dead page. It is an error THIS application constructed, and its
+    // message carries caller-supplied text verbatim: MessageNotFoundError reads
+    // `Message ${messageId} not found in chat ${chatId}`, and GroupNotFoundError, LabelNotFoundError,
+    // ChannelNotFoundError and CallNotFoundError have the same shape. Matching the pattern against
+    // one of those hands the CALLER the classifier. A request naming a messageId of "Target closed"
+    // made its own 404 read as a transport death: the session was torn down and reconnected, and the
+    // caller got a 503. The reactions read needs no role at all, so the lowest-privilege key could
+    // do it at will.
+    //
+    // Excluding the class loses no real signal. Puppeteer and whatsapp-web.js throw plain Errors,
+    // and a page-side throw arrives as one too (puppeteer-core rebuilds it in cdp/utils.js
+    // createEvaluationError). It also settles the nested case: an EngineTransportError arriving from
+    // an inner catch was already reported where it was built, and handlePuppeteerDeath latches on
+    // status, so re-reporting would be a no-op regardless.
+    if (error instanceof HttpException) {
+      return false;
+    }
     const message = error instanceof Error ? error.message : String(error);
     if (WwebjsLifecycle.PROTOCOL_TIMEOUT_PATTERN.test(message)) {
       return false;

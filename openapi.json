@@ -2327,6 +2327,9 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "`after` names no message in this session. The keyset comparison would otherwise return an empty page, which reads exactly like the end of the history, so a walk resumed from a stale or foreign cursor would stop silently instead of reporting the cursor."
           }
         },
         "summary": "Get message history for a session",
@@ -4592,6 +4595,9 @@
           },
           "409": {
             "description": "The session is not connected — an engine exists for it but is not `ready`: disconnected, reconnecting, or still initializing, so the request never reached WhatsApp. Wait for `ready` and retry. A session that was never started answers `400` instead, and the session lifecycle routes answer `409` for a conflicting state rather than this. One window answers this while the session still reads `ready`: WhatsApp Web periodically reloads its own page and the engine re-injects into it — for those few seconds the answer is a `409` naming the reload; retry shortly."
+          },
+          "503": {
+            "description": "The whatsapp-web.js page connection died mid-read, so the lookup could not reach an answer. Distinct from the `404` above, which asserts the contact does not exist: this one asserts nothing about the contact. Retry once the session is ready again."
           }
         },
         "summary": "Get a specific contact by ID",
@@ -7641,6 +7647,9 @@
           },
           "409": {
             "description": "The session is not connected — an engine exists for it but is not `ready`: disconnected, reconnecting, or still initializing, so the request never reached WhatsApp. Wait for `ready` and retry. A session that was never started answers `400` instead, and the session lifecycle routes answer `409` for a conflicting state rather than this. One window answers this while the session still reads `ready`: WhatsApp Web periodically reloads its own page and the engine re-injects into it — for those few seconds the answer is a `409` naming the reload; retry shortly."
+          },
+          "503": {
+            "description": "The whatsapp-web.js page connection died mid-request, so the revoke did not complete. Safe to retry: revoking an already-revoked status converges. The status POST routes deliberately do NOT answer this, because a replayed post would publish the status a second time."
           }
         },
         "summary": "Delete own status",
@@ -10284,12 +10293,13 @@
           },
           "proxyType": {
             "type": "string",
-            "description": "Proxy protocol derived from the stored URL scheme",
+            "description": "Proxy protocol derived from the stored URL scheme; `null` when no proxy is set",
             "enum": [
               "http",
               "https",
               "socks4",
-              "socks5"
+              "socks5",
+              null
             ],
             "nullable": true,
             "example": "http"

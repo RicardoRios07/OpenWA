@@ -98,6 +98,13 @@ export class MessageController {
     description: 'Message history',
     type: MessageListResponseDto,
   })
+  @ApiResponse({
+    status: 400,
+    description:
+      '`after` names no message in this session. The keyset comparison would otherwise return an ' +
+      'empty page, which reads exactly like the end of the history, so a walk resumed from a stale ' +
+      'or foreign cursor would stop silently instead of reporting the cursor.',
+  })
   async getMessages(
     @Param('sessionId') sessionId: string,
     @Query('chatId') chatId?: string,
@@ -112,7 +119,11 @@ export class MessageController {
       from,
       limit: limit ? parseInt(limit, 10) : undefined,
       offset: offset ? parseInt(offset, 10) : undefined,
-      after,
+      // Blank means absent, as it already does for `limit` and `offset` above. A client templating
+      // a cursor it has not got yet sends `?after=`, and the service only skips the keyset branch
+      // on `undefined`: the empty string reached the anchor lookup, matched no row, and turned a
+      // working list request into a 400.
+      after: after?.trim() || undefined,
       // Opt-out, so anything but an explicit false keeps today's behaviour. Same string pair the
       // opt-in flags on this controller accept, read the other way round.
       inlineMedia: inlineMedia !== 'false' && inlineMedia !== '0',

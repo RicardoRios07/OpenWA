@@ -1,4 +1,4 @@
-import type { MigrationTables, WebhookRow, MessageRow, MessageBatchRow } from './migration-tables.types';
+import type { MigrationTables, SessionRow, WebhookRow, MessageRow, MessageBatchRow } from './migration-tables.types';
 
 /**
  * A `data` value that is a POINTER rather than bytes. `metadata.media.data` holds `base64 || dto.url!`
@@ -23,6 +23,36 @@ function redactWebhookCredentials(rows: WebhookRow[]): void {
   for (const row of rows) {
     delete row.secret;
     delete row.headers;
+  }
+}
+
+/**
+ * `sessions.proxyUrl` may embed `user:pass` (docs/04 section 4.3), and the sibling webhook secret
+ * above is already kept out of this payload. Strip the userinfo and keep the rest of the URL.
+ *
+ * Dropping the column instead would be worse than it looks: the importer would restore the session
+ * with no proxy at all, and it would then connect DIRECT on the next start, leaking the host's real
+ * egress IP to WhatsApp with nothing to notice. That is the exact failure mode the engine refuses
+ * elsewhere, where an unusable proxy value fails the session rather than silently bypassing it
+ * (baileys-lifecycle.ts). A credential-stripped URL keeps the operator's intent visible, restores as
+ * `hasCredentials: false` on `GET /proxy`, and fails loudly on the next start when the proxy needs
+ * auth, which is the signal to re-enter it.
+ *
+ * A value the URL parser rejects is cleared rather than passed through, since it cannot be proven
+ * free of credentials.
+ */
+function redactSessionProxyCredentials(rows: SessionRow[]): void {
+  for (const row of rows) {
+    if (!row.proxyUrl) continue;
+    try {
+      const parsed = new URL(row.proxyUrl);
+      if (!parsed.username && !parsed.password) continue;
+      parsed.username = '';
+      parsed.password = '';
+      row.proxyUrl = parsed.toString();
+    } catch {
+      row.proxyUrl = null;
+    }
   }
 }
 
@@ -172,7 +202,7 @@ function defineExportTable<K extends keyof MigrationTables>(table: ExportTable<K
  */
 export const EXPORT_TABLES: AnyExportTable[] = [
   // sessions first: webhooks/messages/templates/etc. all reference it (some via FK, all by sessionId).
-  defineExportTable({ key: 'sessions', table: 'sessions' }),
+  defineExportTable({ key: 'sessions', table: 'sessions', afterRead: redactSessionProxyCredentials }),
   defineExportTable({ key: 'webhooks', table: 'webhooks', afterRead: redactWebhookCredentials }),
 
   // Both carry a full inline base64 payload, so they share ONE budget: messages are served first

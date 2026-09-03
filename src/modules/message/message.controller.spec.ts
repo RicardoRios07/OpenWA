@@ -90,4 +90,25 @@ describe('MessageController - inlineMedia is opt-out', () => {
   it.each(['false', '0'])('omits media for %p', async raw => {
     expect(await inlineMediaFor(raw)).toBe(false);
   });
+
+  const afterFor = async (raw?: string): Promise<string | undefined> => {
+    getMessages.mockClear();
+    await controller.getMessages('session-1', undefined, undefined, undefined, undefined, raw, undefined);
+    const [, options] = getMessages.mock.calls[0] as [string, { after?: string }];
+    return options.after;
+  };
+
+  /**
+   * The service only skips the keyset branch on `undefined`. A blank reached the anchor lookup,
+   * matched no row, and answered 400 for what is an ordinary unfiltered first page: a client
+   * templating a cursor it has not got yet sends exactly that.
+   */
+  it.each([undefined, '', '   '])('treats a blank after as absent for %p', async raw => {
+    expect(await afterFor(raw)).toBeUndefined();
+  });
+
+  it('passes a real cursor through, trimmed', async () => {
+    expect(await afterFor('db-42')).toBe('db-42');
+    expect(await afterFor('  db-42  ')).toBe('db-42');
+  });
 });

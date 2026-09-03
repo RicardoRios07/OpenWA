@@ -108,6 +108,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   block no longer implies `MINIO_BUILTIN=true` fills in the credentials. Only saving storage from the
   dashboard writes them, so a hand-edited file gets the bundled MinIO container and no keys, and media
   is written to local disk while the bucket stays empty. Thanks @onepay-ye for the report.
+- A message id supplied by the caller can no longer be read as a dead browser page. The
+  whatsapp-web.js transport classifier matched a pattern against any error's message, and the
+  gateway's own not-found errors carry the caller's id verbatim, so a request naming a message id of
+  `Target closed` tore its session down, emitted `session.disconnected` to every consumer, paused
+  inbound delivery for the reconnect, and answered `503` instead of `404`. Errors the gateway
+  constructs are now excluded outright.
+- The three whatsapp-web.js status posts and the channel create no longer answer `503` when the
+  browser page dies. The library can throw after the request is already on the wire, and `503` is
+  the status the clients replay for a POST, so a retry could publish the status twice. They answer
+  the same opaque `500` the message sends do. `DELETE` on a status keeps `503`, which is safe to
+  replay, and now declares it.
+- An `allowedSessions` entry that is empty, whitespace-padded, comma-bearing or duplicated is
+  refused. The column stores a comma join, so `[""]` came back as an empty list and every
+  enforcement site reads that as "every session": a request that looked like a scoping stored a key
+  that could reach everything. The API Keys page also says "All sessions" the moment the last
+  session is unticked, which is what saving would then do.
+- Messages sharing one second come back in the order they arrived on SQLite, which is the default
+  database. The tiebreaker was a random uuid, so a rapid burst, a bulk send or a history backfill
+  rendered shuffled; it is now the stored insertion sequence, which also drops the sort the uuid
+  key forced. PostgreSQL has no equivalent column and keeps the uuid order.
+- A send reconciling against its own echo no longer overwrites the delivery state. A `delivered`
+  ack arriving before the send's second save was pulled back to `sent`, leaving one tick on a
+  message the recipient already had.
+- `GET /sessions/{sessionId}/messages` treats a blank `after` as absent, the way it already treats a
+  blank `limit` or `offset`, instead of answering `400`. The `400` for a cursor naming no message in
+  the session is deliberate and is now declared.
+- The dashboard holds a reader's position when an image finishes decoding above them. The correction
+  measured its baseline after the decode was already in layout, so it never ran.
+- The bulk-recipients upload reads a CSV column as one recipient. A row like `1,628123456789` had
+  its columns' digits concatenated into a different number that looked plausible enough to send.
+- The four media knobs (`MEDIA_DOWNLOAD_MAX_BYTES`, `MEDIA_DOWNLOAD_TIMEOUT_MS`,
+  `INBOUND_MEDIA_CONCURRENCY`, `CHAT_HISTORY_MEDIA_BUDGET_BYTES`) refuse a unit-suffixed value at
+  boot. They take raw numbers while `BODY_SIZE_LIMIT` beside them takes `25mb`, and `50mb` resolved
+  to a 50 byte cap with nothing in the logs naming the cause.
+- `GET /api/infra/export-data` strips the userinfo from a session's proxy URL, as it already did for
+  webhook secrets. Scheme and host survive so a restore cannot silently connect direct.
+- `GET /sessions/{sessionId}/contacts/{contactId}` declares the `503` it answers when the page dies,
+  which is distinct from the `404` that asserts the contact does not exist.
+- `SessionProxyResponseDto.proxyType` admits `null` in its enum, so the ordinary "no proxy" response
+  no longer contradicts its own schema.
+- `check:audit` and `check:contract-shapes` run from a checkout path that needs URL escaping. Both
+  compared a hand-built file URL or a basename against the module path, so the scripts exited `0`
+  having run nothing and the jobs behind them reported a pass. Thanks @JuanGalzerano for the report.
+- docs/29 names the Baileys build the tree installs; the counts spec now binds both engine library
+  versions to the pins.
 
 ### Dependencies
 

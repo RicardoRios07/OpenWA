@@ -216,12 +216,46 @@ describe('MessageService', () => {
       expect(qb.skip).not.toHaveBeenCalled();
       expect(qb.getManyAndCount).not.toHaveBeenCalled();
       const [clause, params] = qb.andWhere.mock.calls[0] as [string, Record<string, unknown>];
-      expect(clause).toContain('(message.createdAt, message.id) <');
+      // rowid, not id: the stub repository carries no manager, which reads as "not postgres".
+      expect(clause).toContain('(message.createdAt, message.rowid) <');
       // The anchor's sort key is resolved in SQL; only the id crosses the JS boundary.
       expect(clause).toContain('FROM messages anchor');
       expect(params).toEqual({ after: 'm-1', sessionId: 'sess-1' });
       // `total` counts the filter match, not the post-cursor remainder, so it stays stable per page.
       expect(result.total).toBe(7);
+    });
+
+    /**
+     * The dialect split, pinned on the default test job rather than only in the postgres-gated
+     * suite: a typo in the accessor would otherwise ship a `rowid` term to PostgreSQL, where the
+     * column does not exist and every message list would 500.
+     */
+    it('keeps id as the tiebreak on postgres, where there is no rowid', async () => {
+      const qb = makeCursorQb([{ id: 'm-2' } as Message]);
+      (repository.createQueryBuilder as jest.Mock).mockReturnValue(qb);
+      (repository as unknown as { manager: unknown }).manager = {
+        connection: { options: { type: 'postgres' } },
+      };
+
+      await service.getMessages('sess-1', { after: 'm-1' });
+
+      const [clause] = qb.andWhere.mock.calls[0] as [string];
+      expect(clause).toContain('(message.createdAt, message.id) <');
+      expect(clause).toContain('anchor."id"');
+      expect(clause).not.toContain('rowid');
+      expect(qb.addOrderBy).toHaveBeenCalledWith('message.id', 'DESC');
+
+      delete (repository as unknown as { manager?: unknown }).manager;
+    });
+
+    it('orders by rowid on sqlite, which is the arrival order and needs no sort', async () => {
+      const qb = makeCursorQb([{ id: 'm-2' } as Message]);
+      (repository.createQueryBuilder as jest.Mock).mockReturnValue(qb);
+
+      await service.getMessages('sess-1', { after: 'm-1' });
+
+      // The order term is applied before the cursor branch, so the cursor harness pins it too.
+      expect(qb.addOrderBy).toHaveBeenCalledWith('message.rowid', 'DESC');
     });
 
     it('rejects a cursor that names no row in this session rather than reading as end-of-history', async () => {

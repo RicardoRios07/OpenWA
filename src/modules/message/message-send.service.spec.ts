@@ -314,11 +314,10 @@ describe('MessageSendService', () => {
 
       await service.sendText('sess-1', { chatId: '628123456789@c.us', text: 'hi' });
 
-      // SENT state merged onto the echo row; the redundant PENDING row dropped.
-      expect(repository.update).toHaveBeenCalledWith(
-        { sessionId: 'sess-1', waMessageId: 'wa-msg-1' },
-        expect.objectContaining({ status: MessageStatus.SENT }),
-      );
+      // Timestamp merged onto the echo row; the redundant PENDING row dropped. `status` is NOT
+      // written: the echo row is already SENT and an ack may have advanced it further.
+      const [, mergePatch] = (repository.update as jest.Mock).mock.calls[0] as [unknown, object];
+      expect(mergePatch).not.toHaveProperty('status');
       expect(repository.delete).toHaveBeenCalledWith({ id: 'msg-uuid-1' });
       const persisted = (hookManager.execute as jest.Mock).mock.calls.filter(
         ([ev]: unknown[]) => ev === 'message:persisted',
@@ -1153,11 +1152,12 @@ describe('MessageSendService', () => {
       expect(repository.update).toHaveBeenCalledWith(
         { sessionId: 'sess-1', waMessageId: 'wa-bulk-1' },
         expect.objectContaining({
-          status: MessageStatus.SENT,
           timestamp: 1706868000,
           metadata: bulkRow.metadata,
         }),
       );
+      const [, bulkPatch] = (repository.update as jest.Mock).mock.calls[0] as [unknown, object];
+      expect(bulkPatch).not.toHaveProperty('status');
       expect(saved).toEqual(expect.objectContaining({ id: 'echo-row' }));
     });
 
@@ -1221,8 +1221,18 @@ describe('MessageSendService', () => {
       expect(result.messageId).toBe('wa-msg-1'); // send reported success
       expect(repository.update).toHaveBeenCalledWith(
         { sessionId: 'sess-1', waMessageId: 'wa-msg-1' },
-        expect.objectContaining({ status: MessageStatus.SENT, timestamp: 1706868000 }),
+        expect.objectContaining({ timestamp: 1706868000 }),
       );
+      /**
+       * The delivery state is not in that patch, and that is the point.
+       *
+       * The row it merges onto is the own-send echo's, inserted SENT, and the ack path advances it
+       * forward-only. This merge could only ever write PENDING or SENT, so it was never an upgrade:
+       * when a `delivered` ack won the race, writing SENT here dragged the row back and the
+       * dashboard showed one tick for a message the recipient already had.
+       */
+      const [, sentPatch] = (repository.update as jest.Mock).mock.calls[0] as [unknown, object];
+      expect(sentPatch).not.toHaveProperty('status');
       expect(repository.delete).toHaveBeenCalledWith({ id: 'msg-uuid-1' });
     });
 

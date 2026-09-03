@@ -159,7 +159,8 @@
 }
 
 .api-keys-page .session-scope-hint,
-.api-keys-page .session-scope-empty {
+.api-keys-page .session-scope-empty,
+.api-keys-page .session-scope-widened {
   margin: 0 0 0.75rem;
   font-size: 0.8125rem;
   font-weight: 400;
@@ -167,6 +168,12 @@
   line-height: 1.45;
   text-transform: none;
   letter-spacing: normal;
+}
+
+/* An empty selection grants every session, so it reads as a state rather than a hint. */
+.api-keys-page .session-scope-widened {
+  font-weight: 600;
+  color: var(--text-primary);
 }
 
 .api-keys-page .session-scope-list {

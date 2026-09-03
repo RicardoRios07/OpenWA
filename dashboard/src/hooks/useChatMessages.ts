@@ -101,11 +101,15 @@ export function useChatMessages(
   // remount would stomp that newer write with the stale queued one. This effect stays as a second
   // chance for the same key in case the fetch had already settled before any write ever queued for
   // it — a normal case, and a no-op here since the queue is empty by then.
-  const { isFetching } = query;
+  // Gated on `idle`, not on `isFetching`. A fetch the browser parks when it goes offline reports
+  // fetchStatus 'paused', which makes `isFetching` false while the request is still going to land:
+  // draining here would hand the resumed page a queue that no longer exists to replay. The writer
+  // and the settle subscription key on the same value for the same reason.
+  const { fetchStatus } = query;
   useEffect(() => {
-    if (isFetching) return;
+    if (fetchStatus !== 'idle') return;
     replayWritesLostToFetch(queryClient, messagesQueryKey(sessionId, chatId ?? ''));
-  }, [queryClient, isFetching, sessionId, chatId]);
+  }, [queryClient, fetchStatus, sessionId, chatId]);
 
   return query;
 }

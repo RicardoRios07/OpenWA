@@ -46,3 +46,26 @@ export async function withPage<T>(host: WwebjsEngineHost, context: string, op: (
     throw error;
   }
 }
+
+/**
+ * The NON-IDEMPOTENT counterpart of {@link withPage}: report a dead page as the same early death
+ * signal, then rethrow the error untouched so the caller's status is unchanged.
+ *
+ * whatsapp-web.js can throw AFTER the request is already on the wire (see `sendResolved` in
+ * ./wwebjs-messaging, which reports and rethrows for exactly this reason), so a transport failure
+ * here does NOT prove the status was not posted or the channel not created. `503` is the one status
+ * the clients read as proof the gateway declined before acting, and the Go client replays a POST on
+ * it, so answering it would have a retrying caller publish the status twice.
+ *
+ * ./baileys-channels leaves `createChannel` unbounded on the same reasoning, and the message sends
+ * keep their opaque `500`. Use {@link withPage} for reads and for operations that converge when
+ * repeated, including DELETE.
+ */
+export async function reportPageDeath<T>(host: WwebjsEngineHost, context: string, op: () => Promise<T>): Promise<T> {
+  try {
+    return await op();
+  } catch (error) {
+    host.reportIfPageTransportError(error, context);
+    throw error;
+  }
+}

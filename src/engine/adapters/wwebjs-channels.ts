@@ -4,7 +4,7 @@ import { BusinessClient, WwjsChannelData } from '../types/whatsapp-web-js.types'
 import { EngineNotSupportedError } from '../../common/errors/engine-not-supported.error';
 import { EngineRefusedError } from '../../common/errors/engine-refused.error';
 import { ChannelNotFoundError } from '../../common/errors/channel-not-found.error';
-import { type WwebjsEngineHost, withPage } from './wwebjs-host';
+import { type WwebjsEngineHost, withPage, reportPageDeath } from './wwebjs-host';
 
 /**
  * Channel/Newsletter operations extracted from WhatsAppWebJsAdapter. The adapter keeps the public
@@ -54,7 +54,9 @@ export class WwebjsChannels {
    */
   async createChannel(name: string, description?: string): Promise<Channel> {
     this.host.ensureReady();
-    const result = await this.withPage('createChannel', () =>
+    // Non-idempotent, matching ./baileys-channels, which leaves this unbounded for the same
+    // reason: a replayed create leaves a duplicate channel behind. See reportPageDeath.
+    const result = await reportPageDeath(this.host, 'createChannel', () =>
       (this.client() as unknown as BusinessClient).createChannel(
         name,
         description === undefined ? {} : { description },

@@ -6280,7 +6280,6 @@ describe('WhatsAppWebJsAdapter honest outcomes (no phantom success)', () => {
       ['setProfilePicture', (a: WhatsAppWebJsAdapter) => a.setProfilePicture({ mimetype: 'image/png', data: 'aGk=' })],
       ['deleteProfilePicture', (a: WhatsAppWebJsAdapter) => a.deleteProfilePicture()],
       ['getContactStatuses', (a: WhatsAppWebJsAdapter) => a.getContactStatuses()],
-      ['postTextStatus', (a: WhatsAppWebJsAdapter) => a.postTextStatus('hello', {})],
       ['deleteStatus', (a: WhatsAppWebJsAdapter) => a.deleteStatus('status@broadcast')],
       ['getSubscribedChannels', (a: WhatsAppWebJsAdapter) => a.getSubscribedChannels()],
       // The channel WRITES take the same path: deleteChannel reached the client directly, so a dead
@@ -6302,6 +6301,39 @@ describe('WhatsAppWebJsAdapter honest outcomes (no phantom success)', () => {
         unsubscribeFromChannel: jest.fn().mockRejectedValue(transportError()),
       });
       await expect(call(adapter)).rejects.toBeInstanceOf(EngineTransportError);
+    });
+
+    /**
+     * The non-idempotent writes are the exception, and deliberately so.
+     *
+     * whatsapp-web.js can throw AFTER the request is on the wire, so a transport failure here does
+     * not prove the status was not posted or the channel not created. `503` is the one status the
+     * clients read as "the gateway declined before acting", and the Go client replays a POST on it,
+     * so answering it would have a retrying caller publish the status twice. These report the death
+     * like everything else, then rethrow untouched, which is what the message sends already do.
+     */
+    it.each([
+      ['postTextStatus', (a: WhatsAppWebJsAdapter) => a.postTextStatus('hello', {})],
+      // The three media variants all land on the same postMediaStatus delegate.
+      ['postImageStatus', (a: WhatsAppWebJsAdapter) => a.postImageStatus({ mimetype: 'image/png', data: 'aGk=' }, {})],
+      ['postVideoStatus', (a: WhatsAppWebJsAdapter) => a.postVideoStatus({ mimetype: 'video/mp4', data: 'aGk=' }, {})],
+      ['postVoiceStatus', (a: WhatsAppWebJsAdapter) => a.postVoiceStatus({ mimetype: 'audio/ogg', data: 'aGk=' }, {})],
+      ['createChannel', (a: WhatsAppWebJsAdapter) => a.createChannel('name')],
+    ])('%s reports the death but keeps its own error, so a replay cannot duplicate', async (_name, call) => {
+      const adapter = readyAdapter({
+        sendMessage: jest.fn().mockRejectedValue(transportError()),
+        createChannel: jest.fn().mockRejectedValue(transportError()),
+      });
+      const thrown = await call(adapter).catch((error: unknown) => error);
+
+      expect(thrown).toBeInstanceOf(Error);
+      expect(thrown).not.toBeInstanceOf(EngineTransportError);
+      expect((thrown as Error).message).toContain('Target closed');
+    });
+
+    it('deleteStatus keeps the 503: revoking an already-revoked status converges, so a replay is safe', async () => {
+      const adapter = readyAdapter({ revokeStatusMessage: jest.fn().mockRejectedValue(transportError()) });
+      await expect(adapter.deleteStatus('status@broadcast')).rejects.toBeInstanceOf(EngineTransportError);
     });
 
     it('setProfilePicture classifies a dead page even when the media conversion itself fails on the dying transport', async () => {

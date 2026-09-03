@@ -22,6 +22,8 @@
  * Run locally: `npm run check:audit`.
  */
 import { execFileSync } from 'node:child_process';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /**
  * Advisories CI will not stop on. Every entry states why, and what removes it.
@@ -124,7 +126,14 @@ export function evaluate(report, allowlist = ALLOWLIST) {
 }
 
 // Guarded so the spec can import the two functions above without running a real audit.
-if (import.meta.url === `file://${process.argv[1]}`) {
+//
+// Compare RESOLVED PATHS, not a hand-built file URL. `import.meta.url` is percent-encoded, so any
+// checkout path needing escaping (a space, a `#`, non-ASCII) made `file://${process.argv[1]}`
+// differ and the gate exited 0 having run no audit at all. On Windows it never matched: argv[1] is
+// a native path with backslashes and a drive letter. `fileURLToPath` decodes the URL to a native
+// path and `resolve` normalises argv[1], which is the comparison check-sdk-docs.mjs and
+// check-upstream-surface.mjs already use.
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const report = runAudit();
   const errors = evaluate(report);
 

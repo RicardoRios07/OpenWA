@@ -1,7 +1,7 @@
 # 29 - Engine Capability Matrix
 
 Three-way comparison of every capability: the **Baileys library** (`@whiskeysockets/baileys`
-7.0.0-rc13), the **whatsapp-web.js library** (1.34.7), and what **OpenWA actually exposes** through
+7.0.0-rc14), the **whatsapp-web.js library** (1.34.7), and what **OpenWA actually exposes** through
 its adapter layer and REST API — including which "supported" cells only work because OpenWA patches
 the installed library. Coverage is total: all 112 `IWhatsAppEngine` methods (29.4), **all 152
 Baileys + 81 whatsapp-web.js library methods** (29.5), all 34 + 31 library events (29.5.4), and all
@@ -50,7 +50,7 @@ flowchart LR
         SVC --> STORE["OpenWA-side stores"]
     end
     WA --> WLIB["whatsapp-web.js 1.34.7<br/>+ 7 OpenWA patches"]
-    BA --> BLIB["@whiskeysockets/baileys 7.0.0-rc13<br/>+ 2 OpenWA patches"]
+    BA --> BLIB["@whiskeysockets/baileys 7.0.0-rc14<br/>+ 2 OpenWA patches"]
     WLIB --> WEB["WhatsApp Web<br/>headless Chromium"]
     BLIB --> WAS["WhatsApp servers<br/>browser-free socket"]
     WA -.->|"not-available"| E["EngineNotSupportedError<br/>HTTP 501"]

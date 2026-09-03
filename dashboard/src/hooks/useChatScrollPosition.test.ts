@@ -1,6 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { decideRestoreTarget, grewAboveReadingPosition, isNearBottom } from './useChatScrollPosition.ts';
+import {
+  correctionForMediaGrowth,
+  decideRestoreTarget,
+  grewAboveReadingPosition,
+  isNearBottom,
+} from './useChatScrollPosition.ts';
 
 test('isNearBottom: exactly at the bottom counts as near', () => {
   assert.equal(isNearBottom(1000, 2000, 1000), true); // 2000-1000-1000 = 0
@@ -67,4 +72,45 @@ test('media straddling the top edge is left uncorrected rather than over-correct
   // Top above the edge, bottom below it: only the part above displaces, so a full correction
   // would overshoot. Answering false drifts with the reader rather than against them.
   assert.equal(grewAboveReadingPosition(160, CONTAINER_TOP), false);
+});
+
+// --- correctionForMediaGrowth -------------------------------------------------------------------
+//
+// The reading position is the container's top edge (CONTAINER_TOP, declared above). A media element
+// that decodes above it pushes everything below down, so scrollTop has to grow by the same amount to
+// keep the same content on screen.
+
+test('an element that decoded above the reader is corrected by exactly its growth', () => {
+  // Seeded 0px at mount, now 300px, and its post-decode bottom sits at 90: before it grew, its
+  // bottom was at -210, well above the reading position.
+  assert.equal(correctionForMediaGrowth(1000, 0, 300, 90, CONTAINER_TOP), 1300);
+});
+
+/**
+ * The case a baseline taken in the load handler could never see. By then the decoded height is
+ * already in layout, so seeded === current, the growth reads as zero, and nothing is corrected
+ * while the reader has in fact been displaced.
+ */
+test('a baseline equal to the current height yields no correction, which is why it is seeded at mount', () => {
+  assert.equal(correctionForMediaGrowth(1000, 300, 300, 90, CONTAINER_TOP), null);
+});
+
+test('an element that decoded below the reader is left alone', () => {
+  // Grew 300, and even before growing its bottom was at 500: far below the top edge, so nothing
+  // the reader can see moved. Correcting here would drag them toward the newest messages.
+  assert.equal(correctionForMediaGrowth(1000, 0, 300, 800, CONTAINER_TOP), null);
+});
+
+/**
+ * The subtraction is what makes the question answerable. Post-decode this element measures BELOW
+ * the top edge (bottom 150 > 100), but it only got there by growing: before the decode its bottom
+ * was at 50, above the reader, so it did displace them.
+ */
+test('the above/below question is asked against the pre-decode layout', () => {
+  assert.equal(correctionForMediaGrowth(1000, 0, 100, 150, CONTAINER_TOP), 1100);
+});
+
+test('a shrink or an unchanged box corrects nothing', () => {
+  assert.equal(correctionForMediaGrowth(1000, 300, 300, 50, CONTAINER_TOP), null);
+  assert.equal(correctionForMediaGrowth(1000, 300, 120, 50, CONTAINER_TOP), null);
 });

@@ -57,10 +57,11 @@ export function decideRestoreTarget(
  *   they scroll back), so late-decoding media never yanks a reading user.
  * - Reading further back: the same late-decode growth, above a viewport that is
  *   NOT pinned to the bottom, holds the user's position instead of re-pinning.
- *   That is `onMediaLoad`'s third branch. It snapshots the height at the load
- *   event, since a decode has no requesting call to hang one on the way
- *   `onOlderMessagesRequested` does, and it corrects only for media sitting
- *   above the reading position: growth below it moves nothing on screen.
+ *   That is `onMediaLoad`'s third branch. The baseline comes from
+ *   `measureMedia`, a ref callback that records each element's box height at
+ *   DOM insertion, because a height read inside the load handler is already
+ *   post-decode and would measure the growth as zero. It corrects only for
+ *   media above the reading position: growth below it moves nothing on screen.
  *
  * Mount the returned `containerRef` on the scroll container (the `.room-messages`
  * div in Chats.tsx). The Map of saved positions lives in a ref so it doesn't
@@ -91,6 +92,31 @@ export function grewAboveReadingPosition(mediaBottom: number, containerTop: numb
   return mediaBottom <= containerTop;
 }
 
+/**
+ * The scrollTop that holds the reader still after a media element finished decoding, or null when
+ * nothing on screen moved.
+ *
+ * `seededHeight` is the element's box height recorded when it MOUNTED. That matters: by the time a
+ * `load` handler runs, the decoded size is already in layout, and every geometry read there flushes
+ * it, so a baseline taken in the handler measures the growth as zero and the correction never
+ * fires. DOM insertion is the one moment a browser guarantees is pre-decode.
+ *
+ * The growth is subtracted from the bottom edge before the above/below question is asked, because
+ * `mediaBottom` is read post-decode: an element that displaced the reader can already measure below
+ * the container's top edge by exactly the amount it grew.
+ */
+export function correctionForMediaGrowth(
+  scrollTop: number,
+  seededHeight: number,
+  currentHeight: number,
+  mediaBottom: number,
+  containerTop: number,
+): number | null {
+  const grew = currentHeight - seededHeight;
+  if (grew <= 0) return null;
+  return grewAboveReadingPosition(mediaBottom - grew, containerTop) ? scrollTop + grew : null;
+}
+
 export function useChatScrollPosition(
   activeChatId: string | null,
   isLoaded: boolean,
@@ -100,6 +126,8 @@ export function useChatScrollPosition(
   onMessageAppended: (direction: ScrollDirection) => void;
   /** Pass the load event through: which element grew decides whether the reader moved at all. */
   onMediaLoad: (event?: { currentTarget: Element | null }) => void;
+  /** Ref callback for every inline media element; seeds the pre-decode height onMediaLoad needs. */
+  measureMedia: (el: Element | null) => void;
   /** Call when an older page is requested; the reading position is held once it lands. */
   onOlderMessagesRequested: () => void;
 } {
@@ -118,6 +146,9 @@ export function useChatScrollPosition(
   const prevScrollHeightRef = useRef<number>(0);
   const awaitingOlderPageRef = useRef<boolean>(false);
   const wasFetchingOlderRef = useRef<boolean>(false);
+  // Box height of each mounted media element, recorded at DOM insertion: the one moment a browser
+  // guarantees is before the decode. A WeakMap so entries die with the nodes on a chat switch.
+  const mediaHeights = useRef(new WeakMap<Element, number>());
 
   const writeScrollTop = useCallback((el: HTMLDivElement, top: number) => {
     const before = el.scrollTop;
@@ -259,6 +290,11 @@ export function useChatScrollPosition(
   // reading down exactly like an unabsorbed older-page prepend, and it is held the same way. The
   // decode has no request event to hang a snapshot on, so the baseline is taken here, from the
   // load event itself, and the element that fired it says whether the reader moved at all.
+  /** Attach to every inline media element: seeds its pre-decode height for onMediaLoad. */
+  const measureMedia = useCallback((el: Element | null) => {
+    if (el) mediaHeights.current.set(el, el.getBoundingClientRect().height);
+  }, []);
+
   const onMediaLoad = useCallback(
     (event?: { currentTarget: Element | null }) => {
       const pending = pendingRestoreRef.current;
@@ -282,26 +318,30 @@ export function useChatScrollPosition(
       // request-time snapshot that spans every commit until the page lands, decodes included.
       // Correcting here as well would count the same pixels twice and overshoot by the decode.
       if (awaitingOlderPageRef.current) return;
-      // Which element grew decides whether the reader moved at all; see grewAboveReadingPosition.
+      // Which element grew, and by how much, decides whether the reader moved at all.
       const media = event?.currentTarget ?? null;
       if (!media) return;
-      if (!grewAboveReadingPosition(media.getBoundingClientRect().bottom, el.getBoundingClientRect().top)) {
-        return;
-      }
-      // Snapshot locally rather than from a ref any other commit can refresh: a render landing
-      // between this event and the frame below would otherwise consume the pending correction and
-      // leave the reader displaced with nothing to catch it.
-      const before = el.scrollHeight;
+      const seeded = mediaHeights.current.get(media);
+      if (seeded === undefined) return;
+      const rect = media.getBoundingClientRect();
+      // Re-seed before the frame: the element has finished growing, so its current box is the
+      // baseline for any later change (a re-decode on a src swap, a lazy dimension arriving).
+      mediaHeights.current.set(media, rect.height);
+      const corrected = correctionForMediaGrowth(
+        el.scrollTop,
+        seeded,
+        rect.height,
+        rect.bottom,
+        el.getBoundingClientRect().top,
+      );
+      if (corrected === null) return;
       requestAnimationFrame(() => {
         const cur = containerRef.current;
         if (!cur) return;
         // The container is reused across chats, so a switch between the event and this frame would
-        // measure the new thread and save the result under the old chat's id. prevChatIdRef holds
-        // whichever chat is actually on screen, set by the restore effect above.
+        // apply the correction to a different thread and save it under the outgoing chat's id.
+        // prevChatIdRef holds whichever chat is actually on screen, set by the restore effect above.
         if (prevChatIdRef.current !== activeChatId) return;
-        const grew = cur.scrollHeight - before;
-        if (grew <= 0) return;
-        const corrected = cur.scrollTop + grew;
         writeScrollTop(cur, corrected);
         if (activeChatId !== null) scrollMap.current.set(activeChatId, corrected);
       });
@@ -309,5 +349,5 @@ export function useChatScrollPosition(
     [activeChatId, pinToBottom, writeScrollTop],
   );
 
-  return { containerRef, onMessageAppended, onMediaLoad, onOlderMessagesRequested };
+  return { containerRef, onMessageAppended, onMediaLoad, measureMedia, onOlderMessagesRequested };
 }

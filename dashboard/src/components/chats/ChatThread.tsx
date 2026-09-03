@@ -29,6 +29,8 @@ interface ChatThreadProps {
   loadingOlderMessages: boolean;
   onLoadOlderMessages: () => void;
   onMediaLoad: (event?: { currentTarget: Element | null }) => void;
+  /** Seeds each media element's pre-decode height; see useChatScrollPosition.measureMedia. */
+  measureMedia: (el: Element | null) => void;
   onOpenImage: (messageId: string) => void;
   onReply: (message: ChatMessageView) => void;
   onReact: (message: ChatMessageView, emoji: string) => void;
@@ -50,6 +52,7 @@ function ChatThread({
   loadingOlderMessages,
   onLoadOlderMessages,
   onMediaLoad,
+  measureMedia,
   onOpenImage,
   onReply,
   onReact,
@@ -227,7 +230,9 @@ function ChatThread({
               const thumb = msg.body && msg.body.length > 100 ? `data:image/jpeg;base64,${msg.body}` : '';
               return (
                 <div className="message-location">
-                  {thumb && <img src={thumb} alt="" onLoad={onMediaLoad} className="chat-location-media" />}
+                  {thumb && (
+                    <img ref={measureMedia} src={thumb} alt="" onLoad={onMediaLoad} className="chat-location-media" />
+                  )}
                   <span className="message-media-omitted">📍 {t('chats.media.location')}</span>
                 </div>
               );
@@ -279,6 +284,7 @@ function ChatThread({
                       src={mediaSrc}
                       alt={mediaInfo.filename || t('chats.media.image')}
                       className="chat-image-media"
+                      ref={measureMedia}
                       onLoad={onMediaLoad}
                       onClick={() => onOpenImage(msg.id)}
                     />
@@ -287,7 +293,13 @@ function ChatThread({
               case 'video':
                 return (
                   <div className="message-media-video">
-                    <video src={mediaSrc} controls className="chat-video-media" onLoadedData={onMediaLoad} />
+                    <video
+                      ref={measureMedia}
+                      src={mediaSrc}
+                      controls
+                      className="chat-video-media"
+                      onLoadedData={onMediaLoad}
+                    />
                   </div>
                 );
               case 'audio':
