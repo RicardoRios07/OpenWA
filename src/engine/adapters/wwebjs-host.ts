@@ -1,6 +1,7 @@
 import { type Client, type Message } from 'whatsapp-web.js';
 import { type EngineEventCallbacks, type IncomingMessage } from '../interfaces/whatsapp-engine.interface';
 import { type createLogger } from '../../common/services/logger.service';
+import { EngineTransportError } from '../../common/errors/engine-transport.error';
 import { type WhatsAppWebJsConfig } from './whatsapp-web-js.adapter';
 
 /**
@@ -24,4 +25,24 @@ export interface WwebjsEngineHost {
   getCallbacks(): EngineEventCallbacks;
   /** Own account wid, or undefined while no client exists (late events during teardown). */
   getSelfWid(): string | undefined;
+}
+
+/**
+ * Run a client operation, classifying a dead page/transport as the documented 503 plus an early
+ * death signal instead of an opaque 500 under a status that still says READY - the split every
+ * chats read already makes (#1081). Other errors propagate unchanged.
+ *
+ * Lives here rather than per delegate: ./wwebjs-channels, ./wwebjs-profile and ./wwebjs-status each
+ * held a byte-identical private copy, and ./wwebjs-contacts needed a fourth.
+ */
+export async function withPage<T>(host: WwebjsEngineHost, context: string, op: () => Promise<T>): Promise<T> {
+  try {
+    return await op();
+  } catch (error) {
+    if (host.isPageTransportError(error)) {
+      host.reportIfPageTransportError(error, context);
+      throw new EngineTransportError(`Transport died during ${context}`);
+    }
+    throw error;
+  }
 }

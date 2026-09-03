@@ -1,0 +1,75 @@
+import type { Client } from 'whatsapp-web.js';
+import { WwebjsLabels } from './wwebjs-labels';
+import { createLogger } from '../../common/services/logger.service';
+import { type WwebjsEngineHost } from './wwebjs-host';
+import { EngineTransportError } from '../../common/errors/engine-transport.error';
+
+/**
+ * Three label reads had no error handling on the page call at all, so a dead page was both an opaque
+ * 500 and a death the session was never told about; the label write saw only the `[LT01] Only
+ * Whatsapp business` case and passed everything else through raw. getChatsByLabel in the same file
+ * already made the split, which is why one label read answered 503 and the neighbouring ones 500.
+ */
+const logger = createLogger('wwebjs-label-transport-death.spec');
+
+describe('label operations distinguish a dead page from an ordinary failure', () => {
+  const transportError = new Error('Protocol error (Runtime.callFunctionOn): Target closed');
+
+  function makeLabels(op: string, reject: unknown): { labels: WwebjsLabels; reportIfPageTransportError: jest.Mock } {
+    const rejects = (name: string) =>
+      op === name ? jest.fn().mockRejectedValue(reject) : jest.fn().mockResolvedValue([]);
+    const chat = { getLabels: rejects('getChatLabels') };
+    const client = {
+      getLabels: rejects('getLabels'),
+      getLabelById: op === 'getLabelById' ? jest.fn().mockRejectedValue(reject) : jest.fn().mockResolvedValue(null),
+      getChatById: jest.fn().mockResolvedValue(chat),
+      addOrRemoveLabels:
+        op === 'changeChatLabel' ? jest.fn().mockRejectedValue(reject) : jest.fn().mockResolvedValue(undefined),
+    };
+    const reportIfPageTransportError = jest.fn();
+    const host = {
+      ensureReady: jest.fn(),
+      getClient: () => client as unknown as Client,
+      isPageTransportError: (error: unknown) => error === transportError,
+      reportIfPageTransportError,
+      logger,
+    } as unknown as WwebjsEngineHost;
+    return { labels: new WwebjsLabels(host), reportIfPageTransportError };
+  }
+
+  // changeChatLabel is private; addLabelToChat is its public entry point.
+  const call = (labels: WwebjsLabels, op: string): Promise<unknown> =>
+    ({
+      getLabels: () => labels.getLabels(),
+      getLabelById: () => labels.getLabelById('7'),
+      getChatLabels: () => labels.getChatLabels('628123@c.us'),
+      changeChatLabel: () => labels.addLabelToChat('628123@c.us', '7'),
+    })[op]!();
+
+  const OPS = ['getLabels', 'getLabelById', 'getChatLabels', 'changeChatLabel'];
+
+  it.each(OPS)('%s answers a dead page with the 503 its route documents', async op => {
+    const { labels, reportIfPageTransportError } = makeLabels(op, transportError);
+
+    await expect(call(labels, op)).rejects.toThrow(EngineTransportError);
+    expect(reportIfPageTransportError).toHaveBeenCalledWith(transportError, op);
+  });
+
+  // Negative twin: an ordinary page-side failure must still surface untouched, so the fix cannot
+  // simply relabel every failure as a retryable 503.
+  it.each(OPS)('%s still propagates an ordinary failure unchanged', async op => {
+    const refusal = new Error('Evaluation failed: label not found');
+    const { labels, reportIfPageTransportError } = makeLabels(op, refusal);
+
+    await expect(call(labels, op)).rejects.toBe(refusal);
+    expect(reportIfPageTransportError).not.toHaveBeenCalled();
+  });
+
+  // The label write's one bespoke mapping must survive the guard: a personal account still gets the
+  // "not a Business account" refusal rather than a transport failure.
+  it('still maps the page-side LT01 refusal to the unsupported error', async () => {
+    const { labels } = makeLabels('changeChatLabel', new Error('[LT01] Only Whatsapp business'));
+
+    await expect(labels.addLabelToChat('628123@c.us', '7')).rejects.toThrow(/business/i);
+  });
+});
