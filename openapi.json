@@ -31,6 +31,7 @@
                 "session_disconnected",
                 "session_restricted",
                 "session_restriction_lifted",
+                "session_rebind_rejected",
                 "message_sent",
                 "message_failed",
                 "send_pacing_blocked",

@@ -140,6 +140,43 @@ describe('SessionService logout() name-scoped teardown fence', () => {
   const lastStatusOf = () =>
     (lifecycle as unknown as { lastDispatchedStatus: Map<string, unknown> }).lastDispatchedStatus;
 
+  const rejectRebind = (previous: string, incoming: string, engine: unknown) =>
+    (
+      lifecycle as unknown as {
+        rejectRebind: (id: string, e: unknown, name: string, prev: string, inc: string) => Promise<void>;
+      }
+    ).rejectRebind(SESSION_UUID, engine, SESSION_NAME, previous, incoming);
+
+  it('rejectRebind logs the wrong account out, fails the session, and keeps the original binding', async () => {
+    const logout = jest.fn().mockResolvedValue(undefined);
+    const engine = { logout };
+    enginesOf().set(SESSION_UUID, engine);
+
+    await rejectRebind('628111', '628999', engine);
+
+    // The wrong account is torn down, the session is parked in FAILED with a reason naming both
+    // numbers, and the engine is dropped. The original binding is preserved: no `{ phone: null }`.
+    expect(logout).toHaveBeenCalledTimes(1);
+    expect(lastStatusOf().get(SESSION_UUID)).toBe(SessionStatus.FAILED);
+    expect(errorsOf().get(SESSION_UUID)).toEqual(expect.stringContaining('628111'));
+    expect(errorsOf().get(SESSION_UUID)).toEqual(expect.stringContaining('628999'));
+    expect(enginesOf().has(SESSION_UUID)).toBe(false);
+    expect(stoppingOf().has(SESSION_UUID)).toBe(true);
+    expect(repository.update).not.toHaveBeenCalledWith(SESSION_UUID, { phone: null });
+  });
+
+  it('rejectRebind on a stale engine does nothing (isLiveEngine gate)', async () => {
+    const logout = jest.fn().mockResolvedValue(undefined);
+    const staleEngine = { logout };
+    // A DIFFERENT engine is the live one, so the stale handler must not log out or fail the session.
+    enginesOf().set(SESSION_UUID, { logout: jest.fn() });
+
+    await rejectRebind('628111', '628999', staleEngine);
+
+    expect(logout).not.toHaveBeenCalled();
+    expect(lastStatusOf().get(SESSION_UUID)).not.toBe(SessionStatus.FAILED);
+  });
+
   it('quick-settling teardown: start waits for it, then proceeds', async () => {
     let releaseLogout!: () => void;
     const wedgedLogout = new Promise<void>(res => {
