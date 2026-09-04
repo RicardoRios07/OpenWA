@@ -168,6 +168,20 @@ describe('BaileysSessionStore', () => {
       expect(fake.get(SID, CHAT)?.muteEndTime).toBe((nowS + 3600) * 1000);
       expect(chatOn(newStore(), { name: 'Alice' }).muted).toBe(true);
     });
+
+    it('reports muteExpiration in ms when muted, absent when not, and survives a restart', () => {
+      const endMs = Date.now() + 90 * 60 * 1000;
+      expect(chatOn(newStore(), { muteEndTime: endMs })).toMatchObject({ muted: true, muteExpiration: endMs });
+      // Restart: the fresh store's this.chats has no muteEndTime, but the persisted expiry is read back.
+      expect(chatOn(newStore(), { name: 'Alice' })).toMatchObject({ muted: true, muteExpiration: endMs });
+      // An unmuted chat carries no expiry (undefined, so omitted from the JSON payload).
+      expect(chatOn(newStore(), { muteEndTime: null }).muteExpiration).toBeUndefined();
+    });
+
+    it('normalizes a seconds-scale expiry to ms for muteExpiration', () => {
+      const nowS = Math.floor(Date.now() / 1000);
+      expect(chatOn(newStore(), { muteEndTime: nowS + 3600 }).muteExpiration).toBe((nowS + 3600) * 1000);
+    });
   });
 
   it('records the newest message per chat and surfaces it in getChats', () => {

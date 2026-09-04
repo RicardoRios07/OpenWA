@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `GET /sessions/{sessionId}/chats` reports `muteExpiration`, the epoch-ms instant a muted chat's mute
+  ends (`0` = indefinite), alongside the existing `muted` flag
+  ([#1473](https://github.com/rmyndharis/OpenWA/issues/1473)). Thanks @usmancynosure and @purnamcommunity.
 - The dashboard's Message Tester can load bulk recipients from a `.txt` or `.csv` file, appending the
   file's lines to whatever the Recipients box already holds. One entry per line, which is what the
   box itself expects. Thanks @harry0x.
