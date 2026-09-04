@@ -433,6 +433,7 @@
         "body": "Corpo da mensagem",
         "type": "Tipo de mensagem",
         "isGroup": "É chat de grupo",
+        "kind": "Chat kind",
         "fromMe": "Enviado por mim",
         "hasMedia": "Tem mídia",
         "mentions": "Menções"

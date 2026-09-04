@@ -42,6 +42,60 @@ describe('BaileysSessionStore', () => {
     expect(store.findContact('628222@s.whatsapp.net')?.pushName).toBe('Bob');
   });
 
+  describe('archived, pinned and muted state', () => {
+    // A fresh store per call: upsertChats MERGES, so reusing one store lets an absent-field case
+    // re-read a value a prior call set, and the default-to-false path would never run.
+    const chatFor = (over: Record<string, unknown>) => {
+      const s = new BaileysSessionStore();
+      s.upsertChats([{ id: '628111@s.whatsapp.net', name: 'Alice', ...over }]);
+      return s.listChats()[0];
+    };
+
+    it('maps archived, pinned and muted each from its own field', () => {
+      // No Baileys case asserted archived: true before, so `archived: c.archived ?? false` could be
+      // a constant false and stay green. Mixed values pin each flag to its own source.
+      expect(chatFor({ archived: true, pinned: 0, muteEndTime: 0 })).toMatchObject({
+        archived: true,
+        pinned: false,
+        muted: false,
+      });
+      expect(chatFor({ archived: false, pinned: 2, muteEndTime: 0 })).toMatchObject({
+        archived: false,
+        pinned: true,
+        muted: false,
+      });
+    });
+
+    it('reads a pin as a flag, though Baileys reports it as an order', () => {
+      // proto.IConversation.pinned is a NUMBER — its position among pinned chats, not a boolean.
+      expect(chatFor({ pinned: 2 }).pinned).toBe(true);
+      expect(chatFor({ pinned: 0 }).pinned).toBe(false);
+      expect(chatFor({}).pinned).toBe(false);
+    });
+
+    it('treats a mute as active only while its end time is still ahead', () => {
+      const inAnHourMs = Date.now() + 60 * 60 * 1000;
+      const anHourAgoMs = Date.now() - 60 * 60 * 1000;
+      expect(chatFor({ muteEndTime: inAnHourMs }).muted).toBe(true);
+      expect(chatFor({ muteEndTime: anHourAgoMs }).muted).toBe(false);
+      expect(chatFor({ muteEndTime: 0 }).muted).toBe(false);
+      expect(chatFor({}).muted).toBe(false);
+    });
+
+    it('reads the end time as milliseconds, the unit the mute round-trip is measured at', () => {
+      // chat-mute.spec.ts records the measurement: a seconds-scale value sent through
+      // chatModify({ mute }) left the chat unmuted, because that instant had already passed in
+      // 1970. Reading it back the same way keeps the write and the read on one unit — a
+      // seconds-scale stamp is an instant in 1970 here too, so it reads as expired.
+      expect(chatFor({ muteEndTime: Math.floor(Date.now() / 1000) + 3600 }).muted).toBe(false);
+    });
+
+    it('accepts a Long, which is what the proto actually hands over', () => {
+      const asLong = { toNumber: () => Date.now() + 60 * 60 * 1000 };
+      expect(chatFor({ muteEndTime: asLong }).muted).toBe(true);
+    });
+  });
+
   it('records the newest message per chat and surfaces it in getChats', () => {
     store.upsertChats([{ id: '628111@s.whatsapp.net', name: 'Alice', unreadCount: 2 }]);
     store.recordMessage({
@@ -64,6 +118,9 @@ describe('BaileysSessionStore', () => {
         unreadCount: 2,
         timestamp: 200,
         lastMessage: 'newest',
+        archived: false,
+        pinned: false,
+        muted: false,
       },
     ]);
     expect(store.lastMessage('628111@s.whatsapp.net')).toEqual({

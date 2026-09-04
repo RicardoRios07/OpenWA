@@ -6326,9 +6326,6 @@
           },
           "409": {
             "description": "The session is not connected — an engine exists for it but is not `ready`: disconnected, reconnecting, or still initializing, so the request never reached WhatsApp. Wait for `ready` and retry. A session that was never started answers `400` instead, and the session lifecycle routes answer `409` for a conflicting state rather than this. One window answers this while the session still reads `ready`: WhatsApp Web periodically reloads its own page and the engine re-injects into it — for those few seconds the answer is a `409` naming the reload; retry shortly."
-          },
-          "503": {
-            "description": "WhatsApp did not answer within the request budget. The link may or may not have been created — the gateway stopped waiting for a reply that never came."
           }
         },
         "summary": "Generate a shareable WhatsApp call link",
@@ -6636,7 +6633,7 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/LabelChatDto"
+                    "$ref": "#/components/schemas/ChatSummaryDto"
                   }
                 }
               }
@@ -10460,6 +10457,21 @@
           "lastMessage": {
             "type": "string",
             "example": "hi"
+          },
+          "archived": {
+            "type": "boolean",
+            "description": "Archived state, as set via POST /sessions/{sessionId}/chats/archive.",
+            "example": false
+          },
+          "pinned": {
+            "type": "boolean",
+            "description": "Pinned state, as set via POST /sessions/{sessionId}/chats/pin.",
+            "example": false
+          },
+          "muted": {
+            "type": "boolean",
+            "description": "Whether the chat is muted right now, as set via POST /sessions/{sessionId}/chats/mute. The verdict rather than the expiry: whatsapp-web.js derives it itself from Chat.isMuted, and Baileys carries a muteEndTime that this gateway compares against now. The expiry instant itself is tracked separately in #1473.",
+            "example": false
           }
         },
         "required": [
@@ -10468,7 +10480,10 @@
           "isGroup",
           "kind",
           "unreadCount",
-          "timestamp"
+          "timestamp",
+          "archived",
+          "pinned",
+          "muted"
         ]
       },
       "MarkChatReadDto": {
@@ -15171,54 +15186,6 @@
           "id",
           "name",
           "hexColor"
-        ]
-      },
-      "LabelChatDto": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "description": "Chat id in the engine's native format.",
-            "example": "628123456789@c.us"
-          },
-          "name": {
-            "type": "string",
-            "description": "Chat title — contact name or group subject.",
-            "example": "Ada Lovelace"
-          },
-          "isGroup": {
-            "type": "boolean",
-            "description": "Retained for back-compat; `kind` is the full discriminator.",
-            "example": false
-          },
-          "kind": {
-            "type": "string",
-            "description": "User-facing chat kind.",
-            "example": "individual"
-          },
-          "unreadCount": {
-            "type": "number",
-            "description": "Unread messages in this chat.",
-            "example": 0
-          },
-          "timestamp": {
-            "type": "number",
-            "description": "Unix SECONDS of the most recent activity.",
-            "example": 1786000000
-          },
-          "lastMessage": {
-            "type": "string",
-            "description": "Preview of the last message, when there is one.",
-            "example": "See you then"
-          }
-        },
-        "required": [
-          "id",
-          "name",
-          "isGroup",
-          "kind",
-          "unreadCount",
-          "timestamp"
         ]
       },
       "UpsertLabelDto": {

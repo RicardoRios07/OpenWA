@@ -14,4 +14,8 @@ public record ChatSummary(
     /** Preview text of the last message (the server returns a plain string, not an object). */
     String lastMessage,
     Long timestamp,
-    ChatKind kind) {}
+    ChatKind kind,
+    Boolean archived,
+    Boolean pinned,
+    /** Whether the chat is muted right now, not the expiry behind it. */
+    Boolean muted) {}

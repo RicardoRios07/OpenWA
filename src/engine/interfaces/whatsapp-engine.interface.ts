@@ -491,6 +491,20 @@ export interface ChatSummary {
   unreadCount: number;
   timestamp: number;
   lastMessage?: string;
+  /** Archived state, as set via `POST /sessions/{sessionId}/chats/archive`. */
+  archived: boolean;
+  /** Pinned state, as set via `POST /sessions/{sessionId}/chats/pin`. */
+  pinned: boolean;
+  /**
+   * Muted state, as set via `POST /sessions/{sessionId}/chats/mute`.
+   *
+   * The verdict rather than the expiry the engines hold, deliberately: "is this chat muted right
+   * now" is what a caller needs to label a mute/unmute control, and it is what both engines answer
+   * directly — whatsapp-web.js derives `Chat.isMuted` itself, and Baileys carries a `muteEndTime`
+   * (epoch milliseconds, per the measurement in `chat-mute.spec.ts`) to compare against now. The
+   * expiry instant itself is tracked separately in #1473.
+   */
+  muted: boolean;
 }
 
 /**

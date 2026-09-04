@@ -93,8 +93,11 @@ export function grewAboveReadingPosition(mediaBottom: number, containerTop: numb
 }
 
 /**
- * The scrollTop that holds the reader still after a media element finished decoding, or null when
- * nothing on screen moved.
+ * How much `scrollTop` must gain to hold the reader still after a media element finished decoding,
+ * or null when nothing on screen moved. This is a DELTA, not an absolute target, so the caller adds
+ * it to the LIVE scrollTop at apply time: two elements decoding in one frame each contribute their
+ * own growth and the reader is held through the sum, where a captured absolute would have the second
+ * write overwrite the first with the same value and under-correct.
  *
  * `seededHeight` is the element's box height recorded when it MOUNTED. That matters: by the time a
  * `load` handler runs, the decoded size is already in layout, and every geometry read there flushes
@@ -106,7 +109,6 @@ export function grewAboveReadingPosition(mediaBottom: number, containerTop: numb
  * the container's top edge by exactly the amount it grew.
  */
 export function correctionForMediaGrowth(
-  scrollTop: number,
   seededHeight: number,
   currentHeight: number,
   mediaBottom: number,
@@ -114,7 +116,7 @@ export function correctionForMediaGrowth(
 ): number | null {
   const grew = currentHeight - seededHeight;
   if (grew <= 0) return null;
-  return grewAboveReadingPosition(mediaBottom - grew, containerTop) ? scrollTop + grew : null;
+  return grewAboveReadingPosition(mediaBottom - grew, containerTop) ? grew : null;
 }
 
 export function useChatScrollPosition(
@@ -327,14 +329,8 @@ export function useChatScrollPosition(
       // Re-seed before the frame: the element has finished growing, so its current box is the
       // baseline for any later change (a re-decode on a src swap, a lazy dimension arriving).
       mediaHeights.current.set(media, rect.height);
-      const corrected = correctionForMediaGrowth(
-        el.scrollTop,
-        seeded,
-        rect.height,
-        rect.bottom,
-        el.getBoundingClientRect().top,
-      );
-      if (corrected === null) return;
+      const grew = correctionForMediaGrowth(seeded, rect.height, rect.bottom, el.getBoundingClientRect().top);
+      if (grew === null) return;
       requestAnimationFrame(() => {
         const cur = containerRef.current;
         if (!cur) return;
@@ -342,8 +338,12 @@ export function useChatScrollPosition(
         // apply the correction to a different thread and save it under the outgoing chat's id.
         // prevChatIdRef holds whichever chat is actually on screen, set by the restore effect above.
         if (prevChatIdRef.current !== activeChatId) return;
-        writeScrollTop(cur, corrected);
-        if (activeChatId !== null) scrollMap.current.set(activeChatId, corrected);
+        // Add to the LIVE scrollTop, not a value captured at event time: a sibling element decoding
+        // in the same frame has its own rAF that already moved scrollTop, and this one must stack on
+        // top of it. A captured absolute would re-assert the pre-sibling position and lose the sum.
+        const next = cur.scrollTop + grew;
+        writeScrollTop(cur, next);
+        if (activeChatId !== null) scrollMap.current.set(activeChatId, next);
       });
     },
     [activeChatId, pinToBottom, writeScrollTop],

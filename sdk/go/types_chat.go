@@ -11,6 +11,10 @@ type ChatSummary struct {
 	LastMessage string   `json:"lastMessage,omitempty"`
 	Timestamp   int64    `json:"timestamp"`
 	Kind        ChatKind `json:"kind"`
+	Archived    bool     `json:"archived"`
+	Pinned      bool     `json:"pinned"`
+	// Muted reports whether the chat is muted right now, not the expiry behind it.
+	Muted bool `json:"muted"`
 }
 
 // SetOwnPresenceRequest is the body for SessionsService.SetOnlinePresence. Available reports

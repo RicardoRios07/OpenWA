@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Plus, X } from 'lucide-react';
 import {
   MESSAGE_TYPES,
+  CHAT_KINDS,
   type Chat,
   type WebhookFilters,
   type WebhookFilterCondition,
@@ -26,6 +27,7 @@ const MESSAGE_FIELDS: FieldDescriptor[] = [
   { field: 'body', kind: 'text', operators: ['contains', 'equals'] },
   { field: 'type', kind: 'enum', operators: ['is', 'isNot'], enumValues: MESSAGE_TYPES },
   { field: 'isGroup', kind: 'boolean', operators: ['is'] },
+  { field: 'kind', kind: 'enum', operators: ['is', 'isNot'], enumValues: CHAT_KINDS },
   { field: 'fromMe', kind: 'boolean', operators: ['is'] },
   { field: 'hasMedia', kind: 'boolean', operators: ['is'] },
   { field: 'mentions', kind: 'idArray', operators: ['is', 'isNot'] },

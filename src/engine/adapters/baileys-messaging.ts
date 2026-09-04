@@ -1,4 +1,3 @@
-import sharp from 'sharp';
 import type * as BaileysLib from '@whiskeysockets/baileys';
 import type { AnyMessageContent, MiscMessageGenerationOptions, WAMessage, WASocket } from '@whiskeysockets/baileys';
 import { generateSafeLinkPreview } from './safe-link-preview';
@@ -99,6 +98,12 @@ async function toWebpSticker(data: Buffer, mimetype: string): Promise<Buffer> {
     );
   }
   try {
+    // Imported lazily so an unusable `sharp` (a native binary that will not build or load on an
+    // older CPU, a stripped image) degrades ONLY this one Baileys sticker route instead of killing
+    // the whole gateway at boot. `sharp` sits at the top of a module the built-in engine loads
+    // unconditionally, so an eager import made a single optional capability a hard boot requirement
+    // on both engines. Same deferral the adapters already use for the engine libraries themselves.
+    const { default: sharp } = await import('sharp');
     return await sharp(data, { animated: true })
       .resize(512, 512, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
       .webp()

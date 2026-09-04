@@ -1,6 +1,7 @@
 import { Controller, Get, Post, Put, Delete, Param, Body, HttpCode, HttpStatus } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiParam, ApiBody } from '@nestjs/swagger';
-import { LabelAckResponseDto, LabelChatDto, LabelDto } from './dto/label-response.dto';
+import { LabelAckResponseDto, LabelDto } from './dto/label-response.dto';
+import { ChatSummaryDto } from '../session/dto/chat-summary.dto';
 import { LabelService } from './label.service';
 import { AddLabelDto } from './dto/add-label.dto';
 import { UpsertLabelDto } from './dto/upsert-label.dto';
@@ -60,7 +61,7 @@ export class LabelController {
   })
   @ApiParam({ name: 'sessionId', description: 'Session ID' })
   @ApiParam({ name: 'labelId', description: 'Label ID' })
-  @ApiResponse({ status: 200, description: 'Chats carrying the label', type: [LabelChatDto] })
+  @ApiResponse({ status: 200, description: 'Chats carrying the label', type: [ChatSummaryDto] })
   @ApiResponse({ status: 400, description: 'Session not started' })
   @ApiResponse({ status: 501, description: 'The active engine cannot list chats by label (Baileys)' })
   @ApiResponse({

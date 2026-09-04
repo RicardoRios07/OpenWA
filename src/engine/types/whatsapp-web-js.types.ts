@@ -130,11 +130,18 @@ export interface BusinessClient extends Omit<
   getLabels(): Promise<Array<{ id: string; name: string; hexColor: string }>>;
   getLabelById(id: string): Promise<{ id: string; name: string; hexColor: string } | null>;
   /** Chats carrying a label. whatsapp-web.js has the read but exposes no label create/update/delete. */
-  getChatsByLabelId(
-    labelId: string,
-  ): Promise<
+  getChatsByLabelId(labelId: string): Promise<
     Array<
-      | { id?: { _serialized?: string }; name?: string; isGroup?: boolean; unreadCount?: number; timestamp?: number }
+      | {
+          id?: { _serialized?: string };
+          name?: string;
+          isGroup?: boolean;
+          unreadCount?: number;
+          timestamp?: number;
+          archived?: boolean;
+          pinned?: boolean;
+          isMuted?: boolean;
+        }
       | undefined
     >
   >;

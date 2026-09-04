@@ -2,7 +2,7 @@ import { type Client } from 'whatsapp-web.js';
 import { CallLinkType, MediaInput } from '../interfaces/whatsapp-engine.interface';
 import { EngineRefusedError } from '../../common/errors/engine-refused.error';
 import { toMessageMedia } from './wwebjs-messaging';
-import { type WwebjsEngineHost, withPage } from './wwebjs-host';
+import { type WwebjsEngineHost, withPage, reportPageDeath } from './wwebjs-host';
 
 /**
  * Own-account profile operations extracted from WhatsAppWebJsAdapter. The adapter keeps the public
@@ -27,7 +27,10 @@ export class WwebjsProfile {
     // whatsapp-web.js rejects any callType outside 'voice' | 'video', so the neutral 'audio' maps
     // here. It floors the Date to seconds itself, so the epoch-milliseconds the contract takes goes
     // straight into the Date.
-    const link = await this.withPage('createCallLink', () =>
+    // Non-idempotent: each call mints a NEW server-side link, so a client replaying a 503 would
+    // create a second one. Report a dead page, keep the error as thrown (500). Same rule as
+    // createChannel; see reportPageDeath.
+    const link = await reportPageDeath(this.host, 'createCallLink', () =>
       this.client().createCallLink(new Date(startTime), type === 'video' ? 'video' : 'voice'),
     );
     if (!link) {

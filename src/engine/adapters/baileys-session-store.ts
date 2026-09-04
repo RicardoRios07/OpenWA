@@ -388,7 +388,28 @@ export class BaileysSessionStore {
       unreadCount: c.unreadCount ?? 0,
       timestamp: last?.timestamp ?? this.toUnixSeconds(c.conversationTimestamp),
       lastMessage: last?.text,
+      archived: c.archived ?? false,
+      // Baileys reports a pin as an ORDER, not a flag — 0/absent means unpinned.
+      pinned: Boolean(c.pinned),
+      muted: this.isMuted(c.muteEndTime),
     };
+  }
+
+  /**
+   * Whether a Baileys `muteEndTime` is still in the future.
+   *
+   * The stamp is epoch MILLISECONDS, and that is measured rather than inferred: `chat-mute.spec.ts`
+   * records that a seconds-scale value sent through `chatModify({ mute })` left the chat unmuted —
+   * the instant had already passed in 1970 — while the same instant in milliseconds muted it to
+   * the expected minute. `mute-chat.dto.ts` documents the same unit on the way in. Only the proto's
+   * unsuffixed `muteEndTime` suggests otherwise, beside fields it does spell `…Ms`, and it is
+   * wrong.
+   */
+  private isMuted(muteEndTime: number | { toNumber(): number } | null | undefined): boolean {
+    // toUnixSeconds unwraps Long → number and nothing else; the unit is whatever was passed in.
+    const endMs = this.toUnixSeconds(muteEndTime);
+    if (!endMs) return false;
+    return endMs > Date.now();
   }
 
   /**

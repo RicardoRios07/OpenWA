@@ -60,6 +60,10 @@ export class WwebjsChats {
         timestamp: chat.timestamp || 0,
         // A location message's body is the base64 map thumbnail; don't surface it as the chat preview.
         lastMessage: chat.lastMessage?.type === MessageTypes.LOCATION ? '📍' : chat.lastMessage?.body || undefined,
+        archived: Boolean(chat.archived),
+        pinned: Boolean(chat.pinned),
+        // Chat.isMuted is already the current verdict; muteExpiration is the raw stamp behind it.
+        muted: Boolean(chat.isMuted),
       });
     }
 

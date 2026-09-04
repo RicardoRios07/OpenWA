@@ -80,10 +80,12 @@ test('media straddling the top edge is left uncorrected rather than over-correct
 // that decodes above it pushes everything below down, so scrollTop has to grow by the same amount to
 // keep the same content on screen.
 
-test('an element that decoded above the reader is corrected by exactly its growth', () => {
+// correctionForMediaGrowth returns the DELTA to add to a live scrollTop (or null), not an absolute
+// target, so a second same-frame decode stacks on the first rather than overwriting it.
+test('an element that decoded above the reader yields exactly its growth as the delta', () => {
   // Seeded 0px at mount, now 300px, and its post-decode bottom sits at 90: before it grew, its
   // bottom was at -210, well above the reading position.
-  assert.equal(correctionForMediaGrowth(1000, 0, 300, 90, CONTAINER_TOP), 1300);
+  assert.equal(correctionForMediaGrowth(0, 300, 90, CONTAINER_TOP), 300);
 });
 
 /**
@@ -91,14 +93,14 @@ test('an element that decoded above the reader is corrected by exactly its growt
  * already in layout, so seeded === current, the growth reads as zero, and nothing is corrected
  * while the reader has in fact been displaced.
  */
-test('a baseline equal to the current height yields no correction, which is why it is seeded at mount', () => {
-  assert.equal(correctionForMediaGrowth(1000, 300, 300, 90, CONTAINER_TOP), null);
+test('a baseline equal to the current height yields no delta, which is why it is seeded at mount', () => {
+  assert.equal(correctionForMediaGrowth(300, 300, 90, CONTAINER_TOP), null);
 });
 
-test('an element that decoded below the reader is left alone', () => {
+test('an element that decoded below the reader yields no delta', () => {
   // Grew 300, and even before growing its bottom was at 500: far below the top edge, so nothing
   // the reader can see moved. Correcting here would drag them toward the newest messages.
-  assert.equal(correctionForMediaGrowth(1000, 0, 300, 800, CONTAINER_TOP), null);
+  assert.equal(correctionForMediaGrowth(0, 300, 800, CONTAINER_TOP), null);
 });
 
 /**
@@ -107,10 +109,26 @@ test('an element that decoded below the reader is left alone', () => {
  * was at 50, above the reader, so it did displace them.
  */
 test('the above/below question is asked against the pre-decode layout', () => {
-  assert.equal(correctionForMediaGrowth(1000, 0, 100, 150, CONTAINER_TOP), 1100);
+  assert.equal(correctionForMediaGrowth(0, 100, 150, CONTAINER_TOP), 100);
 });
 
-test('a shrink or an unchanged box corrects nothing', () => {
-  assert.equal(correctionForMediaGrowth(1000, 300, 300, 50, CONTAINER_TOP), null);
-  assert.equal(correctionForMediaGrowth(1000, 300, 120, 50, CONTAINER_TOP), null);
+test('a shrink or an unchanged box yields no delta', () => {
+  assert.equal(correctionForMediaGrowth(300, 300, 50, CONTAINER_TOP), null);
+  assert.equal(correctionForMediaGrowth(300, 120, 50, CONTAINER_TOP), null);
+});
+
+/**
+ * Two above-the-fold elements decoding in one frame. Each returns its own growth as a delta, and
+ * the caller adds each to the live scrollTop, so the reader is held through the SUM. Modelled here
+ * as the caller does it: start at 1000, apply the first delta, then the second against the result.
+ */
+test('two same-frame deltas accumulate rather than overwrite', () => {
+  const d1 = correctionForMediaGrowth(0, 300, 90, CONTAINER_TOP);
+  const d2 = correctionForMediaGrowth(0, 300, 80, CONTAINER_TOP);
+  assert.equal(d1, 300);
+  assert.equal(d2, 300);
+  let scrollTop = 1000;
+  scrollTop += d1 as number;
+  scrollTop += d2 as number;
+  assert.equal(scrollTop, 1600); // 600 total, not 300
 });

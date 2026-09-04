@@ -37,15 +37,22 @@ describe('docs/29 names the engine library versions the tree pins', () => {
   });
 
   it('names no other exact version of either library', () => {
-    // Non-vacuity, and the actual failure mode: the stale rc13 sat beside a correct figure
-    // elsewhere in the file, so a containment check alone would have passed.
+    // Non-vacuity, and the actual failure mode: a stale version sitting beside a correct figure
+    // elsewhere in the file, so a containment check alone would pass. A library reference is not
+    // always adjacent to its version either: the intro names the package in backticks a line above
+    // its build, so an adjacency scan would miss exactly one of the two places this gate protects.
     //
-    // Only COMPLETE versions count. `1.34.x` names a release line rather than a build and is
-    // ordinary prose, so a major.minor.x form is not a claim this gate can adjudicate.
-    const mentioned = [...doc.matchAll(/(?:baileys|whatsapp-web\.js)\s+(\d+\.\d+\.\d[\w.-]*)/gi)].map(m => m[1]);
-    const allowed = new Set([pkg.dependencies['whatsapp-web.js'], pkg.dependencies['@whiskeysockets/baileys']]);
-    expect(mentioned.length).toBeGreaterThan(0);
-    expect(mentioned.filter(v => !allowed.has(v))).toEqual([]);
+    // Scan by each pin's own `major.minor.` prefix instead. That is specific enough to skip the
+    // section numbers (29.x.y) and the WhatsApp Web build (2.3000.x) that share the file, and catches
+    // a drifted build wherever it sits. `1.34.x` is left alone on purpose: a `.x` release-line
+    // reference has no digit in its patch position, so the `\d` below never matches it.
+    for (const pin of [pkg.dependencies['whatsapp-web.js'], pkg.dependencies['@whiskeysockets/baileys']]) {
+      const [major, minor] = pin.split('.');
+      const shape = new RegExp(String.raw`\b${major}\.${minor}\.\d[\w.-]*`, 'g');
+      const found = doc.match(shape) ?? [];
+      expect(found.length).toBeGreaterThan(0);
+      expect(found.filter(v => v !== pin)).toEqual([]);
+    }
   });
 });
 

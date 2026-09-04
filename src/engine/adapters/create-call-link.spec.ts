@@ -89,18 +89,27 @@ describe('BaileysMessaging.createCallLink', () => {
 });
 
 describe('WwebjsProfile.createCallLink', () => {
-  function makeProfile(client: Record<string, jest.Mock>): WwebjsProfile {
+  const PAGE_DEATH = /protocol error|target closed|session closed|connection closed/i;
+
+  function makeProfile(client: Record<string, jest.Mock>): { profile: WwebjsProfile; reported: string[] } {
+    const reported: string[] = [];
+    const isPageTransportError = (error: unknown): boolean =>
+      PAGE_DEATH.test(error instanceof Error ? error.message : String(error));
     const host = {
       ensureReady: jest.fn(),
       getClient: () => client as unknown as Client,
       logger,
+      isPageTransportError,
+      reportIfPageTransportError: (error: unknown, context: string) => {
+        if (isPageTransportError(error)) reported.push(context);
+      },
     } as unknown as WwebjsEngineHost;
-    return new WwebjsProfile(host);
+    return { profile: new WwebjsProfile(host), reported };
   }
 
   it('returns the finished link the client resolves', async () => {
     const createCallLink = jest.fn().mockResolvedValue('https://call.whatsapp.com/video/TOKEN789');
-    const link = await makeProfile({ createCallLink }).createCallLink('video', START_MS);
+    const link = await makeProfile({ createCallLink }).profile.createCallLink('video', START_MS);
 
     expect(link).toBe('https://call.whatsapp.com/video/TOKEN789');
     const [startDate, callType] = createCallLink.mock.calls[0] as [Date, string];
@@ -111,15 +120,29 @@ describe('WwebjsProfile.createCallLink', () => {
   // whatsapp-web.js rejects anything but 'voice' | 'video', so the neutral 'audio' must be mapped.
   it("maps the neutral 'audio' onto the library's 'voice'", async () => {
     const createCallLink = jest.fn().mockResolvedValue('https://call.whatsapp.com/voice/TOKENABC');
-    await makeProfile({ createCallLink }).createCallLink('audio', START_MS);
+    await makeProfile({ createCallLink }).profile.createCallLink('audio', START_MS);
 
     expect((createCallLink.mock.calls[0] as [Date, string])[1]).toBe('voice');
   });
 
   it('treats the empty string as a failure rather than returning it', async () => {
     const createCallLink = jest.fn().mockResolvedValue('');
-    await expect(makeProfile({ createCallLink }).createCallLink('video', START_MS)).rejects.toThrow(
+    await expect(makeProfile({ createCallLink }).profile.createCallLink('video', START_MS)).rejects.toThrow(
       /did not return a call link/i,
     );
+  });
+
+  // Non-idempotent: each call mints a new server-side link, so a dead page must NOT surface as the
+  // 503 the clients replay, or a retry creates a second link. Report the death, rethrow untouched.
+  it('reports a dead page but keeps its own error, so a replay cannot mint a second link', async () => {
+    const createCallLink = jest.fn().mockRejectedValue(new Error('Protocol error: Target closed'));
+    const { profile, reported } = makeProfile({ createCallLink });
+
+    const thrown = await profile.createCallLink('video', START_MS).catch((e: unknown) => e);
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect(thrown).not.toBeInstanceOf(EngineTransportError);
+    expect((thrown as Error).message).toContain('Target closed');
+    expect(reported).toEqual(['createCallLink']);
   });
 });

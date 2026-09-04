@@ -47,9 +47,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already fetched, not by the length of the rendered thread, which also carries engine-history
   items, so no row is skipped between pages; and the reading position is held when a page is
   prepended rather than jumping. Thanks @JuanGalzerano.
+- Webhook smart filters and automation rules can match on chat `kind` (`individual`, `group`,
+  `channel`, `status`, `broadcast`, `unknown`), so a subscription can exclude channel (newsletter)
+  traffic that the `isGroup` boolean could not separate from a 1:1 chat
+  ([#1500](https://github.com/rmyndharis/OpenWA/issues/1500)).
+- `GET /sessions/{sessionId}/chats` reports each chat's `archived`, `pinned` and `muted` state.
+  The matching actions (`POST /sessions/{sessionId}/chats/archive`, `/pin`, `/mute`) already
+  existed; the chat list never reported the resulting state back, so a consumer had no way to
+  filter archived chats out of its own view, order pinned chats first, or honour a mute — and
+  whatsapp-web.js's `chat_archived` event is deliberately not wired, so there was no event
+  fallback either. `GET /sessions/{sessionId}/labels/{labelId}/chats` returns the same chat
+  summary, so it reports the three fields as well.
 
 ### Changed
 
+- `ChatSummary` grew three required fields (`archived`, `pinned`, `muted`), so the chat-list shape
+  is wider than it was. Every producer sets them and the SDK type files carry them, but code
+  holding a hand-built `ChatSummary` — a test fixture, a mock, a stub gateway — has to supply the
+  three. Required rather than optional so "not muted" never has to be read out of an absent field.
 - A whatsapp-web.js protocol timeout is no longer eligible to be classified as a dead page.
   Behaviour is unchanged on the current Puppeteer; the guard keeps a future bump from reporting a
   slow command as a transport death.
@@ -114,7 +129,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Target closed` tore its session down, emitted `session.disconnected` to every consumer, paused
   inbound delivery for the reconnect, and answered `503` instead of `404`. Errors the gateway
   constructs are now excluded outright.
-- The three whatsapp-web.js status posts and the channel create no longer answer `503` when the
+- The four whatsapp-web.js status posts, the channel create and the call-link create no longer answer `503` when the
   browser page dies. The library can throw after the request is already on the wire, and `503` is
   the status the clients replay for a POST, so a retry could publish the status twice. They answer
   the same opaque `500` the message sends do. `DELETE` on a status keeps `503`, which is safe to
@@ -153,6 +168,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   having run nothing and the jobs behind them reported a pass. Thanks @JuanGalzerano for the report.
 - docs/29 names the Baileys build the tree installs; the counts spec now binds both engine library
   versions to the pins.
+- An unusable `sharp` no longer fails the whole gateway at boot. It backs one Baileys route, sticker
+  conversion, but was imported at the top of a module the built-in engine loads on both engines, so a
+  native binary that could not build or load on an older CPU took the entire process down. It is now
+  loaded lazily and only that one route degrades, with a clear error
+  ([#1459](https://github.com/rmyndharis/OpenWA/issues/1459)).
 
 ### Dependencies
 

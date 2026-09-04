@@ -40,6 +40,9 @@ const CHAT: Chat = {
   unreadCount: 2,
   timestamp: 1_700_000_000,
   lastMessage: 'hello from alice',
+  archived: false,
+  pinned: false,
+  muted: false,
 };
 
 // A second conversation, so the attachment tests can distinguish "closed and reopened the SAME
@@ -53,6 +56,9 @@ const CHAT_2: Chat = {
   unreadCount: 0,
   timestamp: 1_700_000_050,
   lastMessage: 'hello from carol',
+  archived: false,
+  pinned: false,
+  muted: false,
 };
 
 const DB_MESSAGE: ChatMessage = {

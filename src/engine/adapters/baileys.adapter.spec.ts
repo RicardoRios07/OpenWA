@@ -4262,6 +4262,9 @@ describe('BaileysAdapter contact + chat reads', () => {
       unreadCount: 1,
       timestamp: 1700000010,
       lastMessage: 'hi',
+      archived: false,
+      pinned: false,
+      muted: false,
     });
   });
 
