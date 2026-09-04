@@ -119,3 +119,19 @@ export const ENGINE_NOT_SUPPORTED_501 =
 export const CHANNEL_MEDIA_501 =
   'Sending media to a channel (`<id>@newsletter`) is not supported by the whatsapp-web.js engine — ' +
   'the page method it needs was removed by a WhatsApp Web update. Text to a channel still works.';
+
+/**
+ * `PayloadTooLargeException` (413), thrown by `assertBase64WithinMediaCap` when an outbound base64
+ * payload's DECODED size exceeds the shared media byte cap, before the payload is persisted or handed
+ * to an engine.
+ *
+ * Declared as a constant for the same reason as the rest of this file: the cap belongs to the media
+ * path, not to any one route, and it already reaches nine call sites. It was answered by every media
+ * send long before it was declared on any of them, which is how a caller reading only the contract
+ * came to expect a `400` the code never sends.
+ */
+export const MEDIA_TOO_LARGE_413 =
+  'The decoded base64 media exceeds the media byte cap (`MEDIA_DOWNLOAD_MAX_BYTES`, 50 MiB by ' +
+  'default). A whole request is separately bounded by `BODY_SIZE_LIMIT` (25 mb by default), and ' +
+  'base64 inflates by about a third, so a large send usually meets that coarser limit first: the ' +
+  'body parser rejects the request before this check runs.';

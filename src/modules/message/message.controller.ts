@@ -52,6 +52,7 @@ import {
   CUSTOM_LINK_PREVIEW_501,
   ENGINE_NOT_READY_409,
   ENGINE_NOT_SUPPORTED_501,
+  MEDIA_TOO_LARGE_413,
   MESSAGE_NOT_FOUND_404,
   RECIPIENT_UNREACHABLE_400,
 } from '../../common/openapi/engine-status-responses';
@@ -76,10 +77,33 @@ export class MessageController {
   })
   @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Max messages to return (default 50)' })
   @ApiQuery({ name: 'offset', required: false, type: Number, description: 'Offset for pagination' })
+  @ApiQuery({
+    name: 'inlineMedia',
+    required: false,
+    type: Boolean,
+    description:
+      "Set false to omit inline media payloads, leaving each row's { omitted, sizeBytes } marker and " +
+      'the media endpoint. The inline-media budget is per response, so a paged walk pulls it afresh on ' +
+      'every page; default true.',
+  })
+  @ApiQuery({
+    name: 'after',
+    required: false,
+    description:
+      'Keyset cursor: the id of the last message of the previous page. Anchors the window to a row ' +
+      'rather than a count, so a message arriving mid-walk cannot shift it. Takes precedence over offset.',
+  })
   @ApiResponse({
     status: 200,
     description: 'Message history',
     type: MessageListResponseDto,
+  })
+  @ApiResponse({
+    status: 400,
+    description:
+      '`after` names no message in this session. The keyset comparison would otherwise return an ' +
+      'empty page, which reads exactly like the end of the history, so a walk resumed from a stale ' +
+      'or foreign cursor would stop silently instead of reporting the cursor.',
   })
   async getMessages(
     @Param('sessionId') sessionId: string,
@@ -87,12 +111,22 @@ export class MessageController {
     @Query('from') from?: string,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
+    @Query('after') after?: string,
+    @Query('inlineMedia') inlineMedia?: string,
   ) {
     return this.messageService.getMessages(sessionId, {
       chatId,
       from,
       limit: limit ? parseInt(limit, 10) : undefined,
       offset: offset ? parseInt(offset, 10) : undefined,
+      // Blank means absent, as it already does for `limit` and `offset` above. A client templating
+      // a cursor it has not got yet sends `?after=`, and the service only skips the keyset branch
+      // on `undefined`: the empty string reached the anchor lookup, matched no row, and turned a
+      // working list request into a 400.
+      after: after?.trim() || undefined,
+      // Opt-out, so anything but an explicit false keeps today's behaviour. Same string pair the
+      // opt-in flags on this controller accept, read the other way round.
+      inlineMedia: inlineMedia !== 'false' && inlineMedia !== '0',
     });
   }
 
@@ -158,6 +192,7 @@ export class MessageController {
   })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   @ApiResponse({ status: 501, description: CHANNEL_MEDIA_501 })
+  @ApiResponse({ status: 413, description: MEDIA_TOO_LARGE_413 })
   async sendImage(
     @Param('sessionId') sessionId: string,
     @Body() dto: SendMediaMessageDto,
@@ -181,6 +216,7 @@ export class MessageController {
   })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   @ApiResponse({ status: 501, description: CHANNEL_MEDIA_501 })
+  @ApiResponse({ status: 413, description: MEDIA_TOO_LARGE_413 })
   async sendVideo(
     @Param('sessionId') sessionId: string,
     @Body() dto: SendMediaMessageDto,
@@ -204,6 +240,7 @@ export class MessageController {
   })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   @ApiResponse({ status: 501, description: CHANNEL_MEDIA_501 })
+  @ApiResponse({ status: 413, description: MEDIA_TOO_LARGE_413 })
   async sendAudio(
     @Param('sessionId') sessionId: string,
     @Body() dto: SendAudioMessageDto,
@@ -227,6 +264,7 @@ export class MessageController {
   })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   @ApiResponse({ status: 501, description: CHANNEL_MEDIA_501 })
+  @ApiResponse({ status: 413, description: MEDIA_TOO_LARGE_413 })
   async sendDocument(
     @Param('sessionId') sessionId: string,
     @Body() dto: SendMediaMessageDto,
@@ -281,6 +319,7 @@ export class MessageController {
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   @ApiResponse({ status: 400, description: RECIPIENT_UNREACHABLE_400 })
   @ApiResponse({ status: 501, description: CHANNEL_MEDIA_501 })
+  @ApiResponse({ status: 413, description: MEDIA_TOO_LARGE_413 })
   async sendSticker(
     @Param('sessionId') sessionId: string,
     @Body() dto: SendMediaMessageDto,
@@ -354,6 +393,12 @@ export class MessageController {
   })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   @ApiResponse({ status: 404, description: MESSAGE_NOT_FOUND_404 })
+  @ApiResponse({
+    status: 503,
+    description:
+      'The whatsapp-web.js page connection died mid-request. The change may or may not have been applied; ' +
+      'repeating the request is safe, since it converges on the same state.',
+  })
   async react(@Param('sessionId') sessionId: string, @Body() dto: ReactMessageDto): Promise<{ success: boolean }> {
     await this.messageService.reactToMessage(sessionId, dto);
     return { success: true };
@@ -387,6 +432,12 @@ export class MessageController {
   @ApiResponse({ status: 200, description: 'Chat history (most recent messages)', type: [ChatHistoryMessageDto] })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   @ApiResponse({ status: 501, description: ENGINE_NOT_SUPPORTED_501 })
+  @ApiResponse({
+    status: 503,
+    description:
+      'The whatsapp-web.js page connection died mid-read, so nothing could be read. Retry once the ' +
+      'session is ready again.',
+  })
   async getChatHistory(
     @Param('sessionId') sessionId: string,
     @Param('chatId') chatId: string,
@@ -426,6 +477,12 @@ export class MessageController {
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   @ApiResponse({ status: 404, description: MESSAGE_NOT_FOUND_404 })
   @ApiResponse({ status: 501, description: ENGINE_NOT_SUPPORTED_501 })
+  @ApiResponse({
+    status: 503,
+    description:
+      'The whatsapp-web.js page connection died mid-read, so nothing could be read. Retry once the ' +
+      'session is ready again.',
+  })
   async getReactions(
     @Param('sessionId') sessionId: string,
     @Param('chatId') chatId: string,
@@ -515,6 +572,12 @@ export class MessageController {
   @ApiResponse({ status: 404, description: 'Poll not found in the chat’s recent history' })
   @ApiResponse({ status: 501, description: 'Not supported on the Baileys engine' })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
+  @ApiResponse({
+    status: 503,
+    description:
+      'The whatsapp-web.js page connection died mid-request. The change may or may not have been applied; ' +
+      'repeating the request is safe, since it converges on the same state.',
+  })
   async votePoll(@Param('sessionId') sessionId: string, @Body() dto: VotePollDto): Promise<{ success: boolean }> {
     return this.messageService.votePoll(sessionId, dto);
   }
@@ -539,6 +602,12 @@ export class MessageController {
   })
   @ApiResponse({ status: 404, description: 'Message not found in the chat' })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
+  @ApiResponse({
+    status: 503,
+    description:
+      'The whatsapp-web.js page connection died mid-request. The pin may or may not have been applied; a ' +
+      'retry is safe, but it restarts the pin duration from the moment it succeeds.',
+  })
   async pinMessage(@Param('sessionId') sessionId: string, @Body() dto: PinMessageDto): Promise<{ success: boolean }> {
     return this.messageService.pinMessage(sessionId, dto);
   }
@@ -558,6 +627,12 @@ export class MessageController {
   })
   @ApiResponse({ status: 404, description: 'Message not found in the chat' })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
+  @ApiResponse({
+    status: 503,
+    description:
+      'The whatsapp-web.js page connection died mid-request. The change may or may not have been applied; ' +
+      'repeating the request is safe, since it converges on the same state.',
+  })
   async unpinMessage(
     @Param('sessionId') sessionId: string,
     @Body() dto: UnpinMessageDto,
@@ -615,6 +690,12 @@ export class MessageController {
   })
   @ApiResponse({ status: 404, description: 'Message not found' })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
+  @ApiResponse({
+    status: 503,
+    description:
+      'The whatsapp-web.js page connection died mid-request. The change may or may not have been applied; ' +
+      'repeating the request is safe, since it converges on the same state.',
+  })
   async edit(@Param('sessionId') sessionId: string, @Body() dto: EditMessageDto): Promise<MessageResponseDto> {
     return this.messageService.editMessage(sessionId, dto);
   }
@@ -638,6 +719,7 @@ export class MessageController {
     status: 400,
     description: 'Session not active or invalid request',
   })
+  @ApiResponse({ status: 413, description: MEDIA_TOO_LARGE_413 })
   async sendBulk(
     @Param('sessionId') sessionId: string,
     @Body() dto: SendBulkMessageDto,

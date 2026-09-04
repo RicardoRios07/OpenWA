@@ -11,6 +11,7 @@
     "cancel": "Abbrechen",
     "delete": "Löschen",
     "create": "Erstellen",
+    "save": "Save",
     "close": "Schließen",
     "showApiKey": "API-Schlüssel anzeigen",
     "hideApiKey": "API-Schlüssel ausblenden",
@@ -87,6 +88,8 @@
     "unreadBadge": "{{count}} ungelesene Nachricht",
     "unreadBadge_other": "{{count}} ungelesene Nachrichten",
     "loadingMessages": "Nachrichten werden geladen...",
+    "loadingOlderMessages": "Ältere Nachrichten werden geladen...",
+    "loadOlderMessagesError": "Ältere Nachrichten konnten nicht geladen werden. Zum erneuten Versuch nach oben scrollen.",
     "noMessagesInChat": "Noch keine Nachrichten. Sende die erste Nachricht, um zu beginnen!",
     "downloadDocument": "Dokument herunterladen",
     "actions": {
@@ -303,8 +306,26 @@
       "autoRejectCalls": "Anrufe automatisch ablehnen",
       "autoRejectCallsHint": "Eingehende Anrufe werden abgelehnt, sobald sie klingeln. Der Webhook call.received wird trotzdem zuerst ausgelöst. Gilt ab dem nächsten Anruf — kein Neustart nötig."
     },
+    "proxy": {
+      "title": "Proxy Configuration",
+      "status": "Current",
+      "enabled": "Use proxy",
+      "url": "Proxy URL",
+      "urlPlaceholder": "http://user:pass@proxy.example.com:8080",
+      "urlKeepPlaceholder": "Enter new URL to replace {{host}} (credentials not shown)",
+      "configured": "{{host}} ({{type}})",
+      "noProxy": "No proxy configured",
+      "hasCredentials": "Credentials are stored but not shown. Enter a full URL to change them.",
+      "hint": "Changes apply on the next session start, not to a running connection. The proxy must be real and reachable — an unreachable value blocks QR delivery and start returns 504.",
+      "createHint": "Only needed when your network cannot reach WhatsApp directly. Must be a real, reachable proxy.",
+      "invalidUrl": "Enter a valid http, https, socks4, or socks5 proxy URL.",
+      "saveSuccessTitle": "Proxy Saved",
+      "saveSuccess": "Proxy settings saved. They apply on the next session start.",
+      "saveError": "Failed to save proxy settings"
+    },
     "actions": {
       "view": "Ansehen",
+      "proxy": "Proxy",
       "start": "Starten",
       "stop": "Stoppen",
       "reconnect": "Erneut verbinden",
@@ -412,6 +433,7 @@
         "body": "Nachrichteninhalt",
         "type": "Nachrichtentyp",
         "isGroup": "Ist Gruppenchat",
+        "kind": "Chat kind",
         "fromMe": "Von mir gesendet",
         "hasMedia": "Enthält Medien",
         "mentions": "Erwähnungen"
@@ -533,7 +555,8 @@
       "role": "Rolle",
       "status": "Status",
       "lastUsed": "Zuletzt verwendet",
-      "actions": "Aktionen"
+      "actions": "Aktionen",
+      "sessions": "Sitzungen"
     },
     "statuses": {
       "active": "Aktiv",
@@ -554,7 +577,19 @@
     "actions": {
       "copy": "Kopieren",
       "revoke": "Widerrufen",
-      "delete": "Löschen"
+      "delete": "Löschen",
+      "editSessions": "Sitzungen bearbeiten"
+    },
+    "sessions": {
+      "label": "Sitzungszugriff",
+      "hint": "Wählen Sie die Sitzungen, die dieser Schlüssel nutzen darf.",
+      "all": "Alle Sitzungen",
+      "empty": "Noch keine Sitzungen. Dieser Schlüssel kann auf alle zugreifen, sobald welche existieren.",
+      "restricted": "{{count}} ausgewählt",
+      "editTitle": "Sitzungszugriff bearbeiten",
+      "save": "Speichern",
+      "choose": "Sitzungen wählen",
+      "leaveAll": "Für alle Sitzungen belassen"
     }
   },
   "logs": {
@@ -650,6 +685,7 @@
     "forwardMessageId": "Nachrichten-ID",
     "forwardMessageIdHint": "ID der weiterzuleitenden Nachricht",
     "bulkRecipients": "Empfänger",
+    "bulkRecipientsUpload": "CSV/TXT hochladen",
     "bulkRecipientsPlaceholder": "+491701234567",
     "bulkRecipientsHint": "Eine Telefonnummer oder Chat-ID pro Zeile (max. 100)",
     "bulkRecipientsCount": "Empfänger: {{count}}",
@@ -887,6 +923,7 @@
       "title": "Instanzen",
       "description": "Erstelle kontobezogene Instanzen für diese Integration. Jede Instanz besitzt ein eigenes Signaturgeheimnis und eine eigene Ingress-URL.",
       "create": "Instanz erstellen",
+      "save": "Save",
       "empty": "Noch keine Instanzen vorhanden. Erstelle eine, um eine Ingress-URL und ein Geheimnis zu erhalten.",
       "loadError": "Instanzen konnten nicht geladen werden.",
       "allSessions": "Alle Sitzungen",

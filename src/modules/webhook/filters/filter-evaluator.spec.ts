@@ -194,4 +194,27 @@ describe('evaluateFilters', () => {
       expect(evaluateFilters(f, 'message.received', msg({ mentionedIds: ['111@lid', 'x@c.us'] }), resolve)).toBe(true);
     });
   });
+
+  describe('kind (chat kind, so a channel can be singled out where isGroup cannot)', () => {
+    // The reporter's case: a webhook subscribed to message.received also gets channel posts, and
+    // isGroup=false cannot tell a channel from a 1:1 chat. `kind` rides the received payload.
+    it('excludes channel traffic with isNot, and matches it with is', () => {
+      const exclude = filters({ field: 'kind', operator: 'isNot', value: ['channel'] });
+      expect(evaluateFilters(exclude, 'message.received', msg({ kind: 'channel' }))).toBe(false);
+      expect(evaluateFilters(exclude, 'message.received', msg({ kind: 'individual' }))).toBe(true);
+
+      const only = filters({ field: 'kind', operator: 'is', value: ['channel'] });
+      expect(evaluateFilters(only, 'message.received', msg({ kind: 'channel' }))).toBe(true);
+      expect(evaluateFilters(only, 'message.received', msg({ kind: 'group' }))).toBe(false);
+    });
+
+    // The edited/reaction/revoked events in the family carry chatId but no kind, so it is derived.
+    it('derives the kind from chatId when the payload omits it (edited/reaction/revoked)', () => {
+      const f = filters({ field: 'kind', operator: 'is', value: ['channel'] });
+      const revoked = { chatId: '120363000000000000@newsletter' } as Record<string, unknown>;
+      expect(evaluateFilters(f, 'message.revoked', revoked)).toBe(true);
+      const dm = { chatId: '628123@c.us' } as Record<string, unknown>;
+      expect(evaluateFilters(f, 'message.revoked', dm)).toBe(false);
+    });
+  });
 });

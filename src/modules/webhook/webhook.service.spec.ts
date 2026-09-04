@@ -336,7 +336,7 @@ describe('WebhookService', () => {
 
       await service.findAll();
 
-      expect(repository.find).toHaveBeenCalledWith({ order: { createdAt: 'DESC' }, take: 1000, skip: 0 });
+      expect(repository.find).toHaveBeenCalledWith({ order: { createdAt: 'DESC', id: 'DESC' }, take: 1000, skip: 0 });
     });
 
     it('applies bounded pagination to cross-session listing', async () => {
@@ -346,7 +346,7 @@ describe('WebhookService', () => {
 
       expect(repository.find).toHaveBeenCalledWith({
         where: { sessionId: In(['sess-1']) },
-        order: { createdAt: 'DESC' },
+        order: { createdAt: 'DESC', id: 'DESC' },
         take: 1000,
         skip: 0,
       });
@@ -512,7 +512,7 @@ describe('WebhookService', () => {
       // sessionId resolves through resolveSessionScope, so the WHERE is an IN over the effective scope
       // ([s1] here for an unrestricted key narrowing to one session) — behaviourally the same rows.
       expect(failureRepository.find).toHaveBeenCalledWith(
-        expect.objectContaining({ where: { sessionId: In(['s1']) }, order: { createdAt: 'DESC' } }),
+        expect.objectContaining({ where: { sessionId: In(['s1']) }, order: { createdAt: 'DESC', id: 'DESC' } }),
       );
     });
   });

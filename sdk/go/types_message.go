@@ -169,6 +169,12 @@ type ListMessagesQuery struct {
 	From   *string
 	Limit  *int
 	Offset *int
+	// After is a keyset cursor: the id of the last message of the previous page. Takes
+	// precedence over Offset.
+	After *string
+	// InlineMedia set to false omits inline media payloads. The budget is per response, so a
+	// walk repays it on every page.
+	InlineMedia *bool
 }
 
 func (q *ListMessagesQuery) values() url.Values {
@@ -177,6 +183,8 @@ func (q *ListMessagesQuery) values() url.Values {
 	setStr(v, "from", q.From)
 	setInt(v, "limit", q.Limit)
 	setInt(v, "offset", q.Offset)
+	setStr(v, "after", q.After)
+	setBool(v, "inlineMedia", q.InlineMedia)
 	return v
 }
 

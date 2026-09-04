@@ -11,6 +11,7 @@
     "cancel": "Cancel",
     "delete": "Delete",
     "create": "Create",
+    "save": "Save",
     "close": "Close",
     "showApiKey": "Show API key",
     "hideApiKey": "Hide API key",
@@ -87,6 +88,8 @@
     "unreadBadge": "{{count}} unread message",
     "unreadBadge_other": "{{count}} unread messages",
     "loadingMessages": "Loading messages...",
+    "loadingOlderMessages": "Loading older messages...",
+    "loadOlderMessagesError": "Couldn't load older messages. Scroll up to retry.",
     "noMessagesInChat": "No messages yet. Send the first message to get started!",
     "downloadDocument": "Download document",
     "actions": {
@@ -307,8 +310,26 @@
       "autoRejectCalls": "Auto-reject calls",
       "autoRejectCallsHint": "Incoming calls are declined as soon as they ring. The call.received webhook still fires first. Applies to the next call — no restart needed."
     },
+    "proxy": {
+      "title": "Proxy Configuration",
+      "status": "Current",
+      "enabled": "Use proxy",
+      "url": "Proxy URL",
+      "urlPlaceholder": "http://user:pass@proxy.example.com:8080",
+      "urlKeepPlaceholder": "Enter new URL to replace {{host}} (credentials not shown)",
+      "configured": "{{host}} ({{type}})",
+      "noProxy": "No proxy configured",
+      "hasCredentials": "Credentials are stored but not shown. Enter a full URL to change them.",
+      "hint": "Changes apply on the next session start, not to a running connection. The proxy must be real and reachable — an unreachable value blocks QR delivery and start returns 504.",
+      "createHint": "Only needed when your network cannot reach WhatsApp directly. Must be a real, reachable proxy.",
+      "invalidUrl": "Enter a valid http, https, socks4, or socks5 proxy URL.",
+      "saveSuccessTitle": "Proxy Saved",
+      "saveSuccess": "Proxy settings saved. They apply on the next session start.",
+      "saveError": "Failed to save proxy settings"
+    },
     "actions": {
       "view": "View",
+      "proxy": "Proxy",
       "start": "Start",
       "stop": "Stop",
       "reconnect": "Reconnect",
@@ -412,6 +433,7 @@
         "body": "Message body",
         "type": "Message type",
         "isGroup": "Is group chat",
+        "kind": "Chat kind",
         "fromMe": "Sent by me",
         "hasMedia": "Has media",
         "mentions": "Mentions"
@@ -533,7 +555,8 @@
       "role": "Role",
       "status": "Status",
       "lastUsed": "Last Used",
-      "actions": "Actions"
+      "actions": "Actions",
+      "sessions": "Sessions"
     },
     "statuses": {
       "active": "Active",
@@ -554,7 +577,19 @@
     "actions": {
       "copy": "Copy",
       "revoke": "Revoke",
-      "delete": "Delete"
+      "delete": "Delete",
+      "editSessions": "Edit sessions"
+    },
+    "sessions": {
+      "label": "Session access",
+      "hint": "Select the sessions this key may use.",
+      "all": "All sessions",
+      "empty": "No sessions yet. This key will be able to access every session once any exist.",
+      "restricted": "{{count}} selected",
+      "editTitle": "Edit session access",
+      "save": "Save",
+      "choose": "Choose sessions",
+      "leaveAll": "Leave for all sessions"
     }
   },
   "logs": {
@@ -650,6 +685,7 @@
     "forwardMessageId": "Message ID",
     "forwardMessageIdHint": "ID of the message to forward",
     "bulkRecipients": "Recipients",
+    "bulkRecipientsUpload": "Upload CSV/TXT",
     "bulkRecipientsPlaceholder": "+62812345678",
     "bulkRecipientsHint": "One phone number or chat ID per line (max 100)",
     "bulkRecipientsCount": "Recipients: {{count}}",

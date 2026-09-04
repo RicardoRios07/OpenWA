@@ -837,12 +837,14 @@ export class BaileysEvents {
         toBase64: () => buf.toString('base64'),
       });
     } catch (err) {
-      // A download failure yields a message with no media, never a propagated throw.
-      this.host.logger.debug('Failed to download inbound media; emitting message without media', {
+      // A download failure yields the omitted marker, never a propagated throw: the media field stays
+      // present, matching the skip/pre-gate/abort exits above. The declared size is the honest number
+      // here, since nothing was downloaded and the cap the abort reports would be a fabrication.
+      this.host.logger.warn('Inbound media download failed; emitting the omitted marker', {
         error: err instanceof Error ? err.message : String(err),
         msgId: msg.key.id,
       });
-      return undefined;
+      return { mimetype, filename, omitted: true, sizeBytes: declared };
     }
   }
 

@@ -11,6 +11,7 @@
     "cancel": "Annuler",
     "delete": "Supprimer",
     "create": "Créer",
+    "save": "Save",
     "close": "Fermer",
     "showApiKey": "Afficher la clé API",
     "hideApiKey": "Masquer la clé API",
@@ -87,6 +88,8 @@
     "unreadBadge": "{{count}} message non lu",
     "unreadBadge_other": "{{count}} messages non lus",
     "loadingMessages": "Chargement des messages...",
+    "loadingOlderMessages": "Chargement des messages plus anciens...",
+    "loadOlderMessagesError": "Impossible de charger les messages plus anciens. Faites défiler vers le haut pour réessayer.",
     "noMessagesInChat": "Aucun message pour le moment. Envoyez le premier message pour commencer !",
     "downloadDocument": "Télécharger le document",
     "actions": {
@@ -303,8 +306,26 @@
       "autoRejectCalls": "Rejeter automatiquement les appels",
       "autoRejectCallsHint": "Les appels entrants sont refusés dès qu'ils sonnent. Le webhook call.received est tout de même émis avant. S'applique au prochain appel — aucun redémarrage nécessaire."
     },
+    "proxy": {
+      "title": "Proxy Configuration",
+      "status": "Current",
+      "enabled": "Use proxy",
+      "url": "Proxy URL",
+      "urlPlaceholder": "http://user:pass@proxy.example.com:8080",
+      "urlKeepPlaceholder": "Enter new URL to replace {{host}} (credentials not shown)",
+      "configured": "{{host}} ({{type}})",
+      "noProxy": "No proxy configured",
+      "hasCredentials": "Credentials are stored but not shown. Enter a full URL to change them.",
+      "hint": "Changes apply on the next session start, not to a running connection. The proxy must be real and reachable — an unreachable value blocks QR delivery and start returns 504.",
+      "createHint": "Only needed when your network cannot reach WhatsApp directly. Must be a real, reachable proxy.",
+      "invalidUrl": "Enter a valid http, https, socks4, or socks5 proxy URL.",
+      "saveSuccessTitle": "Proxy Saved",
+      "saveSuccess": "Proxy settings saved. They apply on the next session start.",
+      "saveError": "Failed to save proxy settings"
+    },
     "actions": {
       "view": "Voir",
+      "proxy": "Proxy",
       "start": "Démarrer",
       "stop": "Arrêter",
       "reconnect": "Reconnecter",
@@ -412,6 +433,7 @@
         "body": "Corps du message",
         "type": "Type de message",
         "isGroup": "Est une discussion de groupe",
+        "kind": "Chat kind",
         "fromMe": "Envoyé par moi",
         "hasMedia": "Contient un média",
         "mentions": "Mentions"
@@ -533,7 +555,8 @@
       "role": "Rôle",
       "status": "Statut",
       "lastUsed": "Dernière utilisation",
-      "actions": "Actions"
+      "actions": "Actions",
+      "sessions": "Sessions"
     },
     "statuses": {
       "active": "Active",
@@ -554,7 +577,19 @@
     "actions": {
       "copy": "Copier",
       "revoke": "Révoquer",
-      "delete": "Supprimer"
+      "delete": "Supprimer",
+      "editSessions": "Modifier les sessions"
+    },
+    "sessions": {
+      "label": "Accès aux sessions",
+      "hint": "Sélectionnez les sessions que cette clé peut utiliser.",
+      "all": "Toutes les sessions",
+      "empty": "Aucune session pour le moment. Cette clé pourra accéder à toutes dès qu’il y en aura.",
+      "restricted": "{{count}} sélectionnées",
+      "editTitle": "Modifier l’accès aux sessions",
+      "save": "Enregistrer",
+      "choose": "Choisir des sessions",
+      "leaveAll": "Laisser pour toutes les sessions"
     }
   },
   "logs": {
@@ -650,6 +685,7 @@
     "forwardMessageId": "ID du message",
     "forwardMessageIdHint": "ID du message à transférer",
     "bulkRecipients": "Destinataires",
+    "bulkRecipientsUpload": "Téléverser CSV/TXT",
     "bulkRecipientsPlaceholder": "+62812345678",
     "bulkRecipientsHint": "Un numéro de téléphone ou ID de chat par ligne (max 100)",
     "bulkRecipientsCount": "Destinataires : {{count}}",
@@ -887,6 +923,7 @@
       "title": "Instances",
       "description": "Provisionnez des instances par compte pour cette intégration. Chaque instance dispose de son propre secret de signature et de sa propre URL d'entrée.",
       "create": "Créer une instance",
+      "save": "Save",
       "empty": "Aucune instance pour le moment. Créez-en une pour obtenir une URL d'entrée et un secret.",
       "loadError": "Échec du chargement des instances.",
       "allSessions": "Toutes les sessions",

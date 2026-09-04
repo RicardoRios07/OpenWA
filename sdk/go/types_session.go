@@ -184,6 +184,40 @@ type CreateSessionRequest struct {
 	ProxyType ProxyType      `json:"proxyType,omitempty"`
 }
 
+// SessionProxy is the masked per-session proxy configuration returned by GET/PATCH /proxy.
+type SessionProxy struct {
+	Enabled        bool       `json:"enabled"`
+	ProxyType      *ProxyType `json:"proxyType"`
+	ProxyHost      *string    `json:"proxyHost"`
+	HasCredentials bool       `json:"hasCredentials"`
+}
+
+// UpdateSessionProxyRequest updates per-session proxy settings. Changes apply on the next start,
+// not to a running engine.
+//
+// Three states, the same shape as UpdateSessionConfigRequest: an absent key leaves the proxy
+// unchanged, an explicit null clears it, and a value sets it. `omitempty` on a nil pointer OMITS the
+// key rather than emitting null, so clearing needs its own flag and the MarshalJSON below.
+type UpdateSessionProxyRequest struct {
+	ProxyURL *string `json:"-"`
+
+	// ClearProxyURL sends an explicit null, removing the proxy. It wins over ProxyURL if both are set.
+	ClearProxyURL bool `json:"-"`
+}
+
+// MarshalJSON emits only what the caller addressed: the Clear flag becomes an explicit null, a
+// non-nil pointer becomes its value, and neither leaves the key out so the server keeps the proxy
+// it already has.
+func (r UpdateSessionProxyRequest) MarshalJSON() ([]byte, error) {
+	out := map[string]any{}
+	if r.ClearProxyURL {
+		out["proxyUrl"] = nil
+	} else if r.ProxyURL != nil {
+		out["proxyUrl"] = *r.ProxyURL
+	}
+	return json.Marshal(out)
+}
+
 // QrCodeResponse carries the current QR code for a session awaiting scan.
 type QrCodeResponse struct {
 	QrCode string        `json:"qrCode"`

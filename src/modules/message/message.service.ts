@@ -28,6 +28,18 @@ export interface GetMessagesOptions {
   from?: string;
   limit?: number;
   offset?: number;
+  /**
+   * Keyset cursor: the `id` of the last row of the previous page. Anchors the window to a ROW
+   * instead of to a count, so a write between two pages cannot shift it. Takes precedence over
+   * `offset`, which is left working unchanged for callers that already use it.
+   */
+  after?: string;
+  /**
+   * Set false to omit every inline media payload, leaving each row's `{ omitted, sizeBytes }` marker
+   * and the media endpoint. The budget below is per RESPONSE, so a walk pulls it afresh on every
+   * page; a client reading many pages usually wants the rows, not the bytes. Defaults to true.
+   */
+  inlineMedia?: boolean;
 }
 
 /**
@@ -135,6 +147,29 @@ export class MessageService implements PluginMessagePort {
     private readonly storageService?: StorageService,
   ) {}
 
+  /**
+   * Second sort key for the message list: what makes the page order TOTAL without scrambling the
+   * order the messages actually arrived in.
+   *
+   * A tiebreaker is required, because `createdAt` is not unique. But `id` is a random v4 uuid, so
+   * it orders a tie group at random: five same-second messages came back shuffled, and the
+   * dashboard renders whatever the server sends. It is also in no index, so SQLite sorted the whole
+   * result into a temp b-tree to apply it.
+   *
+   * SQLite already stores the insertion sequence as `rowid`, the implicit trailing column of every
+   * index, so `(createdAt DESC, rowid DESC)` is a plain backward scan of `(sessionId, createdAt)`:
+   * arrival order restored, and the temp b-tree gone with it. Measured on the pinned better-sqlite3
+   * with the shipped index set.
+   *
+   * PostgreSQL has no equivalent. `ctid` is physical position and moves on every ack UPDATE, so it
+   * cannot order anything, and a monotonic column would need a table rewrite on the hottest table
+   * with no recoverable insertion order to backfill from. It keeps `id`: the walk stays correct,
+   * and a same-second group keeps its uuid order there.
+   */
+  private get orderTiebreak(): 'rowid' | 'id' {
+    return this.messageRepository.manager?.connection?.options?.type === 'postgres' ? 'id' : 'rowid';
+  }
+
   // ========== Outbound sends (delegated) ==========
   //
   // The send family lives on MessageSendService; these pass-throughs keep the MessageService
@@ -223,7 +258,7 @@ export class MessageService implements PluginMessagePort {
     sessionId: string,
     options: GetMessagesOptions = {},
   ): Promise<{ messages: Message[]; total: number }> {
-    const { chatId, from } = options;
+    const { chatId, from, after, inlineMedia } = options;
     // Sanitize pagination: a non-finite limit/offset — e.g. `?limit=abc` -> NaN —
     // must never reach TypeORM's take()/skip(). Clamp to sane bounds; fall back to defaults.
     const rawLimit = options.limit;
@@ -232,12 +267,26 @@ export class MessageService implements PluginMessagePort {
       typeof rawLimit === 'number' && Number.isFinite(rawLimit) ? Math.min(Math.max(Math.trunc(rawLimit), 1), 100) : 50;
     const offset = typeof rawOffset === 'number' && Number.isFinite(rawOffset) ? Math.max(Math.trunc(rawOffset), 0) : 0;
 
+    const tiebreak = this.orderTiebreak;
+
     const query = this.messageRepository
       .createQueryBuilder('message')
       .where('message.sessionId = :sessionId', { sessionId })
       .orderBy('message.createdAt', 'DESC')
-      .skip(offset)
+      // `createdAt` is not unique: SQLite stores whole seconds, Postgres NOW() is transaction-scoped
+      // so a bulk write ties every row, and a history backfill stamps WhatsApp's own second-resolution
+      // timestamp. Without a tiebreaker the tie group's order is whatever the plan produces, and
+      // Postgres sorts it differently between two statements, so a page walk repeats some rows and
+      // never returns others. See `orderTiebreak` for why the key differs by dialect.
+      .addOrderBy(`message.${tiebreak}`, 'DESC')
       .take(limit);
+
+    // `after` replaces the offset rather than adding to it: mixing a row anchor with a count is
+    // meaningless, and silently ignoring one of the two is friendlier to an SDK that always sends
+    // `offset=0` than a 400 would be.
+    if (after === undefined) {
+      query.skip(offset);
+    }
 
     if (chatId) {
       // Match across dialects: a stored chatId may be `@s.whatsapp.net` (e.g. an outbound send addressed
@@ -263,11 +312,40 @@ export class MessageService implements PluginMessagePort {
       });
     }
 
+    // A budget of 0 means "never inline" and grants no single-payload allowance, which is exactly
+    // what an opted-out caller asks for, so the flag picks the budget rather than a second code path.
+    const inlineMediaBudget = inlineMedia === false ? 0 : resolveMessageListInlineMediaBudgetBytes();
+
+    if (after !== undefined) {
+      // `total` keeps its documented meaning, rows matching the filters, so count before narrowing.
+      const total = await query.clone().getCount();
+      // The anchor's sort key is resolved INSIDE the statement. Carrying it in the cursor instead
+      // would mean round-tripping a timestamp through JSON, and neither dialect survives that:
+      // SQLite holds two text shapes for one instant (`datetime('now')` writes 19 chars, a stamped
+      // JS Date writes 23) and compares them as text, while node-postgres truncates the column's
+      // microseconds to a millisecond Date. Both mis-seek silently, which is the very failure this
+      // cursor exists to remove.
+      query.andWhere(
+        `(message.createdAt, message.${tiebreak}) < ` +
+          `(SELECT anchor."createdAt", anchor."${tiebreak}" FROM messages anchor ` +
+          'WHERE anchor."id" = :after AND anchor."sessionId" = :sessionId)',
+        { after, sessionId },
+      );
+      const messages = await query.getMany();
+      // An anchor that does not exist (or belongs to another session) makes the row comparison NULL,
+      // which returns zero rows and reads exactly like the end of the history. Only pay for the
+      // lookup on an empty page, and turn that silent truncation into a loud 400.
+      if (messages.length === 0 && !(await this.messageRepository.exists({ where: { id: after, sessionId } }))) {
+        throw new BadRequestException(`Unknown cursor '${after}' for this session`);
+      }
+      return { messages: spendInlineMediaBudget(messages, inlineMediaBudget), total };
+    }
+
     const [messages, total] = await query.getManyAndCount();
     // The 1..100 clamp above bounds the ROW COUNT, not the response: each row carries its inline
     // base64 in metadata.media.data. Spent newest-first (the query orders createdAt DESC), so the
     // most recently viewed media still arrives inline and the rest keeps its omitted marker.
-    return { messages: spendInlineMediaBudget(messages, resolveMessageListInlineMediaBudgetBytes()), total };
+    return { messages: spendInlineMediaBudget(messages, inlineMediaBudget), total };
   }
 
   /**

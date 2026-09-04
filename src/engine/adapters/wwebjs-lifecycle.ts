@@ -1,5 +1,6 @@
 import * as qrcode from 'qrcode';
 import * as path from 'path';
+import { HttpException } from '@nestjs/common';
 import { Client, LocalAuth, WAState } from 'whatsapp-web.js';
 import {
   type AccountRestriction,
@@ -8,11 +9,13 @@ import {
 } from '../interfaces/whatsapp-engine.interface';
 import { EngineNotReadyError } from '../../common/errors/engine-not-ready.error';
 import { type createLogger } from '../../common/services/logger.service';
+import { MAX_TIMER_MS } from '../../config/configuration';
 import { resolveWebVersionPin } from '../wa-web-version';
 import { resolveAuthTimeoutMs, resolveEngineInitTimeoutMs } from '../engine-init-timeout';
 import { killOrphanedChromiumProcesses, removeStaleSingletonFiles } from './chromium-profile-hygiene';
 import { isSupportedProxyUrl, buildProxyLaunchConfig } from './wwebjs-proxy';
 import { BACKPORT_MISSING_MESSAGE, isBackportMissing } from './wwebjs-backport-check';
+import { unappliedPatches, unappliedPatchesMessage } from './engine-patch-status';
 import { type WhatsAppWebJsConfig } from './whatsapp-web-js.adapter';
 
 /**
@@ -169,6 +172,12 @@ export class WwebjsLifecycle {
       this.host.logger.error(BACKPORT_MISSING_MESSAGE);
     }
 
+    // The other seven whatsapp-web.js patchers fail the same way and were equally silent about it.
+    const unapplied = unappliedPatches('wwebjs');
+    if (unapplied.length) {
+      this.host.logger.error(unappliedPatchesMessage('wwebjs', unapplied));
+    }
+
     try {
       // Build puppeteer args, including proxy if configured
       const puppeteerArgs = this.host.config.puppeteer?.args
@@ -318,6 +327,19 @@ export class WwebjsLifecycle {
     proxyAuthentication: { username: string; password: string } | undefined,
     versionPin: Awaited<ReturnType<typeof resolveWebVersionPin>>,
   ): Promise<void> {
+    // Range-checked at the sink, not only in configuration.ts: a plugin config written through
+    // `PUT /api/plugins/whatsapp-web.js/config` is validated as an object and merged over the env
+    // blob at every boot, so it can carry a value the config layer never saw. Both bounds are
+    // load-bearing. `common/CallbackRegistry.js` arms the timer under `if (timeout)`, so 0 arms
+    // none and a wedged renderer holds the command, and the request behind it, indefinitely; above
+    // MAX_TIMER_MS Node's timer overflows and fires after 1 ms, so the browser never launches.
+    const configuredProtocolTimeout = this.host.config.puppeteer?.protocolTimeoutMs;
+    const protocolTimeout =
+      typeof configuredProtocolTimeout === 'number' &&
+      configuredProtocolTimeout > 0 &&
+      configuredProtocolTimeout <= MAX_TIMER_MS
+        ? configuredProtocolTimeout
+        : undefined;
     const client = new Client({
       authStrategy: new LocalAuth({
         clientId: this.host.config.sessionId,
@@ -339,6 +361,9 @@ export class WwebjsLifecycle {
         ...(this.host.config.puppeteer?.executablePath
           ? { executablePath: this.host.config.puppeteer.executablePath }
           : {}),
+        // Per-CDP-command budget, spread only when the host configured a usable one (see above).
+        // Absent, puppeteer-core nullish-coalesces to its own 180 000 ms (`cdp/Connection.js`).
+        ...(protocolTimeout !== undefined ? { protocolTimeout } : {}),
       },
       ...(authTimeoutMs !== undefined ? { authTimeoutMs } : {}),
       ...(proxyAuthentication ? { proxyAuthentication } : {}),
@@ -646,9 +671,39 @@ export class WwebjsLifecycle {
   private static readonly PAGE_TRANSPORT_ERROR_PATTERN =
     /protocol error|target closed|targetclosederror|detached frame|session closed|connection closed/i;
 
+  /**
+   * A per-command CDP timeout is NOT a death: the renderer is merely slower than the budget, and
+   * the next command may succeed. On Puppeteer 24.38.0 this message carries none of the signatures
+   * above, so the guard changes no current behaviour — it pins the intent.
+   *
+   * Matched on the FULL puppeteer phrase, not a bare `timed out`: a broad exclusion would also
+   * swallow a genuine death whose message happens to mention a timeout.
+   */
+  private static readonly PROTOCOL_TIMEOUT_PATTERN = /timed out\. increase the 'protocoltimeout'/i;
+
   /** Whether the error carries a dead page/transport signature (see PAGE_TRANSPORT_ERROR_PATTERN). */
   isPageTransportError(error: unknown): boolean {
+    // An HttpException is never a dead page. It is an error THIS application constructed, and its
+    // message carries caller-supplied text verbatim: MessageNotFoundError reads
+    // `Message ${messageId} not found in chat ${chatId}`, and GroupNotFoundError, LabelNotFoundError,
+    // ChannelNotFoundError and CallNotFoundError have the same shape. Matching the pattern against
+    // one of those hands the CALLER the classifier. A request naming a messageId of "Target closed"
+    // made its own 404 read as a transport death: the session was torn down and reconnected, and the
+    // caller got a 503. The reactions read needs no role at all, so the lowest-privilege key could
+    // do it at will.
+    //
+    // Excluding the class loses no real signal. Puppeteer and whatsapp-web.js throw plain Errors,
+    // and a page-side throw arrives as one too (puppeteer-core rebuilds it in cdp/utils.js
+    // createEvaluationError). It also settles the nested case: an EngineTransportError arriving from
+    // an inner catch was already reported where it was built, and handlePuppeteerDeath latches on
+    // status, so re-reporting would be a no-op regardless.
+    if (error instanceof HttpException) {
+      return false;
+    }
     const message = error instanceof Error ? error.message : String(error);
+    if (WwebjsLifecycle.PROTOCOL_TIMEOUT_PATTERN.test(message)) {
+      return false;
+    }
     return WwebjsLifecycle.PAGE_TRANSPORT_ERROR_PATTERN.test(message);
   }
 

@@ -332,7 +332,7 @@ export const CURATED_CAPABILITY_EXCEPTIONS: Record<string, MethodCapability> = {
     wwjs: { status: 'supported' },
     baileys: { status: 'supported' },
     evidence:
-      'wwjs GroupChat.setDescription(description) → boolean (index.d.ts:1984; false → adapter throws EngineRefusedError); baileys groupUpdateDescription(jid, description?) (Socket/groups.d.ts:21)',
+      "wwjs GroupChat.setDescription(description) → boolean (index.d.ts:1984; false → adapter throws EngineRefusedError) — depends on 🔧⁹ (scripts/patch-wwebjs-group-description.js): stock 1.34.7 calls the page's WAWebGroupModifyInfoJob.setGroupDescription positionally, but that job now takes a single options object {desc, groupWid, newDescId, prevDescId}, so widToGroupJid reads an undefined Wid and throws inside the page, reaching the caller as a bare 500. setGroupSubject in the same module is still positional and is unaffected. Patched call measured live on wwjs 1.34.7: set reads back, empty string clears. baileys groupUpdateDescription(jid, description?) (Socket/groups.d.ts:21)",
   },
   setGroupEphemeral: {
     wwjs: { status: 'not-available', rootCause: 'library-limitation' },

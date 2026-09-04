@@ -25,4 +25,29 @@ export class ChatSummaryDto {
 
   @ApiPropertyOptional({ example: 'hi' })
   lastMessage?: string;
+
+  @ApiProperty({ description: 'Archived state, as set via POST /sessions/{sessionId}/chats/archive.', example: false })
+  archived!: boolean;
+
+  @ApiProperty({ description: 'Pinned state, as set via POST /sessions/{sessionId}/chats/pin.', example: false })
+  pinned!: boolean;
+
+  @ApiProperty({
+    description:
+      'Whether the chat is muted right now, as set via POST /sessions/{sessionId}/chats/mute. The ' +
+      'verdict rather than the expiry: whatsapp-web.js derives it itself from Chat.isMuted, and ' +
+      'Baileys carries a muteEndTime that this gateway compares against now. muteExpiration carries ' +
+      'the instant itself.',
+    example: false,
+  })
+  muted!: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'Epoch MILLISECONDS at which the mute ends, present only when muted is true; 0 means muted ' +
+      'indefinitely. Milliseconds is the same unit as POST /sessions/{sessionId}/chats/mute ' +
+      'muteUntil, so a value read here can be written straight back.',
+    example: 1786003600000,
+  })
+  muteExpiration?: number;
 }

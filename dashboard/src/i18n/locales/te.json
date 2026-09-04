@@ -11,6 +11,7 @@
     "cancel": "రద్దు చేయి",
     "delete": "తొలగించు",
     "create": "సృష్టించు",
+    "save": "Save",
     "close": "మూసివేయి",
     "showApiKey": "API కీని చూపు",
     "hideApiKey": "API కీని దాచు",
@@ -87,6 +88,8 @@
     "unreadBadge": "{{count}} చదవని సందేశం",
     "unreadBadge_other": "{{count}} చదవని సందేశాలు",
     "loadingMessages": "సందేశాలను లోడ్ చేస్తోంది...",
+    "loadingOlderMessages": "పాత సందేశాలను లోడ్ చేస్తోంది...",
+    "loadOlderMessagesError": "పాత సందేశాలను లోడ్ చేయడం విఫలమైంది. మళ్లీ ప్రయత్నించడానికి పైకి స్క్రోల్ చేయండి.",
     "noMessagesInChat": "ఇంకా సందేశాలు లేవు. ప్రారంభించడానికి మొదటి సందేశాన్ని పంపండి!",
     "downloadDocument": "డాక్యుమెంట్‌ను డౌన్‌లోడ్ చేయి",
     "actions": {
@@ -303,8 +306,26 @@
       "autoRejectCalls": "కాల్‌లను ఆటోమేటిక్‌గా తిరస్కరించు",
       "autoRejectCallsHint": "ఇన్‌కమింగ్ కాల్‌లు మోగిన వెంటనే తిరస్కరించబడతాయి. call.received వెబ్‌హుక్ మాత్రం ముందుగా పంపబడుతుంది. తదుపరి కాల్ నుండి వర్తిస్తుంది — పునఃప్రారంభం అవసరం లేదు."
     },
+    "proxy": {
+      "title": "Proxy Configuration",
+      "status": "Current",
+      "enabled": "Use proxy",
+      "url": "Proxy URL",
+      "urlPlaceholder": "http://user:pass@proxy.example.com:8080",
+      "urlKeepPlaceholder": "Enter new URL to replace {{host}} (credentials not shown)",
+      "configured": "{{host}} ({{type}})",
+      "noProxy": "No proxy configured",
+      "hasCredentials": "Credentials are stored but not shown. Enter a full URL to change them.",
+      "hint": "Changes apply on the next session start, not to a running connection. The proxy must be real and reachable — an unreachable value blocks QR delivery and start returns 504.",
+      "createHint": "Only needed when your network cannot reach WhatsApp directly. Must be a real, reachable proxy.",
+      "invalidUrl": "Enter a valid http, https, socks4, or socks5 proxy URL.",
+      "saveSuccessTitle": "Proxy Saved",
+      "saveSuccess": "Proxy settings saved. They apply on the next session start.",
+      "saveError": "Failed to save proxy settings"
+    },
     "actions": {
       "view": "చూడు",
+      "proxy": "Proxy",
       "start": "ప్రారంభించు",
       "stop": "ఆపివేయి",
       "reconnect": "మళ్లీ కనెక్ట్ చేయి",
@@ -412,6 +433,7 @@
         "body": "సందేశ విషయం",
         "type": "సందేశ రకం",
         "isGroup": "గ్రూప్ చాట్",
+        "kind": "Chat kind",
         "fromMe": "నేను పంపినది",
         "hasMedia": "మీడియా ఉంది",
         "mentions": "ప్రస్తావనలు"
@@ -533,7 +555,8 @@
       "role": "పాత్ర",
       "status": "స్థితి",
       "lastUsed": "చివరిగా ఉపయోగించినది",
-      "actions": "చర్యలు"
+      "actions": "చర్యలు",
+      "sessions": "సెషన్లు"
     },
     "statuses": {
       "active": "యాక్టివ్",
@@ -554,7 +577,19 @@
     "actions": {
       "copy": "కాపీ",
       "revoke": "రద్దు చేయి",
-      "delete": "తొలగించు"
+      "delete": "తొలగించు",
+      "editSessions": "సెషన్లను సవరించు"
+    },
+    "sessions": {
+      "label": "సెషన్ యాక్సెస్",
+      "hint": "ఈ కీ ఉపయోగించగల సెషన్లను ఎంచుకోండి.",
+      "all": "అన్ని సెషన్లు",
+      "empty": "ఇంకా సెషన్లు లేవు. సెషన్లు ఉన్న తర్వాత ఈ కీ అన్నింటికీ యాక్సెస్ పొందుతుంది.",
+      "restricted": "{{count}} ఎంచుకున్నారు",
+      "editTitle": "సెషన్ యాక్సెస్‌ను సవరించు",
+      "save": "సేవ్",
+      "choose": "సెషన్లను ఎంచుకోండి",
+      "leaveAll": "అన్ని సెషన్లకు వదిలేయండి"
     }
   },
   "logs": {
@@ -650,6 +685,7 @@
     "forwardMessageId": "సందేశ ID",
     "forwardMessageIdHint": "ఫార్వార్డ్ చేయాల్సిన సందేశం యొక్క ID",
     "bulkRecipients": "గ్రహీతలు",
+    "bulkRecipientsUpload": "CSV/TXT అప్‌లోడ్ చేయండి",
     "bulkRecipientsPlaceholder": "+62812345678",
     "bulkRecipientsHint": "ఒక్కో లైన్‌లో ఒక ఫోన్ నంబర్ లేదా చాట్ ID (గరిష్టంగా 100)",
     "bulkRecipientsCount": "గ్రహీతలు: {{count}}",
@@ -887,6 +923,7 @@
       "title": "ఇన్‌స్టాన్స్‌లు",
       "description": "ఈ ఇంటిగ్రేషన్ కోసం ఖాతా వారీగా ఇన్‌స్టాన్స్‌లను ప్రొవిజన్ చేయండి. ప్రతి ఇన్‌స్టాన్స్‌కు దాని స్వంత సైనింగ్ సీక్రెట్ మరియు ఇన్‌గ్రెస్ URL ఉంటుంది.",
       "create": "ఇన్‌స్టాన్స్‌ను సృష్టించండి",
+      "save": "Save",
       "empty": "ఇంకా ఇన్‌స్టాన్స్‌లు లేవు. ఇన్‌గ్రెస్ URL మరియు సీక్రెట్ పొందడానికి ఒకటి సృష్టించండి.",
       "loadError": "ఇన్‌స్టాన్స్‌లను లోడ్ చేయడం విఫలమైంది.",
       "allSessions": "అన్ని సెషన్‌లు",

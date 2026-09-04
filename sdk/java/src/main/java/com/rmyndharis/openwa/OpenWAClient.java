@@ -12,6 +12,7 @@ import com.rmyndharis.openwa.http.HttpMethod;
 import com.rmyndharis.openwa.model.MuteChatRequest;
 import com.rmyndharis.openwa.model.UpdateSessionConfigRequest;
 import com.rmyndharis.openwa.model.UpdateSessionConfigRequestSerializer;
+import com.rmyndharis.openwa.model.UpdateSessionProxyRequest;
 import com.rmyndharis.openwa.http.HttpRequestData;
 import com.rmyndharis.openwa.http.HttpResponseData;
 import com.rmyndharis.openwa.http.HttpTransport;
@@ -192,7 +193,11 @@ public final class OpenWAClient {
      * turn into an unintended "reset to default".
      */
     private Gson bodySerializer(Object body) {
-        return body instanceof UpdateSessionConfigRequest || body instanceof MuteChatRequest ? nullEmittingGson : gson;
+        return body instanceof UpdateSessionConfigRequest
+                        || body instanceof MuteChatRequest
+                        || body instanceof UpdateSessionProxyRequest
+                ? nullEmittingGson
+                : gson;
     }
 
     private HttpResponseData execute(HttpMethod method, String path, Object query, Object body) {

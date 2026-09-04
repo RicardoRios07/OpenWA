@@ -2,6 +2,7 @@ import type { Chat, Contact as BaileysContact, WAMessage, WAMessageKey } from '@
 import { ChatSummary, Contact } from '../interfaces/whatsapp-engine.interface';
 import { chatKind, parseWaId, toNeutralJid as canonicalizeWaId, userPart } from '../identity/wa-id';
 import type { LidMappingStore } from '../identity/lid-mapping-store.service';
+import type { ChatStateStore, ChatStateValue } from './baileys-chat-state-store.service';
 import { resolveNonNegativeIntEnv } from '../../config/configuration';
 
 interface LastMessage {
@@ -90,13 +91,17 @@ export class BaileysSessionStore {
   private readonly ephemeralByChat: LruMap<string, number>;
 
   /**
-   * @param lidStore  optional persisted, cross-session lid->phone table that backs resolution beyond
-   *                  this session's in-memory map (survives restarts, shared across sessions).
-   * @param sessionId provenance recorded on rows this session writes to the table.
+   * @param lidStore       optional persisted, cross-session lid->phone table that backs resolution beyond
+   *                       this session's in-memory map (survives restarts, shared across sessions).
+   * @param sessionId      provenance recorded on rows this session writes to the persisted tables.
+   * @param chatStateStore optional persisted per-session mute/archive/pin, so those chat fields survive a
+   *                       reconnect Baileys cannot resync (it only re-emits mutations newer than the
+   *                       persisted app-state version, never an already-applied one).
    */
   constructor(
     private readonly lidStore?: LidMappingStore,
     private readonly sessionId?: string,
+    private readonly chatStateStore?: ChatStateStore,
   ) {
     // Mirrors LidMappingStoreService: a finite default, 0 opts back into unbounded, garbage falls back.
     const maxEntries = resolveNonNegativeIntEnv(
@@ -137,6 +142,7 @@ export class BaileysSessionStore {
       }
       const existing = this.chats.get(r.id) ?? { id: r.id };
       this.chats.set(r.id, { ...existing, ...r });
+      this.persistChatState(r.id, r);
     }
   }
 
@@ -380,6 +386,9 @@ export class BaileysSessionStore {
     // is provably keyed by a real id.
     const id = c.id!;
     const last = this.lastMessages.get(id);
+    // Mute/archive/pin come from the persisted store when it has this chat (it survives a reconnect
+    // Baileys cannot resync), else from the live record. A `null` muteEndTime there means unmuted.
+    const st = this.sessionId ? this.chatStateStore?.get(this.sessionId, id) : undefined;
     return {
       id: this.toNeutralJid(id),
       name: c.name ?? this.resolveContactName(id),
@@ -388,7 +397,66 @@ export class BaileysSessionStore {
       unreadCount: c.unreadCount ?? 0,
       timestamp: last?.timestamp ?? this.toUnixSeconds(c.conversationTimestamp),
       lastMessage: last?.text,
+      archived: st ? st.archived : (c.archived ?? false),
+      // Baileys reports a pin as an ORDER, not a flag: 0/absent means unpinned.
+      pinned: st ? st.pinned : Boolean(c.pinned),
+      muted: this.isMuted(st ? st.muteEndTime : c.muteEndTime),
+      muteExpiration: this.muteExpirationMs(st ? st.muteEndTime : c.muteEndTime),
     };
+  }
+
+  /**
+   * Whether a Baileys `muteEndTime` is still in the future.
+   *
+   * The value arrives in two units. An app-state `chatModify({ mute })` write echoes the epoch
+   * MILLISECONDS this gateway passed (measured in `chat-mute.spec.ts`, documented in `mute-chat.dto.ts`).
+   * A history-sync `Conversation.muteEndTime` is a Long in the proto's own unit, seconds like the
+   * `conversationTimestamp` beside it. So it is normalised by magnitude: below 1e12 is seconds (an
+   * epoch-ms stamp below 1e12 is a date before 2001-09) and is scaled to ms. The current state survives a
+   * reconnect via {@link persistChatState}, because Baileys re-emits only app-state mutations newer than
+   * the persisted version, never an already-applied mute.
+   */
+  private isMuted(muteEndTime: number | { toNumber(): number } | null | undefined): boolean {
+    const raw = this.toUnixSeconds(muteEndTime);
+    if (!raw) return false;
+    const endMs = raw < 1e12 ? raw * 1000 : raw;
+    return endMs > Date.now();
+  }
+
+  /**
+   * The expiry instant (epoch ms) for {@link ChatSummary.muteExpiration}, or undefined when the chat
+   * is not muted. Same normalisation as {@link isMuted}, so the two agree: a value only survives here
+   * when it is still in the future.
+   */
+  private muteExpirationMs(muteEndTime: number | { toNumber(): number } | null | undefined): number | undefined {
+    const raw = this.toUnixSeconds(muteEndTime);
+    if (!raw) return undefined;
+    const endMs = raw < 1e12 ? raw * 1000 : raw;
+    return endMs > Date.now() ? endMs : undefined;
+  }
+
+  /**
+   * Write mute/archive/pin through to the persisted store when a chat update carries them. Key presence,
+   * not truthiness, is the trigger: a history-sync or name-hydration partial that omits these keys must
+   * not overwrite persisted state, and a live unmute arrives as `muteEndTime: null` (key present) that
+   * must persist as null. A no-op when this session has no store wired (unit tests, wwjs).
+   */
+  private persistChatState(id: string, r: Partial<Chat>): void {
+    if (!this.chatStateStore || !this.sessionId) return;
+    const patch: Partial<ChatStateValue> = {};
+    if ('muteEndTime' in r) patch.muteEndTime = this.normalizeMuteEndTime(r.muteEndTime);
+    if ('archived' in r) patch.archived = Boolean(r.archived);
+    if ('pinned' in r) patch.pinned = Boolean(r.pinned);
+    if (Object.keys(patch).length) {
+      void this.chatStateStore.remember(this.sessionId, id, patch);
+    }
+  }
+
+  /** Normalise a raw muteEndTime to canonical epoch ms, or null (0/absent = unmuted). See {@link isMuted}. */
+  private normalizeMuteEndTime(v: number | { toNumber(): number } | null | undefined): number | null {
+    const n = this.toUnixSeconds(v);
+    if (!n) return null;
+    return n < 1e12 ? n * 1000 : n;
   }
 
   /**

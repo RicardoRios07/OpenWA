@@ -11,6 +11,7 @@
     "cancel": "إلغاء",
     "delete": "حذف",
     "create": "إنشاء",
+    "save": "Save",
     "close": "إغلاق",
     "showApiKey": "إظهار مفتاح API",
     "hideApiKey": "إخفاء مفتاح API",
@@ -90,6 +91,8 @@
     "unreadBadge_few": "{{count}} رسائل غير مقروءة",
     "unreadBadge_many": "{{count}} رسالة غير مقروءة",
     "loadingMessages": "جارٍ تحميل الرسائل...",
+    "loadingOlderMessages": "جارٍ تحميل الرسائل الأقدم...",
+    "loadOlderMessagesError": "تعذر تحميل الرسائل الأقدم. مرر لأعلى للمحاولة مرة أخرى.",
     "noMessagesInChat": "لا توجد رسائل بعد. أرسل الرسالة الأولى للبدء!",
     "downloadDocument": "تنزيل المستند",
     "actions": {
@@ -314,8 +317,26 @@
       "autoRejectCalls": "الرفض التلقائي للمكالمات",
       "autoRejectCallsHint": "يتم رفض المكالمات الواردة فور رنينها. ولا يزال الويب هوك call.received يُرسل قبل ذلك. يسري على المكالمة التالية — دون الحاجة إلى إعادة التشغيل."
     },
+    "proxy": {
+      "title": "Proxy Configuration",
+      "status": "Current",
+      "enabled": "Use proxy",
+      "url": "Proxy URL",
+      "urlPlaceholder": "http://user:pass@proxy.example.com:8080",
+      "urlKeepPlaceholder": "Enter new URL to replace {{host}} (credentials not shown)",
+      "configured": "{{host}} ({{type}})",
+      "noProxy": "No proxy configured",
+      "hasCredentials": "Credentials are stored but not shown. Enter a full URL to change them.",
+      "hint": "Changes apply on the next session start, not to a running connection. The proxy must be real and reachable — an unreachable value blocks QR delivery and start returns 504.",
+      "createHint": "Only needed when your network cannot reach WhatsApp directly. Must be a real, reachable proxy.",
+      "invalidUrl": "Enter a valid http, https, socks4, or socks5 proxy URL.",
+      "saveSuccessTitle": "Proxy Saved",
+      "saveSuccess": "Proxy settings saved. They apply on the next session start.",
+      "saveError": "Failed to save proxy settings"
+    },
     "actions": {
       "view": "عرض",
+      "proxy": "Proxy",
       "start": "بدء",
       "stop": "إيقاف",
       "reconnect": "إعادة الاتصال",
@@ -427,6 +448,7 @@
         "body": "نص الرسالة",
         "type": "نوع الرسالة",
         "isGroup": "محادثة جماعية",
+        "kind": "Chat kind",
         "fromMe": "مُرسَلة مني",
         "hasMedia": "تحتوي على وسائط",
         "mentions": "الإشارات"
@@ -548,7 +570,8 @@
       "role": "الدور",
       "status": "الحالة",
       "lastUsed": "آخر استخدام",
-      "actions": "إجراءات"
+      "actions": "إجراءات",
+      "sessions": "الجلسات"
     },
     "statuses": {
       "active": "نشط",
@@ -569,7 +592,19 @@
     "actions": {
       "copy": "نسخ",
       "revoke": "إلغاء",
-      "delete": "حذف"
+      "delete": "حذف",
+      "editSessions": "تعديل الجلسات"
+    },
+    "sessions": {
+      "label": "الوصول إلى الجلسات",
+      "hint": "اختر الجلسات التي يمكن لهذا المفتاح استخدامها.",
+      "all": "كل الجلسات",
+      "empty": "لا توجد جلسات بعد. سيتمكن هذا المفتاح من الوصول إلى كل الجلسات عند إنشائها.",
+      "restricted": "{{count}} محددة",
+      "editTitle": "تعديل الوصول إلى الجلسات",
+      "save": "حفظ",
+      "choose": "اختيار الجلسات",
+      "leaveAll": "تركها لجميع الجلسات"
     }
   },
   "logs": {
@@ -665,6 +700,7 @@
     "forwardMessageId": "معرّف الرسالة",
     "forwardMessageIdHint": "معرّف الرسالة المراد إعادة توجيهها",
     "bulkRecipients": "المستلمون",
+    "bulkRecipientsUpload": "رفع CSV/TXT",
     "bulkRecipientsPlaceholder": "+62812345678",
     "bulkRecipientsHint": "رقم هاتف أو معرّف دردشة واحد في كل سطر (100 كحد أقصى)",
     "bulkRecipientsCount": "المستلمون: {{count}}",
@@ -902,6 +938,7 @@
       "title": "المثيلات",
       "description": "أنشئ مثيلات لكل حساب لهذا التكامل. كل مثيل له مفتاح توقيع سري وعنوان دخول خاص به.",
       "create": "إنشاء مثيل",
+      "save": "Save",
       "empty": "لا توجد مثيلات بعد. أنشئ مثيلًا للحصول على عنوان دخول ومفتاح سري.",
       "loadError": "فشل تحميل المثيلات.",
       "allSessions": "جميع الجلسات",

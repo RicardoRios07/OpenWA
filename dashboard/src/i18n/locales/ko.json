@@ -11,6 +11,7 @@
     "cancel": "취소",
     "delete": "삭제",
     "create": "생성",
+    "save": "Save",
     "close": "닫기",
     "showApiKey": "API 키 표시",
     "hideApiKey": "API 키 숨기기",
@@ -87,6 +88,8 @@
     "unreadBadge": "읽지 않은 메시지 {{count}}개",
     "unreadBadge_other": "읽지 않은 메시지 {{count}}개",
     "loadingMessages": "메시지 불러오는 중...",
+    "loadingOlderMessages": "이전 메시지 불러오는 중...",
+    "loadOlderMessagesError": "이전 메시지를 불러오지 못했습니다. 위로 스크롤하여 다시 시도하세요.",
     "noMessagesInChat": "아직 메시지가 없습니다. 첫 메시지를 보내 대화를 시작하세요!",
     "downloadDocument": "문서 다운로드",
     "actions": {
@@ -303,8 +306,26 @@
       "autoRejectCalls": "통화 자동 거절",
       "autoRejectCallsHint": "수신 통화가 울리는 즉시 거절됩니다. call.received 웹훅은 그전에 그대로 전송됩니다. 다음 통화부터 적용되며 재시작이 필요하지 않습니다."
     },
+    "proxy": {
+      "title": "Proxy Configuration",
+      "status": "Current",
+      "enabled": "Use proxy",
+      "url": "Proxy URL",
+      "urlPlaceholder": "http://user:pass@proxy.example.com:8080",
+      "urlKeepPlaceholder": "Enter new URL to replace {{host}} (credentials not shown)",
+      "configured": "{{host}} ({{type}})",
+      "noProxy": "No proxy configured",
+      "hasCredentials": "Credentials are stored but not shown. Enter a full URL to change them.",
+      "hint": "Changes apply on the next session start, not to a running connection. The proxy must be real and reachable — an unreachable value blocks QR delivery and start returns 504.",
+      "createHint": "Only needed when your network cannot reach WhatsApp directly. Must be a real, reachable proxy.",
+      "invalidUrl": "Enter a valid http, https, socks4, or socks5 proxy URL.",
+      "saveSuccessTitle": "Proxy Saved",
+      "saveSuccess": "Proxy settings saved. They apply on the next session start.",
+      "saveError": "Failed to save proxy settings"
+    },
     "actions": {
       "view": "보기",
+      "proxy": "Proxy",
       "start": "시작",
       "stop": "중지",
       "reconnect": "재연결",
@@ -412,6 +433,7 @@
         "body": "메시지 본문",
         "type": "메시지 유형",
         "isGroup": "그룹 채팅 여부",
+        "kind": "Chat kind",
         "fromMe": "내가 보낸 메시지",
         "hasMedia": "미디어 포함",
         "mentions": "멘션"
@@ -533,7 +555,8 @@
       "role": "역할",
       "status": "상태",
       "lastUsed": "마지막 사용",
-      "actions": "작업"
+      "actions": "작업",
+      "sessions": "세션"
     },
     "statuses": {
       "active": "활성",
@@ -554,7 +577,19 @@
     "actions": {
       "copy": "복사",
       "revoke": "폐기",
-      "delete": "삭제"
+      "delete": "삭제",
+      "editSessions": "세션 편집"
+    },
+    "sessions": {
+      "label": "세션 접근",
+      "hint": "이 키가 사용할 세션을 선택하세요.",
+      "all": "모든 세션",
+      "empty": "아직 세션이 없습니다. 세션이 생기면 이 키는 모두에 접근할 수 있습니다.",
+      "restricted": "{{count}}개 선택됨",
+      "editTitle": "세션 접근 편집",
+      "save": "저장",
+      "choose": "세션 선택",
+      "leaveAll": "모든 세션에 두기"
     }
   },
   "logs": {
@@ -650,6 +685,7 @@
     "forwardMessageId": "메시지 ID",
     "forwardMessageIdHint": "전달할 메시지의 ID",
     "bulkRecipients": "수신자",
+    "bulkRecipientsUpload": "CSV/TXT 업로드",
     "bulkRecipientsPlaceholder": "+62812345678",
     "bulkRecipientsHint": "한 줄에 하나의 전화번호 또는 채팅 ID (최대 100개)",
     "bulkRecipientsCount": "수신자: {{count}}",
@@ -887,6 +923,7 @@
       "title": "인스턴스",
       "description": "이 연동을 위해 계정별 인스턴스를 프로비저닝하세요. 각 인스턴스는 고유한 서명 시크릿과 인그레스 URL을 가집니다.",
       "create": "인스턴스 생성",
+      "save": "Save",
       "empty": "아직 인스턴스가 없습니다. 인스턴스를 만들면 인그레스 URL과 시크릿을 받을 수 있습니다.",
       "loadError": "인스턴스를 불러오지 못했습니다.",
       "allSessions": "모든 세션",

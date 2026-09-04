@@ -34,6 +34,27 @@ func (s *SessionsService) UpdateConfig(ctx context.Context, sessionID string, bo
 	return &out, nil
 }
 
+// GetProxy reads a session's masked proxy configuration.
+func (s *SessionsService) GetProxy(ctx context.Context, sessionID string) (*SessionProxy, error) {
+	var out SessionProxy
+	err := s.client.do(ctx, "GET", "/api/sessions/"+pathEscape(sessionID)+"/proxy", nil, nil, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// UpdateProxy changes per-session proxy settings. No restart is performed -- changes apply on the
+// next start. Send ProxyURL as JSON null to clear the proxy.
+func (s *SessionsService) UpdateProxy(ctx context.Context, sessionID string, body UpdateSessionProxyRequest) (*SessionProxy, error) {
+	var out SessionProxy
+	err := s.client.do(ctx, "PATCH", "/api/sessions/"+pathEscape(sessionID)+"/proxy", nil, body, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // Get returns a single session.
 func (s *SessionsService) Get(ctx context.Context, sessionID string) (*SessionResponse, error) {
 	var out SessionResponse

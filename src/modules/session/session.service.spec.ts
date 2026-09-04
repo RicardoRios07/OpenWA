@@ -735,7 +735,7 @@ describe('SessionService', () => {
       const result = await service.findAll();
 
       expect(result).toHaveLength(2);
-      expect(repository.find).toHaveBeenCalledWith({ order: { createdAt: 'DESC' }, take: 1000, skip: 0 });
+      expect(repository.find).toHaveBeenCalledWith({ order: { createdAt: 'DESC', id: 'DESC' }, take: 1000, skip: 0 });
     });
 
     it('scopes results to a session-restricted key', async () => {
@@ -745,7 +745,7 @@ describe('SessionService', () => {
 
       expect(repository.find).toHaveBeenCalledWith({
         where: { id: In(['sess-1', 'sess-2']) },
-        order: { createdAt: 'DESC' },
+        order: { createdAt: 'DESC', id: 'DESC' },
         take: 1000,
         skip: 0,
       });
@@ -758,8 +758,16 @@ describe('SessionService', () => {
       await service.findAll([]);
 
       expect(repository.find).toHaveBeenCalledTimes(2);
-      expect(repository.find).toHaveBeenNthCalledWith(1, { order: { createdAt: 'DESC' }, take: 1000, skip: 0 });
-      expect(repository.find).toHaveBeenNthCalledWith(2, { order: { createdAt: 'DESC' }, take: 1000, skip: 0 });
+      expect(repository.find).toHaveBeenNthCalledWith(1, {
+        order: { createdAt: 'DESC', id: 'DESC' },
+        take: 1000,
+        skip: 0,
+      });
+      expect(repository.find).toHaveBeenNthCalledWith(2, {
+        order: { createdAt: 'DESC', id: 'DESC' },
+        take: 1000,
+        skip: 0,
+      });
     });
 
     it('applies bounded pagination to the database query', async () => {
@@ -769,7 +777,7 @@ describe('SessionService', () => {
 
       expect(repository.find).toHaveBeenCalledWith({
         where: { id: In(['sess-1']) },
-        order: { createdAt: 'DESC' },
+        order: { createdAt: 'DESC', id: 'DESC' },
         take: 1000,
         skip: 0,
       });
@@ -3437,9 +3445,9 @@ describe('SessionService', () => {
     });
 
     it('synthesizes the omitted media marker for a media echo carrying no media field', async () => {
-      // A wwjs echo whose media download failed carries no media field at all — the sync
-      // buildIncomingMessageBase attaches none and the enrichment around it is best-effort. Without
-      // the marker the dashboard renders an empty bubble and the by-type stats filter would skip the row.
+      // An echo can reach persistence with no media field at all — the sync buildIncomingMessageBase
+      // attaches none and the enrichment around it is best-effort. Without the marker the dashboard
+      // renders an empty bubble and the by-type stats filter would skip the row.
       const callbacks = await startAndCaptureCallbacks();
       (hookManager.execute as jest.Mock).mockImplementation((_e: string, data: unknown) =>
         Promise.resolve({ continue: true, data }),
@@ -6336,6 +6344,86 @@ describe('SessionService', () => {
         maxReconnectAttempts: 20,
         reconnectBaseDelay: 1000,
       });
+    });
+  });
+
+  describe('session proxy', () => {
+    beforeEach(() => {
+      (repository.update as jest.Mock).mockResolvedValue({ affected: 1 });
+    });
+
+    it('reports disabled when no proxy is configured', async () => {
+      (repository.findOne as jest.Mock).mockResolvedValue(createMockSession());
+
+      await expect(service.getProxy('sess-uuid-1')).resolves.toEqual({
+        enabled: false,
+        proxyType: null,
+        proxyHost: null,
+        hasCredentials: false,
+      });
+    });
+
+    it('masks credentials and returns host:port only', async () => {
+      (repository.findOne as jest.Mock).mockResolvedValue(
+        createMockSession({
+          proxyUrl: 'http://user:pass@proxy.internal:8080',
+          proxyType: 'http',
+        }),
+      );
+
+      await expect(service.getProxy('sess-uuid-1')).resolves.toEqual({
+        enabled: true,
+        proxyType: 'http',
+        proxyHost: 'proxy.internal:8080',
+        hasCredentials: true,
+      });
+    });
+
+    it('persists a new proxy URL without writing proxyType', async () => {
+      (repository.findOne as jest.Mock).mockResolvedValue(createMockSession());
+
+      const result = await service.updateProxy('sess-uuid-1', {
+        proxyUrl: 'http://proxy.internal:8080',
+      });
+
+      expect(repository.update).toHaveBeenCalledWith('sess-uuid-1', {
+        proxyUrl: 'http://proxy.internal:8080',
+        proxyType: null,
+      });
+      expect(result).toEqual({
+        enabled: true,
+        proxyType: 'http',
+        proxyHost: 'proxy.internal:8080',
+        hasCredentials: false,
+      });
+    });
+
+    it('derives socks5 from the URL scheme after update', async () => {
+      (repository.findOne as jest.Mock).mockResolvedValue(createMockSession());
+
+      const result = await service.updateProxy('sess-uuid-1', {
+        proxyUrl: 'socks5://proxy.internal:1080',
+      });
+
+      expect(repository.update).toHaveBeenCalledWith('sess-uuid-1', {
+        proxyUrl: 'socks5://proxy.internal:1080',
+        proxyType: null,
+      });
+      expect(result.proxyType).toBe('socks5');
+    });
+
+    it('clears both columns when proxyUrl is null', async () => {
+      (repository.findOne as jest.Mock).mockResolvedValue(
+        createMockSession({ proxyUrl: 'http://proxy.internal:8080', proxyType: 'http' }),
+      );
+
+      const result = await service.updateProxy('sess-uuid-1', { proxyUrl: null });
+
+      expect(repository.update).toHaveBeenCalledWith('sess-uuid-1', {
+        proxyUrl: null,
+        proxyType: null,
+      });
+      expect(result.enabled).toBe(false);
     });
   });
 });

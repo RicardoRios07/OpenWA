@@ -111,6 +111,7 @@ export const BLANK_SHADOWED_ENV_KEYS: string[] = [
   'PUPPETEER_HEADLESS',
   'SESSION_DATA_PATH',
   'PUPPETEER_ARGS',
+  'PUPPETEER_PROTOCOL_TIMEOUT_MS',
   // Rate-limit values are blank-forwarded by Compose so a host value can take precedence without an
   // empty forward masking the lower-priority loaded .env / data/.env.generated value.
   'RATE_LIMIT_SHORT_TTL',

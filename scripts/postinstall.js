@@ -1,7 +1,7 @@
 /**
  * Post-install hook (npm `postinstall`).
  *
- * Eight conditional steps, each skipped when its target is absent so the hook is a no-op where the
+ * Ten conditional steps, each skipped when its target is absent so the hook is a no-op where the
  * piece is missing (the Docker builder stage copies package*.json long before any source):
  *
  *   1. `npm ci` inside dashboard/ when dashboard/ exists — the dashboard carries its own lockfile and
@@ -25,11 +25,13 @@
  *      participant writes report which requested ids resolved to members, gated the same way.
  *   7. `node scripts/patch-wwebjs-block.js --best-effort` when present, restoring block and
  *      unblock after WhatsApp Web removed the contact resolver they used.
- *   8. `node scripts/patch-baileys-appstate.js --best-effort` when present, the app-state resync
+ *   8. `node scripts/patch-wwebjs-group-description.js --best-effort` when present, realigning the
+ *      group-description job call with the options object the page now takes, gated the same way.
+ *   9. `node scripts/patch-baileys-appstate.js --best-effort` when present, the app-state resync
  *      bound, gated the same way.
- *   9. `node scripts/patch-baileys-newsletter-create.js --best-effort` when present, the
- *      newsletter-create parse fix. Steps 7-8 are the Baileys patches, so a Baileys-only install
- *      runs those and skips 2-6.
+ *  10. `node scripts/patch-baileys-newsletter-create.js --best-effort` when present, the
+ *      newsletter-create parse fix. Steps 9-10 are the Baileys patches, so a Baileys-only install
+ *      runs those and skips 2-8.
  *
  * Structured like scripts/patch-wwebjs-201832.js: pure planning + injectable spawn, so the spec
  * (scripts/postinstall.spec.js, node:test) exercises every branch without a real npm run.
@@ -124,6 +126,17 @@ function planSteps(root, env = process.env) {
       name: 'whatsapp-web.js block/unblock LID repair (scripts/patch-wwebjs-block.js --best-effort)',
       command: process.execPath,
       args: [blockPatcher, '--best-effort'],
+      options: { stdio: 'inherit', cwd: root, env: cleanEnv },
+    });
+  }
+  const groupDescriptionPatcher = path.join(root, 'scripts', 'patch-wwebjs-group-description.js');
+  if (fs.existsSync(groupDescriptionPatcher)) {
+    steps.push({
+      name:
+        'whatsapp-web.js group description job signature ' +
+        '(scripts/patch-wwebjs-group-description.js --best-effort)',
+      command: process.execPath,
+      args: [groupDescriptionPatcher, '--best-effort'],
       options: { stdio: 'inherit', cwd: root, env: cleanEnv },
     });
   }

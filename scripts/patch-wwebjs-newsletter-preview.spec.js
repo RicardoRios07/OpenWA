@@ -6,7 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { applyBackport } = require('./patch-wwebjs-newsletter-preview.js');
+const { applyBackport, isApplied } = require('./patch-wwebjs-newsletter-preview.js');
 
 const LEGACY_CALL =
   "let preview = await window\n                    .require('WAWebLinkPreviewChatAction')\n                    .getLinkPreview(link);";
@@ -39,6 +39,14 @@ test('is idempotent when destination chat context is already present', () => {
     reason: 'installed whatsapp-web.js already passes destination chat context',
   });
   assert.equal(fs.readFileSync(utils, 'utf8'), original);
+});
+
+test('reports the patch as applied only once the transform has run', () => {
+  const { root } = makeDependency(`before\n${LEGACY_CALL}\nafter\n`);
+
+  assert.equal(isApplied(root), false);
+  applyBackport(root);
+  assert.equal(isApplied(root), true);
 });
 
 test('rejects an unknown dependency shape without changing it', () => {

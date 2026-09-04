@@ -76,6 +76,25 @@ function occurrences(source, needle) {
   return source.split(needle).length - 1;
 }
 
+/**
+ * The stand-down branch below as a predicate, for the startup guard (engine-patch-status.ts).
+ * Finds are counted with the replacements removed for the reason the apply loop documents: each
+ * replacement contains its own find. Unreadable reads as applied, since a tree we cannot inspect
+ * is not evidence of a broken one.
+ */
+function isApplied(wwjsDir = DEFAULT_WWJS) {
+  try {
+    const source = fs.readFileSync(path.join(wwjsDir, CLIENT_PATH), 'utf8');
+    return EDITS.every(
+      edit =>
+        occurrences(source, edit.replace) === 1 &&
+        occurrences(source.split(edit.replace).join(''), edit.find) === 0,
+    );
+  } catch {
+    return true;
+  }
+}
+
 function applyReadySyncPatch(wwjsDir = DEFAULT_WWJS) {
   const clientFile = path.join(wwjsDir, CLIENT_PATH);
   if (!fs.existsSync(clientFile)) {
@@ -124,6 +143,7 @@ if (require.main === module) run();
 
 module.exports = {
   applyReadySyncPatch,
+  isApplied,
   EDITS,
   FLAG_INIT_FIND,
   FLAG_INIT_REPLACE,

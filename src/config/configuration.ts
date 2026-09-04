@@ -53,6 +53,15 @@ export function resolveNonNegativeIntEnv(raw: string | undefined, fallback: numb
 }
 
 /**
+ * Largest delay Node's timers accept. Above this a `setTimeout` overflows its 32-bit signed field,
+ * warns `TimeoutOverflowWarning`, and fires after 1 ms instead — so an operator reaching for an
+ * "effectively unlimited" budget by typing a row of nines gets the shortest possible one. Puppeteer
+ * arms `protocolTimeout` with a plain `setTimeout` (`common/CallbackRegistry.js`), so the ceiling
+ * applies to it directly and the browser never finishes launching.
+ */
+export const MAX_TIMER_MS = 2147483647;
+
+/**
  * The UI locale Chromium is pinned to. WhatsApp Web renders its chrome — including the new-account
  * onboarding modal the whatsapp-web.js adapter dismisses (#982) — in the browser's language, and that
  * detector matches visible English text. Without a pin the language is whatever the launched binary
@@ -211,6 +220,17 @@ export default () => ({
       // uses Puppeteer's bundled Chromium. Required on hosts where the bundled binary
       // is missing or incompatible (Alpine, ARM, custom base images).
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+      // How long one CDP command may take. An account with thousands of chats can push a single
+      // `client.getChats()` past Puppeteer's own budget; raising this is the escape hatch. Left
+      // UNDEFINED rather than defaulted to Puppeteer's number, so an unset or out-of-range value
+      // means "whatever puppeteer-core's `timeout ?? 180_000` says" instead of pinning today's
+      // figure here and silently outliving it. Out of range is not clamped either: see
+      // wwebjs-lifecycle.ts for why a falsy value is not "no limit", and MAX_TIMER_MS above for
+      // why a huge one is not either.
+      protocolTimeoutMs: (() => {
+        const n = parseInt(process.env.PUPPETEER_PROTOCOL_TIMEOUT_MS || '', 10);
+        return Number.isFinite(n) && n > 0 && n <= MAX_TIMER_MS ? n : undefined;
+      })(),
     },
     sessionDataPath: process.env.SESSION_DATA_PATH || './data/sessions',
     // Baileys engine (used when ENGINE_TYPE=baileys). Multi-file auth state base dir; each session

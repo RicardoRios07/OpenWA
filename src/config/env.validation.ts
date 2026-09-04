@@ -9,6 +9,10 @@ type EnvConfig = Record<string, unknown>;
 // DATABASE_NAME still points at the (now unused) default file.
 const MAIN_DB_DEFAULT_PATH = './data/main.sqlite';
 
+// Duplicated rather than imported from configuration.ts (see MAIN_DB_DEFAULT_PATH above); the spec
+// asserts the two agree.
+const MAX_TIMER_MS = 2147483647;
+
 /**
  * Collision guard shared by boot validation (validateEnv below) and the migration CLI
  * (src/database/data-source.ts / data-source-main.ts — the TypeORM CLI never runs ConfigModule's
@@ -284,8 +288,36 @@ export function validateEnv(config: EnvConfig): EnvConfig {
     'SESSION_LEASE_HEARTBEAT_MS',
     'SESSION_TAKEOVER_SWEEP_MS',
     'SESSION_PROXY_TIMEOUT_MS',
+    // Positive-only is the POINT here, not a convention: 0 arms no Puppeteer timer at all, so a
+    // wedged renderer holds the request forever (see wwebjs-lifecycle.ts).
+    'PUPPETEER_PROTOCOL_TIMEOUT_MS',
+    // The media knobs take RAW numbers while their neighbours in .env.example and docs/12 take unit
+    // strings (`BODY_SIZE_LIMIT=25mb`), and their read sites parse with `Number.parseInt`. That
+    // accepts the leading digits of a unit-suffixed value and discards the unit, so
+    // `MEDIA_DOWNLOAD_MAX_BYTES=50mb` became a 50 BYTE cap and `MEDIA_DOWNLOAD_TIMEOUT_MS=30s`
+    // became 30 ms: every download fails, and the "garbage falls back to the default" the helpers
+    // promise never fires because 50 is a perfectly good positive integer. Reject at boot instead,
+    // which is what the two inline-media budgets below already do.
+    'MEDIA_DOWNLOAD_MAX_BYTES',
+    'MEDIA_DOWNLOAD_TIMEOUT_MS',
+    'INBOUND_MEDIA_CONCURRENCY',
+    'CHAT_HISTORY_MEDIA_BUDGET_BYTES',
   ]) {
     checkPositiveInt(key);
+  }
+
+  // The ceiling matters for the same reason from the other side: the docs forbid 0, so an operator
+  // who wants an effectively unlimited budget reaches for a row of nines. Rejected at boot rather
+  // than clamped, so they learn the value they wrote is not the value they would have got.
+  {
+    const raw = str('PUPPETEER_PROTOCOL_TIMEOUT_MS');
+    const n = raw !== undefined && DECIMAL_INTEGER.test(raw) ? Number(raw) : NaN;
+    if (Number.isInteger(n) && n > MAX_TIMER_MS) {
+      errors.push(
+        `PUPPETEER_PROTOCOL_TIMEOUT_MS must not exceed ${MAX_TIMER_MS} ms (got "${raw}"): Node's ` +
+          `timers overflow above that and fire after 1 ms, so the browser never finishes launching`,
+      );
+    }
   }
 
   // A heartbeat that does not fit inside the lease renews too late to matter: the claim lapses

@@ -7,11 +7,194 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Security
+### Added
 
-- Override `whatsapp-web.js`'s Puppeteer 24 pin with Puppeteer 25.9.0, removing the vulnerable
-  `extract-zip` dependency and the `GHSA-jmr9-qjv8-65gv` audit exception. The amd64 image now installs
-  `unzip`, which `@puppeteer/browsers` 3 uses to extract the pinned Chrome for Testing build.
+- `GET /sessions/{sessionId}/chats` reports `muteExpiration`, the epoch-ms instant a muted chat's mute
+  ends (`0` = indefinite), alongside the existing `muted` flag
+  ([#1473](https://github.com/rmyndharis/OpenWA/issues/1473)). Thanks @usmancynosure and @purnamcommunity.
+- The dashboard's Message Tester can load bulk recipients from a `.txt` or `.csv` file, appending the
+  file's lines to whatever the Recipients box already holds. One entry per line, which is what the
+  box itself expects. Thanks @harry0x.
+- `GET /sessions/{sessionId}/messages` accepts `inlineMedia=false`, which omits every inline media
+  payload and leaves each row's `{ omitted, sizeBytes }` marker plus the media endpoint. The budget
+  bounds one response, so a paged walk pulls up to 8 MiB of base64 per page; a client reading many
+  pages can now ask for the rows without the bytes
+  ([#1516](https://github.com/rmyndharis/OpenWA/issues/1516)).
+- `GET /sessions/{sessionId}/messages` accepts `after`, a keyset cursor holding the `id` of the last
+  message of the previous page. It anchors the window to a row instead of a count, so a message
+  arriving mid-walk can no longer shift it and make a page repeat or skip rows. `offset` keeps
+  working unchanged; an `after` that names no row in the session gives `400`
+  ([#1479](https://github.com/rmyndharis/OpenWA/issues/1479)).
+- Each engine now names the install-time patches its library is missing as it starts, rather than
+  only the message-id backport. A source install applies them with `--best-effort`, so a patch that
+  could not apply left one line in the `npm install` transcript and nothing afterwards; the
+  capability it repairs then failed with an error that named no cause. Diagnostic only, startup
+  continues. See docs/12 for the procedure.
+- The dashboard's API Keys page can limit an operator or viewer key to chosen sessions, on creation
+  and on a key that already exists. Leaving the picker empty keeps access to every session, including
+  ones created later, and the keys table shows each key's scope. `allowedSessions` was already
+  accepted by the REST API; this is the UI for it. Thanks @sebathi.
+- `PUPPETEER_PROTOCOL_TIMEOUT_MS` raises the per-browser-command budget on the whatsapp-web.js
+  engine, for large accounts whose reads fail with `Runtime.callFunctionOn timed out`. Unset keeps
+  Puppeteer's own budget, so nothing changes for a deployment that does not set it. The gateway
+  refuses to boot on `0` or on a value above 2147483647; see docs/12 for when to reach for it.
+  Thanks @JuanGalzerano.
+- `GET` and `PATCH /api/sessions/{sessionId}/proxy` read and update a session's egress proxy;
+  credentials are never returned, and changes apply on the next session start
+  ([#1474](https://github.com/rmyndharis/OpenWA/issues/1474)). Thanks @vitusan.
+- Sessions dashboard: set a proxy when creating a session, and view, change or clear it afterwards.
+  Thanks @vitusan.
+- The dashboard chat room loads older history as you scroll up. It used to show one fixed window —
+  the newest 100 persisted rows plus up to 100 rows of engine history merged in, so roughly 200
+  messages — with no way to reach anything older. Pages are requested by the number of DB rows
+  already fetched, not by the length of the rendered thread, which also carries engine-history
+  items, so no row is skipped between pages; and the reading position is held when a page is
+  prepended rather than jumping. Thanks @JuanGalzerano.
+- Webhook smart filters and automation rules can match on chat `kind` (`individual`, `group`,
+  `channel`, `status`, `broadcast`, `unknown`), so a subscription can exclude channel (newsletter)
+  traffic that the `isGroup` boolean could not separate from a 1:1 chat
+  ([#1500](https://github.com/rmyndharis/OpenWA/issues/1500)).
+- `GET /sessions/{sessionId}/chats` reports each chat's `archived`, `pinned` and `muted` state.
+  The matching actions (`POST /sessions/{sessionId}/chats/archive`, `/pin`, `/mute`) already
+  existed; the chat list never reported the resulting state back, so a consumer had no way to
+  filter archived chats out of its own view, order pinned chats first, or honour a mute — and
+  whatsapp-web.js's `chat_archived` event is deliberately not wired, so there was no event
+  fallback either. `GET /sessions/{sessionId}/labels/{labelId}/chats` returns the same chat
+  summary, so it reports the three fields as well.
+
+### Changed
+
+- `ChatSummary` grew three required fields (`archived`, `pinned`, `muted`), so the chat-list shape
+  is wider than it was. Every producer sets them and the SDK type files carry them, but code
+  holding a hand-built `ChatSummary` — a test fixture, a mock, a stub gateway — has to supply the
+  three. Required rather than optional so "not muted" never has to be read out of an absent field.
+- A whatsapp-web.js protocol timeout is no longer eligible to be classified as a dead page.
+  Behaviour is unchanged on the current Puppeteer; the guard keeps a future bump from reporting a
+  slow command as a transport death.
+- `GET /sessions/{sessionId}/contacts` declares `503` in the contract and answers it when the
+  whatsapp-web.js page dies mid-read, instead of a bare `500`. Thanks @Deyvis17GY.
+- All five clients now document the 16-character minimum on a webhook `secret`, and that an empty
+  string clears it on update. The constraint is unchanged; until now only the gateway named it, in a
+  `400`.
+
+### Fixed
+
+- Baileys chat `muted`, `archived` and `pinned` state now survives a session reconnect or process
+  restart. WhatsApp does not re-deliver it on reconnect, so it is persisted per chat and rehydrated on
+  boot; a muted chat no longer reads unmuted after the session reconnects.
+- Paged lists now tiebreak on `id`, so a walk returns every row exactly once. Neither `createdAt` nor
+  a search relevance score is unique, and on PostgreSQL two identical statements could sort one tie
+  group differently, silently repeating some rows and omitting others: a 5000-row message list lost
+  23 rows per walk, and an ordinary search repeated a row by the third page. Affects the message,
+  session, webhook and webhook delivery-failure lists and `GET /search`. `offset` still addresses a
+  position by count, so a list taking concurrent writes can still shift under a walk.
+
+- `PUT /sessions/{sessionId}/groups/{groupId}/description` no longer fails with a bare `500` on
+  whatsapp-web.js. `WAWebGroupModifyInfoJob.setGroupDescription` now takes a single options object
+  and the library still calls it positionally, so `widToGroupJid` threw inside the page. A new
+  install-time patch (🔧⁹, docs/29) sends the options object; an empty description still clears.
+  `setGroupSubject` was never affected and Baileys is unchanged. Thanks @purnamcommunity.
+- whatsapp-web.js contact reads resolve the renamed `$1` serialized-id field, so contacts keep their
+  `id` on a WhatsApp Web build that renamed it; an entry with no readable id is skipped and counted
+  in the log. Thanks @Deyvis17GY.
+- Inbound media whose download fails now keeps the `media` envelope with `omitted: true` and the declared
+  size, on both engines, instead of dropping the field and looking like a message that never had media.
+- Webhook filters and automation rules gated on `hasMedia` now match those messages.
+- Baileys logs a failed inbound media download at `warn` instead of `debug`, so it is visible by default.
+- The webhook `secret` example in Swagger and the API reference was shorter than the 16-character floor
+  the route enforces, so pasting it back answered `400`. The example now passes, and both webhook routes
+  publish the length rule they enforce ([#1491](https://github.com/rmyndharis/OpenWA/issues/1491)).
+  Thanks @onepay-ye.
+- `STORAGE_TYPE=s3` missing `S3_ACCESS_KEY_ID` or `S3_SECRET_ACCESS_KEY` now warns at startup and names
+  the one that is unset, instead of silently writing every file to local disk and leaving the bucket
+  empty. Thanks @onepay-ye.
+- Six whatsapp-web.js contact operations answer the `503` their routes document when the browser page
+  dies mid-request, instead of a bare `500` that tells a client not to retry: blocked contacts, number
+  lookup, addressbook save and delete, and block and unblock. The list and single-contact reads in the
+  same file already made that split ([#1476](https://github.com/rmyndharis/OpenWA/issues/1476)).
+  Thanks @onepay-ye.
+- Fifteen more whatsapp-web.js operations answer `503` rather than `500` when the browser page dies
+  mid-request: the group list and membership queue, the four label reads and writes, and nine message
+  operations (history, reactions, react, edit, delete, star, pin, unpin and poll votes). Twelve of them
+  had no error handling on that path at all, so a dead page was also never reported to the liveness
+  check. Ten of these routes now declare `503` in the API contract; the message send routes keep
+  answering `500` deliberately, because `503` is replay-safe in the SDK clients and a replayed send
+  would duplicate the message.
+- The seven routes that answer the media byte cap's `413` now declare it: the five media sends,
+  `send-bulk` and the group picture. Only the media conversions, the status sends and the profile
+  picture declared it before, and `docs/06` described the same rejection as a `400` on two of them, so
+  a client written against the contract handled a status the gateway never sends. Behaviour is
+  unchanged. Thanks @onepay-ye for the report.
+- `.env.example` no longer describes an oversized base64 send as a `400` (it is `413`), and its S3
+  block no longer implies `MINIO_BUILTIN=true` fills in the credentials. Only saving storage from the
+  dashboard writes them, so a hand-edited file gets the bundled MinIO container and no keys, and media
+  is written to local disk while the bucket stays empty. Thanks @onepay-ye for the report.
+- A message id supplied by the caller can no longer be read as a dead browser page. The
+  whatsapp-web.js transport classifier matched a pattern against any error's message, and the
+  gateway's own not-found errors carry the caller's id verbatim, so a request naming a message id of
+  `Target closed` tore its session down, emitted `session.disconnected` to every consumer, paused
+  inbound delivery for the reconnect, and answered `503` instead of `404`. Errors the gateway
+  constructs are now excluded outright.
+- The four whatsapp-web.js status posts, the channel create and the call-link create no longer answer `503` when the
+  browser page dies. The library can throw after the request is already on the wire, and `503` is
+  the status the clients replay for a POST, so a retry could publish the status twice. They answer
+  the same opaque `500` the message sends do. `DELETE` on a status keeps `503`, which is safe to
+  replay, and now declares it.
+- An `allowedSessions` entry that is empty, whitespace-padded, comma-bearing or duplicated is
+  refused. The column stores a comma join, so `[""]` came back as an empty list and every
+  enforcement site reads that as "every session": a request that looked like a scoping stored a key
+  that could reach everything. The API Keys page also says "All sessions" the moment the last
+  session is unticked, which is what saving would then do.
+- Messages sharing one second come back in the order they arrived on SQLite, which is the default
+  database. The tiebreaker was a random uuid, so a rapid burst, a bulk send or a history backfill
+  rendered shuffled; it is now the stored insertion sequence, which also drops the sort the uuid
+  key forced. PostgreSQL has no equivalent column and keeps the uuid order.
+- A send reconciling against its own echo no longer overwrites the delivery state. A `delivered`
+  ack arriving before the send's second save was pulled back to `sent`, leaving one tick on a
+  message the recipient already had.
+- `GET /sessions/{sessionId}/messages` treats a blank `after` as absent, the way it already treats a
+  blank `limit` or `offset`, instead of answering `400`. The `400` for a cursor naming no message in
+  the session is deliberate and is now declared.
+- The dashboard holds a reader's position when an image finishes decoding above them. The correction
+  measured its baseline after the decode was already in layout, so it never ran.
+- The bulk-recipients upload reads a CSV column as one recipient. A row like `1,628123456789` had
+  its columns' digits concatenated into a different number that looked plausible enough to send.
+- The four media knobs (`MEDIA_DOWNLOAD_MAX_BYTES`, `MEDIA_DOWNLOAD_TIMEOUT_MS`,
+  `INBOUND_MEDIA_CONCURRENCY`, `CHAT_HISTORY_MEDIA_BUDGET_BYTES`) refuse a unit-suffixed value at
+  boot. They take raw numbers while `BODY_SIZE_LIMIT` beside them takes `25mb`, and `50mb` resolved
+  to a 50 byte cap with nothing in the logs naming the cause.
+- `GET /api/infra/export-data` strips the userinfo from a session's proxy URL, as it already did for
+  webhook secrets. Scheme and host survive so a restore cannot silently connect direct.
+- `GET /sessions/{sessionId}/contacts/{contactId}` declares the `503` it answers when the page dies,
+  which is distinct from the `404` that asserts the contact does not exist.
+- `SessionProxyResponseDto.proxyType` admits `null` in its enum, so the ordinary "no proxy" response
+  no longer contradicts its own schema.
+- `check:audit` and `check:contract-shapes` run from a checkout path that needs URL escaping. Both
+  compared a hand-built file URL or a basename against the module path, so the scripts exited `0`
+  having run nothing and the jobs behind them reported a pass. Thanks @JuanGalzerano for the report.
+- docs/29 names the Baileys build the tree installs; the counts spec now binds both engine library
+  versions to the pins.
+- An unusable `sharp` no longer fails the whole gateway at boot. It backs one Baileys route, sticker
+  conversion, but was imported at the top of a module the built-in engine loads on both engines, so a
+  native binary that could not build or load on an older CPU took the entire process down. It is now
+  loaded lazily and only that one route degrades, with a clear error
+  ([#1459](https://github.com/rmyndharis/OpenWA/issues/1459)).
+
+### Dependencies
+
+- `browserslist` 4.28.2 to 4.28.8 in both dependency trees, closing two high-severity advisories
+  (unbounded cache growth, and a crash on untrusted custom stats). Dev-only and transitive in each,
+  so nothing that ships changes.
+- `fast-uri` 3.1.5 to 3.1.7 via an override, closing four high-severity advisories: two host-confusion
+  paths (skipped IDN canonicalisation, percent-encoded scheme normalisation) and two SSRF paths
+  (malformed IPv6 normalisation, repeated hostname percent-decoding). It arrives under `ajv`, whose
+  range already allows the patched version, and reaches the runtime tree through
+  `@modelcontextprotocol/sdk`, so this one does ship.
+- Force `@puppeteer/browsers` to 3.x through an override, dropping the vulnerable `extract-zip` and
+  closing `GHSA-jmr9-qjv8-65gv`. whatsapp-web.js pins Puppeteer 24, which pins the affected
+  `@puppeteer/browsers` range, so the override moves only that transitive package and leaves
+  Puppeteer 24 in place. The amd64 image installs `unzip` for `@puppeteer/browsers` 3's Chrome for
+  Testing extraction. Thanks @raoulmusci.
 
 ## [0.23.3] - 2026-08-24
 

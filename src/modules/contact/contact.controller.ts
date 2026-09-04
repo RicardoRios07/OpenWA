@@ -28,6 +28,7 @@ export class ContactController {
     type: [ContactDto],
   })
   @ApiResponse({ status: 400, description: 'Session not ready' })
+  @ApiResponse({ status: 503, description: 'The WhatsApp page died while reading contacts, retry shortly' })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   @ApiQuery({ name: 'limit', required: false, description: 'Max contacts to return (1–1000, default 1000)' })
   @ApiQuery({ name: 'offset', required: false, description: 'Number of contacts to skip (for paging)' })
@@ -92,6 +93,13 @@ export class ContactController {
   })
   @ApiResponse({ status: 404, description: 'Contact not found' })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
+  @ApiResponse({
+    status: 503,
+    description:
+      'The whatsapp-web.js page connection died mid-read, so the lookup could not reach an answer. ' +
+      'Distinct from the `404` above, which asserts the contact does not exist: this one asserts ' +
+      'nothing about the contact. Retry once the session is ready again.',
+  })
   async findOne(@Param('sessionId') sessionId: string, @Param('contactId') contactId: string) {
     return this.contactService.getContactById(sessionId, contactId);
   }

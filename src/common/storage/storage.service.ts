@@ -92,6 +92,24 @@ export class StorageService implements OnModuleDestroy {
         this.s3Bucket = process.env.S3_BUCKET || s3Config.bucket || 'openwa';
         void this.initializeS3Bucket();
         this.startS3Reprobe();
+      } else {
+        // Every other degradation in this service announces itself, but this one could not: the
+        // logging all lives past the client construction above, so an s3 deployment missing its
+        // credentials built no client, wrote every file to local disk, and said nothing at all.
+        // The operator's first symptom was an empty bucket with no failure to point at.
+        //
+        // Name the variables actually missing rather than declaring all of them absent: reaching
+        // here with one of the pair set is a plain typo in the other, and "no credentials found"
+        // would send that operator looking at the one they got right.
+        const missing = [
+          accessKeyId ? null : 'S3_ACCESS_KEY_ID',
+          secretAccessKey ? null : 'S3_SECRET_ACCESS_KEY',
+        ].filter((name): name is string => name !== null);
+        this.logger.warn(
+          `STORAGE_TYPE=s3 but ${missing.join(' and ')} is not set; media is being written to the ` +
+            `local dir '${this.localPath}' instead of the bucket. The built-in MinIO uses ` +
+            `minioadmin/minioadmin.`,
+        );
       }
     }
 

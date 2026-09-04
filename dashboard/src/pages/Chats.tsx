@@ -25,6 +25,8 @@ import {
   mergeDeliveryStatus,
   mergeReactionSnapshot,
   findRevokedIndex,
+  patchMatchingMessage,
+  byMessageId,
   getMediaSrc,
   type ChatMessageView,
   type MessageMedia,
@@ -34,7 +36,13 @@ import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useToast } from '../hooks/useToast';
 import { PageHeader } from '../components/PageHeader';
 import { GlobalSearch } from '../components/GlobalSearch';
-import { useChatMessages, useChatMessagesActions, messagesQueryKey } from '../hooks/useChatMessages';
+import {
+  useChatMessages,
+  useChatMessagesActions,
+  messagesQueryKey,
+  updateCachedMessages,
+  cachedSessionThreads,
+} from '../hooks/useChatMessages';
 import { useChannelMessages } from '../hooks/useChannelMessages';
 import { useContactStatuses } from '../hooks/useContactStatuses';
 import { useChatScrollPosition } from '../hooks/useChatScrollPosition';
@@ -173,6 +181,9 @@ export function Chats() {
     data: messages = [],
     isLoading: loadingMessages,
     isError: messagesError,
+    hasNextPage: hasMoreMessages,
+    isFetchingNextPage: loadingOlderMessages,
+    fetchNextPage,
   } = useChatMessages(selectedSessionId, activeChat?.id ?? null);
   const { appendMessage, updateMessage } = useChatMessagesActions();
   const queryClient = useQueryClient();
@@ -224,7 +235,14 @@ export function Chats() {
     containerRef: messagesContainerRef,
     onMessageAppended,
     onMediaLoad,
-  } = useChatScrollPosition(activeChat?.id ?? null, messages.length > 0);
+    measureMedia,
+    onOlderMessagesRequested,
+  } = useChatScrollPosition(activeChat?.id ?? null, messages.length > 0, loadingOlderMessages);
+
+  const handleLoadOlderMessages = useCallback(() => {
+    onOlderMessagesRequested();
+    void fetchNextPage();
+  }, [fetchNextPage, onOlderMessagesRequested]);
 
   // Batch profile-picture fetch for the visible chat list — ONE request for the whole sidebar
   // (per-row queries burst the per-IP throttle into 429s). Sorted-key cached 1h; rows fall back
@@ -395,22 +413,17 @@ export function Chats() {
     (event: { sessionId: string; messageId: string; status: ChatMessageView['status'] }) => {
       if (event.sessionId !== selectedSessionId) return;
 
-      // Acks can arrive for any cached chat under this session. Walk every cache entry under
-      // ['messages', event.sessionId, *] and apply the forward-only delivery merge in place.
-      const caches = queryClient.getQueriesData<ChatMessageView[]>({
-        queryKey: ['messages', event.sessionId],
-      });
-      for (const [key, list] of caches) {
-        if (!list) continue;
-        const idx = list.findIndex(m => m.id === event.messageId || m.waMessageId === event.messageId);
-        if (idx === -1) continue;
-        const target = list[idx];
+      // Acks can arrive for any cached chat under this session, so every thread is checked.
+      for (const [key, thread] of cachedSessionThreads(queryClient, event.sessionId, byMessageId(event.messageId))) {
+        const target = thread.find(byMessageId(event.messageId));
+        if (!target) continue;
         // Backend now sends the neutral delivery status directly (no engine-specific ack codes).
         // Merge forward-only so an out-of-order/replayed lower ack can't downgrade the tick.
         const nextStatus = mergeDeliveryStatus(target.status, event.status) ?? target.status;
-        const next = list.slice();
-        next[idx] = { ...target, status: nextStatus };
-        queryClient.setQueryData(key, next);
+        if (nextStatus === target.status) continue;
+        updateCachedMessages(queryClient, key, list =>
+          patchMatchingMessage(list, event.messageId, m => ({ ...m, status: nextStatus })),
+        );
       }
     },
     [selectedSessionId, queryClient],
@@ -426,23 +439,16 @@ export function Chats() {
       //
       // The absent-vs-empty distinction on `reactions` is mergeReactionSnapshot's job; it is a named
       // function so the behaviour is covered by a test, because nothing here is.
-      const caches = queryClient.getQueriesData<ChatMessageView[]>({
-        queryKey: ['messages', event.sessionId],
-      });
-      for (const [key, list] of caches) {
-        if (!list) continue;
-        const idx = list.findIndex(m => m.id === event.messageId || m.waMessageId === event.messageId);
-        if (idx === -1) continue;
-        const target = list[idx];
-        const next = list.slice();
-        next[idx] = {
-          ...target,
-          metadata: {
-            ...(target.metadata || {}),
-            reactions: mergeReactionSnapshot(target.metadata?.reactions, event.reactions),
-          },
-        };
-        queryClient.setQueryData(key, next);
+      for (const [key] of cachedSessionThreads(queryClient, event.sessionId, byMessageId(event.messageId))) {
+        updateCachedMessages(queryClient, key, list =>
+          patchMatchingMessage(list, event.messageId, m => ({
+            ...m,
+            metadata: {
+              ...(m.metadata || {}),
+              reactions: mergeReactionSnapshot(m.metadata?.reactions, event.reactions),
+            },
+          })),
+        );
       }
     },
     [selectedSessionId, queryClient],
@@ -455,17 +461,15 @@ export function Chats() {
       // Walk every cached chat under this session, find the deleted message and zero it — the
       // backend emits an empty body; the localized "deleted" label is rendered below. Matching is
       // in findRevokedIndex: the event carries two candidate ids and wwebjs's `id` alone can miss.
-      const caches = queryClient.getQueriesData<ChatMessageView[]>({
-        queryKey: ['messages', event.sessionId],
-      });
-      for (const [key, list] of caches) {
-        if (!list) continue;
-        const idx = findRevokedIndex(list, event);
-        if (idx === -1) continue;
-        const target = list[idx];
-        const next = list.slice();
-        next[idx] = { ...target, body: '', type: asMessageType(event.type) };
-        queryClient.setQueryData(key, next);
+      const revoked = (m: ChatMessageView): boolean => findRevokedIndex([m], event) !== -1;
+      for (const [key] of cachedSessionThreads(queryClient, event.sessionId, revoked)) {
+        updateCachedMessages(queryClient, key, list => {
+          const idx = findRevokedIndex(list, event);
+          if (idx === -1) return list;
+          const next = list.slice();
+          next[idx] = { ...next[idx], body: '', type: asMessageType(event.type) };
+          return next;
+        });
       }
     },
     [selectedSessionId, queryClient],
@@ -475,23 +479,19 @@ export function Chats() {
     (event: { sessionId: string; messageId: string; chatId: string; body: string }) => {
       if (event.sessionId !== selectedSessionId) return;
 
-      const caches = queryClient.getQueriesData<ChatMessageView[]>({
-        queryKey: ['messages', event.sessionId],
-      });
       let matchedCachedMessage = false;
       let editedLastMessage = false;
-      for (const [key, list] of caches) {
-        if (!list) continue;
-        const next = applyMessageEdit(list, event);
-        if (next === list) continue;
+      for (const [key, thread] of cachedSessionThreads(queryClient, event.sessionId, byMessageId(event.messageId))) {
+        // Position is asked of the merged thread, never of a page: pages carry only a fraction of
+        // the chat each, so "is this the last message" is only ever answerable from the whole thing.
+        const editedIndex = thread.findIndex(byMessageId(event.messageId));
+        if (editedIndex === -1) continue;
         matchedCachedMessage = true;
-        queryClient.setQueryData(key, next);
+        updateCachedMessages(queryClient, key, list => applyMessageEdit(list, event));
 
-        // Message caches are chronological; only editing the final row changes the sidebar preview.
-        // Confirm the cache belongs to the event chat before touching that summary.
-        const cachedChatId = Array.isArray(key) && typeof key[2] === 'string' ? key[2] : undefined;
-        const editedIndex = list.findIndex(m => m.id === event.messageId || m.waMessageId === event.messageId);
-        if (cachedChatId === event.chatId && editedIndex === list.length - 1) editedLastMessage = true;
+        // Only editing the newest row changes the sidebar preview. Confirm the thread belongs to
+        // the event chat before touching that summary.
+        if (key[2] === event.chatId && editedIndex === thread.length - 1) editedLastMessage = true;
       }
       if (editedLastMessage) {
         setChats(previous =>
@@ -607,7 +607,7 @@ export function Chats() {
 
       // Deep-merge metadata.reactions so existing media / quotedMessage on metadata survive.
       const key = messagesQueryKey(selectedSessionId, activeChat.id);
-      queryClient.setQueryData<ChatMessageView[]>(key, (old = []) =>
+      updateCachedMessages(queryClient, key, old =>
         old.map(m => {
           if (m.id === msg.id || m.waMessageId === msg.id) {
             const metadata = m.metadata || {};
@@ -924,7 +924,11 @@ export function Chats() {
                   loadingMessages={loadingMessages}
                   messagesError={messagesError}
                   messagesContainerRef={messagesContainerRef}
+                  hasMoreMessages={Boolean(hasMoreMessages)}
+                  loadingOlderMessages={loadingOlderMessages}
+                  onLoadOlderMessages={handleLoadOlderMessages}
                   onMediaLoad={onMediaLoad}
+                  measureMedia={measureMedia}
                   onOpenImage={messageId => {
                     const idx = imageMedia.findIndex(x => x.id === messageId);
                     if (idx >= 0) setLightboxIndex(idx);

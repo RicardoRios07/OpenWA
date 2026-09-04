@@ -1,9 +1,8 @@
 import { type Client } from 'whatsapp-web.js';
 import { CallLinkType, MediaInput } from '../interfaces/whatsapp-engine.interface';
 import { EngineRefusedError } from '../../common/errors/engine-refused.error';
-import { EngineTransportError } from '../../common/errors/engine-transport.error';
 import { toMessageMedia } from './wwebjs-messaging';
-import { type WwebjsEngineHost } from './wwebjs-host';
+import { type WwebjsEngineHost, withPage, reportPageDeath } from './wwebjs-host';
 
 /**
  * Own-account profile operations extracted from WhatsAppWebJsAdapter. The adapter keeps the public
@@ -18,21 +17,9 @@ export class WwebjsProfile {
     return this.host.getClient();
   }
 
-  /**
-   * Run a client operation, classifying a dead page/transport as the documented 503 plus an early
-   * death signal instead of an opaque 500 under a status that still says READY - the split every
-   * chats read already makes (#1081). Detection only for other errors: they propagate unchanged.
-   */
-  private async withPage<T>(context: string, op: () => Promise<T>): Promise<T> {
-    try {
-      return await op();
-    } catch (error) {
-      if (this.host.isPageTransportError(error)) {
-        this.host.reportIfPageTransportError(error, context);
-        throw new EngineTransportError(`Transport died during ${context}`);
-      }
-      throw error;
-    }
+  /** See {@link withPage} for what a dead page answers here. */
+  private withPage<T>(context: string, op: () => Promise<T>): Promise<T> {
+    return withPage(this.host, context, op);
   }
 
   async createCallLink(type: CallLinkType, startTime: number): Promise<string> {
@@ -40,7 +27,10 @@ export class WwebjsProfile {
     // whatsapp-web.js rejects any callType outside 'voice' | 'video', so the neutral 'audio' maps
     // here. It floors the Date to seconds itself, so the epoch-milliseconds the contract takes goes
     // straight into the Date.
-    const link = await this.withPage('createCallLink', () =>
+    // Non-idempotent: each call mints a NEW server-side link, so a client replaying a 503 would
+    // create a second one. Report a dead page, keep the error as thrown (500). Same rule as
+    // createChannel; see reportPageDeath.
+    const link = await reportPageDeath(this.host, 'createCallLink', () =>
       this.client().createCallLink(new Date(startTime), type === 'video' ? 'video' : 'voice'),
     );
     if (!link) {

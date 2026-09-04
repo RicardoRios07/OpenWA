@@ -11,6 +11,7 @@
     "cancel": "Annulla",
     "delete": "Elimina",
     "create": "Crea",
+    "save": "Save",
     "close": "Chiudi",
     "showApiKey": "Mostra la chiave API",
     "hideApiKey": "Nascondi la chiave API",
@@ -87,6 +88,8 @@
     "unreadBadge": "{{count}} messaggio non letto",
     "unreadBadge_other": "{{count}} messaggi non letti",
     "loadingMessages": "Caricamento messaggi...",
+    "loadingOlderMessages": "Caricamento messaggi precedenti...",
+    "loadOlderMessagesError": "Impossibile caricare i messaggi precedenti. Scorri verso l’alto per riprovare.",
     "noMessagesInChat": "Ancora nessun messaggio. Invia il primo messaggio per iniziare!",
     "downloadDocument": "Scarica documento",
     "actions": {
@@ -303,8 +306,26 @@
       "autoRejectCalls": "Rifiuta automaticamente le chiamate",
       "autoRejectCallsHint": "Le chiamate in arrivo vengono rifiutate appena squillano. Il webhook call.received viene comunque inviato prima. Si applica alla prossima chiamata — nessun riavvio necessario."
     },
+    "proxy": {
+      "title": "Configurazione proxy",
+      "status": "Stato attuale",
+      "enabled": "Usa proxy",
+      "url": "URL del proxy",
+      "urlPlaceholder": "http://user:pass@proxy.example.com:8080",
+      "urlKeepPlaceholder": "Inserisci un nuovo URL per sostituire {{host}} (le credenziali non vengono mostrate)",
+      "configured": "{{host}} ({{type}})",
+      "noProxy": "Nessun proxy configurato",
+      "hasCredentials": "Le credenziali sono memorizzate ma non vengono mostrate. Inserisci un URL completo per modificarle.",
+      "hint": "Le modifiche verranno applicate al successivo avvio della sessione, non a una connessione già in corso. Il proxy deve essere reale e raggiungibile — un valore non raggiungibile blocca la consegna del QR e l'avvio restituirà l'errore 504.",
+      "createHint": "Necessario solo quando la tua rete non riesce a raggiungere direttamente WhatsApp. Deve essere un proxy reale e raggiungibile.",
+      "invalidUrl": "Inserisci un URL del proxy valido http, https, socks4 o socks5.",
+      "saveSuccessTitle": "Proxy salvato",
+      "saveSuccess": "Impostazioni del proxy salvate. Verranno applicate al successivo avvio della sessione.",
+      "saveError": "Impossibile salvare le impostazioni del proxy"
+    },
     "actions": {
       "view": "Visualizza",
+      "proxy": "Proxy",
       "start": "Avvia",
       "stop": "Ferma",
       "reconnect": "Riconnetti",
@@ -412,6 +433,7 @@
         "body": "Corpo del messaggio",
         "type": "Tipo di messaggio",
         "isGroup": "È una chat di gruppo",
+        "kind": "Chat kind",
         "fromMe": "Inviato da me",
         "hasMedia": "Contiene media",
         "mentions": "Menzioni"
@@ -533,7 +555,8 @@
       "role": "Ruolo",
       "status": "Stato",
       "lastUsed": "Ultimo Utilizzo",
-      "actions": "Azioni"
+      "actions": "Azioni",
+      "sessions": "Sessioni"
     },
     "statuses": {
       "active": "Attiva",
@@ -554,7 +577,19 @@
     "actions": {
       "copy": "Copia",
       "revoke": "Revoca",
-      "delete": "Elimina"
+      "delete": "Elimina",
+      "editSessions": "Modifica sessioni"
+    },
+    "sessions": {
+      "label": "Accesso alle sessioni",
+      "hint": "Seleziona le sessioni che questa chiave può usare.",
+      "all": "Tutte le sessioni",
+      "empty": "Non ci sono ancora sessioni. Questa chiave potrà accedere a tutte quando esisteranno.",
+      "restricted": "{{count}} selezionate",
+      "editTitle": "Modifica accesso alle sessioni",
+      "save": "Salva",
+      "choose": "Scegli sessioni",
+      "leaveAll": "Lascia per tutte le sessioni"
     }
   },
   "logs": {
@@ -650,6 +685,7 @@
     "forwardMessageId": "ID messaggio",
     "forwardMessageIdHint": "ID del messaggio da inoltrare",
     "bulkRecipients": "Destinatari",
+    "bulkRecipientsUpload": "Carica CSV/TXT",
     "bulkRecipientsPlaceholder": "+62812345678",
     "bulkRecipientsHint": "Un numero di telefono o ID chat per riga (max 100)",
     "bulkRecipientsCount": "Destinatari: {{count}}",
@@ -887,6 +923,7 @@
       "title": "Istanze",
       "description": "Effettua il provisioning di istanze per account per questa integrazione. Ogni istanza ha il proprio segreto di firma e URL di ingresso.",
       "create": "Crea istanza",
+      "save": "Save",
       "empty": "Nessuna istanza ancora. Creane una per ottenere un URL di ingresso e un segreto.",
       "loadError": "Impossibile caricare le istanze.",
       "allSessions": "Tutte le sessioni",

@@ -11,6 +11,7 @@
     "cancel": "Cancelar",
     "delete": "Eliminar",
     "create": "Crear",
+    "save": "Save",
     "close": "Cerrar",
     "search": "Buscar",
     "status": "Estado",
@@ -87,6 +88,8 @@
     "unreadBadge": "{{count}} mensaje sin leer",
     "unreadBadge_other": "{{count}} mensajes sin leer",
     "loadingMessages": "Cargando mensajes...",
+    "loadingOlderMessages": "Cargando mensajes anteriores...",
+    "loadOlderMessagesError": "No se pudieron cargar los mensajes anteriores. Desplázate hacia arriba para reintentar.",
     "noMessagesInChat": "Aún no hay mensajes. ¡Envía el primero para empezar!",
     "downloadDocument": "Descargar documento",
     "actions": {
@@ -303,8 +306,26 @@
       "autoRejectCalls": "Rechazar llamadas automáticamente",
       "autoRejectCallsHint": "Las llamadas entrantes se rechazan en cuanto suenan. El webhook call.received se envía igualmente antes. Se aplica a la próxima llamada; no hace falta reiniciar."
     },
+    "proxy": {
+      "title": "Proxy Configuration",
+      "status": "Current",
+      "enabled": "Use proxy",
+      "url": "Proxy URL",
+      "urlPlaceholder": "http://user:pass@proxy.example.com:8080",
+      "urlKeepPlaceholder": "Enter new URL to replace {{host}} (credentials not shown)",
+      "configured": "{{host}} ({{type}})",
+      "noProxy": "No proxy configured",
+      "hasCredentials": "Credentials are stored but not shown. Enter a full URL to change them.",
+      "hint": "Changes apply on the next session start, not to a running connection. The proxy must be real and reachable — an unreachable value blocks QR delivery and start returns 504.",
+      "createHint": "Only needed when your network cannot reach WhatsApp directly. Must be a real, reachable proxy.",
+      "invalidUrl": "Enter a valid http, https, socks4, or socks5 proxy URL.",
+      "saveSuccessTitle": "Proxy Saved",
+      "saveSuccess": "Proxy settings saved. They apply on the next session start.",
+      "saveError": "Failed to save proxy settings"
+    },
     "actions": {
       "view": "Ver",
+      "proxy": "Proxy",
       "start": "Iniciar",
       "stop": "Detener",
       "reconnect": "Reconectar",
@@ -412,6 +433,7 @@
         "body": "Cuerpo del mensaje",
         "type": "Tipo de mensaje",
         "isGroup": "Es chat de grupo",
+        "kind": "Chat kind",
         "fromMe": "Enviado por mí",
         "hasMedia": "Tiene multimedia",
         "mentions": "Menciones"
@@ -487,7 +509,8 @@
       "role": "Rol",
       "status": "Estado",
       "lastUsed": "Último uso",
-      "actions": "Acciones"
+      "actions": "Acciones",
+      "sessions": "Sesiones"
     },
     "statuses": {
       "active": "Activa",
@@ -508,7 +531,19 @@
     "actions": {
       "copy": "Copiar",
       "revoke": "Revocar",
-      "delete": "Eliminar"
+      "delete": "Eliminar",
+      "editSessions": "Editar sesiones"
+    },
+    "sessions": {
+      "label": "Acceso a sesiones",
+      "hint": "Elige las sesiones que podrá usar esta clave.",
+      "all": "Todas las sesiones",
+      "empty": "Todavía no hay sesiones. Esta clave podrá acceder a todas cuando existan.",
+      "restricted": "{{count}} seleccionadas",
+      "editTitle": "Editar acceso a sesiones",
+      "save": "Guardar",
+      "choose": "Elegir sesiones",
+      "leaveAll": "Dejar para todas las sesiones"
     }
   },
   "logs": {
@@ -604,6 +639,7 @@
     "forwardMessageId": "ID del mensaje",
     "forwardMessageIdHint": "ID del mensaje que se va a reenviar",
     "bulkRecipients": "Destinatarios",
+    "bulkRecipientsUpload": "Subir CSV/TXT",
     "bulkRecipientsPlaceholder": "+62812345678",
     "bulkRecipientsHint": "Un número de teléfono o ID de chat por línea (máx. 100)",
     "bulkRecipientsCount": "Destinatarios: {{count}}",
@@ -887,6 +923,7 @@
       "title": "Instancias",
       "description": "Aprovisiona instancias por cuenta para esta integración. Cada instancia tiene su propio secreto de firma y URL de entrada.",
       "create": "Crear instancia",
+      "save": "Save",
       "empty": "Aún no hay instancias. Crea una para obtener una URL de entrada y un secreto.",
       "loadError": "Error al cargar las instancias.",
       "allSessions": "Todas las sesiones",

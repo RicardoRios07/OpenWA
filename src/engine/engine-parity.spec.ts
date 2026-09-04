@@ -126,6 +126,7 @@ function prefixEngine(file: string): AdapterKey | undefined {
 const SHARED = 'shared' as const;
 const UNPREFIXED_FILE_ENGINES: Record<string, readonly AdapterKey[] | typeof SHARED> = {
   'chromium-profile-hygiene.ts': ['wwjs'],
+  'engine-patch-status.ts': SHARED,
   'inbound-media-cap.ts': SHARED,
   'message-mapper.ts': SHARED,
   'safe-link-preview.ts': ['baileys'],

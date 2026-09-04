@@ -1321,6 +1321,9 @@ export class StorageService {
           ...(endpoint ? { forcePathStyle: true } : {}), // path-style is a MinIO/R2 concern
         });
         // bucket auto-created if missing (HeadBucket -> CreateBucket)
+      } else {
+        // No client, so every putFile below lands on local disk. WARN, naming the missing
+        // variables: this is the one degradation with no other signal.
       }
     }
     if (!fs.existsSync(this.localPath)) fs.mkdirSync(this.localPath, { recursive: true });

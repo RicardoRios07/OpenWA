@@ -11,6 +11,13 @@ type ChatSummary struct {
 	LastMessage string   `json:"lastMessage,omitempty"`
 	Timestamp   int64    `json:"timestamp"`
 	Kind        ChatKind `json:"kind"`
+	Archived    bool     `json:"archived"`
+	Pinned      bool     `json:"pinned"`
+	// Muted reports whether the chat is muted right now, not the expiry behind it.
+	Muted bool `json:"muted"`
+	// MuteExpiration is the epoch milliseconds the mute ends, present only when muted; 0 means
+	// indefinitely. A pointer so an absent expiry and a 0 (indefinite) stay distinct on the wire.
+	MuteExpiration *int64 `json:"muteExpiration,omitempty"`
 }
 
 // SetOwnPresenceRequest is the body for SessionsService.SetOnlinePresence. Available reports

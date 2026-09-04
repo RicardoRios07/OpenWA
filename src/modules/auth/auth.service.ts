@@ -49,6 +49,24 @@ export function bannerKeyLine(displayKey: string, isNewKey: boolean): string {
   return `${displayKey.slice(0, 8)}… (full key in data/.api-key or the dashboard)`;
 }
 
+/**
+ * Collapse an `allowedSessions` list to the two shapes the enforcement sites actually distinguish.
+ *
+ * The column is `simple-array`: TypeORM joins on write and splits on read, so `['']` is stored as
+ * `''` and read back as `[]`. Every site treats a zero-length list as "every session", so a write
+ * that looked like a scoping landed as a widening. The DTO validator now refuses such an entry at
+ * the boundary, and this is the second half: whatever reaches storage is either a non-empty list of
+ * real ids, or NULL.
+ *
+ * NULL rather than `[]` on purpose. Both already exist in the table for the same intent, and the
+ * published contract says an unscoped key omits the field, which only NULL produces.
+ */
+function normalizeScopeList(list: string[] | null | undefined): string[] | null {
+  if (list == null) return null;
+  const cleaned = list.map(entry => entry.trim()).filter(entry => entry.length > 0);
+  return cleaned.length > 0 ? cleaned : null;
+}
+
 @Injectable()
 export class AuthService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = createLogger('AuthService');
@@ -183,7 +201,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
       keyPrefix,
       role: dto.role || ApiKeyRole.OPERATOR,
       allowedIps: dto.allowedIps || null,
-      allowedSessions: dto.allowedSessions || null,
+      allowedSessions: normalizeScopeList(dto.allowedSessions),
       expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : null,
     });
 
@@ -219,7 +237,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     const removesOrSchedulesLastAdmin =
       (dto.role !== undefined && dto.role !== ApiKeyRole.ADMIN) ||
       (dto.expiresAt !== undefined && dto.expiresAt !== null) ||
-      (dto.allowedSessions !== undefined && dto.allowedSessions.length > 0);
+      (normalizeScopeList(dto.allowedSessions)?.length ?? 0) > 0;
 
     // Capture the authorization-relevant fields BEFORE applying the change. Only a change to role,
     // allowedIps, allowedSessions, or expiry can widen or restrict what an already-connected WebSocket
@@ -237,7 +255,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     if (dto.name) patch.name = dto.name;
     if (dto.role) patch.role = dto.role;
     if (dto.allowedIps !== undefined) patch.allowedIps = dto.allowedIps;
-    if (dto.allowedSessions !== undefined) patch.allowedSessions = dto.allowedSessions;
+    if (dto.allowedSessions !== undefined) patch.allowedSessions = normalizeScopeList(dto.allowedSessions);
     if (dto.expiresAt !== undefined) patch.expiresAt = dto.expiresAt ? new Date(dto.expiresAt) : null;
 
     let saved: ApiKey;
@@ -260,7 +278,13 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
 
     // Compare membership, not order: a pure reorder of allowedIps/allowedSessions is a no-op for the
     // .includes()-based enforcement, so sort before stringify to avoid a spurious eviction on a reorder.
-    const ordered = (v: string[] | null) => (v ? [...v].sort() : v);
+    // Normalize before comparing: a legacy row stored as '' reads back as [], which means the same
+    // as NULL at every enforcement site, so treating them as different would evict live sockets for a
+    // write that changed nothing.
+    const ordered = (v: string[] | null) => {
+      const normalized = normalizeScopeList(v);
+      return normalized ? [...normalized].sort() : null;
+    };
     const authzChanged =
       saved.role !== before.role ||
       saved.expiresAt?.getTime() !== before.expiresAt?.getTime() ||

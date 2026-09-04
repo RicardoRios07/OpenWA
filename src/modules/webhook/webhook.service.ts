@@ -171,7 +171,12 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
     // A session-restricted key only sees its own sessions' webhooks; an unrestricted key
     // (null/empty allowlist, e.g. ADMIN) sees all — mirroring the ApiKeyGuard allowedSessions model.
     const { limit, offset } = resolveListWindow(opts.limit, opts.offset);
-    const options: FindManyOptions<Webhook> = { order: { createdAt: 'DESC' }, take: limit, skip: offset };
+    // `id` tiebreaks the second-resolution `createdAt` so a paged walk has a total order.
+    const options: FindManyOptions<Webhook> = {
+      order: { createdAt: 'DESC', id: 'DESC' },
+      take: limit,
+      skip: offset,
+    };
     if (allowedSessions && allowedSessions.length > 0) {
       options.where = { sessionId: In(allowedSessions) };
     }
@@ -195,7 +200,8 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
     if (sessionScope !== null && sessionScope.length === 0) return []; // requested session outside the key's scope
     return this.failureRepository.find({
       where: sessionScope ? { sessionId: In(sessionScope) } : {},
-      order: { createdAt: 'DESC' },
+      // A receiver outage writes a burst of failures inside one second; `id` keeps the page order total.
+      order: { createdAt: 'DESC', id: 'DESC' },
       take: limit,
       skip: offset,
     });

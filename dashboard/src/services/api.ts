@@ -33,6 +33,20 @@ export interface SessionConfig {
   reconnectBaseDelay: number;
 }
 
+export type SessionProxyType = 'http' | 'https' | 'socks4' | 'socks5';
+
+export interface SessionProxy {
+  enabled: boolean;
+  proxyType: SessionProxyType | null;
+  proxyHost: string | null;
+  hasCredentials: boolean;
+}
+
+export interface CreateSessionOptions {
+  proxyUrl?: string;
+  proxyType?: SessionProxyType;
+}
+
 export interface Session {
   id: string;
   name: string;
@@ -204,6 +218,8 @@ export interface MessageResponse {
 
 // Mirrors the backend engine ChatKind (dashboard cannot import wa-id.ts).
 export type ChatKind = 'individual' | 'group' | 'channel' | 'status' | 'broadcast' | 'unknown';
+// Mirrors CHAT_KINDS in the backend webhook filter registry (src/modules/webhook/filters/filter-types.ts).
+export const CHAT_KINDS: readonly ChatKind[] = ['individual', 'group', 'channel', 'status', 'broadcast', 'unknown'];
 
 // Chat summary returned by GET /sessions/:id/chats (mirrors the backend ChatSummary).
 export interface Chat {
@@ -214,6 +230,10 @@ export interface Chat {
   unreadCount: number;
   timestamp: number;
   lastMessage?: string;
+  archived: boolean;
+  pinned: boolean;
+  muted: boolean;
+  muteExpiration?: number;
 }
 
 // Engine-neutral message types (mirrors the backend's IWhatsAppEngine MessageType). The backend
@@ -755,16 +775,25 @@ async function requestBlob(endpoint: string): Promise<Blob> {
 export const sessionApi = {
   list: () => request<Session[]>('/sessions'),
   get: (id: string) => request<Session>(`/sessions/${id}`),
-  create: (name: string) =>
+  create: (name: string, options?: CreateSessionOptions) =>
     request<Session>('/sessions', {
       method: 'POST',
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({
+        name,
+        ...(options?.proxyUrl ? { proxyUrl: options.proxyUrl } : {}),
+      }),
     }),
   delete: (id: string) => request<void>(`/sessions/${id}`, { method: 'DELETE' }),
   getConfig: (id: string) => request<SessionConfig>(`/sessions/${id}/config`),
   // PATCH merges: only the keys sent are touched. Send null to clear one back to its default.
   updateConfig: (id: string, patch: Partial<Record<keyof SessionConfig, boolean | number | null>>) =>
     request<SessionConfig>(`/sessions/${id}/config`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+  getProxy: (id: string) => request<SessionProxy>(`/sessions/${id}/proxy`),
+  updateProxy: (id: string, patch: { proxyUrl?: string | null }) =>
+    request<SessionProxy>(`/sessions/${id}/proxy`, {
       method: 'PATCH',
       body: JSON.stringify(patch),
     }),
@@ -787,9 +816,13 @@ export const sessionApi = {
       method: 'POST',
       body: JSON.stringify({ chatId }),
     }),
-  getChatMessages: (id: string, chatId: string, limit = 100) =>
+  // `offset` counts DB rows already fetched for this chat, never rendered rows: the thread merges
+  // these with engine history, so paging by the merged length would skip DB rows. `total` is not
+  // read to decide whether an older page exists — a page short of `limit` is; a chat with live
+  // traffic keeps growing `total` after the fact, so comparing rows-held against it stops early.
+  getChatMessages: (id: string, chatId: string, limit = 100, offset = 0) =>
     request<{ messages: ChatMessage[]; total: number }>(
-      `/sessions/${id}/messages?chatId=${encodeURIComponent(chatId)}&limit=${limit}`,
+      `/sessions/${id}/messages?chatId=${encodeURIComponent(chatId)}&limit=${limit}&offset=${offset}`,
     ),
   // Live history straight from WhatsApp (bypasses the DB) — backfills a thread the gateway never
   // captured, e.g. a freshly paired session whose persisted store is still empty.
@@ -938,6 +971,20 @@ export const apiKeyApi = {
   }) =>
     request<CreatedApiKey>('/auth/api-keys', {
       method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  update: (
+    id: string,
+    data: {
+      name?: string;
+      role?: string;
+      allowedIps?: string[];
+      allowedSessions?: string[];
+      expiresAt?: string;
+    },
+  ) =>
+    request<ApiKey>(`/auth/api-keys/${id}`, {
+      method: 'PUT',
       body: JSON.stringify(data),
     }),
   delete: (id: string) => request<void>(`/auth/api-keys/${id}`, { method: 'DELETE' }),

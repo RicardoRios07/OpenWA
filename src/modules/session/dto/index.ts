@@ -1,5 +1,6 @@
 export * from './create-session.dto';
 export * from './session-config.dto';
+export * from './session-proxy.dto';
 export * from './session-response.dto';
 export * from './mark-chat-read.dto';
 export * from './mark-chat-unread.dto';

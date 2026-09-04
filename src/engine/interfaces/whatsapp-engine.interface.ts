@@ -132,7 +132,7 @@ export interface IncomingMessage {
     mimetype: string;
     filename?: string;
     data?: string; // base64; absent when the payload was omitted (see `omitted`)
-    /** True when the media blob was dropped due to a size cap, timeout, or concurrency saturation. */
+    /** True when the media blob was dropped: a size cap, a timeout, a disabled download, or a failed one. */
     omitted?: boolean;
     /** Decoded byte size of the media; always set when `omitted` is true. */
     sizeBytes?: number;
@@ -491,6 +491,23 @@ export interface ChatSummary {
   unreadCount: number;
   timestamp: number;
   lastMessage?: string;
+  /** Archived state, as set via `POST /sessions/{sessionId}/chats/archive`. */
+  archived: boolean;
+  /** Pinned state, as set via `POST /sessions/{sessionId}/chats/pin`. */
+  pinned: boolean;
+  /**
+   * Muted state, as set via `POST /sessions/{sessionId}/chats/mute`. The verdict a caller needs to
+   * label a mute/unmute control: whatsapp-web.js derives `Chat.isMuted` itself, and Baileys compares
+   * a persisted `muteEndTime` (epoch milliseconds) against now. `muteExpiration` carries the instant.
+   */
+  muted: boolean;
+  /**
+   * Epoch MILLISECONDS at which the mute ends, present only when `muted` is true; `0` means muted
+   * indefinitely. Milliseconds is the same unit as `POST /sessions/{sessionId}/chats/mute`
+   * `muteUntil`, so a value read here can be written straight back (`mute-chat.dto.ts` documents that
+   * unit and why a seconds value is a trap).
+   */
+  muteExpiration?: number;
 }
 
 /**

@@ -6,7 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { applyNewsletterCreatePatch, PARSE_FIND, MARKER } = require('./patch-baileys-newsletter-create');
+const { applyNewsletterCreatePatch, isApplied, PARSE_FIND, MARKER } = require('./patch-baileys-newsletter-create');
 
 /**
  * Same contract as the sibling patcher specs: the patcher rewrites a file this repository does not
@@ -128,5 +128,13 @@ test('the marker the idempotence check keys on is actually written', () => {
   const { dir, file } = fakeBaileys();
   applyNewsletterCreatePatch(dir);
   assert.ok(fs.readFileSync(file, 'utf8').includes(MARKER));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('isApplied is false on a pristine tree and true once the patch has run', () => {
+  const { dir } = fakeBaileys();
+  assert.equal(isApplied(dir), false);
+  applyNewsletterCreatePatch(dir);
+  assert.equal(isApplied(dir), true);
   fs.rmSync(dir, { recursive: true, force: true });
 });

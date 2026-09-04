@@ -11,6 +11,51 @@ import { engineCapabilityMatrix } from './engine-capability-matrix';
  * nothing noticed: the parity gates compare the matrix to the interface, and no check reads the
  * prose. This binds every count-shaped claim in the file to the source it restates.
  */
+/**
+ * The same document also names the two engine LIBRARY versions, in the intro and again in the
+ * architecture mermaid node. Those are hand-written too, and nothing read them: the Baileys pin
+ * moved to 7.0.0-rc14 while both places still said rc13, so the file that exists to be the
+ * authority on engine capability was describing a build the tree does not install.
+ */
+describe('docs/29 names the engine library versions the tree pins', () => {
+  const repoRoot = join(__dirname, '..', '..');
+  const doc = readFileSync(join(repoRoot, 'docs', '29-engine-capability-matrix.md'), 'utf8');
+  const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')) as {
+    dependencies: Record<string, string>;
+  };
+
+  it.each([
+    ['whatsapp-web.js', 'whatsapp-web.js'],
+    ['@whiskeysockets/baileys', '@whiskeysockets/baileys'],
+  ])('states the installed %s version', (_label, dependency) => {
+    const pinned = pkg.dependencies[dependency];
+    expect(pinned).toBeTruthy();
+
+    // Exact pins, not ranges: a caret here would make "the version docs/29 must name" ambiguous.
+    expect(pinned).toMatch(/^\d/);
+    expect(doc).toContain(pinned);
+  });
+
+  it('names no other exact version of either library', () => {
+    // Non-vacuity, and the actual failure mode: a stale version sitting beside a correct figure
+    // elsewhere in the file, so a containment check alone would pass. A library reference is not
+    // always adjacent to its version either: the intro names the package in backticks a line above
+    // its build, so an adjacency scan would miss exactly one of the two places this gate protects.
+    //
+    // Scan by each pin's own `major.minor.` prefix instead. That is specific enough to skip the
+    // section numbers (29.x.y) and the WhatsApp Web build (2.3000.x) that share the file, and catches
+    // a drifted build wherever it sits. `1.34.x` is left alone on purpose: a `.x` release-line
+    // reference has no digit in its patch position, so the `\d` below never matches it.
+    for (const pin of [pkg.dependencies['whatsapp-web.js'], pkg.dependencies['@whiskeysockets/baileys']]) {
+      const [major, minor] = pin.split('.');
+      const shape = new RegExp(String.raw`\b${major}\.${minor}\.\d[\w.-]*`, 'g');
+      const found = doc.match(shape) ?? [];
+      expect(found.length).toBeGreaterThan(0);
+      expect(found.filter(v => v !== pin)).toEqual([]);
+    }
+  });
+});
+
 describe('docs/29 counts match the capability matrix', () => {
   const read = (...parts: string[]): string => readFileSync(join(__dirname, '..', '..', ...parts), 'utf8');
 
@@ -150,9 +195,12 @@ describe('docs/29 counts match the capability matrix', () => {
       wrong.push(`not-available span: 29.8 says ${spanning[1]}, 29.4 says ${across[1]}`);
 
     // 29.8's wwjs patch-dependency count must match the ✅🔧ⁿ marks 29.4 actually carries. 🔧⁶ is the
-    // one baileys row-level mark, so it is excluded from the wwjs figure.
+    // one baileys row-level mark, so it is excluded from the wwjs figure. The class spans every
+    // superscript a patcher can carry rather than the ones that happen to be row-marked today: a
+    // narrower class makes a NEW mark invisible here, so adding a patcher and marking its row would
+    // read as drift in the claim rather than agreement.
     const contract = section(/^## 29\.4 /m, /^## 29\.5 /m);
-    const marks = [...contract.matchAll(/✅🔧([¹²³⁴⁵⁶⁷])/g)].map(m => m[1]);
+    const marks = [...contract.matchAll(/✅🔧([¹²³⁴⁵⁶⁷⁸⁹])/g)].map(m => m[1]);
     const wwjsMarks = marks.filter(m => m !== '⁶').length;
     const claimed = doc.match(/\*\*(\d+) wwjs cells carry an explicit patch dependency\*\*/);
     if (!claimed) wrong.push('patch dependency count: phrasing no longer found');

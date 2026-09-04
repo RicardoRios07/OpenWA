@@ -8,6 +8,7 @@ const path = require('path');
 
 const {
   applyReadySyncPatch,
+  isApplied,
   FLAG_INIT_FIND,
   FLAG_INIT_REPLACE,
   ATTACH_MARK_FIND,
@@ -45,6 +46,15 @@ test('applies all three edits to a pristine upstream tree', () => {
   for (const replacement of [FLAG_INIT_REPLACE, ATTACH_MARK_REPLACE, HAS_SYNCED_REPLACE]) {
     assert.ok(patched.includes(replacement));
   }
+});
+
+test('isApplied is false on a pristine tree and true once the patch has run', () => {
+  const { dir } = fakeWwjs(PRISTINE);
+
+  // Each replacement contains its own find, so a raw find count would read a patched tree as pristine.
+  assert.equal(isApplied(dir), false);
+  applyReadySyncPatch(dir);
+  assert.equal(isApplied(dir), true);
 });
 
 test('is idempotent — a second run is a no-op, not a double patch', () => {

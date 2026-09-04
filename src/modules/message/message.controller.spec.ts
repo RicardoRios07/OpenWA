@@ -63,3 +63,52 @@ describe('MessageController — stored media download', () => {
     expect(body.getStream().read()).toEqual(Buffer.from('GIF89a'));
   });
 });
+
+/**
+ * `inlineMedia` is an OPT-OUT, unlike every other boolean on this controller, so the parse reads the
+ * same string pair the other way round. Inverting it would quietly strip media from every default
+ * read, which no other suite would notice: the service takes a boolean and cannot tell who set it.
+ */
+describe('MessageController - inlineMedia is opt-out', () => {
+  const getMessages = jest.fn().mockResolvedValue({ messages: [], total: 0 });
+  const controller = new MessageController(
+    { getMessages } as unknown as MessageService,
+    {} as unknown as BulkMessageService,
+  );
+
+  const inlineMediaFor = async (raw?: string): Promise<boolean> => {
+    getMessages.mockClear();
+    await controller.getMessages('session-1', undefined, undefined, undefined, undefined, undefined, raw);
+    const [, options] = getMessages.mock.calls[0] as [string, { inlineMedia: boolean }];
+    return options.inlineMedia;
+  };
+
+  it.each([undefined, 'true', '1', '', 'no', 'False'])('keeps media inline for %p', async raw => {
+    expect(await inlineMediaFor(raw)).toBe(true);
+  });
+
+  it.each(['false', '0'])('omits media for %p', async raw => {
+    expect(await inlineMediaFor(raw)).toBe(false);
+  });
+
+  const afterFor = async (raw?: string): Promise<string | undefined> => {
+    getMessages.mockClear();
+    await controller.getMessages('session-1', undefined, undefined, undefined, undefined, raw, undefined);
+    const [, options] = getMessages.mock.calls[0] as [string, { after?: string }];
+    return options.after;
+  };
+
+  /**
+   * The service only skips the keyset branch on `undefined`. A blank reached the anchor lookup,
+   * matched no row, and answered 400 for what is an ordinary unfiltered first page: a client
+   * templating a cursor it has not got yet sends exactly that.
+   */
+  it.each([undefined, '', '   '])('treats a blank after as absent for %p', async raw => {
+    expect(await afterFor(raw)).toBeUndefined();
+  });
+
+  it('passes a real cursor through, trimmed', async () => {
+    expect(await afterFor('db-42')).toBe('db-42');
+    expect(await afterFor('  db-42  ')).toBe('db-42');
+  });
+});

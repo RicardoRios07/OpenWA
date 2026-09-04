@@ -9,8 +9,7 @@ import {
 } from '../interfaces/whatsapp-engine.interface';
 import { SerializedWid } from '../types/whatsapp-web-js.types';
 import { toMessageMedia } from './wwebjs-messaging';
-import { type WwebjsEngineHost } from './wwebjs-host';
-import { EngineTransportError } from '../../common/errors/engine-transport.error';
+import { type WwebjsEngineHost, withPage, reportPageDeath } from './wwebjs-host';
 
 /**
  * The status-post counterpart of `toMessageResult`, but its absent-message case is *narrower* than a
@@ -59,21 +58,9 @@ export class WwebjsStatus {
     return this.host.getClient();
   }
 
-  /**
-   * Run a client operation, classifying a dead page/transport as the documented 503 plus an early
-   * death signal instead of an opaque 500 under a status that still says READY - the split every
-   * chats read already makes (#1081). Other errors propagate unchanged.
-   */
-  private async withPage<T>(context: string, op: () => Promise<T>): Promise<T> {
-    try {
-      return await op();
-    } catch (error) {
-      if (this.host.isPageTransportError(error)) {
-        this.host.reportIfPageTransportError(error, context);
-        throw new EngineTransportError(`Transport died during ${context}`);
-      }
-      throw error;
-    }
+  /** See {@link withPage} for what a dead page answers here. */
+  private withPage<T>(context: string, op: () => Promise<T>): Promise<T> {
+    return withPage(this.host, context, op);
   }
 
   async getContactStatuses(): Promise<Status[]> {
@@ -159,7 +146,8 @@ export class WwebjsStatus {
     // whatsapp-web.js posts a text status by messaging status@broadcast with styling in `extra`
     // (Client.js maps options.extra → page extraOptions → sendStatusTextMsgAction in Utils.js).
     // backgroundColor is a #RRGGBB hex; font is the fontStyle index 0-7.
-    const msg = await this.withPage('postTextStatus', () =>
+    // Non-idempotent: report a dead page, but keep the error as thrown. See reportPageDeath.
+    const msg = await reportPageDeath(this.host, 'postTextStatus', () =>
       this.client().sendMessage('status@broadcast', text, {
         extra: {
           ...(options.backgroundColor !== undefined ? { backgroundColor: options.backgroundColor } : {}),
@@ -193,7 +181,8 @@ export class WwebjsStatus {
     this.host.ensureReady();
     this.warnStatusRecipientsOnce(options);
     const messageMedia = await toMessageMedia(media);
-    const msg = await this.withPage('postMediaStatus', () =>
+    // Non-idempotent: a replayed post would publish the status twice. See reportPageDeath.
+    const msg = await reportPageDeath(this.host, 'postMediaStatus', () =>
       this.client().sendMessage('status@broadcast', messageMedia, {
         ...(options.caption !== undefined ? { caption: options.caption } : {}),
         ...extra,

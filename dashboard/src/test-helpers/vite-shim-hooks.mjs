@@ -23,7 +23,11 @@ const ts = require('typescript');
 
 const RESOLVE_EXTENSIONS = ['.tsx', '.ts', '.js', '.mjs', '.json'];
 
+// socket.io-client is swapped for a double that never dials — see test-helpers/socket-io-double.ts.
+const SOCKET_DOUBLE = new URL('./socket-io-double.ts', import.meta.url).href;
+
 export async function resolve(specifier, context, nextResolve) {
+  if (specifier === 'socket.io-client') return { url: SOCKET_DOUBLE, shortCircuit: true };
   try {
     return await nextResolve(specifier, context);
   } catch (error) {

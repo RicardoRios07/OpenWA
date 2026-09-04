@@ -16,7 +16,14 @@ import { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity
 import { setTimeout } from 'node:timers/promises';
 import { EngineTransportError } from '../../common/errors/engine-transport.error';
 import { Session, SessionStatus } from './entities/session.entity';
-import { CreateSessionDto, SessionConfigResponseDto, UpdateSessionConfigDto } from './dto';
+import {
+  CreateSessionDto,
+  SessionConfigResponseDto,
+  UpdateSessionConfigDto,
+  SessionProxyResponseDto,
+  UpdateSessionProxyDto,
+  projectSessionProxy,
+} from './dto';
 import { EngineRegistry } from '../../engine/engine-registry.service';
 import { SessionLivenessWatchdog } from './session-liveness-watchdog.service';
 import { SessionErrorStore } from './session-error-store.service';
@@ -309,7 +316,12 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
     // allowlist) lists all — mirroring the ApiKeyGuard allowedSessions model so a scoped key
     // cannot enumerate every session through this aggregate route.
     const { limit, offset } = resolveListWindow(opts.limit, opts.offset);
-    const options: FindManyOptions<Session> = { order: { createdAt: 'DESC' }, take: limit, skip: offset };
+    // `id` tiebreaks the second-resolution `createdAt` so a paged walk has a total order.
+    const options: FindManyOptions<Session> = {
+      order: { createdAt: 'DESC', id: 'DESC' },
+      take: limit,
+      skip: offset,
+    };
     if (allowedSessions && allowedSessions.length > 0) {
       options.where = { id: In(allowedSessions) };
     }
@@ -388,6 +400,31 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
     // write the whole row back from a snapshot taken before this await.
     await this.sessionRepository.update(id, { config: config as QueryDeepPartialEntity<Record<string, unknown>> });
     return this.projectConfig(config);
+  }
+
+  async getProxy(id: string): Promise<SessionProxyResponseDto> {
+    const session = await this.findOne(id);
+    return projectSessionProxy(session);
+  }
+
+  /**
+   * Persist per-session proxy settings. No engine restart — proxy is read at initializeEngine() on
+   * the next start(), matching the reconnect settings on PATCH /config.
+   */
+  async updateProxy(id: string, dto: UpdateSessionProxyDto): Promise<SessionProxyResponseDto> {
+    const session = await this.findOne(id);
+
+    if (dto.proxyUrl === null) {
+      await this.sessionRepository.update(id, { proxyUrl: null, proxyType: null });
+      return projectSessionProxy({ proxyUrl: null });
+    }
+
+    if (dto.proxyUrl !== undefined) {
+      await this.sessionRepository.update(id, { proxyUrl: dto.proxyUrl, proxyType: null });
+      return projectSessionProxy({ proxyUrl: dto.proxyUrl });
+    }
+
+    return projectSessionProxy(session);
   }
 
   /** Record removal + engine retirement + credential purge: owned by the lifecycle service. */

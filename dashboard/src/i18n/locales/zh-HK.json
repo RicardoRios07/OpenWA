@@ -11,6 +11,7 @@
     "cancel": "取消",
     "delete": "刪除",
     "create": "建立",
+    "save": "Save",
     "close": "關閉",
     "showApiKey": "顯示 API 金鑰",
     "hideApiKey": "隱藏 API 金鑰",
@@ -87,6 +88,8 @@
     "unreadBadge": "{{count}} 條未讀訊息",
     "unreadBadge_other": "{{count}} 條未讀訊息",
     "loadingMessages": "正在載入訊息...",
+    "loadingOlderMessages": "正在載入較舊的訊息...",
+    "loadOlderMessagesError": "無法載入較舊的訊息。向上捲動重試。",
     "noMessagesInChat": "尚無訊息。傳送第一則訊息即可開始！",
     "downloadDocument": "下載文件",
     "actions": {
@@ -303,8 +306,26 @@
       "autoRejectCalls": "自動拒接來電",
       "autoRejectCallsHint": "來電響鈴後即時拒接。call.received webhook 仍會先行觸發。下一通來電起生效，無需重新啟動。"
     },
+    "proxy": {
+      "title": "Proxy Configuration",
+      "status": "Current",
+      "enabled": "Use proxy",
+      "url": "Proxy URL",
+      "urlPlaceholder": "http://user:pass@proxy.example.com:8080",
+      "urlKeepPlaceholder": "Enter new URL to replace {{host}} (credentials not shown)",
+      "configured": "{{host}} ({{type}})",
+      "noProxy": "No proxy configured",
+      "hasCredentials": "Credentials are stored but not shown. Enter a full URL to change them.",
+      "hint": "Changes apply on the next session start, not to a running connection. The proxy must be real and reachable — an unreachable value blocks QR delivery and start returns 504.",
+      "createHint": "Only needed when your network cannot reach WhatsApp directly. Must be a real, reachable proxy.",
+      "invalidUrl": "Enter a valid http, https, socks4, or socks5 proxy URL.",
+      "saveSuccessTitle": "Proxy Saved",
+      "saveSuccess": "Proxy settings saved. They apply on the next session start.",
+      "saveError": "Failed to save proxy settings"
+    },
     "actions": {
       "view": "查看",
+      "proxy": "Proxy",
       "start": "啟動",
       "stop": "停止",
       "reconnect": "重新連線",
@@ -412,6 +433,7 @@
         "body": "訊息內容",
         "type": "訊息類型",
         "isGroup": "是群組聊天",
+        "kind": "Chat kind",
         "fromMe": "由我傳送",
         "hasMedia": "包含媒體",
         "mentions": "提及"
@@ -533,7 +555,8 @@
       "role": "角色",
       "status": "狀態",
       "lastUsed": "上次使用",
-      "actions": "操作"
+      "actions": "操作",
+      "sessions": "工作階段"
     },
     "statuses": {
       "active": "活躍",
@@ -554,7 +577,19 @@
     "actions": {
       "copy": "複製",
       "revoke": "撤銷",
-      "delete": "刪除"
+      "delete": "刪除",
+      "editSessions": "編輯工作階段"
+    },
+    "sessions": {
+      "label": "工作階段存取",
+      "hint": "選擇此密鑰可以使用的工作階段。",
+      "all": "全部工作階段",
+      "empty": "尚未有工作階段。建立後，此密鑰便可存取全部工作階段。",
+      "restricted": "已選 {{count}} 個",
+      "editTitle": "編輯工作階段存取",
+      "save": "儲存",
+      "choose": "選擇工作階段",
+      "leaveAll": "保留為全部工作階段"
     }
   },
   "logs": {
@@ -650,6 +685,7 @@
     "forwardMessageId": "訊息 ID",
     "forwardMessageIdHint": "要轉發的訊息 ID",
     "bulkRecipients": "收件人",
+    "bulkRecipientsUpload": "上傳 CSV/TXT",
     "bulkRecipientsPlaceholder": "+62812345678",
     "bulkRecipientsHint": "每行一個電話號碼或對話 ID（最多 100 個）",
     "bulkRecipientsCount": "收件人：{{count}}",
@@ -887,6 +923,7 @@
       "title": "執行個體",
       "description": "為此整合按帳戶佈建執行個體。每個執行個體都有專屬的簽署密鑰和連入 URL。",
       "create": "建立執行個體",
+      "save": "Save",
       "empty": "尚無執行個體。建立一個即可取得連入 URL 和密鑰。",
       "loadError": "載入執行個體失敗。",
       "allSessions": "所有工作階段",

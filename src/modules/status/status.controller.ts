@@ -165,6 +165,13 @@ export class StatusController {
   @ApiResponse({ status: 200, description: 'Status deleted.', type: StatusDeletedResponseDto })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   @ApiResponse({ status: 404, description: SESSION_NOT_STARTED_404 })
+  @ApiResponse({
+    status: 503,
+    description:
+      'The whatsapp-web.js page connection died mid-request, so the revoke did not complete. Safe ' +
+      'to retry: revoking an already-revoked status converges. The status POST routes deliberately ' +
+      'do NOT answer this, because a replayed post would publish the status a second time.',
+  })
   async deleteStatus(@Param('sessionId') sessionId: string, @Param('id') statusId: string) {
     await this.statusService.deleteStatus(sessionId, statusId);
     return { message: 'Status deleted successfully' };

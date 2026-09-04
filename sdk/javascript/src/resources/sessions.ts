@@ -13,8 +13,10 @@ import type {
   QrCodeResponse,
   RequestPairingCodeRequest,
   SessionConfig,
+  SessionProxy,
   SessionResponse,
   UpdateSessionConfigRequest,
+  UpdateSessionProxyRequest,
   SessionStatsOverview,
   SetOwnPresenceRequest,
   SuccessResult,
@@ -50,6 +52,26 @@ export class SessionsResource {
     return this.client.request<SessionConfig>({
       method: 'PATCH',
       path: `/api/sessions/${encodeSegment(id)}/config`,
+      body,
+    });
+  }
+
+  /** Read a session's masked proxy configuration (credentials never returned). */
+  getProxy(id: string): Promise<SessionProxy> {
+    return this.client.request<SessionProxy>({
+      method: 'GET',
+      path: `/api/sessions/${encodeSegment(id)}/proxy`,
+    });
+  }
+
+  /**
+   * Update per-session proxy settings. No restart is performed — changes apply on the next start.
+   * Send `proxyUrl: null` to clear the proxy. **OPERATOR**
+   */
+  updateProxy(id: string, body: UpdateSessionProxyRequest): Promise<SessionProxy> {
+    return this.client.request<SessionProxy>({
+      method: 'PATCH',
+      path: `/api/sessions/${encodeSegment(id)}/proxy`,
       body,
     });
   }

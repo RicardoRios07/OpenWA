@@ -10,11 +10,13 @@ import com.rmyndharis.openwa.model.PairingCodeResponse;
 import com.rmyndharis.openwa.model.QrCodeResponse;
 import com.rmyndharis.openwa.model.RequestPairingCodeRequest;
 import com.rmyndharis.openwa.model.SessionConfig;
+import com.rmyndharis.openwa.model.SessionProxy;
 import com.rmyndharis.openwa.model.SessionResponse;
 import com.rmyndharis.openwa.model.SessionStatsOverview;
 import com.rmyndharis.openwa.model.SetOwnPresenceRequest;
 import com.rmyndharis.openwa.model.SuccessResult;
 import com.rmyndharis.openwa.model.UpdateSessionConfigRequest;
+import com.rmyndharis.openwa.model.UpdateSessionProxyRequest;
 import java.util.List;
 
 /** Sessions resource — lifecycle management for WhatsApp sessions. */
@@ -48,6 +50,21 @@ public final class SessionsResource {
     public SessionConfig updateConfig(String id, UpdateSessionConfigRequest body) {
         return client.request(
                 HttpMethod.PATCH, "/api/sessions/" + encodeSegment(id) + "/config", null, body, SessionConfig.class);
+    }
+
+    /** Read a session's masked proxy configuration (credentials never returned). */
+    public SessionProxy getProxy(String id) {
+        return client.request(
+                HttpMethod.GET, "/api/sessions/" + encodeSegment(id) + "/proxy", null, null, SessionProxy.class);
+    }
+
+    /**
+     * Update per-session proxy settings. No restart is performed — changes apply on the next start.
+     * Send {@code proxyUrl: null} to clear the proxy. Requires an OPERATOR-level key.
+     */
+    public SessionProxy updateProxy(String id, UpdateSessionProxyRequest body) {
+        return client.request(
+                HttpMethod.PATCH, "/api/sessions/" + encodeSegment(id) + "/proxy", null, body, SessionProxy.class);
     }
 
     /** Get a single session by id. */

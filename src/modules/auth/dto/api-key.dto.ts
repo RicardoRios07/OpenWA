@@ -1,7 +1,18 @@
-import { IsString, IsOptional, IsEnum, IsArray, IsDateString, MinLength, MaxLength, Validate } from 'class-validator';
+import {
+  IsString,
+  IsOptional,
+  IsEnum,
+  IsArray,
+  ArrayUnique,
+  IsDateString,
+  MinLength,
+  MaxLength,
+  Validate,
+} from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { ApiKeyRole } from '../entities/api-key.entity';
 import { IsIpOrCidrConstraint } from './is-ip-or-cidr.validator';
+import { IsSessionIdConstraint } from './is-session-id.validator';
 
 export class CreateApiKeyDto {
   @ApiProperty({
@@ -42,6 +53,8 @@ export class CreateApiKeyDto {
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
+  @ArrayUnique()
+  @Validate(IsSessionIdConstraint, { each: true })
   allowedSessions?: string[];
 
   @ApiPropertyOptional({
@@ -131,6 +144,8 @@ export class UpdateApiKeyDto {
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
+  @ArrayUnique()
+  @Validate(IsSessionIdConstraint, { each: true })
   allowedSessions?: string[];
 
   @ApiPropertyOptional()

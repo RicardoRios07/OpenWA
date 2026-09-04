@@ -38,7 +38,11 @@ public record UpdateWebhookRequest(
             return this;
         }
 
-        /** HMAC secret; signed as {@code X-OpenWA-Signature: sha256=…}. */
+        /**
+         * HMAC secret; signed as {@code X-OpenWA-Signature: sha256=…}. Held to the same 16-character
+         * minimum as the create request, with one exception: {@code ""} is the documented
+         * "clear the secret" value and is accepted.
+         */
         public Builder secret(String v) {
             this.secret = v;
             return this;

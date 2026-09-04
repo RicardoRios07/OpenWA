@@ -8,6 +8,7 @@ const path = require('path');
 
 const {
   applyStatusPatches,
+  isApplied,
   GATING_FIND,
   GATING_REPLACE,
   MEDIA_DATA_FIND,
@@ -52,6 +53,15 @@ test('applies both repairs to a pristine upstream tree', () => {
   for (const needle of [GATING_FIND, MEDIA_DATA_FIND, MEDIA_SEND_FIND]) {
     assert.ok(!patched.includes(needle));
   }
+});
+
+/** Both groups are independent, so the predicate only reads as applied once each one has landed. */
+test('isApplied tracks the transform: false on a pristine tree, true once patched', () => {
+  const { dir } = fakeWwjs(PRISTINE);
+
+  assert.equal(isApplied(dir), false);
+  applyStatusPatches(dir);
+  assert.equal(isApplied(dir), true);
 });
 
 test('is idempotent — a second run is a no-op, not a double patch', () => {

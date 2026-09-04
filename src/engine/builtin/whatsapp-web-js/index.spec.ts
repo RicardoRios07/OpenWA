@@ -20,7 +20,12 @@ describe('WhatsAppWebJsPlugin.createEngine (opaque config)', () => {
     const plugin = new WhatsAppWebJsPlugin();
     withContext(plugin, {
       sessionDataPath: '/data/sessions',
-      puppeteer: { headless: false, args: ['--single-process'], executablePath: '/usr/bin/chromium' },
+      puppeteer: {
+        headless: false,
+        args: ['--single-process'],
+        executablePath: '/usr/bin/chromium',
+        protocolTimeoutMs: 300_000,
+      },
     });
 
     plugin.createEngine({ sessionId: 'sess-1', proxyUrl: 'http://p', proxyType: 'http' });
@@ -29,7 +34,14 @@ describe('WhatsAppWebJsPlugin.createEngine (opaque config)', () => {
       expect.objectContaining({
         sessionId: 'sess-1',
         sessionDataPath: '/data/sessions',
-        puppeteer: { headless: false, args: ['--single-process'], executablePath: '/usr/bin/chromium' },
+        // protocolTimeoutMs is asserted with a value, not just carried: an object with the key
+        // present-but-undefined equals one without it, so a dropped hop would pass unnoticed.
+        puppeteer: {
+          headless: false,
+          args: ['--single-process'],
+          executablePath: '/usr/bin/chromium',
+          protocolTimeoutMs: 300_000,
+        },
         proxy: { url: 'http://p', type: 'http' },
       }),
     );

@@ -11,6 +11,7 @@
     "cancel": "取消",
     "delete": "删除",
     "create": "创建",
+    "save": "Save",
     "close": "关闭",
     "showApiKey": "显示 API 密钥",
     "hideApiKey": "隐藏 API 密钥",
@@ -87,6 +88,8 @@
     "unreadBadge": "{{count}} 条未读消息",
     "unreadBadge_other": "{{count}} 条未读消息",
     "loadingMessages": "正在加载消息...",
+    "loadingOlderMessages": "正在加载更早的消息...",
+    "loadOlderMessagesError": "无法加载更早的消息。向上滚动重试。",
     "noMessagesInChat": "暂无消息。发送第一条消息即可开始！",
     "downloadDocument": "下载文档",
     "actions": {
@@ -303,8 +306,26 @@
       "autoRejectCalls": "自动拒接来电",
       "autoRejectCallsHint": "来电响铃后立即拒接。call.received webhook 仍会先行触发。下一通来电起生效，无需重启。"
     },
+    "proxy": {
+      "title": "Proxy Configuration",
+      "status": "Current",
+      "enabled": "Use proxy",
+      "url": "Proxy URL",
+      "urlPlaceholder": "http://user:pass@proxy.example.com:8080",
+      "urlKeepPlaceholder": "Enter new URL to replace {{host}} (credentials not shown)",
+      "configured": "{{host}} ({{type}})",
+      "noProxy": "No proxy configured",
+      "hasCredentials": "Credentials are stored but not shown. Enter a full URL to change them.",
+      "hint": "Changes apply on the next session start, not to a running connection. The proxy must be real and reachable — an unreachable value blocks QR delivery and start returns 504.",
+      "createHint": "Only needed when your network cannot reach WhatsApp directly. Must be a real, reachable proxy.",
+      "invalidUrl": "Enter a valid http, https, socks4, or socks5 proxy URL.",
+      "saveSuccessTitle": "Proxy Saved",
+      "saveSuccess": "Proxy settings saved. They apply on the next session start.",
+      "saveError": "Failed to save proxy settings"
+    },
     "actions": {
       "view": "查看",
+      "proxy": "Proxy",
       "start": "启动",
       "stop": "停止",
       "reconnect": "重新连接",
@@ -412,6 +433,7 @@
         "body": "消息正文",
         "type": "消息类型",
         "isGroup": "是群聊",
+        "kind": "Chat kind",
         "fromMe": "由我发送",
         "hasMedia": "包含媒体",
         "mentions": "提及"
@@ -533,7 +555,8 @@
       "role": "角色",
       "status": "状态",
       "lastUsed": "上次使用",
-      "actions": "操作"
+      "actions": "操作",
+      "sessions": "会话"
     },
     "statuses": {
       "active": "活跃",
@@ -554,7 +577,19 @@
     "actions": {
       "copy": "复制",
       "revoke": "撤销",
-      "delete": "删除"
+      "delete": "删除",
+      "editSessions": "编辑会话"
+    },
+    "sessions": {
+      "label": "会话访问",
+      "hint": "选择此密钥可以使用的会话。",
+      "all": "全部会话",
+      "empty": "暂无会话。创建会话后，此密钥将可以访问全部会话。",
+      "restricted": "已选 {{count}} 个",
+      "editTitle": "编辑会话访问",
+      "save": "保存",
+      "choose": "选择会话",
+      "leaveAll": "保留为全部会话"
     }
   },
   "logs": {
@@ -650,6 +685,7 @@
     "forwardMessageId": "消息 ID",
     "forwardMessageIdHint": "要转发的消息 ID",
     "bulkRecipients": "接收者",
+    "bulkRecipientsUpload": "上传 CSV/TXT",
     "bulkRecipientsPlaceholder": "+62812345678",
     "bulkRecipientsHint": "每行一个电话号码或聊天 ID（最多 100 个）",
     "bulkRecipientsCount": "接收者：{{count}}",
@@ -887,6 +923,7 @@
       "title": "实例",
       "description": "为此集成按账户配置实例。每个实例都有自己的签名密钥和接入 URL。",
       "create": "创建实例",
+      "save": "Save",
       "empty": "暂无实例。创建一个以获取接入 URL 和密钥。",
       "loadError": "加载实例失败。",
       "allSessions": "所有会话",
