@@ -401,6 +401,7 @@ export class BaileysSessionStore {
       // Baileys reports a pin as an ORDER, not a flag: 0/absent means unpinned.
       pinned: st ? st.pinned : Boolean(c.pinned),
       muted: this.isMuted(st ? st.muteEndTime : c.muteEndTime),
+      muteExpiration: this.muteExpirationMs(st ? st.muteEndTime : c.muteEndTime),
     };
   }
 
@@ -420,6 +421,18 @@ export class BaileysSessionStore {
     if (!raw) return false;
     const endMs = raw < 1e12 ? raw * 1000 : raw;
     return endMs > Date.now();
+  }
+
+  /**
+   * The expiry instant (epoch ms) for {@link ChatSummary.muteExpiration}, or undefined when the chat
+   * is not muted. Same normalisation as {@link isMuted}, so the two agree: a value only survives here
+   * when it is still in the future.
+   */
+  private muteExpirationMs(muteEndTime: number | { toNumber(): number } | null | undefined): number | undefined {
+    const raw = this.toUnixSeconds(muteEndTime);
+    if (!raw) return undefined;
+    const endMs = raw < 1e12 ? raw * 1000 : raw;
+    return endMs > Date.now() ? endMs : undefined;
   }
 
   /**

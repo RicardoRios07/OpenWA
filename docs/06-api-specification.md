@@ -479,9 +479,9 @@ Get active chats for a session, most-recent first (paginated).
 ```
 
 `archived`, `pinned` and `muted` are the read side of the `chats/archive`, `chats/pin` and
-`chats/mute` endpoints. `muted` is a verdict, not an expiry — whatsapp-web.js derives it from
-`Chat.isMuted`, and Baileys carries a `muteEndTime` (epoch milliseconds) the gateway compares
-against now. The expiry instant itself is tracked separately in #1473.
+`chats/mute` endpoints. `muted` is the verdict; `muteExpiration`, present only when `muted` is true,
+is the instant the mute ends in epoch milliseconds (`0` = indefinite), the same unit as
+`chats/mute`'s `muteUntil`, so a value read here can be written straight back.
 
 Sorted by `timestamp` DESC (most recent first) then paginated. `timestamp` is an epoch number (seconds). `kind` is the user-facing chat discriminator — one of `individual|group|channel|status|broadcast|unknown`; `isGroup` is retained for back-compat (true only for `kind: "group"`).
 

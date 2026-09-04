@@ -912,6 +912,8 @@ class ChatSummary(TypedDict):
     pinned: bool
     # Whether the chat is muted right now, not the expiry behind it.
     muted: bool
+    # Epoch milliseconds the mute ends, present only when muted; 0 means indefinitely.
+    muteExpiration: NotRequired[int]
 
 
 class MarkChatRequest(TypedDict):

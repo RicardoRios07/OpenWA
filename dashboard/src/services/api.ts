@@ -233,6 +233,7 @@ export interface Chat {
   archived: boolean;
   pinned: boolean;
   muted: boolean;
+  muteExpiration?: number;
 }
 
 // Engine-neutral message types (mirrors the backend's IWhatsAppEngine MessageType). The backend

@@ -496,15 +496,18 @@ export interface ChatSummary {
   /** Pinned state, as set via `POST /sessions/{sessionId}/chats/pin`. */
   pinned: boolean;
   /**
-   * Muted state, as set via `POST /sessions/{sessionId}/chats/mute`.
-   *
-   * The verdict rather than the expiry the engines hold, deliberately: "is this chat muted right
-   * now" is what a caller needs to label a mute/unmute control, and it is what both engines answer
-   * directly — whatsapp-web.js derives `Chat.isMuted` itself, and Baileys carries a `muteEndTime`
-   * (epoch milliseconds, per the measurement in `chat-mute.spec.ts`) to compare against now. The
-   * expiry instant itself is tracked separately in #1473.
+   * Muted state, as set via `POST /sessions/{sessionId}/chats/mute`. The verdict a caller needs to
+   * label a mute/unmute control: whatsapp-web.js derives `Chat.isMuted` itself, and Baileys compares
+   * a persisted `muteEndTime` (epoch milliseconds) against now. `muteExpiration` carries the instant.
    */
   muted: boolean;
+  /**
+   * Epoch MILLISECONDS at which the mute ends, present only when `muted` is true; `0` means muted
+   * indefinitely. Milliseconds is the same unit as `POST /sessions/{sessionId}/chats/mute`
+   * `muteUntil`, so a value read here can be written straight back (`mute-chat.dto.ts` documents that
+   * unit and why a seconds value is a trap).
+   */
+  muteExpiration?: number;
 }
 
 /**

@@ -18,4 +18,6 @@ public record ChatSummary(
     Boolean archived,
     Boolean pinned,
     /** Whether the chat is muted right now, not the expiry behind it. */
-    Boolean muted) {}
+    Boolean muted,
+    /** Epoch milliseconds the mute ends, null unless muted; 0 means indefinitely. */
+    Long muteExpiration) {}

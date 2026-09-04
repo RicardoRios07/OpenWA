@@ -79,6 +79,12 @@ export class WwebjsLabels {
         archived: Boolean(chat.archived),
         pinned: Boolean(chat.pinned),
         muted: Boolean(chat.isMuted),
+        // wwjs muteExpiration is epoch SECONDS with -1 = forever; expose ms (0 = indefinite), muted only.
+        muteExpiration: chat.isMuted
+          ? (chat.muteExpiration ?? 0) > 0
+            ? (chat.muteExpiration ?? 0) * 1000
+            : 0
+          : undefined,
       });
     }
     return summaries;
