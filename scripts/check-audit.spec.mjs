@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { collectAdvisories, evaluate } from './check-audit.mjs';
+import { auditUnavailable, collectAdvisories, evaluate } from './check-audit.mjs';
 
 /**
  * The report shape is taken from a real `npm audit --json` run, not invented: one advisory
@@ -68,7 +68,9 @@ test('critical is blocking too, not just high', () => {
       x: {
         name: 'x',
         severity: 'critical',
-        via: [{ name: 'x', url: 'https://github.com/advisories/GHSA-crit-0000-0000', severity: 'critical', title: 'x' }],
+        via: [
+          { name: 'x', url: 'https://github.com/advisories/GHSA-crit-0000-0000', severity: 'critical', title: 'x' },
+        ],
       },
     },
   };
@@ -108,4 +110,19 @@ test('a clean report with an empty allowlist passes', () => {
 test('a report with no vulnerabilities key is clean, not a crash', () => {
   assert.deepEqual(evaluate({}, []), []);
   assert.equal(collectAdvisories(undefined).size, 0);
+});
+
+// The endpoint-failure discriminator. npm returns `{ error }` (no vulnerabilities, no metadata) when
+// the audit endpoint is down or retired; that must read as "could not audit", not as a clean tree,
+// or the stale-allowlist rule fires against every entry. A genuinely clean report has no `error` key.
+test('an { error } payload reads as audit-unavailable, not clean', () => {
+  assert.equal(auditUnavailable({ error: { summary: 'audit endpoint returned an error' } }), true);
+  assert.equal(auditUnavailable(null), true);
+  assert.equal(auditUnavailable('not an object'), true);
+});
+
+test('a clean or vulnerable report is not audit-unavailable', () => {
+  assert.equal(auditUnavailable({}), false);
+  assert.equal(auditUnavailable({ vulnerabilities: {} }), false);
+  assert.equal(auditUnavailable(puppeteerReport), false);
 });

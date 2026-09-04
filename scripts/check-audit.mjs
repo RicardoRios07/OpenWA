@@ -55,23 +55,53 @@ const ALLOWLIST = [
 const BLOCKING = new Set(['high', 'critical']);
 
 /**
+ * True when an `npm audit --json` payload is a registry failure rather than a real audit result.
+ * npm returns `{ error: { summary } }` (no `vulnerabilities`, no `metadata`) when the audit endpoint
+ * is unreachable or, as npm retires the legacy audit endpoint, returns an error. That is NOT a clean
+ * tree: reading it as one would find zero advisories and flag every allowlist entry as stale. A
+ * genuinely clean report carries no `error` key (it has `vulnerabilities: {}` and `metadata`), so
+ * keying on `error` leaves a normal clean run clean. Anything unparseable is wrapped as an error too.
+ */
+export function auditUnavailable(report) {
+  return report == null || typeof report !== 'object' || 'error' in report;
+}
+
+/**
  * `npm audit --json` exits non-zero exactly when it found something, so a throw is the normal path
- * and the payload is on stdout either way. Anything that is not parseable JSON is a real failure —
- * a network error or a broken registry — and must not read as "no vulnerabilities".
+ * and the payload is on stdout either way. Unparseable output, or an `{ error }` payload, means the
+ * audit could not be performed and is wrapped as an error rather than read as "no vulnerabilities".
+ */
+function runAuditOnce() {
+  let raw;
+  try {
+    raw = execFileSync('npm', ['audit', '--json'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  } catch (err) {
+    raw = err?.stdout ?? '';
+    if (!raw) return { error: { summary: err?.stderr?.trim() || err?.message || 'npm audit produced no output' } };
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return { error: { summary: 'npm audit output was not JSON (network or registry error)' } };
+  }
+}
+
+/**
+ * Runs the audit, retrying once when the endpoint does not answer. A transient blip clears on the
+ * retry; a retired or persistently-down endpoint returns the last error report, which the caller
+ * turns into a loud skip rather than a false "stale allowlist" failure.
  */
 function runAudit() {
-  try {
-    return JSON.parse(execFileSync('npm', ['audit', '--json'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }));
-  } catch (err) {
-    const stdout = err?.stdout ?? '';
-    try {
-      return JSON.parse(stdout);
-    } catch {
-      console.error('check:audit — could not read `npm audit --json` output:');
-      console.error(err?.stderr || err?.message || String(err));
-      process.exit(1);
+  const ATTEMPTS = 2;
+  let report;
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+    report = runAuditOnce();
+    if (!auditUnavailable(report)) return report;
+    if (attempt < ATTEMPTS) {
+      console.error(`check:audit: npm audit endpoint did not answer, retrying (${attempt}/${ATTEMPTS})`);
     }
   }
+  return report;
 }
 
 /**
@@ -135,6 +165,19 @@ export function evaluate(report, allowlist = ALLOWLIST) {
 // check-upstream-surface.mjs already use.
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const report = runAudit();
+
+  // A registry that cannot answer the audit request must not be read as a clean tree, and blocking
+  // every merge while npm's audit endpoint is down (or being retired) is worse than the risk of a
+  // missed advisory for the duration. Skip loudly instead: the gate resumes the moment the endpoint
+  // answers, and a working audit still fails on any unexcused high or critical.
+  if (auditUnavailable(report)) {
+    console.warn(
+      `check:audit SKIPPED: npm audit endpoint is unavailable after a retry (${report?.error?.summary ?? 'no report'}). ` +
+        'Advisories were not checked this run.',
+    );
+    process.exit(0);
+  }
+
   const errors = evaluate(report);
 
   if (errors.length > 0) {
