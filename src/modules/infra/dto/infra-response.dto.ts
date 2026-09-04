@@ -384,6 +384,7 @@ export class MigrationTablesDto {
   @ApiProperty({ type: [Object] }) templates!: object[];
   @ApiProperty({ type: [Object] }) baileysStoredMessages!: object[];
   @ApiProperty({ type: [Object] }) lidMappings!: object[];
+  @ApiProperty({ type: [Object] }) chatStates!: object[];
   @ApiProperty({ type: [Object] }) pluginInstances!: object[];
   @ApiProperty({ type: [Object] }) conversationMappings!: object[];
   @ApiProperty({ type: [Object] }) ingressEvents!: object[];
@@ -403,6 +404,7 @@ export class TableCountsDto {
   @ApiProperty({ example: 3 }) templates!: number;
   @ApiProperty({ example: 512 }) baileysStoredMessages!: number;
   @ApiProperty({ example: 64 }) lidMappings!: number;
+  @ApiProperty({ example: 40 }) chatStates!: number;
   @ApiProperty({ example: 12 }) pluginInstances!: number;
   @ApiProperty({ example: 8 }) conversationMappings!: number;
   @ApiProperty({ example: 40 }) ingressEvents!: number;

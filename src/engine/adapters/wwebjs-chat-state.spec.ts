@@ -13,11 +13,11 @@ import { type WwebjsMessaging } from './wwebjs-messaging';
  * `getChatsByLabelId` returns. A field added to one and forgotten in the other is invisible until
  * a Business account lists a label, so both mappers are held to the same shape here.
  *
- * The library reports mute as a verdict already — `Chat.isMuted` — so unlike Baileys there is no
- * end-time comparison to make; `muteExpiration` is the raw stamp behind it and is deliberately not
- * what this maps. Each field is read through `Boolean()` because the page can leave any of them
- * undefined on a chat it built from a partial record, and `undefined` must land as `false` rather
- * than escape into a required boolean.
+ * The library reports mute as a verdict (`Chat.isMuted`) plus the stamp behind it
+ * (`Chat.muteExpiration`, epoch SECONDS, `-1` = forever). `muted` maps the verdict; `muteExpiration`
+ * maps the stamp as epoch ms (`0` = indefinite), present only when muted. Boolean fields read through
+ * `Boolean()` because the page can leave any of them undefined on a chat built from a partial record,
+ * and `undefined` must land as `false` rather than escape into a required boolean.
  */
 
 const logger = createLogger('wwebjs-chat-state.spec');
@@ -81,6 +81,16 @@ describe('WwebjsChats.getChats chat state', () => {
       muted: true,
     });
   });
+
+  it('maps muteExpiration to ms when muted, 0 for -1 (forever), absent when not muted', async () => {
+    const secs = 1_786_003_600;
+    expect(await listWith({ isMuted: true, muteExpiration: secs })).toMatchObject({
+      muted: true,
+      muteExpiration: secs * 1000,
+    });
+    expect((await listWith({ isMuted: true, muteExpiration: -1 })).muteExpiration).toBe(0);
+    expect((await listWith({ isMuted: false, muteExpiration: secs })).muteExpiration).toBeUndefined();
+  });
 });
 
 describe('WwebjsLabels.getChatsByLabel chat state', () => {
@@ -111,5 +121,15 @@ describe('WwebjsLabels.getChatsByLabel chat state', () => {
       pinned: false,
       muted: true,
     });
+  });
+
+  it('maps muteExpiration the same way as getChats', async () => {
+    const secs = 1_786_003_600;
+    expect(await listWith({ isMuted: true, muteExpiration: secs })).toMatchObject({
+      muted: true,
+      muteExpiration: secs * 1000,
+    });
+    expect((await listWith({ isMuted: true, muteExpiration: -1 })).muteExpiration).toBe(0);
+    expect((await listWith({ isMuted: false, muteExpiration: secs })).muteExpiration).toBeUndefined();
   });
 });

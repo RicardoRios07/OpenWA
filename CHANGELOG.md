@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `GET /sessions/{sessionId}/chats` reports `muteExpiration`, the epoch-ms instant a muted chat's mute
+  ends (`0` = indefinite), alongside the existing `muted` flag
+  ([#1473](https://github.com/rmyndharis/OpenWA/issues/1473)). Thanks @usmancynosure and @purnamcommunity.
 - The dashboard's Message Tester can load bulk recipients from a `.txt` or `.csv` file, appending the
   file's lines to whatever the Recipients box already holds. One entry per line, which is what the
   box itself expects. Thanks @harry0x.
@@ -76,6 +79,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Baileys chat `muted`, `archived` and `pinned` state now survives a session reconnect or process
+  restart. WhatsApp does not re-deliver it on reconnect, so it is persisted per chat and rehydrated on
+  boot; a muted chat no longer reads unmuted after the session reconnects.
 - Paged lists now tiebreak on `id`, so a walk returns every row exactly once. Neither `createdAt` nor
   a search relevance score is unique, and on PostgreSQL two identical statements could sort one tie
   group differently, silently repeating some rows and omitting others: a 5000-row message list lost

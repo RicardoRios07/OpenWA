@@ -75,6 +75,68 @@ describe('engine status writes are fenced by ownership', () => {
   });
 });
 
+describe('onReady account-binding guard (rejects a different number rescanning a bound session)', () => {
+  const ENGINE = { logout: jest.fn() } as unknown as IWhatsAppEngine;
+
+  const build = (previousPhone: string | null) => {
+    const handleEngineReady = jest.fn();
+    const rejectRebind = jest.fn().mockResolvedValue(undefined);
+    const host = {
+      isLiveEngine: () => true,
+      ownsSession: () => true,
+      handleEngineReady,
+      rejectRebind,
+      updateStatus: jest.fn().mockResolvedValue(undefined),
+      cancelReconnect: jest.fn(),
+      sessionErrors: { set: jest.fn(), clear: jest.fn(), get: jest.fn() },
+      sessionRestrictions: { set: jest.fn(), clear: jest.fn(), get: jest.fn() },
+      presence: { set: jest.fn(), clear: jest.fn() },
+      messages: { handleInboundMessage: jest.fn(), handleHistoryMessages: jest.fn() },
+      webhookService: { dispatch: jest.fn() },
+      eventsGateway: { emitQRCode: jest.fn(), emitSessionStatus: jest.fn() },
+      hookManager: { execute: jest.fn().mockResolvedValue(undefined) },
+    } as unknown as SessionEngineWiringHost;
+    const wiring = new SessionEngineEventWiring({ logger: createLogger('test') });
+    const cb = wiring.buildCallbacks('sess-1', ENGINE, 'sess-1-name', host, previousPhone);
+    return { cb, handleEngineReady, rejectRebind };
+  };
+
+  it('rejects a ready link whose number differs from the stored binding', () => {
+    const { cb, handleEngineReady, rejectRebind } = build('628111');
+    cb.onReady?.('628999', 'Stranger');
+    expect(rejectRebind).toHaveBeenCalledWith('sess-1', ENGINE, 'sess-1-name', '628111', '628999');
+    expect(handleEngineReady).not.toHaveBeenCalled();
+  });
+
+  it('accepts a re-link from the SAME number (no reject)', () => {
+    const { cb, handleEngineReady, rejectRebind } = build('628111');
+    cb.onReady?.('628111', 'Owner');
+    expect(handleEngineReady).toHaveBeenCalledWith('sess-1', ENGINE, '628111', 'Owner');
+    expect(rejectRebind).not.toHaveBeenCalled();
+  });
+
+  it('accepts the first link on a fresh session (no stored phone)', () => {
+    const { cb, handleEngineReady, rejectRebind } = build(null);
+    cb.onReady?.('628111', 'Owner');
+    expect(handleEngineReady).toHaveBeenCalledWith('sess-1', ENGINE, '628111', 'Owner');
+    expect(rejectRebind).not.toHaveBeenCalled();
+  });
+
+  it('treats a device-suffixed id as the same number (userPart compare, not raw)', () => {
+    const { cb, handleEngineReady, rejectRebind } = build('628111');
+    cb.onReady?.('628111:3', 'Owner');
+    expect(handleEngineReady).toHaveBeenCalled();
+    expect(rejectRebind).not.toHaveBeenCalled();
+  });
+
+  it('never rejects on an empty incoming phone (an account it could not identify)', () => {
+    const { cb, handleEngineReady, rejectRebind } = build('628111');
+    cb.onReady?.('', '');
+    expect(handleEngineReady).toHaveBeenCalledWith('sess-1', ENGINE, '', '');
+    expect(rejectRebind).not.toHaveBeenCalled();
+  });
+});
+
 describe('SessionOwnershipService.owns', () => {
   /**
    * Populated through the REAL claim()/release() path, not by poking the Set.

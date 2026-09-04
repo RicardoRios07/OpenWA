@@ -972,6 +972,8 @@ export interface ChatSummary {
   pinned: boolean;
   /** Whether the chat is muted right now, as set via {@link ChatsResource.mute}. */
   muted: boolean;
+  /** Epoch milliseconds the mute ends, present only when muted; 0 means indefinitely. */
+  muteExpiration?: number;
 }
 
 /** Body for {@link SessionsResource.setOnlinePresence}. */

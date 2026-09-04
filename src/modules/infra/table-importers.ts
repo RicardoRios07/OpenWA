@@ -8,6 +8,7 @@ import type {
   TemplateRow,
   BaileysStoredMessageRow,
   LidMappingRow,
+  ChatStateRow,
   PluginInstanceRow,
   ConversationMappingRow,
   IngressEventRow,
@@ -221,6 +222,15 @@ export const TABLE_IMPORTERS: AnyTableImporter[] = [
     map: (lm: LidMappingRow) => [lm.lid, lm.phone ?? null, lm.sessionId ?? null, lm.updatedAt],
   }),
 
+  // Import chat states (optional; not a FK, restored as a standalone per-session cache table)
+  defineTableImporter({
+    key: 'chatStates',
+    label: 'chat state',
+    sql: `INSERT INTO chat_states ("sessionId", "chatId", "muteEndTime", archived, pinned, "updatedAt") VALUES ($1, $2, $3, $4, $5, $6)`,
+    id: (cs: ChatStateRow) => `${cs.sessionId}/${cs.chatId}`,
+    map: (cs: ChatStateRow) => [cs.sessionId, cs.chatId, cs.muteEndTime ?? null, cs.archived, cs.pinned, cs.updatedAt],
+  }),
+
   // Import plugin instances (Integration Fabric config + ingress HMAC secret)
   defineTableImporter({
     key: 'pluginInstances',
@@ -419,6 +429,7 @@ const EXPECTED_TABLE_KEYS: ReadonlyArray<keyof MigrationTables> = [
   'templates',
   'baileysStoredMessages',
   'lidMappings',
+  'chatStates',
   'pluginInstances',
   'conversationMappings',
   'ingressEvents',

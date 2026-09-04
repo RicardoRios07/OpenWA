@@ -240,6 +240,11 @@ export const EXPORT_TABLES: AnyExportTable[] = [
   // or a backup→restore into a fresh DB loses the whole cache (it self-heals, but lossily).
   defineExportTable({ key: 'lidMappings', table: 'lid_mappings', optional: true }),
 
+  // Persisted per-session mute/archive/pin. Like lid_mappings it is not a FK to sessions, so the
+  // import's `DELETE FROM sessions` never clears it; WhatsApp does not re-deliver it on reconnect,
+  // so a backup that omits it would show a muted chat as unmuted after a restore.
+  defineExportTable({ key: 'chatStates', table: 'chat_states', optional: true }),
+
   // Integration Fabric + both DLQs: none carry an FK constraint to sessions (sessionId is
   // provenance), so the import clears them explicitly before the sessions DELETE to keep the
   // replace-semantics complete.

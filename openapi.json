@@ -31,6 +31,7 @@
                 "session_disconnected",
                 "session_restricted",
                 "session_restriction_lifted",
+                "session_rebind_rejected",
                 "message_sent",
                 "message_failed",
                 "send_pacing_blocked",
@@ -10470,8 +10471,13 @@
           },
           "muted": {
             "type": "boolean",
-            "description": "Whether the chat is muted right now, as set via POST /sessions/{sessionId}/chats/mute. The verdict rather than the expiry: whatsapp-web.js derives it itself from Chat.isMuted, and Baileys carries a muteEndTime that this gateway compares against now. The expiry instant itself is tracked separately in #1473.",
+            "description": "Whether the chat is muted right now, as set via POST /sessions/{sessionId}/chats/mute. The verdict rather than the expiry: whatsapp-web.js derives it itself from Chat.isMuted, and Baileys carries a muteEndTime that this gateway compares against now. muteExpiration carries the instant itself.",
             "example": false
+          },
+          "muteExpiration": {
+            "type": "number",
+            "description": "Epoch MILLISECONDS at which the mute ends, present only when muted is true; 0 means muted indefinitely. Milliseconds is the same unit as POST /sessions/{sessionId}/chats/mute muteUntil, so a value read here can be written straight back.",
+            "example": 1786003600000
           }
         },
         "required": [
@@ -13870,6 +13876,12 @@
               "type": "object"
             }
           },
+          "chatStates": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
           "pluginInstances": {
             "type": "array",
             "items": {
@@ -13927,6 +13939,7 @@
           "templates",
           "baileysStoredMessages",
           "lidMappings",
+          "chatStates",
           "pluginInstances",
           "conversationMappings",
           "ingressEvents",
@@ -13967,6 +13980,10 @@
           "lidMappings": {
             "type": "number",
             "example": 64
+          },
+          "chatStates": {
+            "type": "number",
+            "example": 40
           },
           "pluginInstances": {
             "type": "number",
@@ -14009,6 +14026,7 @@
           "templates",
           "baileysStoredMessages",
           "lidMappings",
+          "chatStates",
           "pluginInstances",
           "conversationMappings",
           "ingressEvents",
@@ -14114,6 +14132,9 @@
                 "type": "array"
               },
               "lidMappings": {
+                "type": "array"
+              },
+              "chatStates": {
                 "type": "array"
               },
               "pluginInstances": {

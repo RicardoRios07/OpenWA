@@ -1,6 +1,26 @@
 import { BaileysSessionStore } from './baileys-session-store';
 import type { LidMappingStore } from '../identity/lid-mapping-store.service';
+import type { ChatStateStore, ChatStateValue } from './baileys-chat-state-store.service';
 import { userPart } from '../identity/wa-id';
+
+/** In-memory ChatStateStore for tests: remember() applies synchronously so a following read sees it. */
+class FakeChatStateStore implements ChatStateStore {
+  readonly rows = new Map<string, ChatStateValue>();
+  private key(s: string, c: string): string {
+    return `${s}\u0000${c}`;
+  }
+  get(s: string, c: string): ChatStateValue | undefined {
+    return this.rows.get(this.key(s, c));
+  }
+  remember(s: string, c: string, patch: Partial<ChatStateValue>): Promise<void> {
+    const existing = this.rows.get(this.key(s, c)) ?? { muteEndTime: null, archived: false, pinned: false };
+    this.rows.set(this.key(s, c), { ...existing, ...patch });
+    return Promise.resolve();
+  }
+  reload(): Promise<void> {
+    return Promise.resolve();
+  }
+}
 
 describe('BaileysSessionStore', () => {
   let store: BaileysSessionStore;
@@ -82,17 +102,85 @@ describe('BaileysSessionStore', () => {
       expect(chatFor({}).muted).toBe(false);
     });
 
-    it('reads the end time as milliseconds, the unit the mute round-trip is measured at', () => {
-      // chat-mute.spec.ts records the measurement: a seconds-scale value sent through
-      // chatModify({ mute }) left the chat unmuted, because that instant had already passed in
-      // 1970. Reading it back the same way keeps the write and the read on one unit — a
-      // seconds-scale stamp is an instant in 1970 here too, so it reads as expired.
-      expect(chatFor({ muteEndTime: Math.floor(Date.now() / 1000) + 3600 }).muted).toBe(false);
+    it('reads both units: epoch ms from an app-state write and epoch seconds from history sync', () => {
+      // A chatModify({ mute }) write echoes back the epoch-MS value the gateway passed; a history-sync
+      // Conversation.muteEndTime is epoch SECONDS (like conversationTimestamp on the same record). Both
+      // must read as muted while ahead, else a synced mute reads unmuted.
+      const nowS = Math.floor(Date.now() / 1000);
+      expect(chatFor({ muteEndTime: (nowS + 3600) * 1000 }).muted).toBe(true); // ms, still ahead
+      expect(chatFor({ muteEndTime: nowS + 3600 }).muted).toBe(true); // seconds, still ahead
+      expect(chatFor({ muteEndTime: nowS - 3600 }).muted).toBe(false); // seconds, already past
     });
 
     it('accepts a Long, which is what the proto actually hands over', () => {
       const asLong = { toNumber: () => Date.now() + 60 * 60 * 1000 };
       expect(chatFor({ muteEndTime: asLong }).muted).toBe(true);
+    });
+  });
+
+  describe('chat-state persistence (survives a reconnect Baileys cannot resync)', () => {
+    const SID = 'sess-1';
+    const CHAT = '628111@s.whatsapp.net';
+    let fake: FakeChatStateStore;
+    beforeEach(() => {
+      fake = new FakeChatStateStore();
+    });
+    // A fresh store sharing the SAME fake models a process restart: this.chats is empty and rebuilds
+    // from history sync, but the persisted state is retained.
+    const newStore = () => new BaileysSessionStore(undefined, SID, fake);
+    const chatOn = (s: BaileysSessionStore, over: Record<string, unknown>) => {
+      s.upsertChats([{ id: CHAT, name: 'Alice', ...over }]);
+      return s.listChats()[0];
+    };
+
+    it('persists a mute and reads it back as muted', () => {
+      expect(chatOn(newStore(), { muteEndTime: Date.now() + 60 * 60 * 1000 }).muted).toBe(true);
+      expect(fake.rows.size).toBe(1);
+    });
+
+    it('a fresh process reads a mute set before the restart, though history sync omits muteEndTime', () => {
+      chatOn(newStore(), { muteEndTime: Date.now() + 60 * 60 * 1000 });
+      // Restart: this.chats is rebuilt from a history-sync record with NO muteEndTime key.
+      expect(chatOn(newStore(), { name: 'Alice' }).muted).toBe(true);
+    });
+
+    it('a live unmute (muteEndTime: null) persists and reads unmuted, across a restart', () => {
+      const s = newStore();
+      chatOn(s, { muteEndTime: Date.now() + 3_600_000 });
+      expect(chatOn(s, { muteEndTime: null }).muted).toBe(false);
+      expect(chatOn(newStore(), { name: 'Alice' }).muted).toBe(false);
+    });
+
+    it('archived and pinned persist and survive a restart', () => {
+      chatOn(newStore(), { archived: true, pinned: 2 });
+      expect(chatOn(newStore(), { name: 'Alice' })).toMatchObject({ archived: true, pinned: true });
+    });
+
+    it('a partial update lacking the keys does not clobber persisted state', () => {
+      const s = newStore();
+      chatOn(s, { muteEndTime: Date.now() + 3_600_000, archived: true });
+      expect(chatOn(s, { name: 'Renamed' })).toMatchObject({ muted: true, archived: true });
+    });
+
+    it('normalizes a seconds-scale muteEndTime to ms on persist', () => {
+      const nowS = Math.floor(Date.now() / 1000);
+      chatOn(newStore(), { muteEndTime: nowS + 3600 });
+      expect(fake.get(SID, CHAT)?.muteEndTime).toBe((nowS + 3600) * 1000);
+      expect(chatOn(newStore(), { name: 'Alice' }).muted).toBe(true);
+    });
+
+    it('reports muteExpiration in ms when muted, absent when not, and survives a restart', () => {
+      const endMs = Date.now() + 90 * 60 * 1000;
+      expect(chatOn(newStore(), { muteEndTime: endMs })).toMatchObject({ muted: true, muteExpiration: endMs });
+      // Restart: the fresh store's this.chats has no muteEndTime, but the persisted expiry is read back.
+      expect(chatOn(newStore(), { name: 'Alice' })).toMatchObject({ muted: true, muteExpiration: endMs });
+      // An unmuted chat carries no expiry (undefined, so omitted from the JSON payload).
+      expect(chatOn(newStore(), { muteEndTime: null }).muteExpiration).toBeUndefined();
+    });
+
+    it('normalizes a seconds-scale expiry to ms for muteExpiration', () => {
+      const nowS = Math.floor(Date.now() / 1000);
+      expect(chatOn(newStore(), { muteEndTime: nowS + 3600 }).muteExpiration).toBe((nowS + 3600) * 1000);
     });
   });
 

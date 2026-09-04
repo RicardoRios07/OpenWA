@@ -115,6 +115,16 @@ export interface LidMappingRow {
   updatedAt: string;
 }
 
+export interface ChatStateRow {
+  sessionId: string;
+  chatId: string;
+  muteEndTime: number | null;
+  // boolean on Postgres, 0/1 on SQLite; carried through as-is like PluginInstanceRow.enabled.
+  archived: boolean | number;
+  pinned: boolean | number;
+  updatedAt: string;
+}
+
 export interface PluginInstanceRow {
   id: string;
   pluginId: string;
@@ -250,6 +260,7 @@ export interface MigrationTables {
   templates: TemplateRow[];
   baileysStoredMessages: BaileysStoredMessageRow[];
   lidMappings: LidMappingRow[];
+  chatStates: ChatStateRow[];
   pluginInstances: PluginInstanceRow[];
   conversationMappings: ConversationMappingRow[];
   ingressEvents: IngressEventRow[];
