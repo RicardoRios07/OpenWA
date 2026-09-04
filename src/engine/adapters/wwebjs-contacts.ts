@@ -8,6 +8,64 @@ import { type WwebjsEngineHost, withPage } from './wwebjs-host';
 /** The raw whatsapp-web.js contact element type, kept local so the wwebjs `Contact` type never leaks. */
 type RawWwebjsContact = Awaited<ReturnType<Client['getContacts']>>[number];
 
+/** The six fields {@link WwebjsContacts.toContact} reads, projected in-page by {@link readLeanContacts}. */
+interface LeanContact {
+  id: SerializedWid | string;
+  name?: string;
+  pushname?: string;
+  number: string;
+  isMyContact: boolean;
+  isBlocked: boolean;
+}
+
+/**
+ * Read the contact list IN-PAGE, projected to only the fields {@link WwebjsContacts.toContact} keeps,
+ * yielding to the page event loop every 256 contacts so the liveness probe's queued `getState()`
+ * evaluate can interleave (#1501). whatsapp-web.js's own `client.getContacts()` maps the same
+ * `window.WWebJS.getContactModel`, but over a `Promise.all` with no await for personal contacts, so it
+ * runs as one uninterrupted synchronous stretch that starves the probe on a large address book and
+ * makes the watchdog tear a healthy session down mid-read. The per-contact `serialize()` cost is
+ * unchanged; the yield is what makes the read probe-safe regardless of size.
+ *
+ * Reusing `getContactModel` keeps `id`/`number`/`name`/`pushname`/`isMyContact`/`isBlocked` byte
+ * identical to `getContacts()` (`Contact.number` is `data.userid`), and the raw `id` stays readable by
+ * {@link readWid} (`_serialized`, the post-rename `$1`, or a lid `phoneNumber` string all resolve).
+ * `BusinessProfile.find` is skipped: its only output, `res.businessProfile`, is not one of the six
+ * fields, so dropping it costs nothing and saves a network fetch per business contact.
+ */
+export async function readLeanContacts(): Promise<LeanContact[]> {
+  const w = window as unknown as {
+    require: (m: string) => { Contact: { getModelsArray: () => unknown[] } };
+    WWebJS: {
+      getContactModel: (contact: unknown) => {
+        id: SerializedWid | string;
+        name?: string;
+        pushname?: string;
+        userid: string;
+        isMyContact: boolean;
+        isBlocked: boolean;
+      };
+    };
+  };
+  const models = w.require('WAWebCollections').Contact.getModelsArray();
+  const out: LeanContact[] = [];
+  for (let i = 0; i < models.length; i++) {
+    const m = w.WWebJS.getContactModel(models[i]);
+    out.push({
+      id: m.id,
+      name: m.name,
+      pushname: m.pushname,
+      number: m.userid,
+      isMyContact: m.isMyContact,
+      isBlocked: m.isBlocked,
+    });
+    // ponytail: yield every 256 contacts so the getState() liveness probe can interleave (#1501);
+    // raise the stride if the read ever gets too chatty on a very large address book.
+    if ((i & 0xff) === 0xff) await new Promise(resolve => setTimeout(resolve));
+  }
+  return out;
+}
+
 /**
  * Contact operations extracted from WhatsAppWebJsAdapter. The adapter keeps the public methods as
  * thin forwarders and injects the shared host surface (./wwebjs-host) via closures, so the delegate
@@ -45,7 +103,12 @@ export class WwebjsContacts {
 
     let raw: RawWwebjsContact[];
     try {
-      raw = await this.client().getContacts();
+      // A direct in-page walk that yields so the liveness probe is not starved (see readLeanContacts,
+      // #1501), instead of whatsapp-web.js's atomic client.getContacts(). The projected rows are a
+      // strict subset of a Contact; the mapping below reads only those six fields.
+      const page = (this.client() as unknown as { pupPage?: { evaluate: <T>(fn: () => Promise<T>) => Promise<T> } })
+        .pupPage;
+      raw = ((await page?.evaluate(readLeanContacts)) ?? []) as unknown as RawWwebjsContact[];
     } catch (error) {
       // A dead page surfaces here as a raw Puppeteer error; convert it to the documented transport
       // failure the way wwebjs-chats.ts does, so a transport death answers 503 instead of a bare 500.
