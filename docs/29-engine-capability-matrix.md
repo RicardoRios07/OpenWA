@@ -728,19 +728,19 @@ with zero OpenWA surface. Baileys-only; whatsapp-web.js has no community API at 
 
 **Contacts & numbers** (11)
 
-| Library method                 | OpenWA exposure                                       |
-| ------------------------------ | ----------------------------------------------------- |
-| `deleteAddressbookContact`     | ✅ `deleteContact`                                    |
-| `getBlockedContacts`           | ✅ `getBlockedContacts`                               |
-| `getContactById`               | ✅ `getContactById`, `blockContact`, `unblockContact` |
-| `getContactDeviceCount`        | ❌ **not exposed**                                    |
-| `getContactLidAndPhone`        | ✅ `resolveContactPhone`                              |
-| `getContacts`                  | ✅ `getContacts`                                      |
-| `getCountryCode`               | ❌ **not exposed**                                    |
-| `getFormattedNumber`           | ❌ **not exposed**                                    |
-| `getNumberId`                  | ✅ `checkNumberExists`, `getNumberId`                 |
-| `isRegisteredUser`             | ❌ **not exposed**                                    |
-| `saveOrEditAddressbookContact` | ✅ `upsertContact`                                    |
+| Library method                 | OpenWA exposure                                                  |
+| ------------------------------ | ---------------------------------------------------------------- |
+| `deleteAddressbookContact`     | ✅ `deleteContact`                                               |
+| `getBlockedContacts`           | ✅ `getBlockedContacts`                                          |
+| `getContactById`               | ✅ `getContactById`, `blockContact`, `unblockContact`            |
+| `getContactDeviceCount`        | ❌ **not exposed**                                               |
+| `getContactLidAndPhone`        | ✅ `resolveContactPhone`                                         |
+| `getContacts`                  | ⚙️ read via a direct page walk, not `Client.getContacts` (#1501) |
+| `getCountryCode`               | ❌ **not exposed**                                               |
+| `getFormattedNumber`           | ❌ **not exposed**                                               |
+| `getNumberId`                  | ✅ `checkNumberExists`, `getNumberId`                            |
+| `isRegisteredUser`             | ❌ **not exposed**                                               |
+| `saveOrEditAddressbookContact` | ✅ `upsertContact`                                               |
 
 **Business** (2)
 
@@ -968,8 +968,8 @@ adapter sources — re-derive the same way when anything changes:
   **9** wwjs-only; `sendCatalog` (unavailable on both engines) is not exposed.
 - Full engine inventory (29.5), split by the exposure legend rather than lumped: Baileys **152**
   socket methods — 48 wired into interface methods, 5 internal wiring, 29 plumbing, **70 ❌ not
-  exposed** (incl. the whole 23-method community cluster); wwjs **81** Client methods — 44 wired,
-  2 internal wiring, 1 class plumbing, **34 ❌ not exposed** (26 real capabilities + 8
+  exposed** (incl. the whole 23-method community cluster); wwjs **81** Client methods — 43 wired,
+  3 internal wiring, 1 class plumbing, **34 ❌ not exposed** (26 real capabilities + 8
   session/transport settings that are not WhatsApp capabilities). The backlog is the ❌ rows minus
   those 8 settings; 🔩 plumbing is correctly never exposed.
 - Events: Baileys **34** (15 consumed / 19 dropped), wwjs **31** (16 consumed / 15 dropped).
