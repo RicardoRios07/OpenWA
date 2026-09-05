@@ -504,8 +504,10 @@ export interface ChatSummary {
   /**
    * Epoch MILLISECONDS at which the mute ends, present only when `muted` is true; `0` means muted
    * indefinitely. Milliseconds is the same unit as `POST /sessions/{sessionId}/chats/mute`
-   * `muteUntil`, so a value read here can be written straight back (`mute-chat.dto.ts` documents that
-   * unit and why a seconds value is a trap).
+   * `muteUntil`, so a FINITE value can be written straight back (`mute-chat.dto.ts` documents that
+   * unit and why a seconds value is a trap). The `0` an indefinite mute reports is the exception:
+   * `muteUntil` requires a real future instant, so re-apply an indefinite mute with a far-future
+   * timestamp rather than `0`.
    */
   muteExpiration?: number;
 }
