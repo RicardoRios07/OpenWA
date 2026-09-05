@@ -26,6 +26,7 @@ function groups(sock: Record<string, jest.Mock>, budgetMs: number): BaileysGroup
     toNeutralJid: (j: string) => j,
     toEngineJid: (j: string) => j,
     normalizedSelfJid: () => '628177@s.whatsapp.net',
+    addLidMappings: jest.fn(),
   } as unknown as BaileysGroupsHost;
   return new BaileysGroups(host, budgetMs);
 }
