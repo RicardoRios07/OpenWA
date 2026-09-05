@@ -46,7 +46,9 @@ export class ChatSummaryDto {
     description:
       'Epoch MILLISECONDS at which the mute ends, present only when muted is true; 0 means muted ' +
       'indefinitely. Milliseconds is the same unit as POST /sessions/{sessionId}/chats/mute ' +
-      'muteUntil, so a value read here can be written straight back.',
+      'muteUntil, so a finite value can be written straight back. The 0 an indefinite mute reports ' +
+      'is the exception: muteUntil requires a real future instant, so re-apply an indefinite mute ' +
+      'with a far-future timestamp rather than 0.',
     example: 1786003600000,
   })
   muteExpiration?: number;
