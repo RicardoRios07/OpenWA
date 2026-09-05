@@ -144,6 +144,25 @@ const TERMINAL_UNLINK_REASONS = new Set(['LOGOUT', 'UNPAIRED', 'UNPAIRED_IDLE', 
  * executeReconnect calls initializeEngine), so they stay in ONE service — splitting them would need
  * forwardRef(), which this codebase deliberately avoids.
  */
+/**
+ * The session-row fields a READY writes.
+ *
+ * An empty `phone` must NOT overwrite the bound number. whatsapp-web.js can momentarily report an
+ * empty phone at ready (client.info unreadable), and the account-binding guard in
+ * SessionEngineEventWiring skips an empty incoming phone rather than rebind-rejecting it, so writing
+ * it here would silently clear the stored number and drop the binding guard until the next non-empty
+ * ready. In that case keep the existing binding and update only the liveness fields.
+ */
+export function readyRowUpdate(phone: string, pushName: string, at: Date) {
+  return {
+    status: SessionStatus.READY,
+    ...(phone ? { phone } : {}),
+    pushName,
+    connectedAt: at,
+    lastActiveAt: at,
+  };
+}
+
 @Injectable()
 export class SessionEngineLifecycle {
   private readonly logger = createLogger('SessionEngineLifecycle');
@@ -777,20 +796,12 @@ export class SessionEngineLifecycle {
     // one-shot recovery budget is re-armed for a future episode.
     this.stuckAuthRecoveryUsed.delete(id);
 
-    void this.sessionRepository
-      .update(id, {
-        status: SessionStatus.READY,
-        phone,
-        pushName,
-        connectedAt: new Date(),
-        lastActiveAt: new Date(),
-      })
-      .catch(err =>
-        this.logger.warn('Failed to persist session ready state', {
-          sessionId: id,
-          error: err instanceof Error ? err.message : String(err),
-        }),
-      );
+    void this.sessionRepository.update(id, readyRowUpdate(phone, pushName, new Date())).catch(err =>
+      this.logger.warn('Failed to persist session ready state', {
+        sessionId: id,
+        error: err instanceof Error ? err.message : String(err),
+      }),
+    );
 
     // Best-effort snapshot of the account's own contacts' currently-active statuses. Live status
     // posts arrive through onMessage below; this just backfills what was already up before we
