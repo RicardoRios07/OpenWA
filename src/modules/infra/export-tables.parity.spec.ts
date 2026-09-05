@@ -199,3 +199,16 @@ describe('InfraDataService.exportData validates the registry against live entity
     expect(query).not.toHaveBeenCalled();
   });
 });
+
+describe('the import clears every re-inserted table that DELETE FROM sessions cannot cascade', () => {
+  it('clears the (sessionId, *) provenance tables (lid_mappings, chat_states) before the sessions delete', () => {
+    const src = readFileSync(join(__dirname, 'infra-data.service.ts'), 'utf8');
+    const cleared = new Set([...src.matchAll(/clearTable\('([a-z_]+)'\)/g)].map(m => m[1]));
+    // These tables carry no FK to sessions (the sessionId is provenance, not a foreign key), so the
+    // import's `DELETE FROM sessions` never reaches them. They are re-inserted from the archive, so
+    // without an explicit clear a restore onto an instance that already holds their rows collides on
+    // PK and the all-or-nothing gate rolls the whole import back (the exact restore-onto-self flow).
+    expect(cleared).toContain('lid_mappings');
+    expect(cleared).toContain('chat_states');
+  });
+});

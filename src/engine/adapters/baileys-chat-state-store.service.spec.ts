@@ -78,6 +78,25 @@ describe('ChatStateStoreService', () => {
     expect(svc.get('s', 'c')).toBeDefined();
   });
 
+  it('preserves persisted siblings when a partial patch lands on a cache-missed chat', async () => {
+    // A muted + archived chat whose row is persisted but NOT in the in-memory cache (evicted, or an
+    // old row outside the newest-maxEntries reload window). A partial `chats.update` carrying only
+    // `{ pinned }` must merge onto the persisted row, not DEFAULT_STATE, or it silently wipes the mute.
+    const repo = makeRepo([{ sessionId: 's', chatId: 'c', muteEndTime: 999, archived: true, pinned: false }]);
+    const svc = svcWith(repo); // no reload(): the row is on disk but absent from the cache
+    await svc.remember('s', 'c', { pinned: true });
+    expect(svc.get('s', 'c')).toEqual({ muteEndTime: 999, archived: true, pinned: true });
+    expect(repo.rows.get(KEY('s', 'c'))).toMatchObject({ muteEndTime: 999, archived: true, pinned: true });
+  });
+
+  it('does not churn a row when a cache-missed patch matches the persisted state', async () => {
+    const repo = makeRepo([{ sessionId: 's', chatId: 'c', muteEndTime: 999, archived: true, pinned: false }]);
+    const svc = svcWith(repo);
+    await svc.remember('s', 'c', { archived: true }); // already true on disk -> no write
+    expect(repo.upsert).not.toHaveBeenCalled();
+    expect(svc.get('s', 'c')).toEqual({ muteEndTime: 999, archived: true, pinned: false });
+  });
+
   it('warms a cache miss from the table so the next read hits', async () => {
     const svc = svcWith(makeRepo([{ sessionId: 's', chatId: 'c', muteEndTime: 5, archived: false, pinned: true }]));
     // No reload: the cache is empty, so the first read misses and schedules a background lookup.
@@ -89,7 +108,7 @@ describe('ChatStateStoreService', () => {
   it('swallows a repo error on reload and remember (table may not exist yet)', async () => {
     const repo = {
       find: jest.fn(() => Promise.reject(new Error('no such table'))),
-      findOne: jest.fn(),
+      findOne: jest.fn(() => Promise.reject(new Error('no such table'))),
       upsert: jest.fn(() => Promise.reject(new Error('no such table'))),
     };
     const svc = new ChatStateStoreService(repo as unknown as Repository<ChatState>);

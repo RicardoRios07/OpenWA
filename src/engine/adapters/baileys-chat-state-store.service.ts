@@ -27,7 +27,8 @@ const SEP = '\u0000'; // a null byte never appears in a session name or JID, so 
 
 // ponytail: one global LRU across all sessions, default 5000, matching the other engine maps. A
 // many-session deployment with large chat lists should raise BAILEYS_CHAT_STATE_CACHE_MAX; an evicted
-// row stays persisted and warms back on the next read, so eviction costs a re-read, never data loss.
+// row stays persisted and both paths read-through on a miss (the read warms lazily, the write merges
+// the patch onto the persisted row), so eviction costs a re-read, never data loss.
 export const CHAT_STATE_CACHE_DEFAULT = 5000;
 
 /**
@@ -92,15 +93,25 @@ export class ChatStateStoreService implements ChatStateStore, OnModuleInit {
 
   async remember(sessionId: string, chatId: string, patch: Partial<ChatStateValue>): Promise<void> {
     const k = this.key(sessionId, chatId);
-    const existing = this.states.get(k) ?? DEFAULT_STATE;
+    // The merge base must be the CURRENT state, not DEFAULT_STATE, or a partial `chats.update` (Baileys
+    // emits single-field patches, e.g. `{ pinned }` alone) would reset the columns it omits. On a cache
+    // miss the persisted row is that base: the read path warms lazily, but the write path upserts every
+    // column, so it has to read-through first or a lone pin update on an evicted muted chat wipes its
+    // mute. A row absent from the table resolves to DEFAULT_STATE, which is the correct base for a chat
+    // whose state has never been persisted.
+    let existing = this.states.get(k);
+    if (!existing) {
+      const row = await this.repo.findOne({ where: { sessionId, chatId } }).catch(() => null);
+      existing = row ? { muteEndTime: row.muteEndTime, archived: row.archived, pinned: row.pinned } : DEFAULT_STATE;
+    }
     const next: ChatStateValue = { ...existing, ...patch };
     if (
-      this.states.has(k) &&
       existing.muteEndTime === next.muteEndTime &&
       existing.archived === next.archived &&
       existing.pinned === next.pinned
     ) {
-      return; // no-op write would just churn updatedAt
+      this.index(k, next); // warm the cache even on a no-op so the next read is a hit
+      return; // nothing changed against the current state; skip the write that would just churn updatedAt
     }
     this.index(k, next);
     try {
