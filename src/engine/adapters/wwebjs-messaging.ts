@@ -618,6 +618,11 @@ export class WwebjsMessaging {
       // id, not this chatId, so LID-resolving the lookup gives no send benefit and would miss a message
       // stored under the pre-migration @c.us chat (#583 R1 review).
       const chat = await this.client().getChatById(chatId);
+      // getChatById RESOLVES undefined for an unknown chat (wwebjs does not throw); guard it so the
+      // caller gets the 404 editMessage returns rather than a TypeError surfacing as an opaque 500.
+      if (!chat) {
+        throw new MessageNotFoundError(messageId, chatId);
+      }
       const messages = await chat.fetchMessages({ limit: 100 });
       const message = messages.find(m => m.id._serialized === messageId);
       if (!message) {
@@ -632,6 +637,9 @@ export class WwebjsMessaging {
     this.host.ensureReady();
     const reactions = await this.withPage('getMessageReactions', async () => {
       const chat = await this.client().getChatById(chatId);
+      if (!chat) {
+        throw new MessageNotFoundError(messageId, chatId);
+      }
       const messages = await chat.fetchMessages({ limit: 100 });
       const message = messages.find(m => m.id._serialized === messageId);
       if (!message) {
@@ -669,6 +677,12 @@ export class WwebjsMessaging {
     this.host.ensureReady();
     const messages = await this.withPage('getChatHistory', async () => {
       const chat = await this.client().getChatById(chatId);
+      // Unknown chat: getChatById resolves undefined rather than throwing. A chat this account cannot
+      // see has no history to return, so yield an empty page instead of dereferencing undefined (a
+      // TypeError that would surface as a 500).
+      if (!chat) {
+        return [];
+      }
       return chat.fetchMessages({ limit });
     });
     const results: IncomingMessage[] = [];
@@ -754,6 +768,9 @@ export class WwebjsMessaging {
     // the pre-migration @c.us chat (#583 R1 review).
     await this.withPage('deleteMessage', async () => {
       const chat = await this.client().getChatById(chatId);
+      if (!chat) {
+        throw new MessageNotFoundError(messageId, chatId);
+      }
       const messages = await chat.fetchMessages({ limit: 100 });
       const message = messages.find(m => m.id._serialized === messageId || m.id.id === messageId);
       if (!message) {
