@@ -596,6 +596,10 @@ export class InfraDataService {
         // lid_mappings is not a FK to sessions, so the sessions DELETE below won't clear it; clear it
         // explicitly so a restore replaces the cache rather than colliding on existing lid PKs.
         await clearTable('lid_mappings');
+        // chat_states is the same case: PK (sessionId, chatId), no FK to sessions, so the sessions DELETE
+        // does not reach it. Without this, a restore onto an instance that already holds chat_states rows
+        // collides on those PKs and the all-or-nothing gate rolls the whole import back.
+        await clearTable('chat_states');
         // Integration Fabric + both DLQs: none carry an FK constraint to sessions (sessionId is provenance),
         // so clearing them here before the sessions DELETE keeps the replace-semantics complete.
         await clearTable('plugin_instances');
