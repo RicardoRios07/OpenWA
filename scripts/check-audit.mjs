@@ -31,26 +31,7 @@ import { fileURLToPath } from 'node:url';
  * Keep this list empty whenever possible. An entry belongs here only when there is no patched
  * version to move to, the reachable path is understood, and the fix is upstream rather than ours.
  */
-const ALLOWLIST = [
-  {
-    id: 'GHSA-jmr9-qjv8-65gv',
-    package: 'extract-zip',
-    reason:
-      'No patched version exists — the advisory covers extract-zip * and 2.0.1 is the latest publish. ' +
-      'It reaches us only through @puppeteer/browsers <=2.13.2, which puppeteer-core 24.38.0 pins EXACTLY, ' +
-      'and puppeteer 24.38.0 is itself pinned exactly by whatsapp-web.js 1.34.7 — so nothing we can express ' +
-      'in overrides moves it. @puppeteer/browsers 3.x drops extract-zip for modern-tar, but forcing it past ' +
-      'those pins pulls yargs 18 and modern-tar (both type:module) into a CommonJS Jest run and 60 suites ' +
-      'fail to load; that was measured, not assumed. ' +
-      'Reachability: the vulnerable path is zip extraction inside `puppeteer browsers install`, which this ' +
-      'repo calls once, at IMAGE BUILD time, on amd64 only (Dockerfile — arm64 symlinks Debian chromium and ' +
-      'never calls it), against a version-pinned Chrome for Testing build fetched from Google over HTTPS. ' +
-      'Nothing in the shipped image extracts a zip through this path at runtime.',
-    removeWhen:
-      'whatsapp-web.js ships a release whose puppeteer pin carries @puppeteer/browsers 3.x. Re-check with ' +
-      '`npm view whatsapp-web.js dependencies.puppeteer` then `npm view puppeteer-core@<v> dependencies`.',
-  },
-];
+const ALLOWLIST = [];
 
 const BLOCKING = new Set(['high', 'critical']);
 

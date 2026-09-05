@@ -97,6 +97,7 @@
     "https-proxy-agent": "^9.1.0",
     "ioredis": "^6.0.0",
     "pg": "^8.23.0",
+    "puppeteer": "24.38.0",
     "qrcode": "^1.5.4",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
@@ -191,6 +192,7 @@
       "^@whiskeysockets/baileys/(.*)$": "<rootDir>/../test/__mocks__/@whiskeysockets/baileys.ts",
       "^archiver$": "<rootDir>/../test/__mocks__/archiver.ts",
       "^https-proxy-agent$": "<rootDir>/../test/__mocks__/https-proxy-agent.ts",
+      "^puppeteer$": "<rootDir>/../test/__mocks__/puppeteer.ts",
       "^socks-proxy-agent$": "<rootDir>/../test/__mocks__/socks-proxy-agent.ts"
     },
     "collectCoverageFrom": [
@@ -445,6 +447,7 @@
     ]
   },
   "overrides": {
+    "@puppeteer/browsers": "3.2.1",
     "shell-quote": "^1.10.0",
     "brace-expansion": "^5.0.9",
     "ip-address": "^10.4.0",

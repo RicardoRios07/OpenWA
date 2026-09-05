@@ -190,6 +190,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (malformed IPv6 normalisation, repeated hostname percent-decoding). It arrives under `ajv`, whose
   range already allows the patched version, and reaches the runtime tree through
   `@modelcontextprotocol/sdk`, so this one does ship.
+- Force `@puppeteer/browsers` to 3.x through an override, dropping the vulnerable `extract-zip` and
+  closing `GHSA-jmr9-qjv8-65gv`. whatsapp-web.js pins Puppeteer 24, which pins the affected
+  `@puppeteer/browsers` range, so the override moves only that transitive package and leaves
+  Puppeteer 24 in place. The amd64 image installs `unzip` for `@puppeteer/browsers` 3's Chrome for
+  Testing extraction. Thanks @raoulmusci.
 
 ## [0.23.3] - 2026-08-24
 
