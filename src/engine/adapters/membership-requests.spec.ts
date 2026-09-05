@@ -230,6 +230,7 @@ function makeBaileysGroups(): { groups: BaileysGroups; sock: BaileysSockStub } {
     toNeutralJid: jid => jid.replace('@s.whatsapp.net', '@c.us'),
     toEngineJid: jid => jid.replace('@c.us', '@s.whatsapp.net'),
     normalizedSelfJid: () => '628999@c.us',
+    addLidMappings: jest.fn(),
   };
   return { groups: new BaileysGroups(host), sock };
 }
