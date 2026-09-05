@@ -18,7 +18,7 @@ import {
 import { toEngineParticipants } from './baileys-groups';
 import { buildVCard } from './vcard';
 import { loadRemoteMediaBuffer } from '../../common/media/load-remote-media';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, InternalServerErrorException } from '@nestjs/common';
 import { EngineRefusedError } from '../../common/errors/engine-refused.error';
 import { MessageNotFoundError } from '../../common/errors/message-not-found.error';
 import { type createLogger } from '../../common/services/logger.service';
@@ -85,6 +85,21 @@ function isWebpBuffer(data: Buffer): boolean {
  * `{ animated: true }` is not optional — without it sharp silently keeps only the first frame, which
  * would reintroduce the same quiet-corruption this function exists to remove.
  */
+/**
+ * Load the deferred `sharp` binary, mapping a LOAD failure to a 500 rather than the decode path's 400.
+ * A native-binary load failure (older CPU, stripped/musl image, missing prebuilt) is a host capability
+ * gap: a valid PNG would hit it too, so reporting it as a 400 tells the caller their image is malformed.
+ */
+export async function loadSharp() {
+  try {
+    return (await import('sharp')).default;
+  } catch (error) {
+    throw new InternalServerErrorException(
+      `Sticker conversion is unavailable: sharp could not load (${error instanceof Error ? error.message : String(error)}).`,
+    );
+  }
+}
+
 async function toWebpSticker(data: Buffer, mimetype: string): Promise<Buffer> {
   if (isWebpBuffer(data)) {
     return data;
@@ -97,13 +112,13 @@ async function toWebpSticker(data: Buffer, mimetype: string): Promise<Buffer> {
       `A sticker must be a WebP image, or an image this gateway can convert to one. Received '${mimetype}'.`,
     );
   }
+  // Imported lazily so an unusable `sharp` (a native binary that will not build or load on an older
+  // CPU, a stripped image) degrades ONLY this one Baileys sticker route instead of killing the whole
+  // gateway at boot. `sharp` sits at the top of a module the built-in engine loads unconditionally, so
+  // an eager import made a single optional capability a hard boot requirement on both engines. Same
+  // deferral the adapters already use for the engine libraries themselves.
+  const sharp = await loadSharp();
   try {
-    // Imported lazily so an unusable `sharp` (a native binary that will not build or load on an
-    // older CPU, a stripped image) degrades ONLY this one Baileys sticker route instead of killing
-    // the whole gateway at boot. `sharp` sits at the top of a module the built-in engine loads
-    // unconditionally, so an eager import made a single optional capability a hard boot requirement
-    // on both engines. Same deferral the adapters already use for the engine libraries themselves.
-    const { default: sharp } = await import('sharp');
     return await sharp(data, { animated: true })
       .resize(512, 512, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
       .webp()
