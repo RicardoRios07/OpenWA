@@ -67,10 +67,10 @@
     "migration:show:main:prod": "npm run typeorm:prod -- migration:show -d dist/database/data-source-main.js"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.1121.0",
-    "@bull-board/api": "^9.5.0",
-    "@bull-board/express": "^9.5.0",
-    "@bull-board/nestjs": "^9.5.0",
+    "@aws-sdk/client-s3": "^3.1125.0",
+    "@bull-board/api": "^9.8.0",
+    "@bull-board/express": "^9.8.0",
+    "@bull-board/nestjs": "^9.8.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@nestjs/bullmq": "^11.0.5",
     "@nestjs/common": "^11.2.3",
@@ -89,7 +89,7 @@
     "archiver": "^8.0.0",
     "audio-decode": "^2.2.3",
     "better-sqlite3": "^13.0.3",
-    "bullmq": "^6.3.2",
+    "bullmq": "^6.3.4",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
     "dockerode": "^5.0.1",
@@ -105,8 +105,8 @@
     "socket.io": "^4.8.3",
     "socks-proxy-agent": "^10.1.0",
     "tar-stream": "3.2.0",
-    "typeorm": "^1.1.0",
-    "undici": "^8.10.0",
+    "typeorm": "^1.1.1",
+    "undici": "^8.10.1",
     "whatsapp-web.js": "1.34.7",
     "zod": "^4.5.4"
   },
@@ -129,15 +129,15 @@
     "eslint": "^10.9.1",
     "eslint-config-prettier": "^10.0.1",
     "eslint-plugin-prettier": "^5.5.6",
-    "globals": "^17.11.0",
-    "jest": "^30.5.0",
+    "globals": "^17.12.0",
+    "jest": "^30.5.1",
     "prettier": "^3.9.6",
     "supertest": "^7.0.0",
     "ts-jest": "^29.4.12",
     "ts-node": "^10.9.2",
     "tsconfig-paths": "^4.2.0",
     "typescript": "~6.0.3",
-    "typescript-eslint": "^8.68.0"
+    "typescript-eslint": "^8.69.0"
   },
   "jest": {
     "moduleFileExtensions": [
@@ -201,10 +201,10 @@
     "coverageDirectory": "../coverage",
     "coverageThreshold": {
       "global": {
-        "branches": 61,
-        "functions": 70,
-        "lines": 68,
-        "statements": 67
+        "branches": 54,
+        "functions": 68,
+        "lines": 60,
+        "statements": 61
       },
       "./src/common/cache/": {
         "branches": 34,
@@ -415,6 +415,54 @@
         "functions": 89,
         "lines": 90,
         "statements": 87
+      },
+      "./src/modules/call/": {
+        "branches": 62,
+        "functions": 57,
+        "lines": 82,
+        "statements": 79
+      },
+      "./src/modules/catalog/": {
+        "branches": 68,
+        "functions": 88,
+        "lines": 89,
+        "statements": 87
+      },
+      "./src/modules/channel/": {
+        "branches": 73,
+        "functions": 41,
+        "lines": 76,
+        "statements": 75
+      },
+      "./src/modules/health/": {
+        "branches": 77,
+        "functions": 66,
+        "lines": 90,
+        "statements": 87
+      },
+      "./src/modules/label/": {
+        "branches": 39,
+        "functions": 42,
+        "lines": 45,
+        "statements": 44
+      },
+      "./src/modules/profile/": {
+        "branches": 78,
+        "functions": 84,
+        "lines": 88,
+        "statements": 85
+      },
+      "./src/modules/settings/": {
+        "branches": 50,
+        "functions": 0,
+        "lines": 85,
+        "statements": 81
+      },
+      "./src/modules/takeover/": {
+        "branches": 74,
+        "functions": 70,
+        "lines": 85,
+        "statements": 83
       }
     },
     "testEnvironment": "node",

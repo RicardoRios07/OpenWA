@@ -7,25 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Inbound commerce messages arrive typed `order` and `product` instead of a bodyless `unknown`, on both engines, and are accepted by webhook and automation-rule message-type filters.
+- The Python SDK's `ChatHistoryMessage` carries the commerce `order` and `product` blocks, with required fields and enums matching the contract.
+
 ### Fixed
 
-- A Baileys session retrying a dropped connection now reports the loop: `lastError` on
-  `GET /sessions/{sessionId}` says which attempt it is on and how long it has been down, the
-  `session.reconnect_loop` webhook fires every fifth attempt, and the reconnect metrics move. The
-  engine retries internally and never reported a disconnect, so an operator had nothing to look at
-  while a session sat at `initializing` for hours
-  ([#1546](https://github.com/rmyndharis/OpenWA/issues/1546)). Thanks @OdaiAhmed99 for the report.
-- The dashboard session card keeps showing the phone number, session id and last-active time while a
-  linked session reconnects, instead of the pairing placeholder that read as an unlinked account
-  ([#1546](https://github.com/rmyndharis/OpenWA/issues/1546)). Thanks @OdaiAhmed99 for the report.
-- The Sessions page reports a dead live-event feed and offers a retry, and re-reads the list once the
-  feed comes back. The socket gives up after five attempts, and the page kept rendering whatever
-  status arrived last with no indication that it had stopped updating.
-- A session left `ready` or `initializing` by a node that never came back is marked disconnected by
-  the takeover sweep. The boot reset skips a row still claimed by another node id, and a container
-  recreate changes that id by default, so with `AUTO_START_SESSIONS` off nothing revisited the row and
-  it went on reporting an engine no process was running. The sweep now runs regardless of that flag;
-  adopting a session still requires it.
+- A Baileys reconnect loop is observable: `lastError` on the session, a `session.reconnect_loop` webhook every fifth attempt, and reconnect metrics ([#1546](https://github.com/rmyndharis/OpenWA/issues/1546)). Thanks @OdaiAhmed99 for the report.
+- The dashboard session card keeps the phone number, session id and last-active time while a linked session reconnects, instead of the pairing placeholder ([#1546](https://github.com/rmyndharis/OpenWA/issues/1546)). Thanks @OdaiAhmed99 for the report.
+- The Sessions page reports a dead live-event feed and re-reads the list once the feed recovers.
+- The takeover sweep marks sessions left `ready` or `initializing` by a node that never returned disconnected, regardless of `AUTO_START_SESSIONS`.
+- Branch Docker images (`:main`, sha tags) rebuild the production apt layer, so they cannot serve stale OS packages from the build cache.
+- The Message Tester's bulk-recipients file picker refuses files over 2 MB before reading them.
+- A misspelled `LOG_LEVEL` fails the boot naming the accepted values, instead of silently logging at info.
+- Dependabot can open better-sqlite3 13.x patch and minor updates again; the freeze now starts at v14.
 
 ## [0.23.4] - 2026-09-05
 
