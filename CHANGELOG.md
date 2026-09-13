@@ -7,15 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.5] - 2026-09-13
+
+### Security
+
+- The group invite-code read, over REST or the MCP `GroupGetInviteCode` tool, requires the OPERATOR role; the code is a transferable join capability, so a VIEWER key can no longer extract it ([GHSA-45fh-xj7x-vj2x](https://github.com/rmyndharis/OpenWA/security/advisories/GHSA-45fh-xj7x-vj2x)). Thanks Matija Petronijević for the report.
+
 ### Added
 
-- Inbound commerce messages arrive typed `order` and `product` instead of a bodyless `unknown`, on both engines, and are accepted by webhook and automation-rule message-type filters.
+- Inbound commerce messages arrive typed `order` and `product` instead of a bodyless `unknown`, on both engines, and are accepted by webhook and automation-rule message-type filters ([#1547](https://github.com/rmyndharis/OpenWA/pull/1547)). Thanks @m7fz7.
 - The Python SDK's `ChatHistoryMessage` carries the commerce `order` and `product` blocks, with required fields and enums matching the contract.
 
 ### Fixed
 
 - The Baileys live path drops contentless protocol traffic (sender-key distributions, message-history notices) instead of delivering it as a bodyless `unknown` `message.received`, matching what the history path already does ([#1568](https://github.com/rmyndharis/OpenWA/issues/1568)). Thanks @berodcdev for the report.
-- The group invite-code read, over REST or the MCP `GroupGetInviteCode` tool, requires the OPERATOR role; the code is a transferable join capability, so a VIEWER key can no longer extract it.
 - A Baileys reconnect loop is observable: `lastError` on the session, a `session.reconnect_loop` webhook every fifth attempt, and reconnect metrics; a connection attempt refused at the WebSocket upgrade is closed and retried instead of leaving the session at `initializing` ([#1546](https://github.com/rmyndharis/OpenWA/issues/1546)). Thanks @OdaiAhmed99 for the report.
 - The dashboard session card keeps the phone number, session id and last-active time while a linked session reconnects, instead of the pairing placeholder ([#1546](https://github.com/rmyndharis/OpenWA/issues/1546)). Thanks @OdaiAhmed99 for the report.
 - The Sessions page reports a dead live-event feed and re-reads the list once the feed recovers.
@@ -23,9 +28,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The webhook docs state that at the default limits media above about 768 KiB reaches webhooks as the omitted marker, and how to raise both limits ([#1569](https://github.com/rmyndharis/OpenWA/issues/1569)). Thanks @Magnarks for the report.
 - The takeover sweep marks sessions left `ready` or `initializing` by a node that never returned disconnected, regardless of `AUTO_START_SESSIONS`.
 - Branch Docker images (`:main`, sha tags) rebuild the production apt layer, so they cannot serve stale OS packages from the build cache.
+- The Docker image upgrades the Debian packages inherited from the digest-pinned `node:22-slim` base at build time, so security fixes published after the base snapshot reach them; this clears CVE-2026-86145 and CVE-2026-89161 in `libpcre2-8-0`.
 - The Message Tester's bulk-recipients file picker refuses files over 2 MB before reading them.
 - A misspelled `LOG_LEVEL` fails the boot naming the accepted values, instead of silently logging at info.
 - Dependabot can open better-sqlite3 13.x patch and minor updates again; the freeze now starts at v14.
+
+### Dependencies
+
+- `multer` 2.2.0 to 2.3.0 via an override, closing three high-severity multipart denial-of-service advisories. It ships in the runtime tree.
 
 ## [0.23.4] - 2026-09-05
 

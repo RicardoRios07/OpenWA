@@ -90,7 +90,12 @@ ARG TARGETARCH
 # cost with --no-install-recommends: ~210 MB, and no new fixable CRITICAL/HIGH findings under the
 # release image scan. It is the Debian package rather than a bundled static build precisely so that
 # codec CVEs arrive through the same security stream as everything else here.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+#
+# `apt-get upgrade` runs first because the base is pinned by digest: the Debian packages it ships
+# (libpcre2, libc, openssl and the rest) keep that snapshot's versions, and `apt-get install` upgrades
+# only the packages it names. A bookworm-security fix published after the snapshot reaches them here,
+# and the release workflow rebuilds this layer without cache so the fix is actually picked up.
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     $([ "$TARGETARCH" = arm64 ] && echo "chromium chromium-sandbox") \
     fonts-liberation \
     libappindicator3-1 \
