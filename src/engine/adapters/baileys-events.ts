@@ -718,16 +718,20 @@ export class BaileysEvents {
 
   /**
    * Download inbound media via a stream, accumulating chunks but ABORTING (destroy + discard) once the
-   * running total exceeds `maxBytes`. Returns null on abort. Uses `downloadMediaMessage(..., 'stream')`
-   * (not the raw `downloadContentFromMessage`) so the library's expired-media re-upload retry is kept;
-   * for under-cap media the concatenated buffer is byte-identical to the 'buffer' mode it replaces.
+   * running total exceeds `maxBytes`. On that abort it resolves `{ overflowBytes }`, the bytes received
+   * when the cap tripped; past the wall-clock deadline it resolves null. Uses
+   * `downloadMediaMessage(..., 'stream')` (not the raw `downloadContentFromMessage`) so the library's
+   * expired-media re-upload retry is kept; for under-cap media the concatenated buffer is byte-identical
+   * to the 'buffer' mode it replaces.
    */
-  private async downloadInboundMediaCapped(msg: WAMessage, maxBytes: number): Promise<Buffer | null> {
+  private async downloadInboundMediaCapped(
+    msg: WAMessage,
+    maxBytes: number,
+  ): Promise<Buffer | { overflowBytes: number } | null> {
     // Hold the stream handle in the outer scope so the timeout can destroy it. A genuine
-    // download/read error still rejects (propagating to the caller's catch as before); only a
-    // wall-clock timeout or the byte-cap overflow resolves to null.
+    // download/read error still rejects (propagating to the caller's catch as before).
     let stream: (AsyncIterable<Buffer> & { destroy?: () => void }) | undefined;
-    const download = (async (): Promise<Buffer | null> => {
+    const download = (async (): Promise<Buffer | { overflowBytes: number }> => {
       const b = await this.host.loadLib();
       stream = (await b.downloadMediaMessage(
         msg,
@@ -745,7 +749,7 @@ export class BaileysEvents {
         total += chunk.length;
         if (total > maxBytes) {
           stream.destroy?.();
-          return null;
+          return { overflowBytes: total };
         }
         chunks.push(chunk);
       }
@@ -754,7 +758,7 @@ export class BaileysEvents {
 
     // A slow/trickling sender never trips the byte cap, so without a deadline it pins a concurrency
     // slot (and, on Baileys, the whole inbound handler) indefinitely. On timeout, destroy the stream
-    // and treat it as no usable media (same null the cap-abort returns).
+    // and treat it as no usable media.
     return withInboundDownloadTimeout(download, inboundMediaTimeoutMs(), () => stream?.destroy?.());
   }
 
@@ -822,8 +826,9 @@ export class BaileysEvents {
     const declared = coerceDeclaredSize(subMessage?.fileLength);
 
     if (declared > maxBytes) {
-      // Pre-download gate: an honest over-cap sender's media is never decrypted into heap at all
-      // (Baileys integrity-checks content against the declared size, so this is a robust bound).
+      // Pre-download gate: an honest over-cap sender's media is never decrypted into heap at all.
+      // Baileys does not check the decrypted bytes against the declared size, so a sender can
+      // understate it; the streaming abort below is the bound for that case.
       this.host.logger.warn('Inbound media declared size exceeds MEDIA_DOWNLOAD_MAX_BYTES; skipped download', {
         msgId: msg.key.id,
         sizeBytes: declared,
@@ -836,11 +841,22 @@ export class BaileysEvents {
       // can't materialise an over-cap blob. For under-cap media this yields the identical buffer.
       const buf = await this.downloadInboundMediaCapped(msg, maxBytes);
       if (buf === null) {
-        this.host.logger.warn(
-          'Inbound media download aborted (over MEDIA_DOWNLOAD_MAX_BYTES or past MEDIA_DOWNLOAD_TIMEOUT_MS); emitting omitted marker',
-          { msgId: msg.key.id },
-        );
-        return { mimetype, filename, omitted: true, sizeBytes: maxBytes };
+        // Nothing proves the real size, so report the declared one, as the failure branch below does.
+        this.host.logger.warn('Inbound media download passed MEDIA_DOWNLOAD_TIMEOUT_MS; emitting omitted marker', {
+          msgId: msg.key.id,
+          sizeBytes: declared,
+        });
+        return { mimetype, filename, omitted: true, sizeBytes: declared };
+      }
+      if (!Buffer.isBuffer(buf)) {
+        // The bytes received are a lower bound above the cap; the declared size passed the pre-gate, so
+        // it is smaller and says nothing here.
+        const sizeBytes = buf.overflowBytes;
+        this.host.logger.warn('Inbound media download exceeded MEDIA_DOWNLOAD_MAX_BYTES; emitting omitted marker', {
+          msgId: msg.key.id,
+          sizeBytes,
+        });
+        return { mimetype, filename, omitted: true, sizeBytes };
       }
       // capInboundMedia is the last line (lazy base64, never persist/webhook/broadcast an over-cap
       // blob); the real heap bound is the pre-gate + streaming abort + concurrency limiter.
@@ -853,7 +869,7 @@ export class BaileysEvents {
     } catch (err) {
       // A download failure yields the omitted marker, never a propagated throw: the media field stays
       // present, matching the skip/pre-gate/abort exits above. The declared size is the honest number
-      // here, since nothing was downloaded and the cap the abort reports would be a fabrication.
+      // here: the download never completed, so no measured size exists.
       this.host.logger.warn('Inbound media download failed; emitting the omitted marker', {
         error: err instanceof Error ? err.message : String(err),
         msgId: msg.key.id,

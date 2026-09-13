@@ -1,5 +1,6 @@
 import * as path from 'path';
 import * as fs from 'fs';
+import type { ClientRequest, IncomingMessage } from 'http';
 import type { Agent } from 'https';
 import * as qrcode from 'qrcode';
 import { HttpsProxyAgent } from 'https-proxy-agent';
@@ -34,6 +35,14 @@ const BAILEYS_BROWSER: [string, string, string] = [
  * transport surfaces as a retryable 502 instead of wedging the session.
  */
 const BAILEYS_LOGOUT_ACK_TIMEOUT_MS = 8_000;
+
+/**
+ * Backstop for a socket whose WebSocket never leaves CONNECTING, which emits no open, error or close
+ * and so never reaches the reconnect path. Above Baileys' connectTimeoutMs (20 s by default), which
+ * ws already enforces on a handshake that gets no answer, and applied only while the WebSocket is
+ * still connecting, so it never cuts into a login or a socket waiting for its QR to be scanned.
+ */
+const BAILEYS_WS_CONNECTING_DEADLINE_MS = 60_000;
 
 /**
  * Build the Node-layer agent for a session egress proxy (#859). Both the WhatsApp WebSocket
@@ -129,6 +138,8 @@ export class BaileysLifecycle {
   private connecting = false;
   private reconnectAttempts = 0;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
+  /** The current socket's BAILEYS_WS_CONNECTING_DEADLINE_MS backstop. */
+  private connectingTimer?: ReturnType<typeof setTimeout>;
   /** Date.now() of the last close that scheduled a reconnect — input to the stability reset. */
   private lastConnectionCloseAt = 0;
   /** Lazily loaded @whiskeysockets/baileys module (ESM-only; loaded on first connect, not at boot). */
@@ -293,6 +304,22 @@ export class BaileysLifecycle {
     });
     this.sock = sock;
 
+    // Baileys re-emits ws's 'unexpected-response', and any listener there stops ws from aborting the
+    // handshake itself: an upgrade answered with anything but 101 (a 503 from WhatsApp's edge or from a
+    // session proxy) leaves the socket CONNECTING for good, and the session at INITIALIZING with no
+    // retry (#1546). Ending it emits the close that handleConnectionUpdate logs, backs off and retries.
+    // A plain Error on purpose: a Boom carrying the HTTP status would turn a 401, 403 or 440 upgrade
+    // response into the terminal close of the same code.
+    sock.ws.on('unexpected-response', (_req: ClientRequest, res: IncomingMessage) => {
+      void sock.end(new Error(`WebSocket upgrade refused (HTTP ${res.statusCode})`));
+    });
+    this.connectingTimer = setTimeout(() => {
+      if (this.sock === sock && sock.ws.isConnecting) {
+        void sock.end(new Error(`WebSocket still connecting after ${BAILEYS_WS_CONNECTING_DEADLINE_MS} ms`));
+      }
+    }, BAILEYS_WS_CONNECTING_DEADLINE_MS);
+    this.connectingTimer.unref();
+
     sock.ev.on(
       'creds.update',
       () =>
@@ -397,6 +424,7 @@ export class BaileysLifecycle {
     }
 
     if (connection === 'open') {
+      clearTimeout(this.connectingTimer);
       this.qrCode = null;
       this.phoneNumber = this.host.extractPhone(this.sock?.user?.id);
       this.pushName = this.sock?.user?.name ?? null;
@@ -416,6 +444,7 @@ export class BaileysLifecycle {
     }
 
     if (connection === 'close') {
+      clearTimeout(this.connectingTimer);
       const statusCode = (lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)?.output
         ?.statusCode;
 
@@ -466,6 +495,7 @@ export class BaileysLifecycle {
       this.host.logger.log('Baileys connection dropped; reconnecting', {
         sessionId: this.host.config.sessionId,
         statusCode,
+        reason: (lastDisconnect?.error as Error | undefined)?.message,
         action: 'baileys_connection_dropped',
       });
 
@@ -607,6 +637,7 @@ export class BaileysLifecycle {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = undefined;
     }
+    clearTimeout(this.connectingTimer);
     void this.sock?.end(undefined);
     this.sock = null;
     // Cached call handles die with the socket — drop them so a later rejectCall() reports
@@ -687,6 +718,7 @@ export class BaileysLifecycle {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = undefined;
     }
+    clearTimeout(this.connectingTimer);
     try {
       void sourceSock.end(undefined);
     } catch {
@@ -772,6 +804,7 @@ export class BaileysLifecycle {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = undefined;
     }
+    clearTimeout(this.connectingTimer);
     void this.sock?.end(undefined);
     this.sock = null;
     this.host.liveCalls.clear();

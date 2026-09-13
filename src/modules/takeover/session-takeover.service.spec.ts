@@ -188,10 +188,12 @@ describe('SessionTakeoverService', () => {
 
     await svc.sweep();
 
+    const after = Date.now();
     const [, goneBefore] = markLapsedDisconnected.mock.calls[0] as [Session[], Date];
     // 60s TTL x 2: anything whose lease expired inside the last two minutes is still presumed alive.
-    expect(before - goneBefore.getTime()).toBeGreaterThanOrEqual(120_000);
-    expect(before - goneBefore.getTime()).toBeLessThan(121_000);
+    // The service reads the clock somewhere inside sweep(), so its cutoff is bounded by the readings either side.
+    expect(goneBefore.getTime()).toBeGreaterThanOrEqual(before - 120_000);
+    expect(goneBefore.getTime()).toBeLessThanOrEqual(after - 120_000);
   });
 
   it('arms the timer when auto-start is on, and tears it down on destroy', () => {
