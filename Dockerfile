@@ -224,11 +224,21 @@ RUN npm install -g npm@12.0.2 && npm cache clean --force
 # amd64: download Chrome for Testing via Puppeteer and symlink it.
 # arm64: use Debian's chromium installed above (CfT has no linux-arm64 build).
 # test -n guards against a future path mismatch failing loudly instead of shipping a broken image.
+#
+# The CfT version is pinned so a rebuild installs the same browser. Nothing bumps it for us:
+# dependabot does not read this line, and the image scans cannot see the binary (no dpkg package owns
+# /opt/puppeteer), so a stale browser never fails a scan. To bump it, take the Stable version from
+# https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions.json, confirm it has
+# a linux64 chrome download in known-good-versions-with-downloads.json, and update the docs that
+# repeat this command (scripts/dockerfile-patchers.spec.js fails until they match). It may be newer
+# than the revision puppeteer-core pins; the arm64 image already runs whatever chromium Debian ships.
+# On an amd64 build, check that a session paired under the old browser still reconnects and that a
+# new whatsapp-web.js session reaches its QR code.
 RUN if [ "$TARGETARCH" = arm64 ]; then \
         ln -s /usr/bin/chromium /usr/local/bin/puppeteer-chrome; \
     else \
         mkdir -p /opt/puppeteer && \
-        PUPPETEER_CACHE_DIR=/opt/puppeteer ./node_modules/.bin/puppeteer browsers install 'chrome@146.0.7680.31' && \
+        PUPPETEER_CACHE_DIR=/opt/puppeteer ./node_modules/.bin/puppeteer browsers install 'chrome@153.0.8010.36' && \
         chown -R openwa:openwa /opt/puppeteer && \
         chrome_path=$(find /opt/puppeteer/chrome/linux*/chrome-linux64/chrome | head -n 1) && \
         test -n "$chrome_path" && \

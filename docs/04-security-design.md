@@ -657,8 +657,8 @@ npm audit --json > audit-report.json
 ### GitHub Dependabot Configuration
 
 ```yaml
-# .github/dependabot.yml — the root npm ecosystem (the file also covers /dashboard,
-# github-actions and docker)
+# .github/dependabot.yml, root npm ecosystem only (the file also covers /dashboard,
+# github-actions and docker). The comment above each ignore is omitted here.
 version: 2
 updates:
   - package-ecosystem: npm
@@ -669,25 +669,36 @@ updates:
     open-pull-requests-limit: 5
     groups:
       minor-and-patch:
-        update-types: [minor, patch]
+        update-types:
+          - minor
+          - patch
       major:
-        update-types: [major]
+        update-types:
+          - major
     labels:
       - dependencies
     ignore:
-      # TypeScript 7 is the native port: typescript-eslint and ts-jest cannot load it (#727/#729).
       - dependency-name: 'typescript'
         versions: ['>=7.0.0']
-      # better-sqlite3 v14: v13 is the shipped line (^13.0.3, TypeORM's optional ^12 peer pinned
-      # to the root version via overrides, prebuild proven on both architectures by the release
-      # boot smoke). The next major stays frozen until re-evaluated.
       - dependency-name: 'better-sqlite3'
         versions: ['>=14.0.0']
+      - dependency-name: 'puppeteer'
+        versions: ['>24.38.0']
+      - dependency-name: 'audio-decode'
+        versions: ['>=3.0.0']
+      - dependency-name: '@types/node'
+        versions: ['>=23.0.0']
+      - dependency-name: '@nestjs/*'
+        versions: ['>=12.0.0']
+      - dependency-name: 'tar-stream'
+        versions: ['>=3.2.1']
 ```
 
-Majors are **not** ignored — they arrive as their own grouped PR, separate from the minor/patch
-group. The only ignores are the two pinned incompatibilities above, each with its lift condition
-documented inline.
+Majors arrive as their own grouped PR, separate from the minor/patch group. Five ignores freeze a
+major line (TypeScript 7, better-sqlite3 14, audio-decode 3, @types/node 23 and later, NestJS 12)
+and two freeze the line in use (puppeteer above the 24.38.0 pin it shares with whatsapp-web.js,
+tar-stream from 3.2.1). Each ignore's reason and lift condition is the comment above it in
+`.github/dependabot.yml`.
 
 ### Security Scanning in CI
 

@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - The group invite-code read, over REST or the MCP `GroupGetInviteCode` tool, requires the OPERATOR role; the code is a transferable join capability, so a VIEWER key can no longer extract it ([GHSA-45fh-xj7x-vj2x](https://github.com/rmyndharis/OpenWA/security/advisories/GHSA-45fh-xj7x-vj2x)). Thanks Matija Petronijević for the report.
+- The amd64 image ships Chrome for Testing 153.0.8010.36 instead of 146.0.7680.31, picking up the browser security fixes released since (the arm64 image uses the Debian chromium package).
 
 ### Added
 
@@ -23,13 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Baileys live path drops contentless protocol traffic (sender-key distributions, message-history notices) instead of delivering it as a bodyless `unknown` `message.received`, matching what the history path already does ([#1568](https://github.com/rmyndharis/OpenWA/issues/1568)). Thanks @berodcdev for the report.
 - A Baileys reconnect loop is observable: `lastError` on the session, a `session.reconnect_loop` webhook every fifth attempt, and reconnect metrics; a connection attempt refused at the WebSocket upgrade is closed and retried instead of leaving the session at `initializing` ([#1546](https://github.com/rmyndharis/OpenWA/issues/1546)). Thanks @OdaiAhmed99 for the report.
 - The dashboard session card keeps the phone number, session id and last-active time while a linked session reconnects, instead of the pairing placeholder ([#1546](https://github.com/rmyndharis/OpenWA/issues/1546)). Thanks @OdaiAhmed99 for the report.
-- The Sessions page reports a dead live-event feed and re-reads the list once the feed recovers.
+- The Sessions page reports a dead live-event feed, and both it and the Chats page re-read their data once the feed recovers, including a feed that never connected.
 - A Baileys media download aborted at `MEDIA_DOWNLOAD_MAX_BYTES` reports the bytes received as `sizeBytes`, and a timed-out one its declared size, instead of the cap.
 - The webhook docs state that at the default limits media above about 768 KiB reaches webhooks as the omitted marker, and how to raise both limits ([#1569](https://github.com/rmyndharis/OpenWA/issues/1569)). Thanks @Magnarks for the report.
 - The takeover sweep marks sessions left `ready` or `initializing` by a node that never returned disconnected, regardless of `AUTO_START_SESSIONS`.
-- Branch Docker images (`:main`, sha tags) rebuild the production apt layer, so they cannot serve stale OS packages from the build cache.
+- Branch Docker images (`:main`, sha tags) rebuild the production stage without the build cache, so they cannot serve stale OS packages.
 - The Docker image upgrades the Debian packages inherited from the digest-pinned `node:22-slim` base at build time, so security fixes published after the base snapshot reach them; this clears CVE-2026-86145 and CVE-2026-89161 in `libpcre2-8-0`.
 - The Message Tester's bulk-recipients file picker refuses files over 2 MB before reading them.
+- `restore.sh` refuses to overwrite a live database without `--force` even when the operator's sqlite3 rc file changes its output format.
 - A misspelled `LOG_LEVEL` fails the boot naming the accepted values, instead of silently logging at info.
 - Dependabot can open better-sqlite3 13.x patch and minor updates again; the freeze now starts at v14.
 

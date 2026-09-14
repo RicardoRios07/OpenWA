@@ -492,14 +492,16 @@ jobs:
           sbom: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          # Never serve the production stage's `apt-get update && apt-get install` from cache. That
+          # Never serve the production stage's `apt-get update && apt-get upgrade && apt-get install` from cache. That
           # layer's cache key is its own command text, which does not change when Debian publishes a
           # security update — so a cached hit silently installs whatever the apt index held when the
           # layer was first built, and the release image ships known-vulnerable packages. It is not a
           # theoretical risk: the first two v0.12.3 attempts installed chromium 150.0.7871.181 from a
           # cached layer while bookworm-security already carried 151.0.7922.71 on BOTH architectures,
-          # and image-scan failed with 228 then 240 findings. The builder stage keeps its cache, so
-          # only the OS-package layer is rebuilt.
+          # and image-scan failed with 228 then 240 findings. The filter names a whole stage, so every
+          # layer of `production` is rebuilt, not only the OS-package one: the PGDG client, the
+          # production `npm ci`, the browser download and the COPY --from=builder steps too. Only the
+          # builder stage keeps its cache.
           no-cache-filters: production
 
   # ──── Boot Smoke (amd64 + arm64) ──────────────────────────────────
@@ -591,7 +593,10 @@ jobs:
   # cannot give: audit sees the npm tree, but the Debian packages baked into node:22-slim — and, on
   # arm64 only, the `chromium`/`chromium-sandbox` packages the amd64 image never installs (amd64 uses
   # a downloaded Chrome-for-Testing binary, not a .deb) — are visible only by scanning the built
-  # artifact. Both architectures are scanned because their OS package sets diverge. Runs at release
+  # artifact. Both architectures are scanned because their OS package sets diverge. The amd64
+  # browser is outside that coverage: no dpkg package owns the Chrome for Testing binary and no
+  # lockfile names it, so neither scanner sees it and a clean amd64 scan says nothing about the
+  # browser (.trivyignore records the same, next to the arm64 chromium note). Runs at release
   # time, not on every PR, so it never hits the fork-PR permission limits a push/PR scan would.
   # `ignore-unfixed` keeps a release from being blocked by a CVE with no fix yet; a fixable
   # HIGH/CRITICAL fails the job and — via promote's `needs` below — stops the release tags.
