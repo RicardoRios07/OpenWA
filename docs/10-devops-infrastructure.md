@@ -88,9 +88,10 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci --only=production
 
-# NOTE: Chrome for Testing has no linux-arm64 build, so this example targets linux/amd64.
-# For arm64, install Debian's `chromium` package and point PUPPETEER_EXECUTABLE_PATH to
-# /usr/bin/chromium — see the repo's Dockerfile for the mixed multi-arch build.
+# NOTE: this example targets linux/amd64. The repo's image keeps Debian's chromium on arm64 by
+# choice (Chrome for Testing publishes linux-arm64 builds only from 153 on). For arm64, install
+# Debian's `chromium` package and point PUPPETEER_EXECUTABLE_PATH to /usr/bin/chromium — see the
+# repo's Dockerfile for the mixed multi-arch build.
 # Download Chrome for Testing via Puppeteer and point ENV to it
 RUN mkdir -p /opt/puppeteer && \
     PUPPETEER_CACHE_DIR=/opt/puppeteer ./node_modules/.bin/puppeteer browsers install 'chrome@153.0.8010.36' && \
@@ -274,9 +275,9 @@ volumes:
 > [13 - Horizontal Scaling Guide](./13-horizontal-scaling.md) for the full list and the design
 > sketch. What multi-node eventually buys is engine capacity, not shared engine state: live engine
 > handles live in exactly one process's `EngineRegistry` (`src/engine/engine-registry.service.ts`),
-> and the hard requirements include a stable `NODE_ID` across restarts, NTP-synced clocks (lease
-> skew beyond the TTL wrongfully transfers a session), sticky sessions, `TRUSTED_PROXIES` for
-> forwarded calls, Redis and Postgres.
+> and the hard requirements include a stable `NODE_ID` across restarts, NTP-synced clocks in one
+> time zone without daylight saving (lease skew beyond the TTL wrongfully transfers a session),
+> sticky sessions, `TRUSTED_PROXIES` for forwarded calls, Redis and Postgres.
 
 ### Helm Chart (Kubernetes)
 

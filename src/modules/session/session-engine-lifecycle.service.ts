@@ -1175,8 +1175,16 @@ export class SessionEngineLifecycle {
     return this.broadcaster.updateStatus(id, status);
   }
 
-  /** Public delegate: the fan-out half only, for a caller that wrote the row under its own predicate. */
+  /**
+   * Public delegate: the fan-out half only, for a caller that wrote the row under its own predicate.
+   *
+   * Always fans out. The caller's write affecting a row already proves a real transition, and the
+   * de-dup map cannot judge one: it only records what THIS process announced, so on a node that never
+   * hosted the engine it still holds the status of an earlier correction, not the READY a peer
+   * announced since.
+   */
   announceStatus(id: string, status: SessionStatus): void {
+    this.broadcaster.clear(id);
     this.broadcaster.announce(id, status);
   }
 }

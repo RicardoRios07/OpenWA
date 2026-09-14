@@ -68,11 +68,12 @@ FROM docker.io/node:22-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc
 # changes nothing about which dependencies land in the image.
 ENV NODE_ENV=production
 
-# Chrome for Testing has no linux-arm64 build, and Puppeteer's chromium snapshot
-# is x86_64-only on Linux too. So: amd64 uses Chrome for Testing (downloaded below)
-# to avoid the Debian chromium package's K8s SIGTRAP under strict non-root/seccomp;
-# arm64 installs Debian's chromium instead (it ships a native arm64 build). Both
-# resolve to the same /usr/local/bin/puppeteer-chrome symlink below.
+# amd64 uses Chrome for Testing (downloaded below) to avoid the Debian chromium
+# package's K8s SIGTRAP under strict non-root/seccomp. arm64 installs Debian's
+# chromium instead, by choice: it ships a native arm64 build, Chrome for Testing
+# publishes linux-arm64 builds only from 153 on, and Puppeteer's chromium snapshot
+# is x86_64-only on Linux. Both resolve to the same /usr/local/bin/puppeteer-chrome
+# symlink below.
 #
 # chromium-sandbox is listed EXPLICITLY (not left to Recommends) so --no-install-recommends still
 # trims every other Recommends but keeps the setuid sandbox binary available. Our default forces
@@ -222,7 +223,7 @@ RUN npm ci --omit=dev --ignore-scripts \
 RUN npm install -g npm@12.0.2 && npm cache clean --force
 
 # amd64: download Chrome for Testing via Puppeteer and symlink it.
-# arm64: use Debian's chromium installed above (CfT has no linux-arm64 build).
+# arm64: use Debian's chromium installed above (a choice; see the note at that install).
 # test -n guards against a future path mismatch failing loudly instead of shipping a broken image.
 #
 # The CfT version is pinned so a rebuild installs the same browser. Nothing bumps it for us:
@@ -233,7 +234,9 @@ RUN npm install -g npm@12.0.2 && npm cache clean --force
 # repeat this command (scripts/dockerfile-patchers.spec.js fails until they match). It may be newer
 # than the revision puppeteer-core pins; the arm64 image already runs whatever chromium Debian ships.
 # On an amd64 build, check that a session paired under the old browser still reconnects and that a
-# new whatsapp-web.js session reaches its QR code.
+# new whatsapp-web.js session reaches its QR code. A new major cannot be rolled back without
+# restoring sessions/ (an older Chrome deletes the IndexedDB a newer one opened), so give the bump a
+# CHANGELOG upgrade note.
 RUN if [ "$TARGETARCH" = arm64 ]; then \
         ln -s /usr/bin/chromium /usr/local/bin/puppeteer-chrome; \
     else \

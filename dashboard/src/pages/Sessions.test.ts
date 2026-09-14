@@ -456,6 +456,28 @@ test('stopping a session dismisses its own open QR modal', async () => {
   });
 });
 
+// A node that died mid-pairing leaves a row reading `qr_ready` with no engine behind it. Reconnect on
+// that card has to start the session: the QR modal alone polls GET /qr, which answers 400 until one
+// is started.
+test('Reconnect on a qr_ready card with no engine loaded starts the session', async () => {
+  const { screen, fireEvent, within, waitFor } = rtl;
+  resetFetchCalls();
+  SESSIONS.push({ ...SESSION_QR, id: 'sess-orphan-1', name: 'orphan-qr', engineLoaded: false });
+  try {
+    renderSessions();
+
+    await screen.findByText('orphan-qr');
+    const card = screen.getByText('orphan-qr').closest('.session-card') as HTMLElement;
+    fireEvent.click(within(card).getByRole('button', { name: 'Reconnect' }));
+
+    await waitFor(() => {
+      assert.ok(findFetchCall('POST', '/api/sessions/sess-orphan-1/start'), 'expected a POST to the start endpoint');
+    });
+  } finally {
+    SESSIONS.pop();
+  }
+});
+
 test('a restricted session shows the restriction on its card, even while it is ready', async () => {
   const { screen, within } = rtl;
   resetFetchCalls();

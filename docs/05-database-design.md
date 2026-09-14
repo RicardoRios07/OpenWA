@@ -294,16 +294,16 @@ CREATE TABLE sessions (
     config JSONB NOT NULL DEFAULT '{}',
     "proxyUrl" VARCHAR(255),
     "proxyType" VARCHAR(10),
-    "connectedAt" TIMESTAMP WITH TIME ZONE,
-    "lastActiveAt" TIMESTAMP WITH TIME ZONE,
+    "connectedAt" TIMESTAMP,
+    "lastActiveAt" TIMESTAMP,
     -- Session ownership / multi-node routing: which process runs the engine, since when, where it
     -- answers HTTP for peers, and how long its claim survives unrenewed. All NULL on a single node.
     "nodeId" VARCHAR(190),
-    "claimedAt" TIMESTAMP WITH TIME ZONE,
+    "claimedAt" TIMESTAMP,
     "nodeUrl" VARCHAR(2048),
-    "leaseExpiresAt" TIMESTAMP WITH TIME ZONE,
-    "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+    "leaseExpiresAt" TIMESTAMP,
+    "createdAt" TIMESTAMP NOT NULL DEFAULT NOW(),
+    "updatedAt" TIMESTAMP NOT NULL DEFAULT NOW()
 );
 ```
 

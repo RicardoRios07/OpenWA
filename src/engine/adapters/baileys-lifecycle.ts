@@ -414,8 +414,10 @@ export class BaileysLifecycle {
       // WhatsApp accepted the QR scan or pairing code. It asks for a restart next (a 515 close, which
       // the branch below turns into INITIALIZING) and the reconnect opens READY. Left at QR_READY, a
       // repeat pairing request in that window would pass the guard and overwrite the just-linked
-      // creds.me. AUTHENTICATING is what whatsapp-web.js reports at the same point.
+      // creds.me. AUTHENTICATING is what whatsapp-web.js reports at the same point. The link worked, so
+      // that restart is attempt 1 whatever failed before the scan.
       this.qrCode = null;
+      this.reconnectAttempts = 0;
       this.setStatus(EngineStatus.AUTHENTICATING);
     }
 
@@ -490,7 +492,8 @@ export class BaileysLifecycle {
 
       // Every other close (408/411/428/500/503/515/undefined) is transient: reconnect with capped
       // backoff and NO attempt ceiling — a long network outage must
-      // not kill the session. The counter resets on 'open' and via the stability window below.
+      // not kill the session. The counter resets on 'open', on a scan, when a QR window runs out, and via
+      // the stability window below.
       // Do NOT fire onDisconnected here; this is a transient drop, not a terminal disconnect.
       this.host.logger.log('Baileys connection dropped; reconnecting', {
         sessionId: this.host.config.sessionId,
@@ -498,6 +501,12 @@ export class BaileysLifecycle {
         reason: (lastDisconnect?.error as Error | undefined)?.message,
         action: 'baileys_connection_dropped',
       });
+
+      // Baileys ends an unscanned socket with a 408 once its QR refs run out, the same code as a lost
+      // connection, so only its message tells them apart. Every other close while a QR waits (503, 500,
+      // 428, a lost connection) is a failure like any other. Should Baileys reword the message, the
+      // expiry counts too, which backs off rather than loops.
+      const qrWindowEnded = (lastDisconnect?.error as Error | undefined)?.message === 'QR refs attempts ended';
 
       // The socket is dead NOW, but the reconnect attempt only runs after the backoff delay below
       // (up to 60 s + jitter; connectInner's own setStatus(INITIALIZING) fires just before the new
@@ -515,12 +524,14 @@ export class BaileysLifecycle {
 
       // Stability reset: a close >5 min after the previous one means the connection had been
       // healthy in between — start the backoff fresh instead of inheriting the old counter.
+      // A QR window that ran out resets it too: WhatsApp answered, and a QR left unscanned for hours
+      // must not add up to a reconnect loop.
       const now = Date.now();
-      if (now - this.lastConnectionCloseAt > BaileysLifecycle.RECONNECT_STABILITY_RESET_MS) {
+      if (qrWindowEnded || now - this.lastConnectionCloseAt > BaileysLifecycle.RECONNECT_STABILITY_RESET_MS) {
         this.reconnectAttempts = 0;
       }
       this.lastConnectionCloseAt = now;
-      this.scheduleReconnect();
+      this.scheduleReconnect(!qrWindowEnded);
     }
   }
 
@@ -582,19 +593,27 @@ export class BaileysLifecycle {
    * cap, plus up to 1 s jitter). Deliberately NO attempt ceiling: transient drops retry forever —
    * only loggedOut (401), forbidden (403), and connectionReplaced (440) are terminal. A connect()
    * failure inside the attempt is just a failed attempt: warn and schedule the next one.
+   *
+   * `countAttempt` false is only the close that ends an unscanned QR window: the connection worked,
+   * so the reconnect is neither an attempt nor reported, and after the reset it waits the first step.
    */
-  private scheduleReconnect(): void {
+  private scheduleReconnect(countAttempt = true): void {
     if (this.intentionalClose || this.reconnectTimer) {
       return;
     }
-    this.reconnectAttempts += 1;
-    const delay = Math.min(60_000, 1_000 * 2 ** (this.reconnectAttempts - 1)) + Math.floor(Math.random() * 1000);
+    if (countAttempt) {
+      this.reconnectAttempts += 1;
+    }
+    const step = Math.max(this.reconnectAttempts - 1, 0);
+    const delay = Math.min(60_000, 1_000 * 2 ** step) + Math.floor(Math.random() * 1000);
     // The consumer is never told about this drop through onDisconnected (deliberately: the session is
     // still linked), and the status it does see is INITIALIZING for the whole episode. So this is the
     // only signal that a retry loop is running. Fired here rather than in the close handler because
     // this is the one place every scheduled attempt passes through, including the reschedule from the
     // failed-attempt catch below, and it is already past the duplicate-close guard above.
-    this.host.getOnReconnecting()?.(this.reconnectAttempts, delay);
+    if (countAttempt) {
+      this.host.getOnReconnecting()?.(this.reconnectAttempts, delay);
+    }
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
       if (this.intentionalClose) {

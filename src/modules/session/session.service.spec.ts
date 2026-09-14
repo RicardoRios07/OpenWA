@@ -2527,6 +2527,155 @@ describe('SessionService', () => {
       expect(marked).toEqual([]);
       expect(repository.update).not.toHaveBeenCalled();
     });
+
+    // A correction must never change what the takeover sweep adopts. It adopts every other corrected
+    // status anyway, and never adopts a row without a phone, so a QR_READY row is corrected only while
+    // it has none: the sweep does adopt a DISCONNECTED row with a phone, and rewriting one of those
+    // would launch an engine that only renders a QR nobody asked for.
+    it('corrects every running status the takeover sweep adopts, and QR_READY only without a phone', async () => {
+      (repository.update as jest.Mock).mockResolvedValue({ affected: 1 });
+      const rows = [
+        ...[
+          SessionStatus.READY,
+          SessionStatus.INITIALIZING,
+          SessionStatus.AUTHENTICATING,
+          SessionStatus.ACTION_REQUIRED,
+        ].map(status => stranded({ id: status, status, phone: '628123' })),
+        stranded({ id: 'qr-unlinked', status: SessionStatus.QR_READY, phone: null }),
+        stranded({ id: 'qr-linked', status: SessionStatus.QR_READY, phone: '628123' }),
+      ];
+
+      const marked = await service.markLapsedDisconnected(rows, GONE_BEFORE);
+
+      expect(marked).toEqual([
+        SessionStatus.READY,
+        SessionStatus.INITIALIZING,
+        SessionStatus.AUTHENTICATING,
+        SessionStatus.ACTION_REQUIRED,
+        'qr-unlinked',
+      ]);
+    });
+
+    it('a failed write on one row does not stop the rows after it', async () => {
+      (repository.update as jest.Mock)
+        .mockRejectedValueOnce(new Error('SQLITE_BUSY: database is locked'))
+        .mockResolvedValueOnce({ affected: 1 });
+
+      const marked = await service.markLapsedDisconnected(
+        [stranded({ id: 'boom' }), stranded({ id: 'fine' })],
+        GONE_BEFORE,
+      );
+
+      expect(marked).toEqual(['fine']);
+    });
+
+    // This process never hosts the engine, so its de-dup map never sees the READY another node
+    // announced in between, and still holds the DISCONNECTED from its own first correction.
+    it('announces a second correction of the same session after another node ran it in between', async () => {
+      (repository.update as jest.Mock).mockResolvedValue({ affected: 1 });
+
+      await service.markLapsedDisconnected([stranded({ nodeId: 'node-c' })], GONE_BEFORE);
+      // node-d claims the row, reaches READY and vanishes too; none of that happens on this process.
+      await service.markLapsedDisconnected([stranded({ nodeId: 'node-d' })], GONE_BEFORE);
+
+      const disconnected = { sessionId: 'stranded-1', status: SessionStatus.DISCONNECTED };
+      expect(webhookService.dispatch).toHaveBeenCalledTimes(2);
+      expect(webhookService.dispatch).toHaveBeenNthCalledWith(2, 'stranded-1', 'session.status', disconnected);
+      expect(eventsGateway.emitSessionStatus).toHaveBeenCalledTimes(2);
+    });
+
+    // The mocks above show what the predicate asks for; whether it filters is SQL. A snapshot read
+    // before a renewal lands is the race the predicate exists for: the write has to refuse a row whose
+    // lease moved on, even though the snapshot still says that lease is long gone.
+    describe('against a real database', () => {
+      const TTL_MS = 60_000;
+      let db: DataSource;
+      let sessions: Repository<Session>;
+
+      beforeAll(async () => {
+        db = new DataSource({ type: 'better-sqlite3', database: ':memory:', entities: [Session], synchronize: true });
+        await db.initialize();
+        sessions = db.getRepository(Session);
+      });
+
+      afterAll(async () => {
+        await db.destroy();
+      });
+
+      beforeEach(() => {
+        (repository.update as jest.Mock).mockImplementation((...args: Parameters<Repository<Session>['update']>) =>
+          sessions.update(...args),
+        );
+      });
+
+      afterEach(async () => {
+        await sessions.clear();
+      });
+
+      it('writes only a row whose lease is still more than two TTLs past expiry when the write lands', async () => {
+        const now = Date.now();
+        const seed = (name: string): Promise<Session> =>
+          sessions.save(
+            sessions.create({
+              name,
+              status: SessionStatus.READY,
+              config: {},
+              nodeId: 'dead-node',
+              leaseExpiresAt: new Date(now - 3 * TTL_MS),
+            }),
+          );
+        const renewed = await seed('renewed');
+        const lapsedOnce = await seed('lapsed-once');
+        const gone = await seed('gone');
+        const snapshot = await sessions.find();
+
+        // Between the read and the write, one holder renews and another has lapsed only once since.
+        await sessions.update({ id: renewed.id }, { leaseExpiresAt: new Date(now + TTL_MS) });
+        await sessions.update({ id: lapsedOnce.id }, { leaseExpiresAt: new Date(now - TTL_MS) });
+
+        const marked = await service.markLapsedDisconnected(snapshot, new Date(now - 2 * TTL_MS));
+
+        expect(marked).toEqual([gone.id]);
+        const statusOf = async (id: string): Promise<SessionStatus> => (await sessions.findOneByOrFail({ id })).status;
+        expect(await statusOf(renewed.id)).toBe(SessionStatus.READY);
+        expect(await statusOf(lapsedOnce.id)).toBe(SessionStatus.READY);
+        expect(await statusOf(gone.id)).toBe(SessionStatus.DISCONNECTED);
+      });
+
+      // The phone is read in the same snapshot, so it can be stale by the time the write lands: a
+      // pairing that completes in between must not be rewritten into a DISCONNECTED row with a phone,
+      // which is exactly what the sweep adopts.
+      it('writes a QR_READY row only while it still has no phone when the write lands', async () => {
+        const now = Date.now();
+        const seed = (name: string, status: SessionStatus, phone: string | null): Promise<Session> =>
+          sessions.save(
+            sessions.create({
+              name,
+              status,
+              phone,
+              config: {},
+              nodeId: 'dead-node',
+              leaseExpiresAt: new Date(now - 3 * TTL_MS),
+            }),
+          );
+        const pairing = await seed('pairing', SessionStatus.QR_READY, null);
+        const pairedMeanwhile = await seed('paired-meanwhile', SessionStatus.QR_READY, null);
+        const relinking = await seed('relinking', SessionStatus.QR_READY, '628123');
+        const linked = await seed('linked', SessionStatus.READY, '628456');
+        const snapshot = await sessions.find();
+
+        await sessions.update({ id: pairedMeanwhile.id }, { phone: '628789' });
+
+        const marked = await service.markLapsedDisconnected(snapshot, new Date(now - 2 * TTL_MS));
+
+        expect([...marked].sort()).toEqual([pairing.id, linked.id].sort());
+        const statusOf = async (id: string): Promise<SessionStatus> => (await sessions.findOneByOrFail({ id })).status;
+        expect(await statusOf(pairing.id)).toBe(SessionStatus.DISCONNECTED);
+        expect(await statusOf(pairedMeanwhile.id)).toBe(SessionStatus.QR_READY);
+        expect(await statusOf(relinking.id)).toBe(SessionStatus.QR_READY);
+        expect(await statusOf(linked.id)).toBe(SessionStatus.DISCONNECTED);
+      });
+    });
   });
 
   // An engine that retries a dropped connection ON ITS OWN never reaches the service-level reconnect
@@ -2577,6 +2726,53 @@ describe('SessionService', () => {
       const result = await service.findOne('sess-uuid-1');
 
       expect(result.lastError).toMatch(/^Reconnecting after a dropped connection \(attempt 5, down for /);
+    });
+
+    it('keeps lastError current on every attempt past the fifth, while the alert stays on its cadence', async () => {
+      const callbacks = await startAndCapture();
+      (webhookService.dispatch as jest.Mock).mockClear();
+      const sessionErrors = (service as unknown as { sessionErrors: SessionErrorStore }).sessionErrors;
+      const start = Date.now();
+      const now = jest.spyOn(Date, 'now');
+      try {
+        for (let attempt = 1; attempt <= 9; attempt++) {
+          now.mockReturnValue(start + (attempt - 1) * 60_000); // one minute between attempts
+          callbacks.onReconnecting?.(attempt, 60_000);
+          if (attempt >= 6) {
+            expect(sessionErrors.get('sess-uuid-1')).toBe(
+              `Reconnecting after a dropped connection (attempt ${attempt}, down for ${attempt - 1}m).`,
+            );
+          }
+        }
+      } finally {
+        now.mockRestore();
+      }
+
+      expect(loopDispatches()).toHaveLength(1);
+    });
+
+    // A QR is WhatsApp answering, so the outage is over. Left in place, the old text would come back
+    // at every INITIALIZING gap between QR windows of a session that is only waiting to be paired.
+    it('clears the reconnect lastError once a QR arrives', async () => {
+      const callbacks = await startAndCapture();
+
+      for (let attempt = 1; attempt <= 5; attempt++) callbacks.onReconnecting?.(attempt, 60_000);
+      callbacks.onQRCode?.('qr-data');
+
+      (repository.findOne as jest.Mock).mockResolvedValue(createMockSession({ status: SessionStatus.INITIALIZING }));
+      const result = await service.findOne('sess-uuid-1');
+
+      expect(result.lastError).toBeUndefined();
+    });
+
+    it('a QR leaves any other lastError alone', async () => {
+      const callbacks = await startAndCapture();
+      const sessionErrors = (service as unknown as { sessionErrors: SessionErrorStore }).sessionErrors;
+
+      callbacks.onActionRequired?.('Dismiss the onboarding dialog on the phone');
+      callbacks.onQRCode?.('qr-data');
+
+      expect(sessionErrors.get('sess-uuid-1')).toBe('Dismiss the onboarding dialog on the phone');
     });
 
     it('never fires onDisconnected: the session is still linked and the engine owns the retry', async () => {

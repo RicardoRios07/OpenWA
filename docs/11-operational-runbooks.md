@@ -511,6 +511,17 @@ docker compose up -d
 curl -H "X-API-Key: $API_KEY" http://localhost:2785/api/health
 ```
 
+> Restoring `sessions/` is required, not optional, when the rollback crosses a browser major upgrade (on
+> amd64, 0.23.5 moved Chrome for Testing from 146 to 153; arm64 runs the chromium Debian shipped when each
+> image was built), and the backup must predate the first start on the newer image; a daily backup taken
+> after the upgrade does not qualify. An older Chrome silently deletes the IndexedDB of a profile a newer
+> Chrome has opened, which is where whatsapp-web.js keeps the WhatsApp login. The symptom: every
+> previously linked whatsapp-web.js session starts at a QR code instead of reconnecting, the log names no
+> cause (0.23.3 and 0.23.4 log only a generic `relink_required` warning), and upgrading again does not
+> bring the pairing back. Changing only the image tag, or `helm rollback` (which keeps the volume), skips
+> the restore and hits this. A session first paired on the newer image is not in that backup and must be
+> paired again either way. Baileys sessions are unaffected.
+
 ---
 
 ### Runbook: Database Backup

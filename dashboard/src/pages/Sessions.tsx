@@ -279,13 +279,10 @@ export function Sessions() {
     }
   };
 
+  // Start and Reconnect only render for a card with no engine behind it, so they always call the
+  // gateway. A leftover `initializing` or `qr_ready` status (a node that died mid-pairing) is no reason
+  // to open the QR modal instead: GET /qr answers 400 until something starts the session.
   const handleStart = async (id: string) => {
-    const session = sessions.find(s => s.id === id);
-    if (session && ['initializing', 'qr_ready'].includes(session.status)) {
-      handleShowQR(id);
-      return;
-    }
-
     try {
       // Use the authoritative response instead of fabricating a status. The old code wrote a local
       // `status: 'connecting'` — a value the gateway never emits — while keeping every other field

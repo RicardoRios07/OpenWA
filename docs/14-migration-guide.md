@@ -850,6 +850,18 @@ flowchart TD
     G --> K
 ```
 
+> [!WARNING]
+> A rollback across a browser major upgrade (on amd64, 0.23.5 moved Chrome for Testing from 146 to 153;
+> arm64 runs the chromium Debian shipped when each image was built) must restore `sessions/` from a backup
+> taken before the first start on the newer image, on both the full and the partial branch: a partial
+> rollback that merges data but keeps the current `sessions/` loses every whatsapp-web.js login. An older
+> Chrome silently deletes the IndexedDB of a profile a newer Chrome has opened, so each previously linked
+> whatsapp-web.js session starts at a QR code instead of reconnecting, the log names no cause (0.23.3 and
+> 0.23.4 log only a generic `relink_required` warning), and upgrading again does not bring the pairing
+> back.
+> A session first paired on the newer image is not in that backup and must be paired again either way.
+> Baileys sessions are unaffected.
+
 ## 14.7 Environment Migration
 
 ### Development → Staging

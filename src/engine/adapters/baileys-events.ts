@@ -76,6 +76,18 @@ const PRESENCE_STATES: ReadonlySet<PresenceState> = new Set<PresenceState>([
   'paused',
 ]);
 
+/**
+ * Top-level Message keys that carry no user content. A live message made only of these is dropped;
+ * messageContextInfo rides along on real content too, so on its own it is not enough to drop.
+ */
+const PROTOCOL_NOISE_KEYS: ReadonlySet<string> = new Set([
+  'senderKeyDistributionMessage',
+  'fastRatchetKeySenderKeyDistributionMessage',
+  'messageContextInfo',
+  'messageHistoryNotice',
+  'messageHistoryBundle',
+]);
+
 export interface BaileysEventsHost {
   /** Live socket handle for media re-upload requests (inbound media download). */
   getSocket(): WASocket;
@@ -304,14 +316,19 @@ export class BaileysEvents {
       }
 
       // --- contentless protocol traffic: don't emit onMessage ---
-      // Baileys' getContentType only matches keys named `conversation` or containing `Message`, and
-      // excludes senderKeyDistributionMessage BY NAME, so a sender-key distribution (Signal traffic
-      // every group participant emits on first write or key rotation), a messageHistoryNotice or any
-      // other suffix-less proto resolves here as contentType `undefined`, never as its own key.
-      // These carry no user content yet reached consumers as bodyless `unknown` message.received
-      // events (#1568). mapHistoryMessage drops exactly this set via its `!contentType` guard, and
-      // emitOwnSendEcho has always skipped undefined the same way, so live inbound must agree.
-      if (!contentType || contentType === 'senderKeyDistributionMessage') {
+      // A sender-key distribution (Signal traffic every group participant emits on first write or key
+      // rotation) or a history-sync notice carries no user content, yet reached consumers as a bodyless
+      // `unknown` message.received (#1568). Drop only a message made entirely of those keys. Anything
+      // else without a resolvable content type (a call log, a type newer than the bundled proto, which
+      // decodes to a lone messageContextInfo) still flows on as `unknown`, as it always has.
+      const keys = Object.keys(normalizedRoot ?? {});
+      if (keys.every(k => PROTOCOL_NOISE_KEYS.has(k)) && keys.some(k => k !== 'messageContextInfo')) {
+        this.host.logger.debug('Dropping contentless protocol message', {
+          action: 'baileys_drop_protocol_noise',
+          msgId: msg.key.id,
+          remoteJid,
+          keys,
+        });
         return;
       }
 

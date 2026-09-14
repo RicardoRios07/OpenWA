@@ -182,6 +182,18 @@ describe('SessionTakeoverService', () => {
     expect(order).toEqual(['mark', 'start']);
   });
 
+  it('a failed status correction does not cost the pass its adoptions', async () => {
+    // A failed correction leaves no write behind, so nothing it guards against can land on an engine
+    // this pass starts. Letting it abort the sweep would turn a database blip into a tick with no
+    // failover at all.
+    const { svc, start, markLapsedDisconnected } = build([lapsed({ name: 'a' })]);
+    markLapsedDisconnected.mockRejectedValue(new Error('SQLITE_BUSY: database is locked'));
+
+    await expect(svc.sweep()).resolves.toBeUndefined();
+
+    expect(start).toHaveBeenCalledWith('id-a');
+  });
+
   it('gives the reset a cutoff of two lease TTLs, so a healthy peer that lapsed once is left alone', async () => {
     const { svc, markLapsedDisconnected } = build([lapsed({ name: 'a' })]);
     const before = Date.now();

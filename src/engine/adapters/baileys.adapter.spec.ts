@@ -144,6 +144,7 @@ import {
   EngineEventCallbacks,
   GroupEvent,
   IncomingCallEvent,
+  IncomingMessage,
 } from '../interfaces/whatsapp-engine.interface';
 import { EngineNotReadyError } from '../../common/errors/engine-not-ready.error';
 import { EngineNotSupportedError } from '../../common/errors/engine-not-supported.error';
@@ -175,6 +176,17 @@ function streamOf(...chunks: Buffer[]): AsyncIterable<Buffer> & { destroy: () =>
     destroy: jest.fn(),
   };
 }
+/**
+ * Baileys 7.0.0-rc14 `getContentType` (lib/Utils/messages.js), copied because the library is
+ * ESM-only and mocked here: a key matches only when it is `conversation` or contains `Message`, and
+ * senderKeyDistributionMessage is excluded by name.
+ */
+function realGetContentType(content?: Record<string, unknown>): string | undefined {
+  return Object.keys(content ?? {}).find(
+    k => (k === 'conversation' || k.includes('Message')) && k !== 'senderKeyDistributionMessage',
+  );
+}
+
 // sessionId (name) and dbSessionId (Session.id UUID) are deliberately distinct here so assertions
 // below prove auth-dir/logging use the name while messageStore (FK-bound) uses the UUID.
 const newAdapter = (): BaileysAdapter =>
@@ -1106,6 +1118,142 @@ describe('BaileysAdapter reconnect policy — unlimited backoff (I4 hardening)',
     await new Promise<void>(r => setImmediate(r));
     expect(baileys().default).toHaveBeenCalledTimes(1);
   });
+
+  const fireClose = (statusCode: number, message?: string): void => {
+    fakeSock.fire('connection.update', {
+      connection: 'close',
+      lastDisconnect: { error: { message, output: { statusCode } } },
+    });
+  };
+
+  // The Boom Baileys ends an unscanned socket with (Socket/socket.js, genPairQR).
+  const QR_REFS_ENDED = 'QR refs attempts ended';
+
+  /**
+   * Deliver a QR on the current socket and wait for the lifecycle to publish it. The renderer's PNG
+   * encoder runs on nextTick and setImmediate, so a test using this must leave both unfaked.
+   */
+  const showQr = async (qr: string): Promise<void> => {
+    fakeSock.fire('connection.update', { connection: 'connecting' });
+    fakeSock.fire('connection.update', { qr });
+    await (qrcode.toDataURL as unknown as jest.Mock).mock.results.at(-1)?.value;
+  };
+
+  // An unpaired socket rotates QRs until its refs run out (60 s, then 20 s per ref), and Baileys then
+  // ends it with a 408: the same code as a lost connection. WhatsApp answered, so the close is no failure.
+  it('a QR window that runs out is not a reconnect attempt: never reported, and the backoff never grows', async () => {
+    const onReconnecting = jest.fn();
+    const adapter = await initWithRealTimers({ onReconnecting });
+    baileys().default.mockClear();
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+    jest.spyOn(Math, 'random').mockReturnValue(0);
+
+    for (let window = 1; window <= 8; window++) {
+      await showQr(`QR-${window}`);
+      expect(adapter.getStatus()).toBe(EngineStatus.QR_READY);
+      await jest.advanceTimersByTimeAsync(160_000);
+      fireClose(408, QR_REFS_ENDED);
+      expect(adapter.getStatus()).toBe(EngineStatus.INITIALIZING);
+
+      // Always the first backoff step: nothing at 999 ms, the new socket at 1 s.
+      await jest.advanceTimersByTimeAsync(999);
+      expect(baileys().default).toHaveBeenCalledTimes(window - 1);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(baileys().default).toHaveBeenCalledTimes(window);
+    }
+    expect(onReconnecting).not.toHaveBeenCalled();
+
+    // A socket that then fails before any QR opens a fresh episode: attempt 1, not attempt 9.
+    fireClose(408);
+    expect(onReconnecting.mock.calls).toEqual([[1, 1_000]]);
+  });
+
+  it('a QR window that runs out ends the streak, so a QR left unscanned never reaches the loop alert', async () => {
+    const onReconnecting = jest.fn();
+    await initWithRealTimers({ onReconnecting });
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+    jest.spyOn(Math, 'random').mockReturnValue(0);
+
+    for (let window = 1; window <= 6; window++) {
+      await showQr(`QR-${window}a`);
+      fireClose(428);
+      await jest.advanceTimersByTimeAsync(1_000);
+      await showQr(`QR-${window}b`);
+      fireClose(408, QR_REFS_ENDED);
+      await jest.advanceTimersByTimeAsync(1_000);
+    }
+
+    expect(onReconnecting.mock.calls).toEqual(Array.from({ length: 6 }, () => [1, 1_000]));
+  });
+
+  // Only the QR expiry is exempt. WhatsApp or a proxy shedding the socket after it served a QR is a
+  // failure like any other, and left uncounted it would open a new registration every second, unseen.
+  it.each([
+    { reason: '503', statusCode: 503, message: undefined },
+    { reason: '500', statusCode: 500, message: undefined },
+    { reason: '428', statusCode: 428, message: undefined },
+    { reason: 'lost connection 408', statusCode: 408, message: 'Connection was lost' },
+  ])('a $reason close while a QR waits counts and backs off', async ({ statusCode, message }) => {
+    const onReconnecting = jest.fn();
+    await initWithRealTimers({ onReconnecting });
+    baileys().default.mockClear();
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+    jest.spyOn(Math, 'random').mockReturnValue(0);
+
+    const delays = [1_000, 2_000, 4_000, 8_000, 16_000];
+    for (const [cycle, delay] of delays.entries()) {
+      await showQr(`QR-${cycle}`);
+      expect(onReconnecting).toHaveBeenCalledTimes(cycle);
+      fireClose(statusCode, message);
+      await jest.advanceTimersByTimeAsync(delay - 1);
+      expect(baileys().default).toHaveBeenCalledTimes(cycle);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(baileys().default).toHaveBeenCalledTimes(cycle + 1);
+    }
+
+    // Attempt 5 is the one the session layer turns into the reconnect-loop alert.
+    expect(onReconnecting.mock.calls).toEqual(delays.map((delay, cycle) => [cycle + 1, delay]));
+  });
+
+  it('a scan ends the streak: the restart WhatsApp asks for after it is attempt 1 again', async () => {
+    const onReconnecting = jest.fn();
+    await initWithRealTimers({ onReconnecting });
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+    jest.spyOn(Math, 'random').mockReturnValue(0);
+
+    fireClose(408);
+    await jest.advanceTimersByTimeAsync(1_000);
+    await showQr('QR-1');
+    fireClose(503);
+    await jest.advanceTimersByTimeAsync(2_000);
+    await showQr('QR-2');
+    fakeSock.fire('connection.update', { isNewLogin: true });
+    onReconnecting.mockClear();
+
+    fireClose(515);
+    expect(onReconnecting.mock.calls).toEqual([[1, 1_000]]);
+  });
+
+  it('a linked session still reports every attempt of an outage, growing backoff included', async () => {
+    const onReconnecting = jest.fn();
+    await initWithRealTimers({ onReconnecting });
+    fakeSock.fire('connection.update', { connection: 'open' });
+    jest.useFakeTimers();
+    jest.spyOn(Math, 'random').mockReturnValue(0);
+
+    for (const statusCode of [408, 503, 408, 503, 408]) {
+      fireClose(statusCode);
+      await jest.advanceTimersByTimeAsync(60_000); // the reconnected socket never opens
+    }
+
+    expect(onReconnecting.mock.calls).toEqual([
+      [1, 1_000],
+      [2, 2_000],
+      [3, 4_000],
+      [4, 8_000],
+      [5, 16_000],
+    ]);
+  });
 });
 
 describe('BaileysAdapter probeLiveness', () => {
@@ -1822,6 +1970,74 @@ describe('BaileysAdapter inbound fan-out', () => {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     const mapped = onHistoryMessages.mock.calls[0][0] as Array<{ id: string; type: string; body: string }>;
     expect(mapped[0]).toMatchObject({ id: 'H1', type: 'text', body: 'disappearing hello' });
+  });
+
+  describe('commerce messages map the same way on the live and history paths', () => {
+    // An order in a disappearing chat, a shared product card, and a share of the whole catalog (the
+    // `catalog` arm of productMessage, with no product id).
+    const commerceMessages = [
+      {
+        key: { remoteJid: '628111@s.whatsapp.net', fromMe: false, id: 'ORDER_MSG' },
+        message: { ephemeralMessage: { message: { orderMessage: { orderId: 'ORDER1', token: 'TOKEN1' } } } },
+        messageTimestamp: 1700000050,
+      },
+      {
+        key: { remoteJid: '628111@s.whatsapp.net', fromMe: false, id: 'PRODUCT_MSG' },
+        message: {
+          productMessage: {
+            product: { productId: 'PROD1', title: 'Sample' },
+            businessOwnerJid: '628111@s.whatsapp.net',
+          },
+        },
+        messageTimestamp: 1700000051,
+      },
+      {
+        key: { remoteJid: '628111@s.whatsapp.net', fromMe: false, id: 'CATALOG_MSG' },
+        message: { productMessage: { catalog: { title: 'Store' }, businessOwnerJid: '628111@s.whatsapp.net' } },
+        messageTimestamp: 1700000052,
+      },
+    ];
+
+    beforeEach(() => {
+      baileys.getContentType.mockImplementation(realGetContentType);
+      // Baileys unwraps ephemeralMessage (among other wrappers) to the inner message.
+      baileys.normalizeMessageContent.mockImplementation(
+        (m?: { ephemeralMessage?: { message?: unknown } }) => m?.ephemeralMessage?.message ?? m,
+      );
+    });
+
+    const expectCommerce = (mapped: IncomingMessage[]): void => {
+      const byId = new Map(mapped.map(m => [m.id, m]));
+      expect(byId.get('ORDER_MSG')).toMatchObject({ type: 'order', order: { orderId: 'ORDER1', token: 'TOKEN1' } });
+      expect(byId.get('PRODUCT_MSG')).toMatchObject({
+        type: 'product',
+        product: { productId: 'PROD1', title: 'Sample', businessOwnerJid: '628111@c.us' },
+      });
+      expect(byId.get('CATALOG_MSG')).toMatchObject({ type: 'unknown', body: 'Store' });
+      expect(byId.get('CATALOG_MSG')?.product).toBeUndefined();
+    };
+
+    it('live: carries the order and product ids and types a catalog share as unknown', async () => {
+      const onMessage = jest.fn();
+      const adapter = newAdapter();
+      await adapter.initialize({ onMessage });
+      fakeSock.fire('messages.upsert', { type: 'notify', messages: commerceMessages });
+      await new Promise(r => setImmediate(r));
+      await new Promise(r => setImmediate(r));
+      expect(onMessage).toHaveBeenCalledTimes(3);
+      expectCommerce((onMessage.mock.calls as Array<[IncomingMessage]>).map(([m]) => m));
+    });
+
+    it('history sync: carries the order and product ids and types a catalog share as unknown', async () => {
+      const onHistoryMessages = jest.fn();
+      const adapter = newAdapter();
+      await adapter.initialize({ onHistoryMessages });
+      fakeSock.fire('messaging-history.set', { contacts: [], chats: [], messages: commerceMessages });
+      await new Promise(r => setImmediate(r));
+      await new Promise(r => setImmediate(r));
+      expect(onHistoryMessages).toHaveBeenCalledTimes(1);
+      expectCommerce((onHistoryMessages.mock.calls as Array<[IncomingMessage[]]>)[0][0]);
+    });
   });
 
   it('surfaces inbound @mentions as neutral mentionedIds (contextInfo.mentionedJid)', async () => {
@@ -2699,41 +2915,79 @@ describe('BaileysAdapter inbound fan-out', () => {
     expect(event.senderId).toBe('628111@c.us'); // canonicalized to the neutral dialect
   });
 
-  it('senderKeyDistributionMessage: emits nothing and stores nothing (protocol noise the history path drops, #1568)', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
-    const baileys = jest.requireMock('@whiskeysockets/baileys') as { getContentType: jest.Mock };
-    // Real baileys 7.x getContentType EXCLUDES senderKeyDistributionMessage by name and only matches
-    // keys named `conversation` or containing `Message`, so an SKDM-only message resolves to
-    // undefined, never to 'senderKeyDistributionMessage'. The mock must return the realistic value
-    // or the test pins a code path production cannot reach.
-    baileys.getContentType.mockReturnValue(undefined);
+  describe('contentless protocol traffic on the live path (#1568)', () => {
+    /** Push one group message through the live upsert handler with Baileys' real content-type resolution. */
+    const fireLive = async (
+      id: string,
+      message: Record<string, unknown>,
+    ): Promise<{ onMessage: jest.Mock; debug: jest.SpyInstance }> => {
+      baileys.getContentType.mockImplementation(realGetContentType);
+      const onMessage = jest.fn();
+      const adapter = newAdapter();
+      const logger = (adapter as unknown as { logger: { debug: (m: string, meta?: unknown) => void } }).logger;
+      const debug = jest.spyOn(logger, 'debug').mockImplementation(() => undefined);
+      await adapter.initialize({ onMessage });
+      fakeSock.fire('messages.upsert', {
+        type: 'notify',
+        messages: [
+          {
+            key: { remoteJid: '120363@g.us', fromMe: false, id, participant: '628222@s.whatsapp.net' },
+            message,
+            messageTimestamp: 1700000025,
+          },
+        ],
+      });
+      await new Promise(r => setImmediate(r));
+      return { onMessage, debug };
+    };
 
-    const onMessage = jest.fn();
-    const adapter = newAdapter();
-    await adapter.initialize({ onMessage });
-    fakeSock.fire('messages.upsert', {
-      type: 'notify',
-      messages: [
-        {
-          key: {
-            remoteJid: '120363@g.us',
-            fromMe: false,
-            id: 'SKDM1',
-            participant: '628222@s.whatsapp.net',
-          },
-          message: {
-            senderKeyDistributionMessage: { axolotlSenderKeyDistributionMessage: 'R1NFMTIx...' },
-          },
-          messageTimestamp: 1700000025,
-        },
+    // Signal and history-sync traffic with no user content: every top-level key is protocol noise.
+    it.each<[string, Record<string, unknown>]>([
+      ['a sender-key distribution', { senderKeyDistributionMessage: { groupId: '120363@g.us' } }],
+      [
+        'a sender-key distribution with its context info',
+        { senderKeyDistributionMessage: { groupId: '120363@g.us' }, messageContextInfo: { messageSecret: 'cw==' } },
       ],
+      [
+        'a sender-key distribution with a message-history notice',
+        { senderKeyDistributionMessage: { groupId: '120363@g.us' }, messageHistoryNotice: { contextInfo: {} } },
+      ],
+      // The only noise key getContentType resolves to itself (it contains `Message` and is not excluded).
+      ['a fast-ratchet sender-key distribution', { fastRatchetKeySenderKeyDistributionMessage: { groupId: 'g' } }],
+      ['a message-history bundle', { messageHistoryBundle: { mimetype: 'application/octet-stream' } }],
+    ])('drops %s without emitting or storing it, and logs the drop', async (_label, message) => {
+      const { onMessage, debug } = await fireLive('NOISE1', message);
+      expect(onMessage).not.toHaveBeenCalled();
+      expect(fakeStore.put).not.toHaveBeenCalled();
+      expect(debug).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ msgId: 'NOISE1', remoteJid: '120363@g.us', keys: Object.keys(message) }),
+      );
     });
-    await new Promise(r => setImmediate(r));
-    // A sender-key distribution is Signal protocol traffic every group participant emits on first
-    // write or key rotation; it carries no user content. The history mapper already returns null
-    // for it, so the live path must not deliver a bodyless `unknown` message.received either.
-    expect(onMessage).not.toHaveBeenCalled();
-    expect(fakeStore.put).not.toHaveBeenCalled();
+
+    // No resolvable content type, yet not known noise: a call log (the proto's own `Messsage` spelling
+    // fails the `Message` match) or a lone messageContextInfo, which is what a content type newer than
+    // the bundled proto decodes to. These keep reaching consumers as `unknown`.
+    it.each<[string, Record<string, unknown>]>([
+      ['a call log', { callLogMesssage: { isVideo: false, callOutcome: 1, durationSecs: 12 } }],
+      ['a bare messageContextInfo', { messageContextInfo: { messageSecret: 'cw==' } }],
+    ])('emits and stores %s as unknown', async (_label, message) => {
+      const { onMessage } = await fireLive('UNK1', message);
+      expect(onMessage).toHaveBeenCalledTimes(1);
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      expect((onMessage.mock.calls[0][0] as { type: string }).type).toBe('unknown');
+      expect(fakeStore.put).toHaveBeenCalledTimes(1);
+    });
+
+    it('emits a real message that arrives bundled with a sender-key distribution', async () => {
+      const { onMessage } = await fireLive('SKDM_TEXT', {
+        senderKeyDistributionMessage: { groupId: '120363@g.us' },
+        conversation: 'hello group',
+      });
+      expect(onMessage).toHaveBeenCalledTimes(1);
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      expect(onMessage.mock.calls[0][0]).toMatchObject({ type: 'text', body: 'hello group' });
+    });
   });
 
   it('learns the lid pair carried on a dropped sender-key distribution before dropping it (#1568)', async () => {
