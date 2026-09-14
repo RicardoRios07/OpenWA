@@ -11,7 +11,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
-import { Repository, In, Not, IsNull, LessThan, DataSource, FindManyOptions } from 'typeorm';
+import { Repository, In, Not, IsNull, LessThan, DataSource, FindManyOptions, FindOptionsWhere } from 'typeorm';
 import { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity';
 import { setTimeout } from 'node:timers/promises';
 import { EngineTransportError } from '../../common/errors/engine-transport.error';
@@ -78,6 +78,11 @@ function isTransientLaunchFailure(error: unknown): boolean {
 
 /** Pause between sequential auto-start launches so a burst of Chromium boots does not spike the host. */
 export const AUTOSTART_THROTTLE_MS = 2_000;
+
+/** List window for {@link SessionService.findAll}, plus an optional exact session-name filter. */
+export interface SessionListOptions extends ListOptions {
+  name?: string;
+}
 
 /**
  * Statuses that assert an engine is running somewhere. The boot reset clears them for every row this
@@ -317,7 +322,7 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
     return saved;
   }
 
-  async findAll(allowedSessions?: string[] | null, opts: ListOptions = {}): Promise<Session[]> {
+  async findAll(allowedSessions?: string[] | null, opts: SessionListOptions = {}): Promise<Session[]> {
     // A session-restricted key only lists its own sessions; an unrestricted key (null/empty
     // allowlist) lists all — mirroring the ApiKeyGuard allowedSessions model so a scoped key
     // cannot enumerate every session through this aggregate route.
@@ -328,8 +333,17 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
       take: limit,
       skip: offset,
     };
+    const where: FindOptionsWhere<Session> = {};
     if (allowedSessions && allowedSessions.length > 0) {
-      options.where = { id: In(allowedSessions) };
+      where.id = In(allowedSessions);
+    }
+    // Exact, case-sensitive match. Only a non-empty string reaches TypeORM: anything else (an
+    // array from a repeated query key, an empty value) is not a name and must not become one.
+    if (typeof opts.name === 'string' && opts.name.length > 0) {
+      where.name = opts.name;
+    }
+    if (Object.keys(where).length > 0) {
+      options.where = where;
     }
     const sessions = await this.sessionRepository.find(options);
     return sessions.map(session => this.attachRuntimeState(session));

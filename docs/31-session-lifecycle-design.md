@@ -103,11 +103,11 @@ the Chromium process still holds file handles → rm fails or races a browser re
 **Pinned by:** `logout-teardown-race.spec.ts` — the module's most complete race corpus. Read it
 before touching anything in the logout/forceKill path.
 
-### INV-9 — The reconnect loop bounds itself: backoff with jitter, clamp ≤ 1h and ≤ setTimeout's 32-bit range, alert every 5 consecutive attempts
+### INV-9 — The reconnect loop bounds itself: backoff with jitter, clamp ≤ 5 min and ≤ setTimeout's 32-bit range, alert every 5 consecutive attempts
 
-**Defense:** `reconnect-policy.ts` — a pure decision function (5-minute stability reset, loop
-alerts) consumed by the lifecycle; the clamps exist because a naive `delay * 2^attempt` reaches
-values `setTimeout` silently truncates.
+**Defense:** `reconnect-policy.ts` — a pure decision function (attempt budget, loop alerts)
+consumed by the lifecycle, which resets the budget only when the session reaches READY; the clamps
+exist because a naive `delay * 2^attempt` reaches values `setTimeout` silently truncates.
 **Pinned by:** `reconnect-policy.spec.ts`.
 
 ### INV-10 — Boot auto-start is sequential, staggered (2s per Chromium), and detached from bootstrap

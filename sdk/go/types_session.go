@@ -5,16 +5,19 @@ import (
 	"net/url"
 )
 
-// ListSessionsQuery paginates GET /sessions. Both fields optional.
+// ListSessionsQuery paginates GET /sessions. All fields optional.
 type ListSessionsQuery struct {
 	Limit  *int
 	Offset *int
+	// Name returns only the session with exactly this name (case-sensitive).
+	Name *string
 }
 
 func (q *ListSessionsQuery) values() url.Values {
 	v := url.Values{}
 	setInt(v, "limit", q.Limit)
 	setInt(v, "offset", q.Offset)
+	setStr(v, "name", q.Name)
 	return v
 }
 

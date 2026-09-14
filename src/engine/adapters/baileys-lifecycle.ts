@@ -15,6 +15,11 @@ import { BaileysAdapterConfig } from '../types/baileys.types';
 import { createBaileysLogger } from './baileys-logger';
 import { BaileysVersionResolver } from './baileys-version-resolver';
 import { unappliedPatches, unappliedPatchesMessage } from './engine-patch-status';
+import {
+  ACCOUNT_REJECTED_REASON,
+  CONNECTION_REPLACED_REASON,
+  LOGOUT_CLEANUP_FAILED_REASON,
+} from '../terminal-engine-failure';
 import type { BaileysEvents } from './baileys-events';
 import type { BaileysHistory } from './baileys-history';
 import type { BaileysSessionStore } from './baileys-session-store';
@@ -471,7 +476,7 @@ export class BaileysLifecycle {
         this.setStatus(EngineStatus.FAILED);
         this.host.liveCalls.clear(); // terminal close: dead call handles, like the loggedOut branch above
         this.host.getOnError()?.(
-          'Connection replaced by another instance (440) — stop the other instance, then start this session again',
+          `${CONNECTION_REPLACED_REASON} — stop the other instance, then start this session again`,
         );
         return;
       }
@@ -485,7 +490,7 @@ export class BaileysLifecycle {
         this.setStatus(EngineStatus.FAILED);
         this.host.liveCalls.clear(); // terminal close: dead call handles, like the loggedOut branch above
         this.host.getOnError()?.(
-          'Account rejected by WhatsApp (403) — the number is likely banned or blocked; reconnecting will not help',
+          `${ACCOUNT_REJECTED_REASON} — the number is likely banned or blocked; reconnecting will not help`,
         );
         return;
       }
@@ -782,9 +787,7 @@ export class BaileysLifecycle {
         // clean disconnect (the credentials did not actually get wiped).
         this.setStatus(EngineStatus.FAILED);
         this.host.getOnError()?.(
-          `Logged out by WhatsApp, but the local credential cleanup failed: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
+          `${LOGOUT_CLEANUP_FAILED_REASON}: ${err instanceof Error ? err.message : String(err)}`,
         );
         return;
       }

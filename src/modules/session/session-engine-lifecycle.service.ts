@@ -14,6 +14,7 @@ import { PresenceStore } from './presence-store.service';
 import { AuditService } from '../audit/audit.service';
 import { AuditAction } from '../audit/entities/audit-log.entity';
 import { resolveEngineInitTimeoutMs } from '../../engine/engine-init-timeout';
+import { isKnownTerminalEngineFailure } from '../../engine/terminal-engine-failure';
 import { StatusStoreService } from '../status-store/status-store.service';
 import { IWhatsAppEngine, AccountRestriction } from '../../engine/interfaces/whatsapp-engine.interface';
 import { createLogger } from '../../common/services/logger.service';
@@ -47,6 +48,10 @@ const isStatusSeedOnReadyEnabled = (): boolean => process.env.STATUS_SEED_ON_REA
 export interface ReconnectState extends ReconnectAttemptState {
   /** The pending attempt's timer. Lives here, not in the policy, which stays free of side effects. */
   timer: NodeJS.Timeout | null;
+  /** True while executeReconnect awaits its re-init: an engine failure reported then is parked, not applied. */
+  initInFlight?: boolean;
+  /** The failure parked during that window, applied or dropped by executeReconnect once init settles. */
+  parkedFailure?: { run: () => void; terminal: boolean };
 }
 
 // Reconnect-backoff bounds. An OPERATOR-supplied session.config feeds this math, so the values
@@ -58,7 +63,7 @@ const RECONNECT_MAX_ATTEMPTS_CAP = 20;
 
 /** Coerce + clamp the untyped session.config reconnect knobs to finite, bounded values. Defaults are
  *  a 5000ms base delay and UNLIMITED attempts (`Infinity`): a long-lived session must keep retrying
- *  (the backoff parks at the 1h cap) instead of dying permanently after ~2.5 minutes. An EXPLICIT
+ *  (the backoff parks at the 5-minute cap) instead of dying permanently after ~2.5 minutes. An EXPLICIT
  *  `maxReconnectAttempts: 0` (disable) is preserved, and 1..20 clamps as before. */
 export function resolveReconnectConfig(
   config: { maxReconnectAttempts?: unknown; reconnectBaseDelay?: unknown } | null,
@@ -316,6 +321,7 @@ export class SessionEngineLifecycle {
       handleEngineDisconnected: (id, engine, reason) => this.handleEngineDisconnected(id, engine, reason),
       updateStatus: (id, status) => this.updateStatus(id, status),
       cancelReconnect: id => this.cancelReconnect(id),
+      parkReconnectInitFailure: (id, run, reason) => this.parkReconnectInitFailure(id, run, reason),
       evictAndForceDestroy: (id, engine) => this.evictAndForceDestroy(id, engine),
       trackPendingCredentialTeardown: (sessionName, raw) => this.trackPendingCredentialTeardown(sessionName, raw),
       reportRestrictionLifted: (id, lifted) => this.reportRestrictionLifted(id, lifted),
@@ -683,9 +689,10 @@ export class SessionEngineLifecycle {
         // The engine's INTERNAL auth-timeout: whatsapp-web.js throws the primitive string 'auth timeout'
         // (see ENGINE_AUTH_TIMEOUT) when its inject poll exhausts authTimeoutMs (default 30s) — the common
         // pre-QR failure when the browser launched but couldn't reach WhatsApp, e.g. a dead/unreachable
-        // session proxy (#733). onError already evicted the engine + wrote FAILED before this catch ran, so
-        // only the HTTP mapping remains: surface a diagnostic 504 instead of letting the bare string escape
-        // to NestJS's default handler as a meaningless 500.
+        // session proxy (#733). On a start() onError already evicted the engine + wrote FAILED before this
+        // catch ran (a reconnect parked that report, and its catch evicts and retries instead), so only
+        // the HTTP mapping remains: surface a diagnostic 504 instead of letting the bare string escape to
+        // NestJS's default handler as a meaningless 500.
         throw new HttpException(ENGINE_AUTH_TIMEOUT_MESSAGE, HttpStatus.GATEWAY_TIMEOUT);
       }
       throw err;
@@ -970,7 +977,7 @@ export class SessionEngineLifecycle {
     const state = this.reconnectStates.get(id);
     if (!state) return;
 
-    // All the backoff rules (stability reset, budget, exponential delay, loop cadence) live in the
+    // All the backoff rules (budget, exponential delay, loop cadence) live in the
     // pure policy; this method only applies the effects the decision calls for.
     const decision = decideReconnect(state);
 
@@ -987,6 +994,13 @@ export class SessionEngineLifecycle {
       // this node's lease lapsed must not park a peer's session in FAILED, which nothing resets
       // automatically. The in-memory error above is per-process and harmless either way.
       if (this.ownsSession(id)) void this.updateStatus(id, SessionStatus.FAILED);
+      // The hook signal a terminal failure carries: a failed re-init no longer fires session:error per
+      // attempt, so the episode's one terminal end reports it here.
+      void this.hookManager.execute(
+        'session:error',
+        { reason: decision.reason },
+        { sessionId: id, source: 'SessionService' },
+      );
       // Terminal path — evict the dead engine so it neither holds a concurrency slot nor makes a
       // subsequent start() reject the session as "already started". This mirrors onError's terminal
       // path (the same rationale: leaving the engine in the map wedges the session). The engine may
@@ -1084,6 +1098,8 @@ export class SessionEngineLifecycle {
   private async executeReconnect(id: string, session: Session, state: ReconnectState): Promise<void> {
     // The session may have been stopped/deleted before this fired — don't resurrect it.
     if (this.stoppingSessions.has(id)) {
+      // Drop the spent state too: its non-null timer would otherwise keep isEngineActive() pinning the lease.
+      if (this.reconnectStates.get(id) === state) this.cancelReconnect(id);
       return;
     }
     try {
@@ -1112,8 +1128,19 @@ export class SessionEngineLifecycle {
       // engine was created, so there is nothing to evict and no dir to purge).
       await this.awaitPendingTeardown(session.name);
 
-      // Re-initialize
-      await this.initializeEngine(id, session);
+      // Re-initialize. An engine failure reported inside this window is parked (see
+      // parkReconnectInitFailure): a failed launch must retry, not land FAILED and strand the session.
+      state.initInFlight = true;
+      try {
+        await this.initializeEngine(id, session);
+      } finally {
+        state.initInFlight = false;
+      }
+      // Init resolved, so a failure the engine reported meanwhile (a stuck-auth or readiness timer, an
+      // auth failure) is real: apply it, unless a stop/delete/start already replaced this state.
+      const parked = state.parkedFailure;
+      state.parkedFailure = undefined;
+      if (parked && this.reconnectStates.get(id) === state) parked.run();
 
       // A stop()/delete() may have run while we awaited init — if so, tear down the engine we just
       // registered so it isn't orphaned (the session is meant to be down). delete() clears its
@@ -1140,11 +1167,22 @@ export class SessionEngineLifecycle {
         return;
       }
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      const errorMessage = error instanceof Error ? error.message : String(error);
       this.logger.error(`Reconnect attempt ${state.attempts} failed`, errorMessage, {
         sessionId: id,
         action: 'reconnect_error',
       });
+      const parked = state.parkedFailure;
+      state.parkedFailure = undefined;
+      // A delete (or delete + start) replaced this state while init ran: nothing here is ours any more,
+      // and the engine in the map may be the replacement's. No await may sit between this check and
+      // the eviction/scheduling below.
+      if (this.reconnectStates.get(id) !== state) return;
+      // A failure only the operator can fix (re-scan, stale profile) stays terminal on a reconnect too.
+      if (parked && (parked.terminal || isKnownTerminalEngineFailure(errorMessage))) {
+        parked.run();
+        return;
+      }
       // initializeEngine registers the engine in the map BEFORE engine.initialize() runs, so a rejected
       // re-init leaves a half-built engine behind. Evict + reap it: otherwise a reconnect that later
       // exhausts its attempts strands an orphaned Chromium holding a concurrency slot, and the next
@@ -1153,9 +1191,31 @@ export class SessionEngineLifecycle {
       if (halfBuilt) {
         this.evictAndForceDestroy(id, halfBuilt);
       }
-      // Schedule another attempt
+      if (this.stoppingSessions.has(id)) {
+        this.cancelReconnect(id);
+        return;
+      }
+      // Schedule another attempt. The row stays INITIALIZING through the backoff (an active status, with
+      // lastError still showing the reason), so a retryable failure writes nothing per attempt.
       this.scheduleReconnect(id, session);
     }
+  }
+
+  /**
+   * Park an engine failure while the current reconnect state's re-init is in flight, so
+   * executeReconnect decides once init settles. onError's report supersedes the bare FAILED
+   * onStateChanged parks just before it, and a known-terminal report is never displaced by a
+   * retryable one. Keyed ONLY on the marker, never on stoppingSessions: stop marks outlive refused
+   * requests, and swallowing a failure on them would strand an engine start() then refuses.
+   */
+  private parkReconnectInitFailure(id: string, run: () => void, reason?: string): boolean {
+    const state = this.reconnectStates.get(id);
+    if (!state?.initInFlight) return false;
+    const terminal = reason !== undefined && isKnownTerminalEngineFailure(reason);
+    if (!state.parkedFailure || (reason !== undefined && !state.parkedFailure.terminal)) {
+      state.parkedFailure = { run, terminal };
+    }
+    return true;
   }
 
   private cancelReconnect(id: string): void {

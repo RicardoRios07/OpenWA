@@ -65,6 +65,12 @@ export interface SessionEngineWiringHost {
   handleEngineDisconnected(id: string, engine: IWhatsAppEngine, reason: string): Promise<void>;
   updateStatus(id: string, status: SessionStatus): Promise<void>;
   cancelReconnect(id: string): void;
+  /**
+   * Park an engine failure reported while a service-level reconnect awaits its re-init, instead of
+   * applying it: `run` is the failure's side effects, and `reason` is set for an onError report.
+   * Returns false (nothing parked, the caller applies it now) outside that window.
+   */
+  parkReconnectInitFailure(id: string, run: () => void, reason?: string): boolean;
   evictAndForceDestroy(id: string, engine: IWhatsAppEngine): void;
   trackPendingCredentialTeardown(sessionName: string, raw: Promise<void>): void;
   /** Announce a restriction that has ended; shared with the lifecycle's own READY path. */
@@ -340,9 +346,11 @@ export class SessionEngineEventWiring {
           [EngineStatus.FAILED]: SessionStatus.FAILED,
         };
         const newStatus = statusMap[engineState];
-        if (newStatus) {
-          persistStatus(newStatus);
-        }
+        if (!newStatus) return;
+        // A FAILED reported inside a service-level reconnect's init window is parked with onError.
+        const persist = (): void => persistStatus(newStatus);
+        if (newStatus === SessionStatus.FAILED && host.parkReconnectInitFailure(id, persist)) return;
+        persist();
       },
       onActionRequired: (reason: string): void => {
         if (!host.isLiveEngine(id, engine)) return;
@@ -447,26 +455,32 @@ export class SessionEngineEventWiring {
         // scheduled (unlike onDisconnected), since re-scanning is required.
         host.sessionErrors.set(id, reason);
 
-        // A prior onDisconnected may have scheduled a reconnect. This failure is terminal
-        // (re-scan required), so cancel it — otherwise the pending timer would resurrect a
-        // session the operator must manually restart.
-        host.cancelReconnect(id);
+        const fail = (): void => {
+          // A prior onDisconnected may have scheduled a reconnect. This failure is terminal
+          // (re-scan required), so cancel it — otherwise the pending timer would resurrect a
+          // session the operator must manually restart.
+          host.cancelReconnect(id);
 
-        void host.hookManager.execute(
-          'session:error',
-          { reason },
-          {
-            sessionId: id,
-            source: 'Engine',
-          },
-        );
+          void host.hookManager.execute(
+            'session:error',
+            { reason },
+            {
+              sessionId: id,
+              source: 'Engine',
+            },
+          );
 
-        persistStatus(SessionStatus.FAILED);
+          persistStatus(SessionStatus.FAILED);
 
-        // onError is terminal (no reconnect is scheduled — re-scan is required). Evict the dead engine
-        // and SIGKILL its process: leaving it in the map would hold a concurrency slot indefinitely and
-        // make the next start() reject the session as "already started" instead of re-initializing it.
-        host.evictAndForceDestroy(id, engine);
+          // onError is terminal (no reconnect is scheduled — re-scan is required). Evict the dead engine
+          // and SIGKILL its process: leaving it in the map would hold a concurrency slot indefinitely and
+          // make the next start() reject the session as "already started" instead of re-initializing it.
+          host.evictAndForceDestroy(id, engine);
+        };
+
+        // During a service-level reconnect's init the lifecycle parks this instead: once init settles it
+        // either applies it or, for a retryable failure, evicts the engine and re-arms the backoff.
+        if (!host.parkReconnectInitFailure(id, fail, reason)) fail();
       },
       onCredentialTeardownStarted: (operation: Promise<void>): void => {
         // The adapter fired the moment it began the call that ends in an fs.rm of this session's
