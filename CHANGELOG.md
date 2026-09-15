@@ -7,45 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Security
-
-- The `session.qr` WebSocket event reaches only OPERATOR and ADMIN keys, matching `GET /api/sessions/{sessionId}/qr`; a VIEWER key subscribed by name or through a wildcard no longer receives the pairing QR.
-- An integration ingress route verified with `shared-secret` no longer stores the instance secret from its declared header; the value is redacted in the persisted event, the queued job, the dead-letter row and the `ingress:error` hook payload.
-
-### Added
-
-- `GET /api/sessions` accepts a `name` query parameter that returns only the session with that exact name, also on the MCP `SessionFindAll` tool and the JavaScript, Python, Go, Java and PHP SDKs ([#1594](https://github.com/rmyndharis/OpenWA/issues/1594)). Thanks @rivenash.
-
-### Changed
-
-- The Italian (`it`) dashboard translates the session proxy Save button, the webhook chat-kind filter label and the warning shown when a backup export leaves out media ([#1583](https://github.com/rmyndharis/OpenWA/pull/1583)). Thanks @albanobattistella.
-
-### Fixed
-
-- A session whose automatic reconnect fails to relaunch the engine (a network, DNS or browser launch error) keeps retrying with backoff instead of stopping in `failed` until restarted by hand; an authentication failure or a stale browser profile still ends in `failed` ([#1580](https://github.com/rmyndharis/OpenWA/issues/1580)).
-- A session that runs out of reconnect attempts fires the `session:error` plugin hook when it lands in `failed`.
-- A session that runs out of reconnect attempts keeps the last attempt's failure reason in `lastError` and in the `session:error` hook, after the attempts message.
-- A stop during the retry delay after a transient start failure is no longer undone by the retry.
-- In a multi-node deployment, a start cut short by a concurrent stop releases its claim, so a peer no longer adopts and restarts the stopped session.
-- A stop or delete that fails on a database error no longer blocks the session's next automatic reconnect or makes a later start answer "already started".
-- A logout or force-kill refused as "not started" leaves the session's claim untouched, so a crashed node's session stays visible to the takeover sweep.
-- `GET /api/sessions/:sessionId/presence/:chatId` returns `null` once the session has no running engine, instead of the last presence reported before a stop, logout, force-kill or failure.
-- An explicit `maxReconnectAttempts` is honoured and the reconnect delay is capped at 5 minutes; the budget used to restart once the backoff passed 5 minutes, so the limit was never reached and the documented 1-hour cap never applied.
-- The webhook delivery reconciler no longer replays a delivery that is still waiting for a dispatch slot or retrying on the node that dispatched it, which sent a duplicate outside `WEBHOOK_DISPATCH_CONCURRENCY` and could close a slow delivery as failed while it was still running.
-- A webhook delivery shed at `WEBHOOK_DISPATCH_MAX_QUEUED` or refused during shutdown is no longer replayed by the delivery reconciler, so its delivery-failure row no longer reports an event that was delivered after all.
-- `session.reconnect_loop` webhooks carry an idempotency key salted per occurrence, so an alert from a later outage that reaches the same attempt count is no longer deduplicated onto the earlier one or left without a delivery record.
-
-## [0.23.5] - 2026-09-14
+## [0.23.5] - 2026-09-15
 
 ### Security
 
 - The group invite-code read, over REST or the MCP `GroupGetInviteCode` tool, requires the OPERATOR role; the code is a transferable join capability, so a VIEWER key can no longer extract it ([GHSA-45fh-xj7x-vj2x](https://github.com/rmyndharis/OpenWA/security/advisories/GHSA-45fh-xj7x-vj2x)). Thanks Matija Petronijević for the report.
 - The amd64 image ships Chrome for Testing 153.0.8010.36 instead of 146.0.7680.31, picking up the browser security fixes released since (the arm64 image uses the Debian chromium package).
+- The `session.qr` WebSocket event reaches only OPERATOR and ADMIN keys, matching `GET /api/sessions/{sessionId}/qr`; a VIEWER key subscribed by name or through a wildcard no longer receives the pairing QR.
+- An integration ingress route verified with `shared-secret` no longer stores the instance secret from its declared header; the value is redacted in the persisted event, the queued job, the dead-letter row and the `ingress:error` hook payload.
+- Baileys sessions with an HTTP, HTTPS or SOCKS5 proxy fetch through the proxy instead of connecting direct: inbound media, the WhatsApp Web version lookup, the history-sync and app-state payloads of the initial sync, and a product card's image URL. With a SOCKS4 proxy, which the HTTP client cannot use, inbound media is skipped and arrives as the omitted marker, the version lookup falls back to the bundled version, and the initial-sync payloads and product image are still fetched directly.
 
 ### Added
 
 - Inbound commerce messages arrive typed `order` and `product` instead of a bodyless `unknown`, on both engines, and are accepted by webhook and automation-rule message-type filters ([#1547](https://github.com/rmyndharis/OpenWA/pull/1547)). Thanks @m7fz7.
-- The Python SDK's `ChatHistoryMessage` carries the commerce `order` and `product` blocks, with required fields and enums matching the contract.
+- The JavaScript, Python, Go and Java SDKs type the `order` and `product` message types, and the Python `ChatHistoryMessage` carries their blocks with required fields and enums matching the contract.
+- `GET /api/sessions` accepts a `name` query parameter that returns only the session with that exact name, also on the MCP `SessionFindAll` tool and the JavaScript, Python, Go, Java and PHP SDKs ([#1594](https://github.com/rmyndharis/OpenWA/issues/1594)). Thanks @rivenash for the request.
+
+### Changed
+
+- The Italian (`it`) dashboard translates the session proxy Save button, the webhook chat-kind filter label and the warning shown when a backup export leaves out media ([#1583](https://github.com/rmyndharis/OpenWA/pull/1583)). Thanks @albanobattistella.
+- `webhooks.deliveryFailures` returns a typed `WebhookDeliveryFailure` list in the JavaScript, Python, Go and Java SDKs; Go and Java callers that handled the old untyped value must update.
+- From-source minimum Node.js rises from 22.13 to **22.19**, the floor of the bundled `undici`.
 
 ### Fixed
 
@@ -65,6 +47,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `restore.sh` refuses to overwrite a live database without `--force` even when the operator's sqlite3 rc file changes its output format.
 - A misspelled `LOG_LEVEL` fails the boot naming the accepted values, instead of silently logging at info.
 - Dependabot can open better-sqlite3 13.x patch and minor updates again; the freeze now starts at v14.
+- A request forwarded to the node that owns its session answers `504` or `502`, not `503`, when the forward times out or breaks after the request was sent, so a client retrying on `503` no longer repeats a send the owner may have carried out; `503` remains for an owner that could not be reached at all.
+- The dashboard Logs page and its sidebar entry are shown to admin keys only, matching the ADMIN-only `GET /api/audit` it reads.
+- The dashboard Sessions page hides Show QR for viewer keys, since the QR is operator-only.
+- The dashboard Sessions page re-reads the session list once after a failed read, as soon as live updates are connected, and regains that retry after a successful read, instead of keeping the error until a reload.
+- The dashboard Templates page shows a load or permission error when the template list cannot be read, instead of "No templates saved".
+- The dashboard Webhooks Configured card shows a placeholder instead of 0 when the webhook list cannot be read.
+- Dashboard message search ignores a response that arrives after a newer query, so stale results no longer replace the current ones.
+- A session whose automatic reconnect fails to relaunch the engine (a network, DNS or browser launch error) keeps retrying with backoff instead of stopping in `failed` until restarted by hand; an authentication failure or a stale browser profile still ends in `failed` ([#1580](https://github.com/rmyndharis/OpenWA/issues/1580)).
+- A session that runs out of reconnect attempts fires the `session:error` plugin hook when it lands in `failed`.
+- A session that runs out of reconnect attempts keeps the last attempt's failure reason in `lastError` and in the `session:error` hook, after the attempts message.
+- A stop during the retry delay after a transient start failure is no longer undone by the retry; a stop or delete the ownership fence refused leaves the retry alone.
+- In a multi-node deployment, a start cut short by a concurrent stop releases its claim, so a peer no longer adopts and restarts the stopped session.
+- A stop or delete that fails on a database error no longer blocks the session's next automatic reconnect or makes a later start answer "already started".
+- A logout or force-kill refused as "not started" leaves the session's claim untouched, so a crashed node's session stays visible to the takeover sweep.
+- `GET /api/sessions/:sessionId/presence/:chatId` returns `null` once the session has no running engine, instead of the last presence reported before a stop, logout, force-kill or failure.
+- An explicit `maxReconnectAttempts` is honoured and the reconnect delay is capped at 5 minutes; the budget used to restart once the backoff passed 5 minutes, so a limit above about 6 attempts was never reached and the documented 1-hour cap never applied.
+- The webhook delivery reconciler no longer replays a delivery that is still waiting for a dispatch slot or retrying on the node that dispatched it, which sent a duplicate outside `WEBHOOK_DISPATCH_CONCURRENCY` and could close a slow delivery as failed while it was still running.
+- `session.reconnect_loop` webhooks carry an idempotency key salted per occurrence, so an alert from a later outage that reaches the same attempt count is no longer deduplicated onto the earlier one or left without a delivery record.
+- A bulk batch sends each message through the session's current engine, so a reconnect or restart mid-batch no longer fails every remaining message.
+- `POST /messages/send-bulk` answers 400 for an item with an empty `chatId`, a text item without text, or a media item without a `url` or `base64` under its type; such items used to be accepted with 202 and fail later.
+- `POST /messages/send-bulk` answers 400, not 500, when a concurrent request already created the same `batchId`.
+- `PUT /templates/:id` answers 400, not 500, for a `null` `name` or `body`.
+- `GET /api/search` answers 400, not 500, for a fractional `limit` or `offset`.
+- `POST /messages/send-template` without `templateId` or `templateName` answers 400 instead of 404.
+- The label upsert documentation no longer says omitted fields are kept: the write replaces the whole label, so an omitted name or colour is not preserved.
+- Restoring a PostgreSQL backup into SQLite stores creation and update timestamps in SQLite's own format, so restored pending webhook deliveries and ingress events are replayed on the day they were created instead of from the next UTC day.
+- The `POST /api/infra/import-data` schema and the API docs state 16 migration tables, including the `chatStates` and `webhookOutboxEvents` keys the restore already clears.
+- `GET /api/infra/storage/export` streams files into the archive one at a time instead of loading the whole media store into memory first, so exporting a large local or S3 store no longer exhausts memory.
+- A Baileys session behind an HTTP(S) proxy that never answers CONNECT no longer leaves an open connection to the proxy on every reconnect attempt.
+- A Baileys inbound media download that passes `MEDIA_DOWNLOAD_TIMEOUT_MS` before its stream opens stops instead of buffering in the background outside `INBOUND_MEDIA_CONCURRENCY`.
+- `BAILEYS_CHAT_STATE_CACHE_MAX` is listed in `.env.example` and forwarded by both bundled Compose files, so the Baileys chat-state cache cap can be raised from `.env`.
 
 ### Dependencies
 
@@ -76,6 +89,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The amd64 image moves from Chrome for Testing 146 to 153, so every amd64 rollback to 0.23.4 or earlier crosses a browser major; the arm64 image runs the chromium Debian ships at build time, whose major can differ between releases.
 - A `LOG_LEVEL` other than `error`, `warn`, `info`, `debug` or `verbose` now stops the boot instead of logging at info.
 - Multi-node deployments run the lapsed-status correction even with `AUTO_START_SESSIONS` off, so every node needs a synced clock and, on PostgreSQL, one time zone without daylight saving (`TZ=UTC` recommended); otherwise live sessions can be marked disconnected (see `docs/13-horizontal-scaling.md`).
+- A session with an explicit `maxReconnectAttempts` now stops in `failed` once those attempts run out during an outage; before, a limit above about 6 at the default base delay was never reached and the session retried indefinitely.
+- A dashboard or client signed in with a `VIEWER` key no longer receives the pairing QR over the `/events` WebSocket, matching the OPERATOR role `GET /api/sessions/{sessionId}/qr` already required.
+- Installing from source now needs Node.js 22.19 or newer; the published Docker image is unaffected.
+- Python SDK: `ChatHistoryMessage` marks the keys the contract always sends as required and narrows `type` and `kind` to literals, so a hand-built partial dict or a plain `str` assigned to either no longer type-checks.
 
 ## [0.23.4] - 2026-09-05
 

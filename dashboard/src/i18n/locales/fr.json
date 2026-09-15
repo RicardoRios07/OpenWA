@@ -518,7 +518,10 @@
       "title": "Aucun template enregistré",
       "description": "Créez un template réutilisable pour accélérer vos réponses et notifications courantes.",
       "noSessionsTitle": "Aucune session disponible",
-      "noSessionsDesc": "Créez une session WhatsApp avant d'ajouter des templates."
+      "noSessionsDesc": "Créez une session WhatsApp avant d'ajouter des templates.",
+      "loadErrorTitle": "Impossible de charger les templates",
+      "forbiddenTitle": "Aucun accès aux templates",
+      "forbiddenDesc": "Les templates nécessitent une clé API avec le rôle opérateur ou administrateur."
     },
     "toasts": {
       "created": "Template créé avec succès",

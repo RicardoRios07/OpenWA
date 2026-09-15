@@ -518,7 +518,10 @@
       "title": "No templates saved",
       "description": "Create a reusable template to speed up common replies and notifications.",
       "noSessionsTitle": "No sessions available",
-      "noSessionsDesc": "Create a WhatsApp session before adding templates."
+      "noSessionsDesc": "Create a WhatsApp session before adding templates.",
+      "loadErrorTitle": "Could not load templates",
+      "forbiddenTitle": "No access to templates",
+      "forbiddenDesc": "Templates require an API key with the operator or admin role."
     },
     "toasts": {
       "created": "Template created successfully",

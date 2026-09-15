@@ -480,9 +480,15 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
    * their own requireSession, so for an id that never had one the entry is unreachable by every
    * reclamation path and survives for the life of the process. A 404 also means there is no engine
    * and no in-flight start() for the mark to guard, so dropping it is safe as well as necessary.
+   *
+   * The request count set on the same tick is dropped with it, and for the same reason: its only
+   * reader is the transient start retry, which cannot be guarding a session that has no row, so
+   * an id that never had one would otherwise keep a counter entry for the life of the process.
    */
   private discardStopMarkForMissingSession(id: string, error: unknown): void {
-    if (error instanceof NotFoundException) this.engineLifecycle.clearStopping(id);
+    if (!(error instanceof NotFoundException)) return;
+    this.engineLifecycle.clearStopping(id);
+    this.stopRequests.delete(id);
   }
 
   /**
@@ -496,14 +502,19 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
    * holder may be gone, and taking over is exactly what the claim rule allows.
    */
   private async assertNotHeldElsewhere(id: string): Promise<void> {
-    // Both callers set the stop mark before this query. A refusal keeps it (see delete()), but a
-    // query that failed decided nothing, and a mark left on a session running here would stop its
-    // next disconnect from reconnecting.
+    // Both callers count the request and set the stop mark before this query. The MARK survives a
+    // 409 (harmless, cleared by the next start()) but not a failed query: that decided nothing, and
+    // a mark left on a session running here would stop its next disconnect from reconnecting.
+    // Neither refusal keeps its COUNT. Nothing was taken down, and the count exists only so an
+    // in-flight start()'s transient retry can tell a stop that happened from one that did not;
+    // counting a refusal cancels that retry and leaves the session down with nothing to restart it.
     const heldElsewhere = await this.ownership?.isHeldByOtherNode(id).catch((error: unknown) => {
       this.engineLifecycle.clearStopping(id);
+      this.uncountStopRequest(id);
       throw error;
     });
     if (heldElsewhere) {
+      this.uncountStopRequest(id);
       throw new ConflictException(`Session ${id} is running on another node`);
     }
   }
@@ -629,6 +640,18 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
   private markStopping(id: string): void {
     this.stopRequests.set(id, (this.stopRequests.get(id) ?? 0) + 1);
     this.engineLifecycle.markStopping(id);
+  }
+
+  /**
+   * Undo markStopping()'s count for a request that took nothing down, and drop the entry once the
+   * count is back to zero so ids that are only ever refused cannot accumulate. Decrementing rather
+   * than deleting keeps a concurrent stop that DID take effect counted: it leaves the value one
+   * above what an in-flight start captured either way, so the retry it must cancel stays cancelled.
+   */
+  private uncountStopRequest(id: string): void {
+    const remaining = (this.stopRequests.get(id) ?? 0) - 1;
+    if (remaining > 0) this.stopRequests.set(id, remaining);
+    else this.stopRequests.delete(id);
   }
 
   /** Hand the claim back unless something still runs here (engine, in-flight start, pending reconnect). */

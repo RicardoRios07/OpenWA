@@ -38,6 +38,23 @@ describe('BaileysVersionResolver', () => {
 
   const asBaileysLib = (mock: unknown): typeof BaileysLib => mock as typeof BaileysLib;
 
+  describe('Proxy scheme without a fetch dispatcher', () => {
+    it('when the dispatcher is null, skips both remote tiers instead of fetching direct', async () => {
+      fs.writeFileSync(path.join(tmpDir, 'last_known_wa_version.json'), JSON.stringify([2, 3000, 1043857760]));
+      const resolver = createResolver();
+      const mockLib = {
+        fetchLatestWaWebVersion: jest.fn(),
+        fetchLatestBaileysVersion: jest.fn(),
+      };
+
+      const version = await resolver.resolve(asBaileysLib(mockLib), { dispatcher: null });
+
+      expect(version).toEqual([2, 3000, 1043857760]);
+      expect(mockLib.fetchLatestWaWebVersion).not.toHaveBeenCalled();
+      expect(mockLib.fetchLatestBaileysVersion).not.toHaveBeenCalled();
+    });
+  });
+
   describe('Tier 1: BAILEYS_WA_VERSION environment variable override', () => {
     it('when BAILEYS_WA_VERSION is set in dot format, returns the overridden version immediately without network calls', async () => {
       // Arrange

@@ -707,7 +707,10 @@
       "title": "No hay plantillas guardadas",
       "description": "Crea una plantilla reutilizable para agilizar respuestas y notificaciones habituales.",
       "noSessionsTitle": "No hay sesiones disponibles",
-      "noSessionsDesc": "Crea una sesión de WhatsApp antes de añadir plantillas."
+      "noSessionsDesc": "Crea una sesión de WhatsApp antes de añadir plantillas.",
+      "loadErrorTitle": "No se pudieron cargar las plantillas",
+      "forbiddenTitle": "Sin acceso a las plantillas",
+      "forbiddenDesc": "Las plantillas requieren una clave API con el rol de operador o administrador."
     },
     "toasts": {
       "created": "Plantilla creada correctamente",

@@ -518,7 +518,10 @@
       "title": "未儲存任何範本",
       "description": "建立可重用的範本，加快常用回覆和通知的速度。",
       "noSessionsTitle": "沒有可用的工作階段",
-      "noSessionsDesc": "請先建立 WhatsApp 工作階段，才能新增範本。"
+      "noSessionsDesc": "請先建立 WhatsApp 工作階段，才能新增範本。",
+      "loadErrorTitle": "無法載入範本",
+      "forbiddenTitle": "無權存取範本",
+      "forbiddenDesc": "範本需要具有操作員或管理員角色的 API 金鑰。"
     },
     "toasts": {
       "created": "範本建立成功",

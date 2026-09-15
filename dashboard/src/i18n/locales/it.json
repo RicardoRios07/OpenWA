@@ -518,7 +518,10 @@
       "title": "Nessun modello salvato",
       "description": "Crea un modello riutilizzabile per velocizzare le risposte e le notifiche più comuni..",
       "noSessionsTitle": "Nessuna sessione disponibile",
-      "noSessionsDesc": "Crea una sessione WhatsApp prima di aggiungere i modelli."
+      "noSessionsDesc": "Crea una sessione WhatsApp prima di aggiungere i modelli.",
+      "loadErrorTitle": "Impossibile caricare i modelli",
+      "forbiddenTitle": "Nessun accesso ai modelli",
+      "forbiddenDesc": "I modelli richiedono una chiave API con ruolo operatore o amministratore."
     },
     "toasts": {
       "created": "Modello creato con successo",

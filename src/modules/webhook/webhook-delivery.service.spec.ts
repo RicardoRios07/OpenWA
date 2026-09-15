@@ -349,11 +349,15 @@ describe('WebhookDeliveryService', () => {
         }),
       );
       expect(mockFetch).toHaveBeenCalledTimes(1);
-      // The shed delivery's record is retired, so the reconciler does not replay what was shed on
-      // purpose and leave a failure row behind for an event that was delivered after all.
-      expect(outboxService.close).toHaveBeenCalledWith('wh-b', expect.stringMatching(/_wh-b$/), 'failed');
+      // The shed delivery was rejected before its POST, so only the delivered one is retired: wh-b's
+      // row stays pending and the reconciler is what still gets that event to the receiver.
       expect(outboxService.close).toHaveBeenCalledWith('wh-a', expect.stringMatching(/_wh-a$/), 'dispatched');
-      expect(service.isLocallyPending((outboxService.close.mock.calls as string[][])[0][1])).toBe(false);
+      expect((outboxService.close.mock.calls as string[][]).map(c => c[0])).toEqual(['wh-a']);
+      // Both keys, the shed one included, are released: the reconciler only replays a pending row
+      // once no dispatch on this node still owns it, so a leaked key would strand wh-b for good.
+      for (const c of outboxService.open.mock.calls as Array<[{ idempotencyKey: string }]>) {
+        expect(service.isLocallyPending(c[0].idempotencyKey)).toBe(false);
+      }
     });
 
     it('reports a delivery as locally pending while it is parked or in flight, and releases it once settled', async () => {
@@ -871,9 +875,9 @@ describe('WebhookDeliveryService', () => {
       const recorded = shutdownInserts.map(c => c[0]);
       expect(recorded.map(r => r.webhookId)).toEqual(expect.arrayContaining(['wh-b', 'wh-c']));
       for (const r of recorded) expect(r.lastError).toBe('ConcurrencyLimiter closed');
-      // Their records are retired too, so the next start does not replay what was dead-lettered here.
-      expect(outboxService.close).toHaveBeenCalledWith('wh-b', expect.stringMatching(/_wh-b$/), 'failed');
-      expect(outboxService.close).toHaveBeenCalledWith('wh-c', expect.stringMatching(/_wh-c$/), 'failed');
+      // Their outbox rows are left pending: the POST never happened, so the next start's sweep is
+      // the only thing that can still deliver those two events.
+      expect(outboxService.close).not.toHaveBeenCalled();
       // The in-flight delivery was NOT falsely dead-lettered (the receiver may have it); it is
       // logged as abandoned so the loss is still operator-visible.
       expect(
@@ -888,7 +892,7 @@ describe('WebhookDeliveryService', () => {
       loggerSpy.mockRestore();
     });
 
-    it('waits for the outbox close of a delivery refused during shutdown before returning', async () => {
+    it('waits for the failure record of a delivery refused during shutdown before returning', async () => {
       const hooks = [
         createMockWebhook({ id: 'wh-a', url: 'https://a.example/hook', events: ['message.received'] }),
         createMockWebhook({ id: 'wh-b', url: 'https://b.example/hook', events: ['message.received'] }),
@@ -907,10 +911,10 @@ describe('WebhookDeliveryService', () => {
 
       let releaseActive: (value: unknown) => void = () => undefined;
       mockFetch.mockImplementation(() => new Promise(resolve => (releaseActive = resolve)));
-      // The close of the refused delivery stays open until the test releases it.
-      let releaseClose: () => void = () => undefined;
-      outboxService.close.mockImplementation((_id: string, _key: string, state: string) =>
-        state === 'failed' ? new Promise<void>(resolve => (releaseClose = resolve)) : Promise.resolve(),
+      // The failure record of the refused delivery stays open until the test releases it.
+      let releaseInsert: () => void = () => undefined;
+      (failureRepository.insert as jest.Mock).mockImplementation(
+        () => new Promise<void>(resolve => (releaseInsert = resolve)),
       );
 
       const dispatchP = service.dispatch('sess-1', 'message.received', { from: 'x@c.us' });
@@ -920,19 +924,21 @@ describe('WebhookDeliveryService', () => {
       const destroyP = service.onModuleDestroy().then(() => (destroyed = true));
       // The in-flight delivery finishes, so only the refused delivery's bookkeeping keeps the drain open.
       releaseActive({ ok: true, status: 200 });
-      const closedFailed = (): boolean => (outboxService.close.mock.calls as string[][]).some(c => c[2] === 'failed');
-      for (let i = 0; i < 40 && !destroyed && !closedFailed(); i++) await new Promise(r => setTimeout(r, 10));
+      const recording = (): boolean => (failureRepository.insert as jest.Mock).mock.calls.length > 0;
+      for (let i = 0; i < 40 && !destroyed && !recording(); i++) await new Promise(r => setTimeout(r, 10));
       await new Promise(r => setTimeout(r, 120));
 
-      // A close outside the tracked bookkeeping would let teardown finish first, closing the database
-      // under a row that then stays pending and is replayed after restart.
-      expect(closedFailed()).toBe(true);
+      // A write outside the tracked bookkeeping would let teardown finish first, closing the database
+      // under the failure record of a delivery the receiver never got.
+      expect(recording()).toBe(true);
       expect(destroyed).toBe(false);
 
-      releaseClose();
+      releaseInsert();
       await destroyP;
       await dispatchP;
       expect(destroyed).toBe(true);
+      // The refused delivery keeps its pending outbox row, so the next start's sweep replays it.
+      expect(outboxService.close).not.toHaveBeenCalledWith('wh-b', expect.anything(), 'failed');
     });
 
     it('queued mode: parked enqueues drain to the queue on shutdown instead of dead-lettering', async () => {

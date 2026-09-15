@@ -236,6 +236,7 @@ services:
       - BAILEYS_LOG_LEVEL=${BAILEYS_LOG_LEVEL:-}
       - BAILEYS_MESSAGE_STORE_LIMIT=${BAILEYS_MESSAGE_STORE_LIMIT:-}
       - BAILEYS_SESSION_STORE_MAX_ENTRIES=${BAILEYS_SESSION_STORE_MAX_ENTRIES:-}
+      - BAILEYS_CHAT_STATE_CACHE_MAX=${BAILEYS_CHAT_STATE_CACHE_MAX:-}
       - WWEBJS_ONBOARDING_CONTINUE_LABELS=${WWEBJS_ONBOARDING_CONTINUE_LABELS:-}
       # Default matches the image's ENV (Dockerfile); a blank forward would shadow it and make
       # puppeteer fall back to a bundled Chromium the image does not ship. compose-parity.spec.ts

@@ -114,7 +114,7 @@ curl -X POST 'http://localhost:2785/api/infra/import-data' \
 ```
 
 > [!IMPORTANT]
-> Post the whole exported file, as the `-d @data-backup.json` above does. The import empties all 14
+> Post the whole exported file, as the `-d @data-backup.json` above does. The import empties all 16
 > migration tables before repopulating, so a hand-built body carrying only some keys restores the rest
 > **empty**. The export also bounds the inline media it carries
 > (`EXPORT_INLINE_MEDIA_BUDGET_BYTES`, 8 MiB by default); for a byte-exact copy including media, use
@@ -151,10 +151,12 @@ curl -X POST 'http://localhost:2785/api/infra/import-data' \
     "templates": [...],
     "baileysStoredMessages": [...],
     "lidMappings": [...],
+    "chatStates": [...],
     "pluginInstances": [...],
     "conversationMappings": [...],
     "ingressEvents": [...],
     "webhookDeliveryFailures": [...],
+    "webhookOutboxEvents": [...],
     "integrationDeliveryFailures": [...],
     "statusUpdates": [...],
     "automationRules": [...]
@@ -167,10 +169,12 @@ curl -X POST 'http://localhost:2785/api/infra/import-data' \
     "templates": 4,
     "baileysStoredMessages": 0,
     "lidMappings": 87,
+    "chatStates": 24,
     "pluginInstances": 2,
     "conversationMappings": 31,
     "ingressEvents": 12,
     "webhookDeliveryFailures": 0,
+    "webhookOutboxEvents": 0,
     "integrationDeliveryFailures": 0,
     "statusUpdates": 19,
     "automationRules": 7

@@ -518,7 +518,10 @@
       "title": "Kayıtlı şablon yok",
       "description": "Sık kullanılan yanıtları ve bildirimleri hızlandırmak için yeniden kullanılabilir bir şablon oluşturun.",
       "noSessionsTitle": "Kullanılabilir oturum yok",
-      "noSessionsDesc": "Şablon eklemeden önce bir WhatsApp oturumu oluşturun."
+      "noSessionsDesc": "Şablon eklemeden önce bir WhatsApp oturumu oluşturun.",
+      "loadErrorTitle": "Şablonlar yüklenemedi",
+      "forbiddenTitle": "Şablonlara erişim yok",
+      "forbiddenDesc": "Şablonlar, operatör veya yönetici rolüne sahip bir API anahtarı gerektirir."
     },
     "toasts": {
       "created": "Şablon başarıyla oluşturuldu",

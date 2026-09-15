@@ -665,6 +665,9 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
       })
       .catch(async error => {
         if (error instanceof Error && error.message === 'ConcurrencyLimiter queue full') {
+          // Shed before the task ran, so nothing was POSTed. The failure row reports the shed, but
+          // the outbox row stays 'pending' on purpose: retiring it would drop the only copy of an
+          // event the receiver provably never got. The sweep replays it once the backlog clears.
           await this.recordUndelivered(
             webhook,
             deliveryId,
@@ -673,15 +676,13 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
             'webhook_dispatch_capacity_exceeded',
             ctx,
           );
-          // Shed on purpose: the failure row is the record, so a replay must not undo the shedding.
-          await this.outbox.close(webhook.id, idempotencyKey, 'failed');
           return;
         }
         if (error instanceof Error && error.message === 'ConcurrencyLimiter closed') {
           // Rejected by the shutdown drain before dispatching — record it like any other
-          // undelivered delivery, retire its outbox row so it is not replayed after restart, and
-          // track both writes so onModuleDestroy can await them (the
-          // limiter slot bookkeeping no longer covers this task).
+          // undelivered delivery, and track the write so onModuleDestroy can await it (the
+          // limiter slot bookkeeping no longer covers this task). Its outbox row stays 'pending':
+          // the POST never happened, so the next start's sweep is what finally delivers the event.
           const record = this.recordUndelivered(
             webhook,
             deliveryId,
@@ -689,7 +690,7 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
             error,
             'webhook_dispatch_shutdown',
             ctx,
-          ).then(() => this.outbox.close(webhook.id, idempotencyKey, 'failed'));
+          );
           this.pendingBookkeeping.add(record);
           try {
             await record;

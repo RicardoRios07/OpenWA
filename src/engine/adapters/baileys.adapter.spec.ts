@@ -137,6 +137,7 @@ jest.mock('@whiskeysockets/baileys', () => ({
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { NotFoundException, BadRequestException } from '@nestjs/common';
 import { SocksProxyAgent } from 'socks-proxy-agent';
+import { Dispatcher1Wrapper } from 'undici';
 import { BaileysAdapter, createProxyAgent } from './baileys.adapter';
 import {
   EditedMessage,
@@ -5181,11 +5182,39 @@ describe('BaileysAdapter proxy support', () => {
     expect(lastSocketConfig().agent).toBeInstanceOf(SocksProxyAgent);
   });
 
-  it('leaves agent/fetchAgent unset without a proxyUrl', async () => {
+  it('hands the version lookup a fetch dispatcher, not the socket agent', async () => {
+    await proxied('http://user:pass@proxy.example:8080').initialize(noopCallbacks());
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    const lookup = jest.requireMock('@whiskeysockets/baileys').fetchLatestBaileysVersion as jest.Mock;
+    const [[options]] = lookup.mock.calls as Array<[{ dispatcher?: unknown }]>;
+    expect(options.dispatcher).toBeInstanceOf(Dispatcher1Wrapper);
+  });
+
+  it('skips the remote version lookup rather than going direct for a socks4 proxy', async () => {
+    await proxied('socks4://proxy.example:1080').initialize(noopCallbacks());
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    expect(jest.requireMock('@whiskeysockets/baileys').fetchLatestBaileysVersion).not.toHaveBeenCalled();
+  });
+
+  it('hands the socket config a fetch dispatcher, for the downloads Baileys runs itself', async () => {
+    await proxied('http://user:pass@proxy.example:8080').initialize(noopCallbacks());
+    const options = lastSocketConfig().options as { dispatcher?: unknown };
+    expect(options.dispatcher).toBeInstanceOf(Dispatcher1Wrapper);
+  });
+
+  it('leaves the socket fetch options at the library default for a socks4 proxy', async () => {
+    // Global fetch has no SOCKS4 transport, so there is nothing to hand it; these downloads keep the
+    // direct behaviour they have always had rather than being broken outright.
+    await proxied('socks4://proxy.example:1080').initialize(noopCallbacks());
+    expect(lastSocketConfig().options).toEqual({});
+  });
+
+  it('leaves agent/fetchAgent unset and the fetch options at the library default without a proxyUrl', async () => {
     await newAdapter().initialize(noopCallbacks());
     const cfg = lastSocketConfig();
     expect(cfg.agent).toBeUndefined();
     expect(cfg.fetchAgent).toBeUndefined();
+    expect(cfg.options).toEqual({});
   });
 
   it('fails closed: an unusable proxy value fails initialize instead of connecting direct', async () => {

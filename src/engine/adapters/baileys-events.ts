@@ -33,6 +33,7 @@ import {
   isMediaDownloadEnabled,
   withInboundDownloadTimeout,
 } from './inbound-media-cap';
+import type { Dispatcher } from 'undici';
 import type { ConcurrencyLimiter } from '../../common/utils/concurrency-limiter';
 import { type createLogger } from '../../common/services/logger.service';
 import { createSilentLogger } from './baileys-logger';
@@ -98,6 +99,8 @@ export interface BaileysEventsHost {
   normalizedSelfJid(): string;
   /** Lazily loaded @whiskeysockets/baileys module (ESM-only; loaded on first connect, not at boot). */
   loadLib(): Promise<typeof BaileysLib>;
+  /** Session proxy dispatcher for the media download: undefined = direct, null = proxy fetch cannot use. */
+  getFetchDispatcher(): Dispatcher | null | undefined;
   /** Unix-seconds timestamp of the last 'open' connection.update — the live-vs-history discriminator. */
   readonly connectedAt: number;
   /** The adapter's inbound media download gate (shared so the bound holds across all inbound paths). */
@@ -321,6 +324,13 @@ export class BaileysEvents {
       // `unknown` message.received (#1568). Drop only a message made entirely of those keys. Anything
       // else without a resolvable content type (a call log, a type newer than the bundled proto, which
       // decodes to a lone messageContextInfo) still flows on as `unknown`, as it always has.
+      //
+      // Known limit: a type newer than the bundled proto that arrives in the same stanza as its sender's
+      // key distribution is dropped too. Baileys merges the stanza's decrypted parts into one message
+      // and protobuf decoding discards unknown fields, so it reads { senderKeyDistributionMessage,
+      // messageContextInfo }: nothing records which part the context info came from or that a field was
+      // skipped, and a messageContextInfo field such as messageSecret is not proof of content either,
+      // since the sending client decides what it carries. It stops once the proto knows the type.
       const keys = Object.keys(normalizedRoot ?? {});
       if (keys.every(k => PROTOCOL_NOISE_KEYS.has(k)) && keys.some(k => k !== 'messageContextInfo')) {
         this.host.logger.debug('Dropping contentless protocol message', {
@@ -745,24 +755,41 @@ export class BaileysEvents {
     msg: WAMessage,
     maxBytes: number,
   ): Promise<Buffer | { overflowBytes: number } | null> {
+    // A proxied session must not fetch media around its proxy (#859). Baileys reads the dispatcher
+    // from the nested `options` (a top-level one is ignored); a proxy scheme fetch cannot use fails
+    // the download, which the caller turns into the omitted marker.
+    const dispatcher = this.host.getFetchDispatcher();
+    if (dispatcher === null) {
+      throw new Error('Media download is not supported through this proxy scheme');
+    }
     // Hold the stream handle in the outer scope so the timeout can destroy it. A genuine
     // download/read error still rejects (propagating to the caller's catch as before).
     let stream: (AsyncIterable<Buffer> & { destroy?: () => void }) | undefined;
+    // The timeout can fire before the stream exists (an expired-media re-upload wait, a slow response):
+    // the abandoned download must then stop on its own instead of buffering outside the limiter.
+    let timedOut = false;
     const download = (async (): Promise<Buffer | { overflowBytes: number }> => {
       const b = await this.host.loadLib();
       stream = (await b.downloadMediaMessage(
         msg,
         'stream',
-        {},
+        dispatcher ? { options: { dispatcher } as RequestInit } : {},
         {
           logger: createSilentLogger(),
           reuploadRequest: this.host.getSocket().updateMediaMessage,
         },
       )) as AsyncIterable<Buffer> & { destroy?: () => void };
+      if (timedOut) {
+        stream.destroy?.();
+        return Buffer.alloc(0);
+      }
 
       const chunks: Buffer[] = [];
       let total = 0;
       for await (const chunk of stream) {
+        if (timedOut) {
+          break;
+        }
         total += chunk.length;
         if (total > maxBytes) {
           stream.destroy?.();
@@ -776,7 +803,10 @@ export class BaileysEvents {
     // A slow/trickling sender never trips the byte cap, so without a deadline it pins a concurrency
     // slot (and, on Baileys, the whole inbound handler) indefinitely. On timeout, destroy the stream
     // and treat it as no usable media.
-    return withInboundDownloadTimeout(download, inboundMediaTimeoutMs(), () => stream?.destroy?.());
+    return withInboundDownloadTimeout(download, inboundMediaTimeoutMs(), () => {
+      timedOut = true;
+      stream?.destroy?.();
+    });
   }
 
   /**

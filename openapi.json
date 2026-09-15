@@ -6497,7 +6497,7 @@
         ]
       },
       "put": {
-        "description": "Baileys only. `PUT` rather than `POST` because the label id is chosen by the caller: WhatsApp carries one `label_edit` write keyed on that id, so whether this creates or updates depends purely on whether the id already exists, and there is no server-assigned id to return.\n\n**Choose an unused id to create.** Reusing one silently rewrites that label rather than failing, because the protocol has no create-only form. Fields left out are left alone.\n\nwhatsapp-web.js can read and assign labels but cannot edit one, and answers `501`.",
+        "description": "Baileys only. `PUT` rather than `POST` because the label id is chosen by the caller: WhatsApp carries one `label_edit` write keyed on that id, so whether this creates or updates depends purely on whether the id already exists, and there is no server-assigned id to return.\n\n**Choose an unused id to create.** Reusing one silently rewrites that label rather than failing, because the protocol has no create-only form. The write replaces the whole label, so send every field it should keep: an omitted name or colour is not preserved.\n\nwhatsapp-web.js can read and assign labels but cannot edit one, and answers `501`.",
         "operationId": "LabelController_upsertLabel",
         "parameters": [
           {
@@ -14181,7 +14181,7 @@
         "properties": {
           "tables": {
             "type": "object",
-            "description": "Every one of the 14 migration tables is emptied before the restore runs, so a key omitted here is restored EMPTY rather than left untouched. Post the whole GET /api/infra/export-data payload, not a hand-built subset.",
+            "description": "Every one of the 16 migration tables is emptied before the restore runs, so a key omitted here is restored EMPTY rather than left untouched. Post the whole GET /api/infra/export-data payload, not a hand-built subset.",
             "properties": {
               "sessions": {
                 "type": "array"
@@ -15284,14 +15284,14 @@
         "properties": {
           "name": {
             "type": "string",
-            "description": "Label name. Omit to leave the current name untouched.",
+            "description": "Label name. The write replaces the whole label, so an omitted name is not preserved.",
             "example": "VIP customer",
             "minLength": 1,
             "maxLength": 100
           },
           "color": {
             "type": "number",
-            "description": "WhatsApp's colour INDEX (0-19), not a hex value — the read path's `hexColor` cannot be translated back, because neither engine exposes the mapping. Omit to leave the colour alone.",
+            "description": "WhatsApp's colour INDEX (0-19), not a hex value — the read path's `hexColor` cannot be translated back, because neither engine exposes the mapping. An omitted colour is not preserved.",
             "example": 3,
             "minimum": 0,
             "maximum": 19

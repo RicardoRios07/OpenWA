@@ -94,20 +94,21 @@ Validation failures (`statusCode: 400`) return `message` as an **array** of fiel
 
 ### General Error Codes
 
-| HTTP Status | Meaning               | When                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| ----------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `400`       | Bad Request           | DTO validation failed, unknown body field, or a business precondition not met (e.g. session not active, media over cap)                                                                                                                                                                                                                                                                                                                                               |
-| `401`       | Unauthorized          | Missing/invalid/expired/revoked `X-API-Key` (or `METRICS_TOKEN` for metrics), a blocked source IP, or a key used outside its `allowedSessions` scope                                                                                                                                                                                                                                                                                                                  |
-| `403`       | Forbidden             | A valid, in-scope key whose **role** is below the route's `@RequireRole` requirement                                                                                                                                                                                                                                                                                                                                                                                  |
-| `404`       | Not Found             | The addressed resource (session, message, webhook, batch, …) does not exist                                                                                                                                                                                                                                                                                                                                                                                           |
-| `409`       | Conflict              | A uniqueness constraint was violated (e.g. duplicate name); a credential teardown for the same session name is still in flight on `start`/`delete` (retryable; body carries `code: 'SESSION_NAME_TEARDOWN_PENDING'`); or, on routes that reach a WhatsApp engine, the engine exists but is not ready yet (retryable; each route section carries the exact wording); or, on a multi-node deployment, another node currently owns the session's live engine (retryable) |
-| `413`       | Payload Too Large     | Base64 media exceeds the media byte cap (see §6.3)                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `415`       | Unsupported Media     | The request has a body carrying a `Content-Encoding` other than `identity`; compressed request bodies are not accepted, as the aggregate body cap counts wire bytes                                                                                                                                                                                                                                                                                                   |
-| `429`       | Too Many Requests     | A rate limit was exceeded: the per-client-IP tiers, the ingress per-instance limit, or send pacing (body carries `code: 'SEND_PACING_LIMITED'` and `retryAfterSeconds`); honor `Retry-After` when present                                                                                                                                                                                                                                                             |
-| `500`       | Internal Server Error | Send failed at the WhatsApp engine or an unexpected server error                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `501`       | Not Implemented       | The operation is not supported by the active engine (see the capability matrix, docs/29)                                                                                                                                                                                                                                                                                                                                                                              |
-| `502`       | Bad Gateway           | An engine transport failure (e.g. a dead Baileys socket; retryable), or an upstream component returned something unusable (not retryable; each route section carries the exact wording)                                                                                                                                                                                                                                                                               |
-| `503`       | Service Unavailable   | A dependency or the session is not ready (boot draining, a datastore down, the engine reconnecting); retryable                                                                                                                                                                                                                                                                                                                                                        |
+| HTTP Status | Meaning               | When                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ----------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `400`       | Bad Request           | DTO validation failed, unknown body field, or a business precondition not met (e.g. session not active, media over cap)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `401`       | Unauthorized          | Missing/invalid/expired/revoked `X-API-Key` (or `METRICS_TOKEN` for metrics), a blocked source IP, or a key used outside its `allowedSessions` scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `403`       | Forbidden             | A valid, in-scope key whose **role** is below the route's `@RequireRole` requirement                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `404`       | Not Found             | The addressed resource (session, message, webhook, batch, …) does not exist                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `409`       | Conflict              | A uniqueness constraint was violated (e.g. duplicate name); a credential teardown for the same session name is still in flight on `start`/`delete` (retryable; body carries `code: 'SESSION_NAME_TEARDOWN_PENDING'`); or, on routes that reach a WhatsApp engine, the engine exists but is not ready yet (retryable; each route section carries the exact wording); or, on a multi-node deployment, another node currently owns the session's live engine (retryable)                                                                                                                                                                                           |
+| `413`       | Payload Too Large     | Base64 media exceeds the media byte cap (see §6.3)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `415`       | Unsupported Media     | The request has a body carrying a `Content-Encoding` other than `identity`; compressed request bodies are not accepted, as the aggregate body cap counts wire bytes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `429`       | Too Many Requests     | A rate limit was exceeded: the per-client-IP tiers, the ingress per-instance limit, or send pacing (body carries `code: 'SEND_PACING_LIMITED'` and `retryAfterSeconds`); honor `Retry-After` when present                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `500`       | Internal Server Error | Send failed at the WhatsApp engine or an unexpected server error                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `501`       | Not Implemented       | The operation is not supported by the active engine (see the capability matrix, docs/29)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `502`       | Bad Gateway           | An engine transport failure (e.g. a dead Baileys socket; retryable), an upstream component returned something unusable (not retryable; each route section carries the exact wording), or, on a multi-node deployment, forwarding a session-scoped request to its owner node failed after the request may already have been sent, so a non-idempotent call must not be replayed blindly (see docs/13)                                                                                                                                                                                                                                                            |
+| `503`       | Service Unavailable   | A dependency or the session is not ready (boot draining, a datastore down, the engine reconnecting); retryable. On a multi-node deployment a forwarded request answers `503` only when the owner node was never reached, so the request was not carried out (see docs/13)                                                                                                                                                                                                                                                                                                                                                                                       |
+| `504`       | Gateway Timeout       | An upstream the gateway waits on did not answer in time: on a multi-node deployment, the owner node did not answer a forwarded session-scoped request within `SESSION_PROXY_TIMEOUT_MS`; on `POST /sessions/{sessionId}/start` (see §6.4.1), the engine did not finish starting within its timeout, either because the browser wedged mid-startup (often a container memory or resource limit) or because a session pinned to an unreachable `proxyUrl` never connected, and the message names which. On the forwarding path the request may still have been carried out on the owner node, so a non-idempotent call must not be replayed blindly (see docs/13) |
 
 ### Timestamp Conventions
 
@@ -551,6 +552,14 @@ network cannot reach WhatsApp directly. Set `proxyUrl`/`proxyType` on the same r
 > WebSocket never connects, **no QR code is ever delivered**, and `POST /api/sessions/:sessionId/start`
 > returns `504 Gateway Timeout` after ~30s. Leave `proxyUrl` unset unless you genuinely need a proxy.
 
+On the Baileys engine, with `socks5`, `http` or `https`, the proxy also carries everything the engine fetches
+over HTTP: inbound media, the WhatsApp Web version lookup, the history-sync and app-state payloads of the
+initial sync, and a product card's `imageUrl`. A `socks4` proxy carries the WebSocket and media uploads only,
+because the HTTP client has no SOCKS4 transport: inbound media is not downloaded (it arrives as the omitted
+marker) and the WhatsApp Web version is not looked up remotely, while the initial-sync payloads and a product
+card's `imageUrl` are still fetched directly. On every proxy scheme, a media URL you pass to a send or to
+`POST /api/media/convert` is fetched by the gateway itself, directly, not through the session proxy.
+
 **Response** `201`
 
 ```json
@@ -607,7 +616,7 @@ No request body.
 
 Returned via `transformSession`. Status typically transitions to `initializing` / `qr_ready`.
 
-**Errors:** `400` session already started / already starting · `401` · `403` · `404` not found · `409` credential teardown for the same session name still in flight (retryable; body carries `code: 'SESSION_NAME_TEARDOWN_PENDING'`; no destructive side effect runs before the refusal — a retry after cleanup settles proceeds)
+**Errors:** `400` session already started / already starting · `401` · `403` · `404` not found · `409` credential teardown for the same session name still in flight (retryable; body carries `code: 'SESSION_NAME_TEARDOWN_PENDING'`; no destructive side effect runs before the refusal — a retry after cleanup settles proceeds) · `504` the engine did not finish starting within its timeout (wedged browser, resource limit, or an unreachable `proxyUrl`); the engine is torn down, so the start can be retried once the cause is addressed
 
 #### POST /api/sessions/:sessionId/stop
 
@@ -1713,7 +1722,7 @@ Render a stored text template (header/body/footer joined by blank lines, `{{vars
 
 Delegates to the send-text path after rendering.
 
-**Errors:** `400` unknown body field, validation failure, or session not active · `401` missing/invalid API key · `403` key role below OPERATOR · `404` session or template not found · `500` engine error · `409` conflict or engine not ready (retryable)
+**Errors:** `400` unknown body field, validation failure, neither `templateId` nor `templateName` given, or session not active · `401` missing/invalid API key · `403` key role below OPERATOR · `404` session or template not found · `500` engine error · `409` conflict or engine not ready (retryable)
 
 #### POST /api/sessions/:sessionId/messages/send-image
 
@@ -2170,6 +2179,8 @@ Send messages to multiple recipients as an async batch — returns immediately a
 Each `BulkMessageItemDto`: `{ chatId: string, type: 'text'|'image'|'video'|'audio'|'document', content: BulkMessageContentDto, variables?: Record<string,string> }`. `content` (all fields optional, nested-validated): `text?: string`, `image?`/`video?`/`audio?`/`document?`: `{ url?, base64?, mimetype?, filename? }`, `caption?: string`, `mentions?: string[]` (per item; a batch fans out to many chats, and a WID is only taggable in a chat the participant is in).
 
 `BulkMessageOptionsDto`: `{ delayBetweenMessages?: number (1000–60000, default 3000), randomizeDelay?: boolean (default true), stopOnError?: boolean (default false) }`.
+
+Each item must carry what its `type` sends: a non-empty `chatId`, a non-empty `content.text` for `text`, and a `url` or `base64` under `content.<type>` for a media type. If any item does not, the request answers `400` and nothing is queued. The check runs again per item after `variables` and the `message:sending` gate, where a failure fails that item only.
 
 Each item's base64 media is checked against the media byte cap (`MEDIA_DOWNLOAD_MAX_BYTES`) twice: at batch creation, and again per item after `variables` and the `message:sending` plugin gate are applied. An item that outgrows the cap only after rendering fails individually (`failed` in `results`, with `message:failed` fired) instead of being sent. `totalMessages` in the response reflects the de-duplicated item count.
 
@@ -3365,12 +3376,12 @@ Update a template's name/body/header/footer (partial; only provided fields chang
 
 **Request body** — `UpdateTemplateDto`
 
-| Field  | Type   | Required | Constraints                           | Description                                                                                                                                                         |
-| ------ | ------ | -------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| name   | string | no       | if present: non-empty, max 100 chars  | Applied only when not `undefined`. Duplicate name → `409`.                                                                                                          |
-| body   | string | no       | if present: non-empty, max 4096 chars | Applied only when not `undefined`.                                                                                                                                  |
-| header | string | no       | max 1024 chars                        | Applied only when not `undefined`. The update path does **not** coerce to `null`, so passing explicit `null` fails `@IsString`; omit the key to leave it unchanged. |
-| footer | string | no       | max 1024 chars                        | Applied only when not `undefined`.                                                                                                                                  |
+| Field  | Type   | Required | Constraints                           | Description                                                                                                                                                                                                                                                                                                         |
+| ------ | ------ | -------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| name   | string | no       | if present: non-empty, max 100 chars  | Applied only when not `undefined`; explicit `null` → `400`. Duplicate name → `409`.                                                                                                                                                                                                                                 |
+| body   | string | no       | if present: non-empty, max 4096 chars | Applied only when not `undefined`; explicit `null` → `400`.                                                                                                                                                                                                                                                         |
+| header | string | no       | if present: max 1024 chars            | Applied only when not `undefined`. Explicit `null` is accepted and **clears** the stored header (`200`); omit the key to leave it unchanged. The published schema types this field as a non-nullable `string`, so a generated or typed SDK client sends `""` instead, which the renderer skips exactly like `null`. |
+| footer | string | no       | if present: max 1024 chars            | Applied only when not `undefined`. Explicit `null` is accepted and **clears** the stored footer (`200`); omit the key to leave it unchanged. The published schema types this field as a non-nullable `string`, so a generated or typed SDK client sends `""` instead, which the renderer skips exactly like `null`. |
 
 ```json
 {
@@ -3936,13 +3947,14 @@ Create or update a label.
 
 The label id is **yours to choose** and travels in the path. Whether this creates or updates depends
 only on whether that id already exists — reusing one rewrites that label rather than failing.
-Omitted fields are left as they are.
+The write replaces the whole label, so send every field it should keep: an omitted name or colour
+is not preserved.
 
 **Request body** — `UpsertLabelDto`
 
 | Field   | Type   | Required | Constraints  | Description                                  |
 | ------- | ------ | -------- | ------------ | -------------------------------------------- |
-| `name`  | string | No       | 1–100 chars  | Omit to keep the current name                |
+| `name`  | string | No       | 1–100 chars  | Not preserved when omitted                   |
 | `color` | number | No       | integer 0–19 | WhatsApp's colour **index**, not a hex value |
 
 `color` deliberately does not round-trip with the `hexColor` the read routes return: neither engine
@@ -5444,7 +5456,7 @@ Request a graceful server restart, optionally orchestrating Docker profiles (add
 
 #### GET /api/infra/export-data
 
-Export every row of the 14 migration tables from the Data DB as JSON. Read-only, but runs raw `SELECT *` on the `data` DataSource.
+Export every row of the 16 migration tables from the Data DB as JSON. Read-only, but runs raw `SELECT *` on the `data` DataSource.
 
 **Auth:** API key (ADMIN)
 
@@ -5454,7 +5466,7 @@ Export every row of the 14 migration tables from the Data DB as JSON. Read-only,
 >
 > This bounds the media, not the export — a large enough text-only history still exceeds the import limit, because every row costs a few hundred bytes of scaffolding whatever was said. For a backup that keeps everything, use `scripts/backup.sh`: it snapshots the database file itself (and `pg_dump`s Postgres), so inline media rides along regardless of this budget.
 
-The migration set (`MigrationTables`) is, in payload-key order: `sessions`, `webhooks`, `messages`, `messageBatches`, `templates`, `baileysStoredMessages`, `lidMappings`, `pluginInstances`, `conversationMappings`, `ingressEvents`, `webhookDeliveryFailures`, `integrationDeliveryFailures`, `statusUpdates`, `automationRules`.
+The migration set (`MigrationTables`) is, in payload-key order: `sessions`, `webhooks`, `messages`, `messageBatches`, `templates`, `baileysStoredMessages`, `lidMappings`, `chatStates`, `pluginInstances`, `conversationMappings`, `ingressEvents`, `webhookDeliveryFailures`, `webhookOutboxEvents`, `integrationDeliveryFailures`, `statusUpdates`, `automationRules`.
 
 **Response** `200`
 
@@ -5485,10 +5497,12 @@ The migration set (`MigrationTables`) is, in payload-key order: `sessions`, `web
     "templates": [],
     "baileysStoredMessages": [],
     "lidMappings": [],
+    "chatStates": [],
     "pluginInstances": [],
     "conversationMappings": [],
     "ingressEvents": [],
     "webhookDeliveryFailures": [],
+    "webhookOutboxEvents": [],
     "integrationDeliveryFailures": [],
     "statusUpdates": [],
     "automationRules": []
@@ -5501,10 +5515,12 @@ The migration set (`MigrationTables`) is, in payload-key order: `sessions`, `web
     "templates": 0,
     "baileysStoredMessages": 0,
     "lidMappings": 0,
+    "chatStates": 0,
     "pluginInstances": 0,
     "conversationMappings": 0,
     "ingressEvents": 0,
     "webhookDeliveryFailures": 0,
+    "webhookOutboxEvents": 0,
     "integrationDeliveryFailures": 0,
     "statusUpdates": 0,
     "automationRules": 0
@@ -5515,7 +5531,7 @@ The migration set (`MigrationTables`) is, in payload-key order: `sessions`, `web
 
 Rows are raw DB column shapes (e.g. `messageBatches` rows use snake_case columns: `batch_id`, `session_id`, `current_index`, `created_at`, …). **`webhooks` rows omit `secret` and `headers`** (webhook credentials are excluded from backups; they restore as `null`/`{}`), while `pluginInstances` rows still carry integration secrets — treat the payload as a credential dump. On Postgres the generated `body_ts` FTS column is stripped from `messages` so archives stay dialect-neutral.
 
-`sessions`/`webhooks` are queried directly, so a hard DB error there yields `500`. The other 12 are queried tolerantly: a _genuinely missing_ table (an older DB that has not run the migration) exports as `[]` and its name is listed in `skippedTables`; any other error (lock, I/O, timeout) fails the export rather than reporting the table as empty. Check `skippedTables` before restoring — a skipped table is "not migrated yet", not "exported empty".
+`sessions`/`webhooks` are queried directly, so a hard DB error there yields `500`. The other 14 are queried tolerantly: a _genuinely missing_ table (an older DB that has not run the migration) exports as `[]` and its name is listed in `skippedTables`; any other error (lock, I/O, timeout) fails the export rather than reporting the table as empty. Check `skippedTables` before restoring — a skipped table is "not migrated yet", not "exported empty".
 
 **Errors:** `401` · `403` · `500` DB error
 
@@ -5525,7 +5541,7 @@ Rows are raw DB column shapes (e.g. `messageBatches` rows use snake_case columns
 
 Replace all Data DB rows with the supplied export. **Destructive and transactional (all-or-nothing).**
 
-> **The replace covers all 14 migration tables, not just the ones you send.** Inside the transaction every table in the migration set is emptied first and only then re-populated from the payload, so a table you omit ends up **empty**, not untouched. Always restore a payload produced by `GET /api/infra/export-data` of the same or a newer build — a hand-built body carrying only a subset silently wipes the rest.
+> **The replace covers all 16 migration tables, not just the ones you send.** Inside the transaction every table in the migration set is emptied first and only then re-populated from the payload, so a table you omit ends up **empty**, not untouched. Always restore a payload produced by `GET /api/infra/export-data` of the same or a newer build — a hand-built body carrying only a subset silently wipes the rest.
 
 **Auth:** API key (ADMIN)
 
@@ -5537,7 +5553,7 @@ Replace all Data DB rows with the supplied export. **Destructive and transaction
 | `tables.sessions`             | `SessionRow[]`      | No       | Inserted first; a row whose `name` is not a safe directory name is skipped with a warning (which then rolls the whole restore back). An ACTIVE status in the backup (`ready`, `initializing`, ...) describes the source host's engines: restored as `disconnected` (a notice counts them), unless the session is held by a live peer whose claim the import preserves |
 | `tables.webhooks`             | `WebhookRow[]`      | No       | Export rows omit `secret`/`headers`; an absent key restores as `null`/`{}`                                                                                                                                                                                                                                                                                            |
 | `tables.messageBatches`       | `MessageBatchRow[]` | No       | snake_case columns                                                                                                                                                                                                                                                                                                                                                    |
-| `tables.*` (the remaining 11) | `Row[]`             | No       | Same keys as the export; an omitted table restores **zero** rows into an emptied table                                                                                                                                                                                                                                                                                |
+| `tables.*` (the remaining 13) | `Row[]`             | No       | Same keys as the export; an omitted table restores **zero** rows into an emptied table                                                                                                                                                                                                                                                                                |
 | `stopOrphans`                 | boolean             | No       | Stop the running engines for sessions the backup does not contain, inside this request and before the replace (best-effort, time-bounded per engine). Preferred over `force`                                                                                                                                                                                          |
 | `force`                       | boolean             | No       | Legacy escape hatch: proceed despite orphaned engines and leave them running until a process restart (`restartRequired: true`)                                                                                                                                                                                                                                        |
 
@@ -5566,10 +5582,12 @@ Replace all Data DB rows with the supplied export. **Destructive and transaction
     "templates": [],
     "baileysStoredMessages": [],
     "lidMappings": [],
+    "chatStates": [],
     "pluginInstances": [],
     "conversationMappings": [],
     "ingressEvents": [],
     "webhookDeliveryFailures": [],
+    "webhookOutboxEvents": [],
     "integrationDeliveryFailures": [],
     "statusUpdates": [],
     "automationRules": []
@@ -5591,10 +5609,12 @@ Replace all Data DB rows with the supplied export. **Destructive and transaction
     "templates": 0,
     "baileysStoredMessages": 0,
     "lidMappings": 0,
+    "chatStates": 0,
     "pluginInstances": 0,
     "conversationMappings": 0,
     "ingressEvents": 0,
     "webhookDeliveryFailures": 0,
+    "webhookOutboxEvents": 0,
     "integrationDeliveryFailures": 0,
     "statusUpdates": 0,
     "automationRules": 0
@@ -5614,7 +5634,7 @@ Replace all Data DB rows with the supplied export. **Destructive and transaction
 
 Because that pre-flight runs _before_ the transaction, its teardown is not covered by the rollback. A response with `imported:false` therefore still reports the engines it really stopped, and `restartRequired` on that path means only that a teardown **failed** — a cleanly stopped orphan leaves its session row intact (restart it with `POST /sessions/{sessionId}/start`), and an engine `force` left running was never orphaned after all, since the data that would have orphaned it was not replaced.
 
-Inside the transaction every migration table is emptied. `webhooks` and `sessions` are DELETEd directly, so a missing table there fails the restore; 11 more go through a tolerant helper where a _genuinely missing_ table is skipped; and `automation_rules` is emptied by the `DELETE FROM sessions` cascade rather than by the helper. Any other DELETE failure propagates to the rollback. Rows are then re-inserted, sessions first. JSON object/array fields are auto-stringified before insert, and the Postgres-form `$N` placeholders are rewritten for SQLite. Two guards return `imported:false` after a rollback: any `warnings`, and a payload that restores **zero** rows in total (a wrong/empty backup would otherwise commit a silent wipe — the response then carries `Backup contained no rows to restore; refused to replace existing data. Check the file.`). On commit the lid→phone mirror is reloaded from the restored rows.
+Inside the transaction every migration table is emptied. `webhooks` and `sessions` are DELETEd directly, so a missing table there fails the restore; 13 more go through a tolerant helper where a _genuinely missing_ table is skipped; and `automation_rules` is emptied by the `DELETE FROM sessions` cascade rather than by the helper. Any other DELETE failure propagates to the rollback. Rows are then re-inserted, sessions first. JSON object/array fields are auto-stringified before insert, and the Postgres-form `$N` placeholders are rewritten for SQLite. Two guards return `imported:false` after a rollback: any `warnings`, and a payload that restores **zero** rows in total (a wrong/empty backup would otherwise commit a silent wipe — the response then carries `Backup contained no rows to restore; refused to replace existing data. Check the file.`). On commit the lid→phone mirror is reloaded from the restored rows.
 
 **Errors:** `400` `tables` absent/not an object, a table whose value is not an array of rows, a row that is not an object (`null`, a bare string, a nested array), a flag spelled as anything but a boolean or exact `true`/`false`, or a property the route does not accept — nothing is written, and field-level detail is suppressed in production unless `VALIDATION_ERROR_DETAIL=true` · `401` · `403` · `409` refused, with the reason in `code` — `IMPORT_WOULD_ORPHAN_ENGINES` (live engines exist for sessions the backup does not contain; retry with `stopOrphans` or `force`), `IMPORT_ALREADY_RUNNING` (another import is running; wait for it), `IMPORT_NESTED_TRANSACTION` (another database transaction holds the connection; retry with nothing else in flight) · `500` unrecoverable DB error
 
@@ -6158,8 +6178,8 @@ Search messages across sessions (active search provider).
 | `from`      | string                          | No       | —       | Filter by sender.                                                                                                                                                                             |
 | `dateFrom`  | integer (epoch ms)              | No       | —       | Inclusive lower bound on `timestamp`. A non-numeric value is rejected with `400`.                                                                                                             |
 | `dateTo`    | integer (epoch ms)              | No       | —       | Inclusive upper bound on `timestamp`. A non-numeric value is rejected with `400`.                                                                                                             |
-| `limit`     | integer (≥ 1)                   | No       | `50`    | Max hits to return. Clamped to `SEARCH_LIMIT_MAX` (default `100`). A non-numeric value is rejected with `400`.                                                                                |
-| `offset`    | integer (≥ 0)                   | No       | `0`     | Pagination offset. A non-numeric value is rejected with `400`.                                                                                                                                |
+| `limit`     | integer (≥ 1)                   | No       | `50`    | Max hits to return. Clamped to `SEARCH_LIMIT_MAX` (default `100`). A non-integer value is rejected with `400`.                                                                                |
+| `offset`    | integer (≥ 0)                   | No       | `0`     | Pagination offset. A non-integer value is rejected with `400`.                                                                                                                                |
 
 **Response** `200` — `SearchResults`
 
@@ -6860,7 +6880,7 @@ Webhook delivery is **at-least-once**. A consumer can legitimately receive the s
 - The underlying WhatsApp engine can re-fire an event for a single message.
 - A failed delivery (non-2xx response, timeout, or network error) is retried.
 
-**Crash boundary.** Every delivery is recorded before it is attempted, and the record is retired once something durable owns it: the queue job in queued mode, the completed send in direct mode. A hard crash (SIGKILL, OOM) therefore leaves the record behind, and a bounded sweep (`WEBHOOK_RECONCILE_INTERVAL_MS`, default 60s) replays whatever is still stranded, reusing the stored `X-OpenWA-Idempotency-Key` so the retry stays deduplicable at your receiver. A delivery that keeps failing exhausts `WEBHOOK_RECONCILE_MAX_ATTEMPTS` and goes terminal rather than replaying forever. One window remains open: a crash between persisting the message and writing that record loses the delivery, because the two are not yet one transaction. The failure table records exhausted retries, plus over-budget, dispatch-capacity-exceeded, and shutdown-rejected deliveries with attempts 0. A delivery the dispatcher shed for capacity or refused during the drain is not replayed: its failure row is the only record, so recover it from there. A node's sweep also leaves alone a delivery that the same node is still waiting to dispatch or retrying, however long that takes; with several nodes on one database, another node can still replay it, and the stored idempotency key keeps that duplicate deduplicable. Enabling the queue (`QUEUE_ENABLED=true`, needs Redis) makes the dispatch durable from the enqueue onward. In both modes, a graceful shutdown drains in-flight deliveries first: the queued path waits for each worker's current job, and the direct path waits up to `WEBHOOK_SHUTDOWN_DRAIN_MS` (default 5s; raise it to at least `WEBHOOK_TIMEOUT`, default 10s, if a slow receiver must finish).
+**Crash boundary.** Every delivery is recorded before it is attempted, and the record is retired once something durable owns it: the queue job in queued mode, the completed send in direct mode. A hard crash (SIGKILL, OOM) therefore leaves the record behind, and a bounded sweep (`WEBHOOK_RECONCILE_INTERVAL_MS`, default 60s) replays whatever is still stranded, reusing the stored `X-OpenWA-Idempotency-Key` so the retry stays deduplicable at your receiver. A delivery that keeps failing exhausts `WEBHOOK_RECONCILE_MAX_ATTEMPTS` and goes terminal rather than replaying forever. One window remains open: a crash between persisting the message and writing that record loses the delivery, because the two are not yet one transaction. The failure table records exhausted retries, plus over-budget, dispatch-capacity-exceeded, and shutdown-rejected deliveries with attempts 0. Read the last two as a report rather than a verdict: a delivery the dispatcher shed for capacity or refused during the drain was rejected before its POST, so it keeps its record and is replayed by the same sweep, and a row there can belong to an event that was later delivered. A node's sweep also leaves alone a delivery that the same node is still waiting to dispatch or retrying, however long that takes; with several nodes on one database, another node can still replay it, and the stored idempotency key keeps that duplicate deduplicable. Enabling the queue (`QUEUE_ENABLED=true`, needs Redis) makes the dispatch durable from the enqueue onward. In both modes, a graceful shutdown drains in-flight deliveries first: the queued path waits for each worker's current job, and the direct path waits up to `WEBHOOK_SHUTDOWN_DRAIN_MS` (default 5s; raise it to at least `WEBHOOK_TIMEOUT`, default 10s, if a slow receiver must finish).
 
 **Design your handler to be idempotent**, keyed on the `X-OpenWA-Idempotency-Key` header (see below). As a server-side safety net, OpenWA de-duplicates inbound `message.received` before dispatch (a re-fired event for an already-persisted message is dropped), so one webhook normally sees each inbound message once — but this is best-effort defense-in-depth and does not remove the need for consumer-side idempotency.
 

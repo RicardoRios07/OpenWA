@@ -60,6 +60,15 @@
 > which is exactly how a takeover begins. Without `NODE_URL` the whole path is inert and
 > single-node deployments pay nothing.
 >
+> **A failed forward says whether the owner could have acted.** When the owner cannot be
+> reached at all (connection refused, unresolvable or unusable `NODE_URL`), the answer is
+> `503` and the request was not carried out, so it is safe to retry. A timeout answers `504`
+> (no reply within `SESSION_PROXY_TIMEOUT_MS`), and any other failure answers `502` (the
+> connection broke, possibly after the request was sent; a TLS certificate the forwarding
+> node does not trust also lands here, with the cause code in its warning log): the owner
+> may already have carried it out, so a non-idempotent call such as a message send must not
+> be repeated blindly on either.
+>
 > **The lease compares timestamps written by different nodes, so their clocks must agree.** Each
 > node writes `leaseExpiresAt` from its own clock and reads every other node's the same way, so a
 > node whose clock runs more than one lease TTL (default 60s) ahead sees healthy peers as lapsed and

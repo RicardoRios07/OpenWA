@@ -518,7 +518,10 @@
       "title": "저장된 템플릿이 없습니다",
       "description": "자주 쓰는 답장이나 알림을 빠르게 보내려면 재사용 가능한 템플릿을 만드세요.",
       "noSessionsTitle": "사용 가능한 세션이 없습니다",
-      "noSessionsDesc": "템플릿을 추가하기 전에 WhatsApp 세션을 만드세요."
+      "noSessionsDesc": "템플릿을 추가하기 전에 WhatsApp 세션을 만드세요.",
+      "loadErrorTitle": "템플릿을 불러올 수 없습니다",
+      "forbiddenTitle": "템플릿에 접근할 수 없습니다",
+      "forbiddenDesc": "템플릿을 사용하려면 운영자 또는 관리자 역할의 API 키가 필요합니다."
     },
     "toasts": {
       "created": "템플릿이 생성되었습니다",

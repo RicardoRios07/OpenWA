@@ -133,6 +133,7 @@ export class BaileysAdapter implements IWhatsAppEngine {
       toNeutralJid: jid => this.sessionStore.toNeutralJid(jid),
       normalizedSelfJid: () => this.normalizedSelfJid(),
       loadLib: () => this.loadLib(),
+      getFetchDispatcher: () => this.lifecycle.fetchDispatcher(),
       toUnixSeconds,
       inboundLimiter: this.inboundLimiter,
       recordKeyLidMappings: key => this.sessionStore.recordKeyLidMappings(key),
@@ -628,7 +629,9 @@ export class BaileysAdapter implements IWhatsAppEngine {
     this.ensureReady();
     // Unset fields are passed through as undefined rather than stripped: the protobuf encoder skips
     // a field that is `!= null` false, exactly as it skips a missing one (WAProto/index.js,
-    // LabelEditAction.encode), so an omitted name really does leave the stored name alone. Colour 0
+    // LabelEditAction.encode). That does not make the write partial: the patch is an app-state SET
+    // on ['label_edit', id], which replaces the stored action whole, so an omitted name is not kept
+    // (Utils/chat-utils.js builds it with OP.SET and the receiver applies it without a merge). Colour 0
     // is a real WhatsApp colour and survives that check — which is why it must never be tested for
     // truthiness on the way here.
     await withQueryDeadline(

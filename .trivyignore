@@ -42,7 +42,14 @@ CVE-2026-69192
 # Chrome for Testing publishes linux-arm64 builds only from 153 on, and the image has not moved arm64 to
 # one. Those are dpkg packages, so the scan sees them and a fixable HIGH/CRITICAL fails it.
 # `ignore-unfixed` still hides every chromium CVE Debian has not fixed yet, so a passing arm64 scan
-# does not mean the browser has no open advisories. The eleven chromium CVEs this file used to accept
+# does not mean the browser has no open advisories. Measured on 2026-09-15 against
+# ghcr.io/rmyndharis/openwa:main (arm64, the release flags minus `ignore-unfixed`): `chromium`,
+# `chromium-common` and `chromium-sandbox` each carry 2 CRITICAL and 15 HIGH advisories in state
+# "affected", i.e. Debian has published no fix. That exposure is accepted for the release: the
+# alternative is moving arm64 off the Debian package to Chrome for Testing, which publishes
+# linux-arm64 builds from 153 on. Re-measure with
+# `trivy image --severity CRITICAL,HIGH --platform linux/arm64 ghcr.io/rmyndharis/openwa:<tag>`
+# when deciding whether the number still fits. The eleven chromium CVEs this file used to accept
 # (between CVE-2026-76033 and CVE-2026-76047) were fixed in 151.0.7922.169, and bookworm-security has
 # shipped newer chromium builds since.
 #
