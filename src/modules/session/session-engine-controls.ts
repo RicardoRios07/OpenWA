@@ -124,6 +124,20 @@ export class SessionEngineControls {
     return this.sessionRestrictions.attachTo(this.sessionErrors.attachTo(session));
   }
 
+  /**
+   * requireSession for stop()/delete(), whose caller sets the stop mark before this read. A read
+   * that fails has retired nothing, so the mark must not outlive it: left on a running session, its
+   * next disconnect would never reconnect and start() would keep refusing it as already started.
+   */
+  private async requireSessionOrDropStopMark(id: string): Promise<Session> {
+    try {
+      return await this.requireSession(id);
+    } catch (error) {
+      this.stoppingSessions.delete(id);
+      throw error;
+    }
+  }
+
   async start(id: string): Promise<Session> {
     // Reserve the slot SYNCHRONOUSLY at entry — before even the requireSession await. Two
     // near-simultaneous start() calls must not both pass the check and orphan an engine (the has()
@@ -257,7 +271,7 @@ export class SessionEngineControls {
   }
 
   async stop(id: string): Promise<Session> {
-    const session = await this.requireSession(id);
+    const session = await this.requireSessionOrDropStopMark(id);
 
     // Mark as tearing down BEFORE cleanup so an in-flight reconnect can't resurrect it.
     this.stoppingSessions.add(id);
@@ -440,7 +454,7 @@ export class SessionEngineControls {
   }
 
   async delete(id: string): Promise<void> {
-    const session = await this.requireSession(id);
+    const session = await this.requireSessionOrDropStopMark(id);
 
     // FENCE #1 — fail-fast on an ALREADY-PENDING credential teardown for this session NAME, BEFORE
     // any lifecycle mutation. A logout teardown that lost its deadline race is still running and ends

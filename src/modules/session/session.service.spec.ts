@@ -16,6 +16,8 @@ import {
 import { EngineTransportError } from '../../common/errors/engine-transport.error';
 import { ConfigService } from '@nestjs/config';
 import { SessionService, AUTOSTART_THROTTLE_MS } from './session.service';
+import { SessionOwnershipService } from './session-ownership.service';
+import { decideReconnect } from './reconnect-policy';
 import { ACK_RECONCILE_DELAY_MS } from './message-projector.service';
 import { SessionEngineLifecycle, type ReconnectState } from './session-engine-lifecycle.service';
 import {
@@ -1369,7 +1371,7 @@ describe('SessionService', () => {
       expect(stopping.has('sess-uuid-1')).toBe(false);
     });
 
-    // The counterpart, and the reason the reclamation is narrowed to 404 rather than every failure:
+    // The counterpart, and the reason the reclamation is narrowed to 404 and a failed read:
     // a refusal against a session that DOES exist must still leave its mark, which is the
     // documented "harmless, cleared by the next start()" behaviour the mark relies on.
     it.each([
@@ -1385,6 +1387,160 @@ describe('SessionService', () => {
 
       expect(stopping.has('sess-uuid-1')).toBe(true);
       stopping.delete('sess-uuid-1');
+    });
+
+    // A failed read decided nothing. A mark left on a running session made its next disconnect skip
+    // the reconnect while the dead engine stayed registered, so start() answered "already started".
+    it.each([
+      ['stop', (s: SessionService) => s.stop('sess-uuid-1')],
+      ['delete', (s: SessionService) => s.delete('sess-uuid-1')],
+    ])('%s() failing on its session read leaves a running session able to reconnect', async (_verb, call) => {
+      (repository.findOne as jest.Mock).mockResolvedValue(createMockSession());
+      (repository.update as jest.Mock).mockResolvedValue({ affected: 1 });
+      await service.start('sess-uuid-1');
+      const callbacks = (mockEngine.initialize.mock.calls as [EngineEventCallbacks][])[0][0];
+      const internals = lifecycle as unknown as {
+        stoppingSessions: Set<string>;
+        reconnectStates: Map<string, ReconnectState>;
+        executeReconnect: (id: string, session: Session, state: ReconnectState) => Promise<void>;
+      };
+
+      (repository.findOne as jest.Mock).mockRejectedValueOnce(new Error('Connection terminated unexpectedly'));
+      await expect(call(service)).rejects.toThrow('Connection terminated unexpectedly');
+      expect(internals.stoppingSessions.has('sess-uuid-1')).toBe(false);
+
+      callbacks.onDisconnected?.('socket closed');
+      await new Promise(resolve => setImmediate(resolve));
+      const state = internals.reconnectStates.get('sess-uuid-1')!;
+      expect(state.timer).not.toBeNull();
+      clearTimeout(state.timer!);
+      await internals.executeReconnect('sess-uuid-1', createMockSession(), state);
+
+      expect(mockEngine.initialize).toHaveBeenCalledTimes(2);
+      expect(lifecycle.isEngineActive('sess-uuid-1')).toBe(true);
+    });
+
+    it.each([
+      ['stop', (s: SessionService) => s.stop('sess-uuid-1')],
+      ['delete', (s: SessionService) => s.delete('sess-uuid-1')],
+    ])('%s() whose ownership query fails leaves no stop mark', async (_verb, call) => {
+      const ownership = withOwnership();
+      ownership.isHeldByOtherNode.mockRejectedValue(new Error('Connection terminated unexpectedly'));
+      const stopping = (lifecycle as unknown as { stoppingSessions: Set<string> }).stoppingSessions;
+
+      await expect(call(service)).rejects.toThrow('Connection terminated unexpectedly');
+
+      expect(stopping.has('sess-uuid-1')).toBe(false);
+    });
+
+    // The claim predicates are SQL, so these run the real ownership service on a real database.
+    describe('against a real database', () => {
+      let db: DataSource;
+      let sessions: Repository<Session>;
+      let ownership: SessionOwnershipService;
+
+      const seed = (overrides: Partial<Session> = {}): Promise<Session> =>
+        sessions.save(sessions.create({ name: 'owned', status: SessionStatus.READY, config: {}, ...overrides }));
+      const nodeIdOf = async (id: string): Promise<string | null> => (await sessions.findOneByOrFail({ id })).nodeId;
+      const until = async (condition: () => boolean): Promise<void> => {
+        for (let i = 0; i < 200 && !condition(); i++) await new Promise(resolve => setImmediate(resolve));
+        expect(condition()).toBe(true);
+      };
+
+      beforeAll(async () => {
+        db = new DataSource({ type: 'better-sqlite3', database: ':memory:', entities: [Session], synchronize: true });
+        await db.initialize();
+        sessions = db.getRepository(Session);
+      });
+
+      afterAll(async () => {
+        await db.destroy();
+      });
+
+      beforeEach(() => {
+        ownership = new SessionOwnershipService(sessions, {
+          get: (key: string) => ({ 'session.nodeId': 'node-a', 'session.leaseTtlMs': 60_000 })[key],
+        } as unknown as ConfigService);
+        Object.assign(service as unknown as Record<string, unknown>, { ownership });
+        (repository.update as jest.Mock).mockResolvedValue({ affected: 1 });
+      });
+
+      afterEach(async () => {
+        await sessions.clear();
+      });
+
+      // The stop could not release while the start still held the session; nothing else would, so
+      // the row kept naming this node until a peer adopted the session the operator stopped.
+      it('start() retired by a concurrent stop() hands the claim back', async () => {
+        const row = await seed();
+        (repository.findOne as jest.Mock).mockResolvedValue(createMockSession({ id: row.id }));
+        let resolveInit: () => void = () => undefined;
+        mockEngine.initialize.mockImplementationOnce(() => new Promise<void>(resolve => (resolveInit = resolve)));
+
+        const starting = service.start(row.id);
+        await until(() => mockEngine.initialize.mock.calls.length === 1);
+        await service.stop(row.id);
+        expect(await nodeIdOf(row.id)).toBe('node-a');
+
+        resolveInit();
+        await starting;
+
+        expect(lifecycle.isEngineActive(row.id)).toBe(false);
+        expect(await nodeIdOf(row.id)).toBeNull();
+      });
+
+      it('start() that succeeds keeps its claim', async () => {
+        const row = await seed();
+        (repository.findOne as jest.Mock).mockResolvedValue(createMockSession({ id: row.id }));
+
+        await service.start(row.id);
+
+        expect(await nodeIdOf(row.id)).toBe('node-a');
+      });
+
+      // The failed first attempt stays in its 2s retry delay while the stop lands.
+      it('start() does not retry a transient failure once a stop() landed during the delay', async () => {
+        const row = await seed();
+        (repository.findOne as jest.Mock).mockResolvedValue(createMockSession({ id: row.id }));
+        mockEngine.initialize.mockRejectedValueOnce(new EngineTransportError('Protocol error: Target closed'));
+
+        const starting = service.start(row.id);
+        const outcome = starting.catch((error: unknown) => error);
+        await until(() => mockEngine.initialize.mock.calls.length === 1 && !lifecycle.isEngineActive(row.id));
+        await service.stop(row.id);
+
+        expect(await outcome).toBeInstanceOf(EngineTransportError);
+        expect(mockEngine.initialize).toHaveBeenCalledTimes(1);
+        expect(lifecycle.isEngineActive(row.id)).toBe(false);
+        expect(await nodeIdOf(row.id)).toBeNull();
+      });
+
+      // The earlier stop's mark is still set when the row read fails, before start() clears it.
+      it('start() still retries a transient failure when only an earlier stop() left its mark', async () => {
+        const row = await seed();
+        (repository.findOne as jest.Mock).mockResolvedValue(createMockSession({ id: row.id }));
+        await service.stop(row.id);
+        (repository.findOne as jest.Mock).mockRejectedValueOnce(new Error('Connection terminated unexpectedly'));
+
+        await service.start(row.id);
+
+        expect(mockEngine.initialize).toHaveBeenCalledTimes(1);
+        expect(await nodeIdOf(row.id)).toBe('node-a');
+      });
+
+      // A 400 changes nothing, and release() also clears a lapsed foreign claim: that took a crashed
+      // node's session out of the lapsed-claim sweep for good.
+      it.each([
+        ['logout', (s: SessionService, id: string) => s.logout(id)],
+        ['forceKill', (s: SessionService, id: string) => s.forceKill(id)],
+      ])('%s() refused as not started keeps a lapsed foreign claim', async (_verb, call) => {
+        const row = await seed({ nodeId: 'dead-node', leaseExpiresAt: new Date(Date.now() - 60_000) });
+        (repository.findOne as jest.Mock).mockResolvedValue(createMockSession({ id: row.id }));
+
+        await expect(call(service, row.id)).rejects.toThrow(BadRequestException);
+
+        expect(await nodeIdOf(row.id)).toBe('dead-node');
+      });
     });
   });
 
@@ -2341,6 +2497,110 @@ describe('SessionService', () => {
       expect(errorHooks()).toBe(1);
       expect(i.reconnectStates.has(ID)).toBe(false);
       expect(i.engines.has(ID)).toBe(false);
+      // The budget message alone says nothing about why the attempts failed; the last one's reason
+      // stays on lastError and in the hook payload.
+      const exhausted = decideReconnect({ attempts: 5, maxAttempts: 5, baseDelay: 0 }) as { reason: string };
+      expect(i.sessionErrors.get(ID)).toBe(`${exhausted.reason} Last error: net::ERR_NAME_NOT_RESOLVED`);
+      const hook = (hookManager.execute as jest.Mock).mock.calls.find(([n]) => n === 'session:error') as unknown[];
+      expect(hook[1]).toEqual({ reason: i.sessionErrors.get(ID) });
+    });
+
+    it('does not nest the engine-internal reconnect banner inside the exhausted reason', () => {
+      const i = internals();
+      const state = armState({ attempts: 5, maxAttempts: 5 });
+      i.sessionErrors.set(ID, 'Reconnecting after a dropped connection (attempt 5, down for 40s).');
+
+      (lifecycle as unknown as { scheduleReconnect: (id: string, s: Session) => void }).scheduleReconnect(
+        ID,
+        createMockSession(),
+      );
+
+      expect(i.reconnectStates.has(ID)).toBe(false);
+      expect(state.timer).toBeNull();
+      const exhausted = decideReconnect({ attempts: 5, maxAttempts: 5, baseDelay: 0 }) as { reason: string };
+      expect(i.sessionErrors.get(ID)).toBe(exhausted.reason);
+    });
+
+    // The success path has its own replacement check: a parked failure of the OLD attempt must not
+    // run against the state a delete + start put in its place while that init was still running.
+    it('drops a parked failure when a delete-then-start replaced the state before init resolved', async () => {
+      const i = internals();
+      let callbacks: EngineEventCallbacks = {};
+      let resolveInit: () => void = () => undefined;
+      mockEngine.initialize.mockImplementationOnce((cb: EngineEventCallbacks) => {
+        callbacks = cb;
+        return new Promise<void>(res => (resolveInit = res));
+      });
+      const replacement = {
+        ...mockEngine,
+        initialize: jest.fn().mockResolvedValue(undefined),
+        forceDestroy: jest.fn(),
+      };
+      const state = armState();
+
+      const run = i.executeReconnect(ID, createMockSession(), state);
+      await flush();
+      reportFailure(callbacks, 'net::ERR_CONNECTION_RESET');
+      expect(state.parkedFailure).toBeDefined();
+      await service.delete(ID);
+      (engineFactory.create as jest.Mock).mockReturnValueOnce(replacement);
+      await service.start(ID);
+      const fresh = i.reconnectStates.get(ID);
+      (hookManager.execute as jest.Mock).mockClear();
+      (repository.update as jest.Mock).mockClear();
+      resolveInit();
+      await run;
+      await flush();
+
+      expect(fresh).toBeDefined();
+      expect(i.reconnectStates.get(ID)).toBe(fresh);
+      expect(i.engines.get(ID)).toBe(replacement);
+      expect(replacement.forceDestroy).not.toHaveBeenCalled();
+      expect(failedWrites()).toBe(0);
+      expect(errorHooks()).toBe(0);
+    });
+
+    // A retryable report arriving after a terminal one in the same init must not turn the terminal
+    // failure into a retry, which would loop on credentials that can never work.
+    it('keeps an earlier terminal report parked when a retryable one follows in the same init', async () => {
+      const i = internals();
+      mockEngine.initialize.mockImplementationOnce((cb: EngineEventCallbacks) => {
+        cb.onError?.(`${AUTH_FAILURE_REASON}: bad credentials`);
+        cb.onError?.('net::ERR_CONNECTION_RESET');
+        return Promise.reject(new Error('net::ERR_CONNECTION_RESET'));
+      });
+      const state = armState();
+
+      await i.executeReconnect(ID, createMockSession(), state);
+      await flush();
+
+      expect(failedWrites()).toBe(1);
+      expect(errorHooks()).toBe(1);
+      expect(hookManager.execute).toHaveBeenCalledWith(
+        'session:error',
+        { reason: `${AUTH_FAILURE_REASON}: bad credentials` },
+        expect.anything(),
+      );
+      expect(state.timer).toBeNull();
+      expect(i.reconnectStates.has(ID)).toBe(false);
+    });
+
+    // Only a bare FAILED was parked, so the rejection message is the one place the terminal cause
+    // shows up.
+    it('stays terminal when only a bare FAILED was parked and the rejection names a terminal cause', async () => {
+      const i = internals();
+      mockEngine.initialize.mockImplementationOnce((cb: EngineEventCallbacks) => {
+        cb.onStateChanged?.(EngineStatus.FAILED);
+        return Promise.reject(new Error(`${AUTH_FAILURE_REASON}: bad credentials`));
+      });
+      const state = armState();
+
+      await i.executeReconnect(ID, createMockSession(), state);
+      await flush();
+
+      expect(failedWrites()).toBe(1);
+      expect(state.timer).toBeNull();
+      expect(state.attempts).toBe(1);
     });
 
     it('keeps an init failure on the start() path terminal as before', async () => {
@@ -3136,6 +3396,59 @@ describe('SessionService', () => {
       );
       expect(statusWrites).toHaveLength(0);
     });
+
+    // A replaced engine whose own backoff is still running must not report on the replacement.
+    it('ignores reports from an engine that is no longer the live one', async () => {
+      const callbacks = await startAndCapture();
+      (webhookService.dispatch as jest.Mock).mockClear();
+      const engines = (service as unknown as { engines: EngineRegistry }).engines;
+      engines.set('sess-uuid-1', { ...mockEngine } as never);
+      const attemptsBefore = getSessionReconnectAttemptsTotal();
+
+      for (let attempt = 1; attempt <= 5; attempt++) callbacks.onReconnecting?.(attempt, 60_000);
+
+      const sessionErrors = (service as unknown as { sessionErrors: SessionErrorStore }).sessionErrors;
+      expect(sessionErrors.get('sess-uuid-1')).toBeUndefined();
+      expect(loopDispatches()).toHaveLength(0);
+      expect(getSessionReconnectAttemptsTotal()).toBe(attemptsBefore);
+    });
+
+    // The counters are module-global, so the assertions are deltas.
+    it('counts every attempt and one loop alert per fifth attempt', async () => {
+      const callbacks = await startAndCapture();
+      const attemptsBefore = getSessionReconnectAttemptsTotal();
+      const alertsBefore = getSessionReconnectLoopAlertsTotal();
+
+      for (let attempt = 1; attempt <= 5; attempt++) callbacks.onReconnecting?.(attempt, 60_000);
+
+      expect(getSessionReconnectAttemptsTotal() - attemptsBefore).toBe(5);
+      expect(getSessionReconnectLoopAlertsTotal() - alertsBefore).toBe(1);
+    });
+
+    // One engine can live through several episodes; each one's downtime starts at its own attempt 1.
+    it('measures the downtime of the current episode, not since an earlier one', async () => {
+      const callbacks = await startAndCapture();
+      const sessionErrors = (service as unknown as { sessionErrors: SessionErrorStore }).sessionErrors;
+      const start = Date.now();
+      const now = jest.spyOn(Date, 'now');
+      try {
+        for (let attempt = 1; attempt <= 5; attempt++) {
+          now.mockReturnValue(start + (attempt - 1) * 60_000);
+          callbacks.onReconnecting?.(attempt, 60_000);
+        }
+        const secondEpisode = start + 60 * 60_000;
+        for (let attempt = 1; attempt <= 5; attempt++) {
+          now.mockReturnValue(secondEpisode + (attempt - 1) * 20_000);
+          callbacks.onReconnecting?.(attempt, 20_000);
+        }
+      } finally {
+        now.mockRestore();
+      }
+
+      expect(sessionErrors.get('sess-uuid-1')).toBe(
+        'Reconnecting after a dropped connection (attempt 5, down for 80s).',
+      );
+    });
   });
 
   // A restriction is WhatsApp judging the account, not a fault on our side, so it has its own
@@ -3402,6 +3715,25 @@ describe('SessionService', () => {
       await startAndCapture();
 
       await expect(service.getPresence('sess-uuid-1', 'silent@c.us')).resolves.toBeNull();
+    });
+
+    // Presence belongs to the connection: once no engine is registered, the last report is not current.
+    it('reports null once the session is stopped', async () => {
+      const callbacks = await startAndCapture();
+      callbacks.onPresenceUpdate?.(presence('composing'));
+
+      await service.stop('sess-uuid-1');
+
+      await expect(service.getPresence('sess-uuid-1', 'c@c.us')).resolves.toBeNull();
+    });
+
+    it('reports null once a terminal engine failure evicted the engine', async () => {
+      const callbacks = await startAndCapture();
+      callbacks.onPresenceUpdate?.(presence('composing'));
+
+      callbacks.onError?.(`${AUTH_FAILURE_REASON}: bad credentials`);
+
+      await expect(service.getPresence('sess-uuid-1', 'c@c.us')).resolves.toBeNull();
     });
   });
 

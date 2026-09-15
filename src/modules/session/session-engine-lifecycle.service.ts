@@ -29,7 +29,11 @@ import { HookManager } from '../../core/hooks';
 import { SessionLifecycleFences } from './session-lifecycle-fences';
 import { SessionStatusBroadcaster } from './session-status-broadcaster';
 import { SessionEngineLeafEvents } from './session-engine-leaf-events';
-import { SessionEngineEventWiring, SessionEngineWiringHost } from './session-engine-event-wiring';
+import {
+  RECONNECT_LOOP_REASON,
+  SessionEngineEventWiring,
+  SessionEngineWiringHost,
+} from './session-engine-event-wiring';
 import { SessionEngineControls } from './session-engine-controls';
 import { SessionOwnershipService, nodeOwnsSession } from './session-ownership.service';
 
@@ -988,19 +992,22 @@ export class SessionEngineLifecycle {
         action: 'reconnect_failed',
       });
       // Don't leave the session silently stuck DISCONNECTED — mark it terminally FAILED with a reason
-      // so findOne/findAll surface it via `lastError` and the dashboard shows it needs a restart.
-      this.sessionErrors.set(id, decision.reason);
+      // so findOne/findAll surface it via `lastError` and the dashboard shows it needs a restart. The
+      // last attempt's own failure is kept alongside: it is the diagnosis, and this write would
+      // otherwise erase it. The engine-internal loop banner is not a cause, so it is not repeated.
+      const lastError = this.sessionErrors.get(id);
+      const reason =
+        lastError && !lastError.startsWith(RECONNECT_LOOP_REASON)
+          ? `${decision.reason} Last error: ${lastError}`
+          : decision.reason;
+      this.sessionErrors.set(id, reason);
       // Same ownership fence as the engine callbacks: a reconnect chain that exhausts itself after
       // this node's lease lapsed must not park a peer's session in FAILED, which nothing resets
       // automatically. The in-memory error above is per-process and harmless either way.
       if (this.ownsSession(id)) void this.updateStatus(id, SessionStatus.FAILED);
       // The hook signal a terminal failure carries: a failed re-init no longer fires session:error per
       // attempt, so the episode's one terminal end reports it here.
-      void this.hookManager.execute(
-        'session:error',
-        { reason: decision.reason },
-        { sessionId: id, source: 'SessionService' },
-      );
+      void this.hookManager.execute('session:error', { reason }, { sessionId: id, source: 'SessionService' });
       // Terminal path — evict the dead engine so it neither holds a concurrency slot nor makes a
       // subsequent start() reject the session as "already started". This mirrors onError's terminal
       // path (the same rationale: leaving the engine in the map wedges the session). The engine may

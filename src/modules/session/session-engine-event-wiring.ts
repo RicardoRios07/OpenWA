@@ -27,7 +27,7 @@ import { userPart } from '../../engine/identity/wa-id';
 import { SessionEngineLeafEvents } from './session-engine-leaf-events';
 
 /** The lastError an engine-internal reconnect episode records; onQRCode clears only this one. */
-const RECONNECT_LOOP_REASON = 'Reconnecting after a dropped connection';
+export const RECONNECT_LOOP_REASON = 'Reconnecting after a dropped connection';
 
 /**
  * The call-ins SessionEngineEventWiring needs from the lifecycle core. Built ONCE in the
