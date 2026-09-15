@@ -303,7 +303,7 @@ describe('SessionService', () => {
       expect(dataSource.transaction).toHaveBeenCalled(); // DB removal still ran
     });
 
-    it('delete() purges the on-disk auth dirs (keyed by session NAME) so a same-name recreate starts clean', async () => {
+    it('delete() purges the on-disk auth dirs, keyed by the session id, so no credentials outlive the row', async () => {
       (repository.findOne as jest.Mock).mockResolvedValue(
         createMockSession({ id: 'sess-uuid-1', name: 'test-session' }),
       );
@@ -311,7 +311,9 @@ describe('SessionService', () => {
 
       await service.delete('sess-uuid-1');
 
-      expect(engineFactory.purgeSessionData).toHaveBeenCalledWith('test-session');
+      // The name goes with it: a legacy name-keyed directory the boot migration could not rename is
+      // still a complete WhatsApp login, and delete is the only path that can take it.
+      expect(engineFactory.purgeSessionData).toHaveBeenCalledWith('sess-uuid-1', 'test-session');
     });
 
     it('delete() delegates the both-engines purge exactly once, after the DB rows are removed', async () => {
@@ -322,10 +324,10 @@ describe('SessionService', () => {
       await expect(service.delete('sess-uuid-1')).resolves.toBeUndefined();
 
       // The factory owns the per-engine best-effort isolation (covered in engine.factory.spec);
-      // the service hands it the session NAME once, only after the DB removal has committed.
+      // the service hands it the session ID once, only after the DB removal has committed.
       expect(dataSource.transaction).toHaveBeenCalled();
       expect(engineFactory.purgeSessionData).toHaveBeenCalledTimes(1);
-      expect(engineFactory.purgeSessionData).toHaveBeenCalledWith('test-session');
+      expect(engineFactory.purgeSessionData).toHaveBeenCalledWith('sess-uuid-1', 'test-session');
       const txOrder = (dataSource.transaction as jest.Mock).mock.invocationCallOrder[0];
       const purgeOrder = (engineFactory.purgeSessionData as jest.Mock).mock.invocationCallOrder[0];
       expect(txOrder).toBeLessThan(purgeOrder);
@@ -339,7 +341,7 @@ describe('SessionService', () => {
 
       await service.delete('sess-uuid-1');
 
-      expect(engineFactory.purgeSessionData).toHaveBeenCalledWith('test-session');
+      expect(engineFactory.purgeSessionData).toHaveBeenCalledWith('sess-uuid-1', 'test-session');
     });
 
     it('stop() escalates to forceDestroy when engine.disconnect() rejects — stop completes with a warning', async () => {
@@ -538,7 +540,7 @@ describe('SessionService', () => {
 
         releaseLogout();
         await deleteCall;
-        expect(engineFactory.purgeSessionData).toHaveBeenCalledWith('test-session');
+        expect(engineFactory.purgeSessionData).toHaveBeenCalledWith('sess-uuid-1', 'test-session');
         expect(pendingTeardownsOf().has('test-session')).toBe(false);
       } finally {
         jest.useRealTimers();
@@ -1143,7 +1145,7 @@ describe('SessionService', () => {
       await service.start('sess-uuid-1');
 
       expect(engineFactory.create).toHaveBeenCalledWith(
-        expect.objectContaining({ sessionId: 'test-session', dbSessionId: 'sess-uuid-1' }),
+        expect.objectContaining({ sessionId: 'sess-uuid-1', dbSessionId: 'sess-uuid-1' }),
       );
       expect(mockEngine.initialize).toHaveBeenCalled();
       expect(repository.update).toHaveBeenCalledWith('sess-uuid-1', {
@@ -1818,7 +1820,19 @@ describe('SessionService', () => {
         // runs inside initializeEngine before the mapped error is thrown — asserted below.
         expect(caught).toBeInstanceOf(HttpException);
         expect((caught as HttpException).getStatus()).toBe(HttpStatus.GATEWAY_TIMEOUT);
-        expect((caught as HttpException).getResponse() as string).toMatch(/timed out after 60000ms/i);
+        const body = (caught as HttpException).getResponse() as string;
+        expect(body).toMatch(/timed out after 60000ms/i);
+        // This deadline cannot tell an unreachable WhatsApp Web or session proxy from a stalled browser:
+        // whatsapp-web.js navigates with { waitUntil: 'load', timeout: 0 } and only starts its auth poll
+        // after the page has loaded, so a navigation that hangs fires this timeout, not the auth one. The
+        // diagnostic must name every cause and rule out none, or it points the operator away from the
+        // network. It must also blame the ENGINE, not the browser: the deadline is engine-agnostic, and a
+        // hung navigation means the browser started fine.
+        expect(body).toMatch(/the engine did not finish starting/i);
+        expect(body).not.toMatch(/browser did not finish starting/i);
+        expect(body).toMatch(/WhatsApp Web, the network or the session proxy may be unreachable/i);
+        expect(body).toMatch(/may have stalled during startup/i);
+        expect(body).not.toMatch(/not a network/i);
         expect(mockEngine.forceDestroy).toHaveBeenCalled(); // wedged browser reaped
         expect(intern().engines.has('sess-uuid-1')).toBe(false); // slot freed for retry
         expect(repository.update).toHaveBeenCalledWith('sess-uuid-1', { status: SessionStatus.DISCONNECTED });
@@ -2259,7 +2273,7 @@ describe('SessionService', () => {
       expect(mockEngine.destroy).toHaveBeenCalled();
       expect(i.engines.has('sess-uuid-1')).toBe(false);
       // delete() purged BEFORE this re-init re-created the auth dir — the guard purges a second time.
-      expect(engineFactory.purgeSessionData).toHaveBeenCalledWith('test-session');
+      expect(engineFactory.purgeSessionData).toHaveBeenCalledWith('sess-uuid-1');
     });
 
     it('still re-initializes when the old engine destroy() hangs (time-bounded teardown)', async () => {
@@ -6286,7 +6300,7 @@ describe('SessionService', () => {
 
       // delete() runs its purge BEFORE this start's init resolves; the init re-creates the auth dir
       // (both engines mkdir at init), so the retirement guard must purge a second time — keyed by
-      // session NAME, same as delete()'s purge — or the race leaves credentials behind.
+      // the session id, same as delete()'s purge — or the race leaves credentials behind.
       mockEngine.initialize.mockImplementationOnce(() => {
         (repository.findOne as jest.Mock).mockResolvedValue(null);
         return Promise.resolve();
@@ -6295,7 +6309,7 @@ describe('SessionService', () => {
       await expect(service.start('sess-uuid-1')).rejects.toThrow(NotFoundException);
 
       expect(mockEngine.destroy).toHaveBeenCalled();
-      expect(engineFactory.purgeSessionData).toHaveBeenCalledWith('test-session');
+      expect(engineFactory.purgeSessionData).toHaveBeenCalledWith('sess-uuid-1');
     });
 
     it('emits no QR/status event for the retired engine once the post-init guard has run', async () => {
@@ -6317,13 +6331,14 @@ describe('SessionService', () => {
       expect(webhookService.dispatch).not.toHaveBeenCalledWith('sess-uuid-1', 'session.qr', expect.anything());
     });
 
-    it('does not re-purge when the same name was re-created under a new id mid-race (the new row owns the dirs)', async () => {
+    it('re-purges the deleted id even when the same NAME was re-created mid-race (different dirs)', async () => {
       const session = createMockSession();
       (repository.findOne as jest.Mock).mockResolvedValue(session);
       (repository.update as jest.Mock).mockResolvedValue({ affected: 1 });
 
-      // delete(old id) + create(same name) land during init: the old row is gone but a NEW row now
-      // owns the name — purging would wipe the fresh session's auth dir, so the guard must skip it.
+      // delete(old id) + create(same name) land during init. The dirs are keyed by id, so the new row
+      // owns its OWN directories: skipping the purge here (as the name-keyed guard used to) would
+      // strand the deleted session's credentials on the volume for good.
       mockEngine.initialize.mockImplementationOnce(() => {
         (repository.findOne as jest.Mock).mockImplementation(({ where }: { where: { id?: string; name?: string } }) => {
           if (where.name === 'test-session') return Promise.resolve(createMockSession({ id: 'sess-uuid-2' }));
@@ -6335,7 +6350,8 @@ describe('SessionService', () => {
       await expect(service.start('sess-uuid-1')).rejects.toThrow(NotFoundException);
 
       expect(mockEngine.destroy).toHaveBeenCalled();
-      expect(engineFactory.purgeSessionData).not.toHaveBeenCalled();
+      expect(engineFactory.purgeSessionData).toHaveBeenCalledWith('sess-uuid-1');
+      expect(engineFactory.purgeSessionData).not.toHaveBeenCalledWith('sess-uuid-2');
     });
 
     it('does not purge anything on a normal start (session row present throughout)', async () => {

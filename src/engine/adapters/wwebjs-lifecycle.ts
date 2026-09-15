@@ -18,6 +18,7 @@ import { BACKPORT_MISSING_MESSAGE, isBackportMissing } from './wwebjs-backport-c
 import { unappliedPatches, unappliedPatchesMessage } from './engine-patch-status';
 import { type WhatsAppWebJsConfig } from './whatsapp-web-js.adapter';
 import { AUTH_FAILURE_REASON, STALE_PROFILE_ADVICE } from '../terminal-engine-failure';
+import { wwjsAuthDir } from '../auth-dir-paths';
 
 /**
  * Detect Puppeteer's "Execution context was destroyed" error. During `Client.inject()` this is most
@@ -316,7 +317,7 @@ export class WwebjsLifecycle {
           `"${reason}" during initialize. If this followed an OpenWA upgrade that changed the ` +
             `Chromium/Chrome binary (v0.8.12 amd64 switched Debian Chromium → Chrome for Testing), the ` +
             `session's browser profile is likely stale — delete the profile dir ` +
-            `"${path.join(path.resolve(this.host.config.sessionDataPath), `session-${this.host.config.sessionId}`)}" ` +
+            `"${wwjsAuthDir(this.host.config.sessionDataPath, this.host.config.sessionId)}" ` +
             `and start again to re-scan. If no upgrade happened, Puppeteer also raises this on a page ` +
             `navigation or renderer crash (check for memory pressure or a WhatsApp Web reload). ` +
             `See docs/12-troubleshooting-faq.md.`,

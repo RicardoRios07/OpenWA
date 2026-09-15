@@ -213,11 +213,11 @@ curl -H "X-API-Key: $API_KEY" \
 # Check WhatsApp engine logs
 docker compose logs openwa-api 2>&1 | grep -i "whatsapp\|puppeteer\|browser"
 
-# Check auth folder. Both engines key it on the session NAME, but the location differs:
-#   whatsapp-web.js → SESSION_DATA_PATH (default /app/data/sessions), dir `session-<name>`
-#   baileys         → BAILEYS_AUTH_DIR  (default /app/data/baileys),  dir `<name>` (no prefix)
-docker compose exec openwa-api ls -la /app/data/sessions/session-<name>/   # whatsapp-web.js
-docker compose exec openwa-api ls -la /app/data/baileys/<name>/            # baileys
+# Check auth folder. Both engines key it on the session UUID id, but the location differs:
+#   whatsapp-web.js → SESSION_DATA_PATH (default /app/data/sessions), dir `session-<id>`
+#   baileys         → BAILEYS_AUTH_DIR  (default /app/data/baileys),  dir `<id>` (no prefix)
+docker compose exec openwa-api ls -la /app/data/sessions/session-<id>/   # whatsapp-web.js
+docker compose exec openwa-api ls -la /app/data/baileys/<id>/            # baileys
 ```
 
 **Solutions:**
@@ -231,10 +231,10 @@ docker compose exec openwa-api ls -la /app/data/baileys/<name>/            # bai
 | WhatsApp blocked      | Set a per-session proxy (`proxyUrl`) |
 
 ```bash
-# Clear auth and restart (the profile dir carries the session NAME, not its UUID id).
+# Clear auth and restart (the profile dir carries the session's UUID id, not its name).
 # Remove the one that matches the session's engine — deleting the other path is a silent no-op.
-docker compose exec openwa-api rm -rf /app/data/sessions/session-<name>   # whatsapp-web.js
-docker compose exec openwa-api rm -rf /app/data/baileys/<name>            # baileys
+docker compose exec openwa-api rm -rf /app/data/sessions/session-<id>   # whatsapp-web.js
+docker compose exec openwa-api rm -rf /app/data/baileys/<id>            # baileys
 docker compose restart openwa-api
 ```
 
@@ -275,6 +275,14 @@ curl -X POST "$BASE/api/sessions" -H "X-API-Key: $API_KEY" -H "Content-Type: app
 
 > ℹ️ Proxy egress for the `whatsapp-web.js` engine is configured **per session** via the
 > `proxyUrl`/`proxyType` fields on `POST /api/sessions` — not via environment variables.
+
+> ℹ️ A `504` whose body starts with `Engine initialization timed out after ...` is a **different**
+> failure with a different fix: initialization never finished at all. That happens when WhatsApp Web,
+> the network or the session proxy is unreachable in a way that hangs the connection instead of
+> failing it, and when the browser stalls during startup (typically a container memory or resource
+> limit). Check egress to `web.whatsapp.com`, the session's `proxyUrl` and the container's memory
+> limit. The auth poll that produces the message above only starts once the page has loaded, so it
+> never fires for a connection that hangs before that.
 
 ### Issue: Session stuck at `authenticating`, never reaches `ready`
 
@@ -437,7 +445,7 @@ show:
 Protocol error (Runtime.callFunctionOn): Execution context was destroyed.
 ```
 
-**Cause:** The session's persistent browser profile (`<SESSION_DATA_PATH>/session-<name>`, created by
+**Cause:** The session's persistent browser profile (`<SESSION_DATA_PATH>/session-<id>`, created by
 whatsapp-web.js's `LocalAuth`) was built with a different Chromium/Chrome binary than the one the new
 image runs. A browser profile carries binary-bound state (page caches, GPU shader caches, IndexedDB /
 Local Storage version markers) that is not safely portable across Chromium major versions or binary
@@ -461,12 +469,12 @@ upgrade runbook's rollback in docs/11); without one, scan a new QR.
 profile cannot be salvaged — clearing only the cache subdirs (`Cache`, `GPUCache`, `Code Cache`, …) is
 **not** enough, the taint is deeper than the caches — so a one-time re-authentication is required.
 
-The profile dir is named after the session **name**, while the REST API addresses a session by its
-**id** (a UUID) — so the two placeholders below are different values:
+The profile dir is named after the session **id** (the UUID the REST API addresses it by), so
+`GET /api/sessions` gives you the value for both commands below:
 
 ```bash
-docker exec openwa-api rm -rf /app/data/sessions/session-<name>
-# then POST /sessions/<id>/force-kill and POST /sessions/<id>/start (the session's UUID id), and scan the new QR
+docker exec openwa-api rm -rf /app/data/sessions/session-<id>
+# then POST /sessions/<id>/force-kill and POST /sessions/<id>/start, and scan the new QR
 ```
 
 Re-creating the session (`DELETE /sessions/<id>`) also purges its profile dir; create it again and

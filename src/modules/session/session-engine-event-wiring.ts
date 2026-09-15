@@ -484,12 +484,12 @@ export class SessionEngineEventWiring {
       },
       onCredentialTeardownStarted: (operation: Promise<void>): void => {
         // The adapter fired the moment it began the call that ends in an fs.rm of this session's
-        // on-disk auth dir. Track it under the captured session NAME (the auth-dir key) — NOT the
-        // UUID, and NOT guarded on this engine still being live: a logout that captured this engine
-        // must register its destructive promise even as a concurrent stop()/delete() evicts it,
-        // because the rm targets the session name's dir and would otherwise race a (re)created
-        // session under that same name. `session.name` is the immutable snapshot captured at
-        // initializeEngine entry, so a row delete/recreate under the same name cannot poison the key.
+        // on-disk auth dir. Track it under the captured session NAME (the fence key — see
+        // awaitPendingTeardown), and NOT guarded on this engine still being live: a logout that
+        // captured this engine must register its destructive promise even as a concurrent
+        // stop()/delete() evicts it, or the rm would race a start this fence should have held back.
+        // `session.name` is the immutable snapshot captured at initializeEngine entry, so a row
+        // delete/recreate under the same name cannot poison the key.
         host.trackPendingCredentialTeardown(sessionName, operation);
       },
       claimStuckAuthRecovery: (): boolean => host.claimStuckAuthRecovery(id, engine),

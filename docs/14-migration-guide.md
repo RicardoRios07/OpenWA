@@ -565,7 +565,7 @@ LIMIT 10;
 ```
 whatsapp-web.js (LocalAuth) — SESSION_DATA_PATH, default ./data/sessions
 ./data/sessions/
-├── session-{sessionName}/
+├── session-{sessionId}/
 │   ├── Default/
 │   │   ├── IndexedDB/
 │   │   ├── Local Storage/
@@ -574,33 +574,39 @@ whatsapp-web.js (LocalAuth) — SESSION_DATA_PATH, default ./data/sessions
 
 Baileys — BAILEYS_AUTH_DIR, default ./data/baileys
 ./data/baileys/
-└── {sessionName}/          # multi-file auth state
+└── {sessionId}/            # multi-file auth state
 ```
 
 > [!IMPORTANT]
-> **Directories are keyed by session NAME, not by the REST id.** The API addresses a session by its
-> UUID (`/api/sessions/{sessionId}`), but the engine receives `session.name` as its client id, so the on-disk
-> profile is `session-<name>` (whatsapp-web.js) or `<name>` (Baileys). Resolve the name via
-> `GET /api/sessions/{sessionId}` before copying anything.
+> **Directories are keyed by the session id**, the same UUID the API addresses a session by
+> (`/api/sessions/{sessionId}`): the on-disk profile is `session-<id>` (whatsapp-web.js) or `<id>`
+> (Baileys). Up to 0.23.4 they were keyed by the session NAME; 0.23.5 renames them onto the id at
+> first boot, so a directory copied off an older install still carries a name and has to be renamed
+> to the target's session id by hand.
 
 ### Transfer Methods
 
 #### Method 1: Direct File Copy (Server to Server)
 
 Moves the auth profile only. The session's database record is created separately — either by
-`POST /api/sessions` on the target with the same `name`, or with the infra export/import of
-Method 2. Copying rows between SQLite files by hand is not supported: the `sessions` table carries
-columns the copy would have to reproduce exactly, and a mismatch corrupts the row.
+`POST /api/sessions` on the target, or with the infra export/import of Method 2. Copying rows
+between SQLite files by hand is not supported: the `sessions` table carries columns the copy would
+have to reproduce exactly, and a mismatch corrupts the row.
+
+The profile directory is named after the session id, and a session created with `POST /api/sessions`
+on the target gets a **new** id, so the copy below renames the directory as it lands. Method 2
+carries the ids over unchanged and needs no rename.
 
 Under the shipped compose the data directory lives in a named Docker volume
 (`openwa-data:/app/data`), not a host bind mount, so the profile is copied through the container
 with `docker compose cp` rather than straight off the host filesystem. `APP_DIR` is the directory
-holding `docker-compose.yml` on each server; `SESSION_NAME` is the session `name` (resolve it via
-`GET /api/sessions/{sessionId}` — the on-disk directory is keyed by name, not by the REST id).
+holding `docker-compose.yml` on each server; `OLD_ID` and `NEW_ID` are the session ids on the source
+and the target (`GET /api/sessions` on each).
 
 ```bash
 APP_DIR=/srv/openwa            # docker compose project directory on both hosts
-SESSION_NAME=my-session
+OLD_ID=3f1c...                 # id on the source host
+NEW_ID=9a2e...                 # id of the session created on the target host
 
 # 1. Stop the app on both hosts. Use `stop`, not `down`: a running engine holds the profile open,
 #    but `down` removes the container that step 2 copies through.
@@ -608,20 +614,20 @@ ssh old-server "cd $APP_DIR && docker compose stop openwa-api"
 ssh new-server "cd $APP_DIR && docker compose stop openwa-api"
 
 # 2. Copy the auth profile out of the source container, to the target host, and back in.
-#    whatsapp-web.js: /app/data/sessions/session-<name>.
-#    Baileys:         /app/data/baileys/<name> (no "session-" prefix).
+#    whatsapp-web.js: /app/data/sessions/session-<id>.
+#    Baileys:         /app/data/baileys/<id> (no "session-" prefix).
 ssh old-server "cd $APP_DIR && docker compose cp \
-    openwa-api:/app/data/sessions/session-$SESSION_NAME ./session-$SESSION_NAME"
-rsync -avz --progress "old-server:$APP_DIR/session-$SESSION_NAME/" \
-    "new-server:$APP_DIR/session-$SESSION_NAME/"
+    openwa-api:/app/data/sessions/session-$OLD_ID ./session-$OLD_ID"
+rsync -avz --progress "old-server:$APP_DIR/session-$OLD_ID/" \
+    "new-server:$APP_DIR/session-$NEW_ID/"
 ssh new-server "cd $APP_DIR && docker compose cp \
-    ./session-$SESSION_NAME openwa-api:/app/data/sessions/session-$SESSION_NAME"
+    ./session-$NEW_ID openwa-api:/app/data/sessions/session-$NEW_ID"
 
 # 3. Start the target back up.
 ssh new-server "cd $APP_DIR && docker compose start openwa-api"
 ```
 
-Delete the staging copies (`$APP_DIR/session-$SESSION_NAME` on both hosts) afterwards — they hold
+Delete the staging copies (`$APP_DIR/session-$OLD_ID` and `$APP_DIR/session-$NEW_ID`) afterwards — they hold
 live WhatsApp credentials.
 
 #### Method 2: Records via the Infra API + auth state by file copy
@@ -641,7 +647,8 @@ curl -X POST 'http://new-server:2785/api/infra/import-data' \
   -H 'Content-Type: application/json' \
   -d @data-backup.json
 
-# 2. Move the engine auth state with both instances stopped (Method 1), keyed by session NAME.
+# 2. Move the engine auth state with both instances stopped. The import preserves session ids, so
+#    the directories transfer as they are, with no rename.
 #    OLD_DIR/NEW_DIR are each host's OpenWA working directory; SESSION_DATA_PATH defaults to
 #    ./data/sessions and BAILEYS_AUTH_DIR to ./data/baileys, relative to it. The production
 #    docker-compose.yml keeps /app/data in the named volume `openwa_openwa-data` rather than on the
@@ -1153,7 +1160,7 @@ docker compose up -d
 # Check database integrity
 sqlite3 ./data/openwa.sqlite "PRAGMA integrity_check;"
 
-# Verify auth session files (directories are named after the session NAME)
+# Verify auth session files (directories are named after the session id)
 ls -la ./data/sessions/session-*/
 ls -la ./data/baileys/          # Baileys engine
 

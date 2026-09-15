@@ -1,4 +1,3 @@
-import * as path from 'path';
 import { ChatLabelsUnsupportedError } from '../../common/errors/chat-labels-unsupported.error';
 import { isChannelJid } from '../identity/wa-id';
 import type * as BaileysLib from '@whiskeysockets/baileys';
@@ -51,6 +50,7 @@ import { EngineNotSupportedError } from '../../common/errors/engine-not-supporte
 import { NotFoundException } from '@nestjs/common';
 import { createLogger } from '../../common/services/logger.service';
 import { BaileysAdapterConfig } from '../types/baileys.types';
+import { baileysAuthDir } from '../auth-dir-paths';
 import { BaileysSessionStore } from './baileys-session-store';
 import { inboundMediaConcurrency } from './inbound-media-cap';
 import { ConcurrencyLimiter } from '../../common/utils/concurrency-limiter';
@@ -112,7 +112,7 @@ export class BaileysAdapter implements IWhatsAppEngine {
 
   constructor(private readonly config: BaileysAdapterConfig) {
     // Isolate each session's auth state under its own subdirectory of the shared auth dir.
-    this.authPath = path.join(config.authDir, config.sessionId);
+    this.authPath = baileysAuthDir(config.authDir, config.sessionId);
     this.sessionStore = new BaileysSessionStore(config.lidMappingStore, config.sessionId, config.chatStateStore);
     // Constructed before messaging: the messaging delegate's own-send echo maps through
     // events.mapMessage (and the lifecycle delegate clears that same live-call cache on teardown).

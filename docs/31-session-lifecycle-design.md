@@ -54,14 +54,16 @@ is the single most repeated invariant in the module.
 ### INV-4 — Init timeout evicts and 504s; init rejection propagates as FAILED
 
 **Interleaving:** whatsapp-web.js calls `page.goto(..., {timeout: 0})` — a hung browser never
-rejects, so a plain `await` hangs the start forever.
+rejects, and neither does a navigation that never completes because WhatsApp Web is unreachable, so
+a plain `await` hangs the start forever. The engine's own `authTimeoutMs` poll does not cover that
+case: whatsapp-web.js only starts it in `inject()`, after the page has loaded.
 **Defense:** `Promise.race` deadline in `initializeEngine`; on timeout the engine is evicted +
 force-destroyed + status DISCONNECTED + 504 to the caller. A REAL rejection is NOT treated as a
 timeout: it propagates so `start()` records FAILED with the reason.
 **Pinned by:** `session.service.spec.ts` (start failure-path cases; the timeout/rejection
 split lives in `session.service.spec.ts`'s init-timeout describes).
 **Do not "simplify" the two paths into one** — the distinction is why a bad proxy config returns
-FAILED + reason while a wedged browser returns 504 + eviction.
+FAILED + reason while an init that never completes returns 504 + eviction.
 
 ### INV-5 — Delete racing a start re-purges auth directories after init resolves
 

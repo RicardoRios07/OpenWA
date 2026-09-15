@@ -522,6 +522,14 @@ curl -H "X-API-Key: $API_KEY" http://localhost:2785/api/health
 > the restore and hits this. A session first paired on the newer image is not in that backup and must be
 > paired again either way. Baileys sessions are unaffected.
 
+> Restoring `sessions/` **and** `baileys/` is likewise required when rolling back past 0.23.5, on either
+> engine and either architecture. 0.23.5 renames each session's auth directory from the session name to
+> its UUID id at first boot (`session-<id>` under `SESSION_DATA_PATH`, `<id>` under `BAILEYS_AUTH_DIR`);
+> an older image looks for the name-keyed directory, finds nothing, and starts every session at a QR
+> code. The rename keeps nothing behind to fall back to, so the backup must again predate the first
+> start on 0.23.5. Restoring both directories from that backup returns every session to its previous
+> pairing.
+
 ---
 
 ### Runbook: Database Backup

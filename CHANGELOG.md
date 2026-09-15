@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The group invite-code read, over REST or the MCP `GroupGetInviteCode` tool, requires the OPERATOR role; the code is a transferable join capability, so a VIEWER key can no longer extract it ([GHSA-45fh-xj7x-vj2x](https://github.com/rmyndharis/OpenWA/security/advisories/GHSA-45fh-xj7x-vj2x)). Thanks Matija Petronijević for the report.
 - The amd64 image ships Chrome for Testing 153.0.8010.36 instead of 146.0.7680.31, picking up the browser security fixes released since (the arm64 image uses the Debian chromium package).
-- The `session.qr` WebSocket event reaches only OPERATOR and ADMIN keys, matching `GET /api/sessions/{sessionId}/qr`; a VIEWER key subscribed by name or through a wildcard no longer receives the pairing QR.
+- The `session.qr` WebSocket event reaches only OPERATOR and ADMIN keys, matching `GET /api/sessions/{sessionId}/qr`; a VIEWER key subscribed by name or through a wildcard no longer receives the pairing QR ([GHSA-m427-j4h4-9qwj](https://github.com/rmyndharis/OpenWA/security/advisories/GHSA-m427-j4h4-9qwj)).
 - An integration ingress route verified with `shared-secret` no longer stores the instance secret from its declared header; the value is redacted in the persisted event, the queued job, the dead-letter row and the `ingress:error` hook payload.
 - Baileys sessions with an HTTP, HTTPS or SOCKS5 proxy fetch through the proxy instead of connecting direct: inbound media, the WhatsApp Web version lookup, the history-sync and app-state payloads of the initial sync, and a product card's image URL. With a SOCKS4 proxy, which the HTTP client cannot use, inbound media is skipped and arrives as the omitted marker, the version lookup falls back to the bundled version, and the initial-sync payloads and product image are still fetched directly.
 
@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Engine auth directories are named after the session id instead of the session name, so two sessions whose names differ only in letter case no longer share one WhatsApp login, or wipe each other's, on a case-insensitive filesystem such as macOS APFS, Windows, or a Docker Desktop bind mount of either ([#1597](https://github.com/rmyndharis/OpenWA/issues/1597)). Existing directories are renamed at the first boot after the upgrade.
 - The Baileys live path drops a message made only of sender-key distributions or message-history notices instead of delivering it as a bodyless `unknown` `message.received`; other messages it cannot type still arrive as `unknown` ([#1568](https://github.com/rmyndharis/OpenWA/issues/1568)). Thanks @berodcdev for the report.
 - A Baileys reconnect loop is observable through `lastError` on the session, a `session.reconnect_loop` webhook every fifth attempt and reconnect metrics; a QR left unscanned is not reported as one ([#1546](https://github.com/rmyndharis/OpenWA/issues/1546)). Thanks @OdaiAhmed99 for the report.
 - A Baileys connection attempt refused at the WebSocket upgrade is closed and retried instead of leaving the session at `initializing` ([#1546](https://github.com/rmyndharis/OpenWA/issues/1546)). Thanks @OdaiAhmed99 for the report.
@@ -55,6 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The dashboard Webhooks Configured card shows a placeholder instead of 0 when the webhook list cannot be read.
 - Dashboard message search ignores a response that arrives after a newer query, so stale results no longer replace the current ones.
 - A session whose automatic reconnect fails to relaunch the engine (a network, DNS or browser launch error) keeps retrying with backoff instead of stopping in `failed` until restarted by hand; an authentication failure or a stale browser profile still ends in `failed` ([#1580](https://github.com/rmyndharis/OpenWA/issues/1580)).
+- The `504` a start returns when the engine does not finish initializing names every possible cause, an unreachable WhatsApp Web, network or session proxy and a browser stalled during startup, instead of ruling the network out ([#1601](https://github.com/rmyndharis/OpenWA/issues/1601)).
 - A session that runs out of reconnect attempts fires the `session:error` plugin hook when it lands in `failed`.
 - A session that runs out of reconnect attempts keeps the last attempt's failure reason in `lastError` and in the `session:error` hook, after the attempts message.
 - A stop during the retry delay after a transient start failure is no longer undone by the retry; a stop or delete the ownership fence refused leaves the retry alone.
@@ -86,6 +88,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Upgrade notes (behavior changes)
 
 - whatsapp-web.js: back up `sessions/` before upgrading. A rollback to an image with an older browser major deletes the stored WhatsApp logins unless `sessions/` is restored from that backup, and a session first paired after the upgrade must be paired again (see `docs/11-operational-runbooks.md`). Baileys sessions are unaffected.
+- Back up `sessions/` and `baileys/` before upgrading. The first boot renames each session's auth directory from the session name to its id; a rollback to 0.23.4 or earlier looks for the name-keyed directory, finds nothing, and starts every session on both engines at a QR code unless both directories are restored from that backup (see `docs/11-operational-runbooks.md`).
+- whatsapp-web.js on a non-container install: confirm no Chromium survived the stop before starting 0.23.5. The orphan sweep matches the session id from this release on, so a browser orphaned by a hard kill of the older version is no longer recognised and would hold the same profile as the one launched next to it.
 - The amd64 image moves from Chrome for Testing 146 to 153, so every amd64 rollback to 0.23.4 or earlier crosses a browser major; the arm64 image runs the chromium Debian ships at build time, whose major can differ between releases.
 - A `LOG_LEVEL` other than `error`, `warn`, `info`, `debug` or `verbose` now stops the boot instead of logging at info.
 - Multi-node deployments run the lapsed-status correction even with `AUTO_START_SESSIONS` off, so every node needs a synced clock and, on PostgreSQL, one time zone without daylight saving (`TZ=UTC` recommended); otherwise live sessions can be marked disconnected (see `docs/13-horizontal-scaling.md`).
