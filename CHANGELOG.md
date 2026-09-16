@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The PostgreSQL data connection is pinned to UTC: parameters bind as UTC, naive timestamps read back as UTC, every pooled connection sets its session `TimeZone`, and boot fails when the effective zone is not UTC year round.
+- Credentials on a `socks4://` session proxy are reported at session start as unauthenticatable: SOCKS4 sends the user name as the connect request's user id and drops the password.
+
+### Fixed
+
+- Restoring a data archive into PostgreSQL from a gateway that does not run in UTC no longer shifts every timestamp by the host offset, and no longer shifts it again on each further restore ([#1624](https://github.com/rmyndharis/OpenWA/issues/1624)).
+- Retention sweeps on PostgreSQL delete the rows their window names instead of taking up to the host's UTC offset of younger rows with them, and the `today` message counts cover the host's local day.
+- Session leases on PostgreSQL compare as instants across nodes in different time zones and across a daylight-saving change.
+- Live WebSocket sockets are re-validated against the API-key table once a minute, so a key deleted, revoked, expired or narrowed on another node or by a direct database write drops its sockets there too, and a socket that connected while its key was being revoked no longer keeps that authorization for the life of the connection ([#1625](https://github.com/rmyndharis/OpenWA/issues/1625)).
+- A WebSocket subscribe whose socket is evicted while it is in flight no longer registers its rooms after the disconnect.
+
+### Upgrade notes (behavior changes)
+
+- PostgreSQL deployments: the data connection issues `SET TIME ZONE 'UTC'` per connection and verifies the result at boot. A deployment where that cannot hold (a pooler that drops session state) now fails to start, naming the effective zone; set the default instead with `ALTER DATABASE "<database>" SET TimeZone='UTC'`. SQLite deployments, and any gateway already running in UTC, are unaffected and no data moves.
+- PostgreSQL deployments whose **gateway** ran outside UTC before this release: the twelve columns the app writes itself hold that host's local wall time and now read as UTC, so they appear shifted by the offset. They are `sessions.connectedAt`, `sessions.lastActiveAt`, `sessions.claimedAt`, `sessions.leaseExpiresAt`, `webhooks.lastTriggeredAt`, `webhook_outbox_events.lastAttemptAt`, `ingress_events.lastDispatchAt`, `message_batches.started_at`, `message_batches.completed_at`, `lid_mappings.updatedAt`, `chat_states.updatedAt` and `baileys_stored_messages.createdAt`. The last three carry a `DEFAULT now()` that never fires, because their only writer passes the value. With the gateway stopped, convert each with the host's old zone, which resolves daylight saving per row: `UPDATE sessions SET "connectedAt" = ("connectedAt" AT TIME ZONE 'Asia/Jakarta') AT TIME ZONE 'UTC' WHERE "connectedAt" IS NOT NULL;`. `claimedAt` and `leaseExpiresAt` are cluster runtime state: clear them, do not convert them, with every node stopped and before the first start on this release, or the lease reads shifted by the old offset and the session is unusable until it lapses. East of UTC it reads hours into the future, so every node treats the session as held elsewhere and `POST /sessions/{id}/start` answers `409`; west of UTC it reads already lapsed, so a peer can adopt a session that is still running. `UPDATE sessions SET "nodeId" = NULL, "claimedAt" = NULL, "leaseExpiresAt" = NULL, "nodeUrl" = NULL;`. Leaving `lid_mappings.updatedAt` and `chat_states.updatedAt` unconverted also mis-ranks the boot preload of both caches, which orders by that column under a cap.
+- The remaining eighteen `createdAt`/`updatedAt` columns are written by PostgreSQL itself (`DEFAULT now()`) in the **server's** zone, not the gateway's. On a UTC server, which is the image default and what the bundled Compose file starts, they are already correct and must not be converted; convert them only if the server itself ran outside UTC, with the server's old zone.
+- A table that has had an archive from a **SQLite** gateway restored into it holds those rows in correct UTC while the app wrote its own in local time. The two are indistinguishable within the column, so a blanket `UPDATE` would move the rows that are already right; correct such a column row by row against a known archive, or leave it as it is.
+- An archive a **PostgreSQL** gateway outside UTC exported before this release is shifted the other way, and restoring it moved the whole table, `DEFAULT now()` columns included: the export read every value back through the local-time parser and the import bound the resulting ISO text into a column that drops the zone, so each restore took the table one offset backward. No row in such a table is correct, and the conversion above would move those rows a further offset the wrong way. Where the table holds nothing but restored rows, apply the inverse once per restore taken: `UPDATE sessions SET "createdAt" = ("createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Jakarta';`. Where it also holds rows written after the restore, no blanket conversion is safe.
+- Re-export after upgrading for an archive whose stamps are the instants they claim; restoring a pre-release archive carries its shift in as it is.
+- A WebSocket client can now be disconnected with an `UNAUTHORIZED` frame up to a minute after its key changed, where before only the node that processed the change disconnected it; reconnect and resubscribe on that frame. A rename, and the key's usage counters, evict nobody.
+- A caller-supplied URL leaves through the session proxy from this release. Set `SESSION_PROXY_URL_FETCH=false` when a session proxy is a WhatsApp-only route that cannot reach arbitrary media hosts.
+
+### Security
+
+- Baileys sessions with a SOCKS4 proxy fetch through it instead of connecting direct: inbound media, the WhatsApp Web version lookup, the initial-sync payloads and a product card's image URL, which 0.23.5 routed through HTTP, HTTPS and SOCKS5 proxies only ([#1626](https://github.com/rmyndharis/OpenWA/issues/1626)).
+- A media URL passed to a send route or to `POST /api/sessions/{sessionId}/media/convert`, and the link preview of a text send, are fetched through the named session's egress proxy on both engines, instead of leaving from the gateway's own address ([#1626](https://github.com/rmyndharis/OpenWA/issues/1626)).
+
 ## [0.23.5] - 2026-09-15
 
 ### Security

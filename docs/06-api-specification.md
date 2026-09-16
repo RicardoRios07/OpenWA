@@ -552,13 +552,22 @@ network cannot reach WhatsApp directly. Set `proxyUrl`/`proxyType` on the same r
 > WebSocket never connects, **no QR code is ever delivered**, and `POST /api/sessions/:sessionId/start`
 > returns `504 Gateway Timeout` after ~30s. Leave `proxyUrl` unset unless you genuinely need a proxy.
 
-On the Baileys engine, with `socks5`, `http` or `https`, the proxy also carries everything the engine fetches
-over HTTP: inbound media, the WhatsApp Web version lookup, the history-sync and app-state payloads of the
-initial sync, and a product card's `imageUrl`. A `socks4` proxy carries the WebSocket and media uploads only,
-because the HTTP client has no SOCKS4 transport: inbound media is not downloaded (it arrives as the omitted
-marker) and the WhatsApp Web version is not looked up remotely, while the initial-sync payloads and a product
-card's `imageUrl` are still fetched directly. On every proxy scheme, a media URL you pass to a send or to
-`POST /api/media/convert` is fetched by the gateway itself, directly, not through the session proxy.
+On the Baileys engine the proxy carries everything the engine fetches over HTTP, on all four schemes: inbound
+media, the WhatsApp Web version lookup, the history-sync and app-state payloads of the initial sync, and a
+product card's `imageUrl`. SOCKS4 has no authentication step, so credentials in a `socks4://` URL are not a
+login: the user name travels as the connect request's user id and the password is dropped, which a warning
+says at session start. Use `socks5`, `http` or `https` for a proxy that needs a password.
+
+A URL **you** supply is fetched through the session proxy too, on both engines: the media URL of a send, the
+`url` of `POST /api/sessions/:sessionId/media/convert/voice|video`, and the link preview of a text send. The
+session named in the request decides which proxy that is: the one its running engine started with, or, when
+the session is not running, the one stored on its row. Set `SESSION_PROXY_URL_FETCH=false` to fetch those URLs
+from the gateway's own address instead, for a proxy that only routes to WhatsApp. The SSRF guard applies
+either way: the scheme and the destination are checked before any socket is opened, and the checked addresses
+are what a SOCKS proxy is asked to connect to, in resolver order, so a proxy that routes only one address
+family still reaches a dual-stack host (a `socks4` proxy is always given an IPv4 one, the only family that
+protocol carries). Behind an HTTP or HTTPS proxy the destination is named in the `CONNECT` line and resolved
+by the proxy, so the connection there cannot be pinned to the address that was vetted.
 
 **Response** `201`
 
@@ -6365,6 +6374,11 @@ endpoints run — on a source install it must be present, or they answer `503`.
 Nothing is converted implicitly: sends behave exactly as before unless a caller runs media through
 these endpoints first and posts the result.
 
+A `url` is fetched by the gateway through the egress proxy of the session in the path, exactly as a
+send by URL is (see "Per-session egress proxy" under `POST /api/sessions`); `SESSION_PROXY_URL_FETCH=false`
+sends it direct instead. ffmpeg never sees the URL either way: it is handed bytes this gateway already
+fetched and checked.
+
 > **Why voice conversion matters.** WhatsApp renders a playable voice-note bubble only for Ogg/Opus.
 > Posting MP3 bytes to `send-audio` with `ptt: true` sends those bytes as they are, so the recipient
 > gets a mic bubble that will not play. Converting first is what produces a real voice note.
@@ -6785,7 +6799,8 @@ A subscribe request whose `events` array contains no recognized name (after filt
 - **`sessionId: "*"`** subscribes to every session; **`events: ["*"]`** subscribes to every subscribable event. They combine (e.g. `"*"` + `["*"]` = every event of every session).
 - The API key is **re-validated on every `subscribe`** (not just at connect), so a key revoked or expired mid-connection is caught — the server replies `UNAUTHORIZED` and disconnects.
 - **Per-key session scope is enforced** against the fresh key: a key restricted via `allowedSessions` may NOT subscribe to `"*"` and may NOT subscribe to a session outside its allowlist — either is rejected with `FORBIDDEN_SESSION`. An unrestricted key (no `allowedSessions`) may subscribe to anything, including `"*"`.
-- **`session.qr` requires the OPERATOR role**, matching `GET /api/sessions/{sessionId}/qr`. A VIEWER key may still subscribe to it, by name or through a wildcard, but the QR is never delivered to its sockets; every other event is. The role is read from the key re-validated on each `subscribe`, so a key narrowed to VIEWER stops receiving the QR from its next `subscribe` (a role change also disconnects the key's sockets).
+- **Live sockets are re-validated against the database once a minute**, with no client activity required. A socket carries the key as it stood when it connected, and rooms joined earlier are never revisited, so that snapshot is what the sweep compares against the current row, along with any later `subscribe` whose key no longer matched it (what that `subscribe` granted outlives the change, so putting the row back does not spare the socket). It closes the key's sockets with an `UNAUTHORIZED` frame naming the cause: `API key has been deleted`, `API key has been revoked`, `API key has expired`, or `API key authorization changed; please reconnect` when `role`, `allowedIps`, `allowedSessions` or `expiresAt` moved. A change made through this API still evicts synchronously in the same request; the sweep is what catches a change made on another node, written straight to the database, or committed in the instant a socket was connecting. A rename, and the usage counters the gateway itself writes, evict nobody. Treat these frames as "reconnect and resubscribe", not as fatal.
+- **`session.qr` requires the OPERATOR role**, matching `GET /api/sessions/{sessionId}/qr`. A VIEWER key may still subscribe to it, by name or through a wildcard, but the QR is never delivered to its sockets; every other event is. The role is read from the key re-validated on each `subscribe`, so a key narrowed to VIEWER stops receiving the QR from its next `subscribe`. Between subscribes the QR gate rests on the same snapshot as every other event: a key demoted right after a `subscribe` keeps receiving the QR until its sockets are evicted, which is immediate on the node processing the change and within the sweep's minute anywhere else.
 
 ### Example (socket.io-client)
 

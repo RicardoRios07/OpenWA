@@ -186,6 +186,15 @@ curl -X POST 'http://localhost:2785/api/infra/import-data' \
 > [!NOTE]
 > `skippedTables` lists optional tables absent from an older schema; the import tolerates them.
 
+> [!NOTE]
+> **Timestamps travel as UTC.** Every stamp in the archive is ISO 8601 with an explicit `Z`, and both
+> dialects store it as the same instant, so an archive moves between SQLite and PostgreSQL in either
+> direction without shifting and a repeated restore is a no-op. On PostgreSQL that is the connection's
+> UTC pin ([05 - Database Design](./05-database-design.md#timestamps-on-postgresql-are-utc)), not a
+> property of the host: a gateway restoring under `TZ=Asia/Jakarta` writes the same rows as one on UTC.
+> An archive taken by 0.23.5 or earlier from a PostgreSQL gateway that ran off UTC carries that host's
+> offset in its stamps; read the 0.23.6 upgrade notes in `CHANGELOG.md` before restoring one.
+
 ### Storage Migration (Local ↔ S3/MinIO)
 
 OpenWA v0.2+ supports migrating media files between storage backends:
@@ -746,6 +755,7 @@ docker compose run --rm openwa-api npm run migration:run:prod
 
 | Release  | Change                                                                                                                                                                                                                                                                                                                       | Action                                                                                                                                                                                                                                            |
 | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0.23.6` | A media URL passed to a send route or to `POST /media/convert`, and the link preview of a text send, are fetched through the egress proxy of the session named in the request instead of leaving from the gateway's own address                                                                                              | Set `SESSION_PROXY_URL_FETCH=false` if a session proxy is a WhatsApp-only route that cannot reach arbitrary media hosts                                                                                                                           |
 | `0.23.0` | Typed SDK clients: `markRead` and `subscribePresence` each take their own request type instead of the shared `MarkChatRequest`, which now serves `markUnread` alone                                                                                                                                                          | Go and Java: swap the type at both call sites. Typed Python: only at `markRead`, its `subscribePresence` body being structurally identical. JavaScript and PHP need no change; the wire body is unchanged                                         |
 | `0.22.0` | Baileys refuses a reply whose quoted id, or a forward whose `fromChatId`, does not name the addressed chat, with the `404` whatsapp-web.js already answered; leaving a group, unsubscribing from a channel and labelling a channel surface WhatsApp's refusal; membership requests for an id that is not a group are refused | Handle a refusal on those six calls, which previously answered `200` whatever happened                                                                                                                                                            |
 | `0.22.0` | Typed SDK clients narrow their request bodies: 19 Python request types mark the fields the server requires, and Go and Java type the proxy scheme, call kind, membership method, chat state, pin window and status font as enums                                                                                             | Pass the named constants instead of bare strings or numbers and supply every required field; untyped callers are unaffected                                                                                                                       |

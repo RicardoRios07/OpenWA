@@ -641,6 +641,13 @@ docker compose up -d
 curl -s -X POST -H "X-API-Key: <an-existing-key>" http://localhost:2785/api/auth/validate
 ```
 
+> **PostgreSQL restores are read as UTC.** From 0.23.6 the data connection binds, parses and defaults
+> every timestamp in UTC, and refuses to boot when its session is not on UTC
+> ([05 - Database Design](./05-database-design.md#timestamps-on-postgresql-are-utc)). A `database.sql`
+> taken from a gateway that ran off UTC before 0.23.6 holds that host's local wall time in the columns
+> the app wrote, so those rows read as shifted by the offset once restored. The 0.23.6 upgrade notes in
+> `CHANGELOG.md` carry the conversion and name the columns it must not touch.
+
 > `main.sqlite` carries the hashed API keys and audit log; `.api-key`, when retained by the original
 > installation, carries the plaintext bootstrap admin key. After restore, verify that both expected files
 > were present in the archive and that the client is using the original plaintext key. Re-running backup

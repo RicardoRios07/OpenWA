@@ -180,6 +180,9 @@ jobs:
           POSTGRES_USER: openwa
           POSTGRES_PASSWORD: openwa
           POSTGRES_DB: openwa
+          # Same as ci.yml: initdb takes the server's default TimeZone from this, so the data
+          # connection's session pin has something to override.
+          TZ: Asia/Jakarta
         ports:
           - 5432:5432
         options: >-
@@ -216,19 +219,22 @@ jobs:
 
       # Runtime-proves BuiltInFtsProvider on Postgres (websearch_to_tsquery + ts_headline against the
       # STORED body_ts tsvector), the boot-migration advisory lock (two concurrent migrators on one
-      # database), that a paged message list has a total order, and that the data entities can build
+      # database), that a paged message list has a total order, that the data entities can build
       # their own schema (raw SQL the ORM passes through verbatim, such as a partial index predicate,
-      # only case-folds on a real server). All four self-skip unless DATABASE_TYPE=postgres, so they
-      # are a no-op in the default test job and only execute here against the postgres:16 service.
-      - name: Postgres specs (FTS provider + boot-migration lock + list ordering + entity synchronize)
+      # only case-folds on a real server), and that the UTC pin holds across a backup round trip, a
+      # retention window and a local-midnight count. All five self-skip unless DATABASE_TYPE=postgres,
+      # so they are a no-op in the default test job and only execute here against the postgres:16
+      # service. TZ is deliberately not UTC, for the reason ci.yml states.
+      - name: Postgres specs (FTS provider + boot-migration lock + list ordering + entity synchronize + UTC pin)
         # --runInBand: same reason the CI job passes it — both specs issue DDL against the one
         # shared service database, and jest's default file-parallelism races their catalog writes
         # (the first v0.19.0 tag failed this step on `relation "messages" already exists` over a
         # tree CI had passed minutes earlier). The lock spec's own two-migrator race is in-file
         # (Promise.all) and unaffected by runInBand. The synchronize spec additionally CREATEs and
         # DROPs a scratch database of its own, which is only safe serialized.
-        run: npx jest --runInBand src/database/migrations/__tests__/1782400000000-AddMessagesFts.pg.spec.ts src/database/migrations/__tests__/pg-boot-migrations.pg.spec.ts src/modules/message/message-list-ordering.pg.spec.ts src/database/migrations/__tests__/pg-entity-synchronize.pg.spec.ts
+        run: npx jest --runInBand src/database/migrations/__tests__/1782400000000-AddMessagesFts.pg.spec.ts src/database/migrations/__tests__/pg-boot-migrations.pg.spec.ts src/modules/message/message-list-ordering.pg.spec.ts src/database/migrations/__tests__/pg-entity-synchronize.pg.spec.ts src/database/postgres-utc.pg.spec.ts
         env:
+          TZ: Asia/Jakarta
           DATABASE_TYPE: postgres
           DATABASE_HOST: localhost
           DATABASE_PORT: '5432'

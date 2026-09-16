@@ -99,6 +99,10 @@ services:
     environment:
       # Core
       - NODE_ENV=${NODE_ENV:-production}
+      # The image already runs on UTC; stated here so it is a decision rather than an accident. Stored
+      # timestamps are UTC on either database whatever this says (the Postgres data connection pins its
+      # own session), so overriding it only moves log stamps and the local day the "today" stats count.
+      - TZ=${TZ:-UTC}
       # Writable HOME on tmpfs so Chromium's HOME-relative writes don't hit the read_only rootfs
       - HOME=/tmp
       # Chromium resolves its home from the passwd entry (no /home/openwa), ignoring $HOME, so without
@@ -211,6 +215,7 @@ services:
       - MEDIA_DOWNLOAD_MAX_BYTES=${MEDIA_DOWNLOAD_MAX_BYTES:-}
       - MEDIA_DOWNLOAD_TIMEOUT_MS=${MEDIA_DOWNLOAD_TIMEOUT_MS:-}
       - INBOUND_MEDIA_CONCURRENCY=${INBOUND_MEDIA_CONCURRENCY:-}
+      - SESSION_PROXY_URL_FETCH=${SESSION_PROXY_URL_FETCH:-}
       # Server-side media conversion (opt-in). The image ships ffmpeg, but without these forwards
       # the feature could not be switched on from .env at all.
       - MEDIA_CONVERSION_ENABLED=${MEDIA_CONVERSION_ENABLED:-}
