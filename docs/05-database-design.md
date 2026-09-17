@@ -377,7 +377,7 @@ clears it, and so does a gateway restart.
 | ---------------------- | --------- | ------------------------------------------------------------------------ |
 | `maxReconnectAttempts` | unlimited | Reconnect attempt cap, clamped to 0–20 (`0` disables reconnect entirely) |
 | `reconnectBaseDelay`   | `5000` ms | Base delay of the reconnect backoff, clamped to 1000–300000 ms           |
-| `autoRejectCalls`      | `false`   | Auto-reject an incoming call as soon as it rings                         |
+| `autoRejectCalls`      | `false`   | Auto-reject an incoming call as soon as it rings (Baileys only)          |
 
 Set them at creation with `POST /api/sessions`, or on an existing session with
 `PATCH /api/sessions/{sessionId}/config` — no restart, and no re-scan of the QR. The patch merges, so a key

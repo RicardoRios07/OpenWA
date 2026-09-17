@@ -305,7 +305,7 @@
       "created": "创建时间",
       "lastActive": "上次活跃",
       "autoRejectCalls": "自动拒接来电",
-      "autoRejectCallsHint": "来电响铃后立即拒接。call.received webhook 仍会先行触发。下一通来电起生效，无需重启。"
+      "autoRejectCallsHint": "来电响铃后立即拒接。call.received webhook 仍会先行触发。下一通来电起生效，无需重启。仅限 Baileys 引擎：whatsapp-web.js 已无法检测到正在响铃的来电。"
     },
     "proxy": {
       "title": "Proxy Configuration",
@@ -393,7 +393,8 @@
     },
     "start": {
       "teardownPendingTitle": "会话启动中",
-      "teardownPending": "此会话的凭据拆除仍在处理中。请稍候再试。"
+      "teardownPending": "此会话的凭据拆除仍在处理中。请稍候再试。",
+      "errorTitle": "启动失败"
     },
     "restriction": {
       "reachout_timelock": "新会话被阻止",

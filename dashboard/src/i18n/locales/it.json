@@ -305,7 +305,7 @@
       "created": "Creata",
       "lastActive": "Ultima Attività",
       "autoRejectCalls": "Rifiuta automaticamente le chiamate",
-      "autoRejectCallsHint": "Le chiamate in arrivo vengono rifiutate appena squillano. Il webhook call.received viene comunque inviato prima. Si applica alla prossima chiamata — nessun riavvio necessario."
+      "autoRejectCallsHint": "Le chiamate in arrivo vengono rifiutate appena squillano. Il webhook call.received viene comunque inviato prima. Si applica alla prossima chiamata — nessun riavvio necessario. Solo con il motore Baileys: whatsapp-web.js non rileva più le chiamate mentre squillano."
     },
     "proxy": {
       "title": "Configurazione proxy",
@@ -393,7 +393,8 @@
     },
     "start": {
       "teardownPendingTitle": "Avvio sessione",
-      "teardownPending": "Uno smontaggio delle credenziali per questa sessione è ancora in corso. Attendi un momento e riprova."
+      "teardownPending": "Uno smontaggio delle credenziali per questa sessione è ancora in corso. Attendi un momento e riprova.",
+      "errorTitle": "Avvio Fallito"
     },
     "restriction": {
       "reachout_timelock": "Nuove chat bloccate",

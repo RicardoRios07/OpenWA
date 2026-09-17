@@ -305,7 +305,7 @@
       "created": "Créé le",
       "lastActive": "Dernière activité",
       "autoRejectCalls": "Rejeter automatiquement les appels",
-      "autoRejectCallsHint": "Les appels entrants sont refusés dès qu'ils sonnent. Le webhook call.received est tout de même émis avant. S'applique au prochain appel — aucun redémarrage nécessaire."
+      "autoRejectCallsHint": "Les appels entrants sont refusés dès qu'ils sonnent. Le webhook call.received est tout de même émis avant. S'applique au prochain appel — aucun redémarrage nécessaire. Moteur Baileys uniquement : whatsapp-web.js ne détecte plus les appels pendant qu'ils sonnent."
     },
     "proxy": {
       "title": "Proxy Configuration",
@@ -393,7 +393,8 @@
     },
     "start": {
       "teardownPendingTitle": "Démarrage de la session",
-      "teardownPending": "Un nettoyage d'identifiants pour cette session est encore en cours. Patientez un instant et réessayez."
+      "teardownPending": "Un nettoyage d'identifiants pour cette session est encore en cours. Patientez un instant et réessayez.",
+      "errorTitle": "Échec du démarrage"
     },
     "restriction": {
       "reachout_timelock": "Nouvelles discussions bloquées",
