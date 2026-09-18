@@ -95,14 +95,17 @@ Start workflows when WhatsApp events occur.
 | `group.leave`                                     | Participant(s) left a group                   | Churn tracking                               |
 | `group.update`                                    | Group subject/description/settings changed    | Group administration                         |
 | `group.join_request`                              | Someone asked to join an administered group   | Auto-approve/vet join requests               |
-| `call.received`                                   | Incoming call ringing, **Baileys only**       | Auto-reject + auto-reply bots                |
+| `call.received`                                   | Call ringing, not reliable on whatsapp-web.js | Auto-reject + auto-reply bots                |
 
 > [!NOTE]
-> Call events fire on Baileys only. whatsapp-web.js has no call-outcome event, and on current
-> WhatsApp Web builds it no longer detects a ringing call either, so a workflow triggered on
-> `call.received`, `call.missed` or any other call event never runs on a whatsapp-web.js session, and
-> the session's auto-reject setting has nothing to act on. Call automation needs a gateway running
-> `ENGINE_TYPE=baileys`.
+> The three call-outcome events fire on Baileys only: whatsapp-web.js has no call-outcome event, so a
+> workflow triggered on `call.missed` never runs on a whatsapp-web.js session. `call.received` fires
+> on both engines but is not reliable on whatsapp-web.js: it fired in a live test on 2026-09-17 and
+> did not in one on 2026-08-10. Rejecting a call, the session's auto-reject setting included, is
+> Baileys only: a rejection sent by whatsapp-web.js did not stop the call from ringing in a live
+> test. Reliable call automation needs a gateway running `ENGINE_TYPE=baileys`. The caller in `from`
+> may be an `@lid` privacy id on either engine; resolve it with
+> `GET /api/sessions/{sessionId}/contacts/{contactId}/phone`.
 
 #### How It Works
 
@@ -278,8 +281,9 @@ Always use the correct format for chat IDs:
 3. Verify n8n webhook URL is accessible from OpenWA server
 4. Check firewall/proxy settings
 5. Ensure session is connected and active
-6. For any call trigger, `call.received` included, confirm the gateway runs Baileys: see the note
-   under the trigger event table above
+6. For a call trigger, check the session's engine: the call-outcome events never fire on
+   whatsapp-web.js and `call.received` is not reliable there (see the note under the trigger event
+   table above)
 7. Ask OpenWA which side dropped the event:
    `GET /api/webhooks/delivery-failures?sessionId={sessionId}` (ADMIN key). A row means OpenWA
    delivered and n8n rejected it; an empty list means the event never reached delivery at all

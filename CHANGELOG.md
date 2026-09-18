@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A re-delivery of an already-persisted ingress event is answered with the route's declared ack, the same response the first delivery received, instead of a hardcoded `200 duplicate` that bypassed the ack entirely. A provider that validates the ack no longer fails on the retry path dedup exists for ([#1638](https://github.com/rmyndharis/OpenWA/issues/1638)).
+- The `session-alive` preflight's `503` carries a `Retry-After`, so a provider that retries a 503 only when that header is present comes back instead of failing the call; the rejection writes no dedup row, so the retry is treated as a new delivery ([#1639](https://github.com/rmyndharis/OpenWA/issues/1639)).
+- A `429` from a rate-limit window carries a plain `Retry-After` in seconds alongside the existing `Retry-After-<window>`, which no HTTP client reads. The suffixed names stay, since they are what identify which window shed the request ([#1639](https://github.com/rmyndharis/OpenWA/issues/1639)).
+- An ingress route's declared ack `content-type` reaches the provider instead of being overwritten with `text/plain`, so a provider that requires `application/json` on a 200 or 202 accepts the ack; a type a browser could execute is still forced to `text/plain` ([#1637](https://github.com/rmyndharis/OpenWA/issues/1637)). Thanks @wesamdev for the report.
 - Restoring a data archive into PostgreSQL from a gateway that does not run in UTC no longer shifts every timestamp by the host offset, and no longer shifts it again on each further restore ([#1624](https://github.com/rmyndharis/OpenWA/issues/1624)).
 - Retention sweeps on PostgreSQL delete the rows their window names instead of taking up to the host's UTC offset of younger rows with them, and the `today` message counts cover the host's local day.
 - Session leases on PostgreSQL compare as instants across nodes in different time zones and across a daylight-saving change.
@@ -23,13 +27,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A failed start in the dashboard that left no engine shows the gateway's error in a toast.
 - The dashboard closes a session's QR modal when the session fails, or disconnects with no engine left, instead of leaving it spinning.
 - The dashboard disables a session's Start and Reconnect buttons while its start request is in flight.
+- whatsapp-web.js sessions no longer report a call rejection that did not stop the call: the call reject route answers `501` and `autoRejectCalls` logs a failed auto-reject.
+- A Baileys session added to or joining a group emits `group.join`, as whatsapp-web.js already did.
 
 ### Documentation
 
-- The docs, the README, the OpenAPI field descriptions and the dashboard's auto-reject hint mark call events, call rejection and `autoRejectCalls` as Baileys only: on current WhatsApp Web builds whatsapp-web.js no longer detects a ringing call ([#1118](https://github.com/rmyndharis/OpenWA/discussions/1118)). Thanks @etondeengole for the report.
+- The docs, the README, the OpenAPI field descriptions and the dashboard's auto-reject hint mark call rejection, `autoRejectCalls` and the call outcome events as Baileys only, and `call.received` as not reliable on whatsapp-web.js ([#1118](https://github.com/rmyndharis/OpenWA/discussions/1118)). Thanks @etondeengole for the report.
 
 ### Upgrade notes (behavior changes)
 
+- A repeat ingress delivery is no longer distinguishable by its response. A route with no declared `response` answers `202 accepted` where it answered `200 duplicate`, and a route with a declared ack answers that ack, including a non-2xx one, so a provider retrying such a route no longer stops after the first retry. The `ingress_events` dedup row remains the record of which deliveries were repeats.
+- A client that honours `Retry-After` now sees one on every rate-limit `429`, where before it saw only the suffixed `Retry-After-<window>` and typically ignored it. When the `long` window sheds a request that value can be up to an hour, so a client that sleeps for it will now wait rather than retry immediately.
 - PostgreSQL deployments: the data connection issues `SET TIME ZONE 'UTC'` per connection and verifies the result at boot. A deployment where that cannot hold (a pooler that drops session state) now fails to start, naming the effective zone; set the default instead with `ALTER DATABASE "<database>" SET TimeZone='UTC'`. SQLite deployments, and any gateway already running in UTC, are unaffected and no data moves.
 - PostgreSQL deployments whose **gateway** ran outside UTC before this release: the twelve columns the app writes itself hold that host's local wall time and now read as UTC, so they appear shifted by the offset. They are `sessions.connectedAt`, `sessions.lastActiveAt`, `sessions.claimedAt`, `sessions.leaseExpiresAt`, `webhooks.lastTriggeredAt`, `webhook_outbox_events.lastAttemptAt`, `ingress_events.lastDispatchAt`, `message_batches.started_at`, `message_batches.completed_at`, `lid_mappings.updatedAt`, `chat_states.updatedAt` and `baileys_stored_messages.createdAt`. The last three carry a `DEFAULT now()` that never fires, because their only writer passes the value. With the gateway stopped, convert each with the host's old zone, which resolves daylight saving per row: `UPDATE sessions SET "connectedAt" = ("connectedAt" AT TIME ZONE 'Asia/Jakarta') AT TIME ZONE 'UTC' WHERE "connectedAt" IS NOT NULL;`. `claimedAt` and `leaseExpiresAt` are cluster runtime state: clear them, do not convert them, with every node stopped and before the first start on this release, or the lease reads shifted by the old offset and the session is unusable until it lapses. East of UTC it reads hours into the future, so every node treats the session as held elsewhere and `POST /sessions/{id}/start` answers `409`; west of UTC it reads already lapsed, so a peer can adopt a session that is still running. `UPDATE sessions SET "nodeId" = NULL, "claimedAt" = NULL, "leaseExpiresAt" = NULL, "nodeUrl" = NULL;`. Leaving `lid_mappings.updatedAt` and `chat_states.updatedAt` unconverted also mis-ranks the boot preload of both caches, which orders by that column under a cap.
 - The remaining eighteen `createdAt`/`updatedAt` columns are written by PostgreSQL itself (`DEFAULT now()`) in the **server's** zone, not the gateway's. On a UTC server, which is the image default and what the bundled Compose file starts, they are already correct and must not be converted; convert them only if the server itself ran outside UTC, with the server's old zone.
@@ -38,6 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Re-export after upgrading for an archive whose stamps are the instants they claim; restoring a pre-release archive carries its shift in as it is.
 - A WebSocket client can now be disconnected with an `UNAUTHORIZED` frame up to a minute after its key changed, where before only the node that processed the change disconnected it; reconnect and resubscribe on that frame. A rename, and the key's usage counters, evict nobody.
 - A caller-supplied URL leaves through the session proxy from this release. Set `SESSION_PROXY_URL_FETCH=false` when a session proxy is a WhatsApp-only route that cannot reach arbitrary media hosts.
+- whatsapp-web.js: `POST /api/sessions/{sessionId}/calls/{callId}/reject` answers `501` instead of a `200` that did not stop the call from ringing.
 
 ### Security
 

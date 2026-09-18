@@ -1333,7 +1333,7 @@ available_events:
   - group.join_request # Someone asked to join a group this session administers
 
   # Calls
-  - call.received # Incoming call ringing (Baileys only; payload: callId, from, isVideo, isGroup, timestamp)
+  - call.received # Incoming call ringing (not reliable on whatsapp-web.js; payload: callId, from, isVideo, isGroup, timestamp)
 ```
 
 **Q: Webhook payload format?**

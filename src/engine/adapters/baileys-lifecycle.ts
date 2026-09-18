@@ -141,6 +141,7 @@ export interface BaileysLifecycleHost {
   logContactEvent: BaileysEvents['logContactEvent'];
   handleGroupParticipantsUpdate: BaileysEvents['handleGroupParticipantsUpdate'];
   handleGroupsUpdate: BaileysEvents['handleGroupsUpdate'];
+  handleGroupsUpsert: BaileysEvents['handleGroupsUpsert'];
   handleGroupJoinRequest: BaileysEvents['handleGroupJoinRequest'];
   handleCallEvents: BaileysEvents['handleCallEvents'];
   handlePresenceUpdate: BaileysEvents['handlePresenceUpdate'];
@@ -302,7 +303,7 @@ export class BaileysLifecycle {
     }
 
     // An internal reconnect (transient drop) overwrites this.sock WITHOUT going through
-    // disconnect/logout/destroy, so the previous socket's WebSocket and the 15 ev listeners we
+    // disconnect/logout/destroy, so the previous socket's WebSocket and the 16 ev listeners we
     // register below would leak on every reconnect. Tear the prior socket down first. Detach OUR
     // connection.update listener BEFORE end(): Baileys' own end() synchronously emits a synthetic
     // connection.update {connection:'close'}, which — if still wired — would re-enter
@@ -322,6 +323,7 @@ export class BaileysLifecycle {
         previous.ev.removeAllListeners('lid-mapping.update');
         previous.ev.removeAllListeners('group-participants.update');
         previous.ev.removeAllListeners('groups.update');
+        previous.ev.removeAllListeners('groups.upsert');
         previous.ev.removeAllListeners('group.join-request');
         previous.ev.removeAllListeners('call');
         previous.ev.removeAllListeners('presence.update');
@@ -432,6 +434,7 @@ export class BaileysLifecycle {
     });
     sock.ev.on('group-participants.update', event => this.host.handleGroupParticipantsUpdate(event));
     sock.ev.on('groups.update', updates => this.host.handleGroupsUpdate(updates));
+    sock.ev.on('groups.upsert', groups => this.host.handleGroupsUpsert(groups));
     sock.ev.on('group.join-request', event => this.host.handleGroupJoinRequest(event));
     sock.ev.on('messaging-history.set', history => {
       this.host.upsertContacts(history.contacts);

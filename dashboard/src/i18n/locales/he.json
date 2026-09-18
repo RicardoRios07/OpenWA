@@ -312,7 +312,7 @@
       "created": "נוצר בתאריך",
       "lastActive": "פעילות אחרונה",
       "autoRejectCalls": "דחיית שיחות אוטומטית",
-      "autoRejectCallsHint": "שיחות נכנסות נדחות ברגע שהן מצלצלות. ה-webhook call.received עדיין נשלח לפני כן. חל מהשיחה הבאה — ללא צורך בהפעלה מחדש. במנוע Baileys בלבד: whatsapp-web.js כבר לא מזהה שיחה בזמן שהיא מצלצלת."
+      "autoRejectCallsHint": "שיחות נכנסות נדחות ברגע שהן מצלצלות. ה-webhook call.received עדיין נשלח לפני כן. חל מהשיחה הבאה — ללא צורך בהפעלה מחדש. במנוע Baileys בלבד: whatsapp-web.js לא יכול לדחות שיחות."
     },
     "proxy": {
       "title": "Proxy Configuration",

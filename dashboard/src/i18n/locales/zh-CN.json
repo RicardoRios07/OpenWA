@@ -305,7 +305,7 @@
       "created": "创建时间",
       "lastActive": "上次活跃",
       "autoRejectCalls": "自动拒接来电",
-      "autoRejectCallsHint": "来电响铃后立即拒接。call.received webhook 仍会先行触发。下一通来电起生效，无需重启。仅限 Baileys 引擎：whatsapp-web.js 已无法检测到正在响铃的来电。"
+      "autoRejectCallsHint": "来电响铃后立即拒接。call.received webhook 仍会先行触发。下一通来电起生效，无需重启。仅限 Baileys 引擎：whatsapp-web.js 无法拒接来电。"
     },
     "proxy": {
       "title": "Proxy Configuration",

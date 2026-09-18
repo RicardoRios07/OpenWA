@@ -305,7 +305,7 @@
       "created": "Creado",
       "lastActive": "Última actividad",
       "autoRejectCalls": "Rechazar llamadas automáticamente",
-      "autoRejectCallsHint": "Las llamadas entrantes se rechazan en cuanto suenan. El webhook call.received se envía igualmente antes. Se aplica a la próxima llamada; no hace falta reiniciar. Solo con el motor Baileys: whatsapp-web.js ya no detecta las llamadas mientras suenan."
+      "autoRejectCallsHint": "Las llamadas entrantes se rechazan en cuanto suenan. El webhook call.received se envía igualmente antes. Se aplica a la próxima llamada; no hace falta reiniciar. Solo con el motor Baileys: whatsapp-web.js no puede rechazar llamadas."
     },
     "proxy": {
       "title": "Proxy Configuration",

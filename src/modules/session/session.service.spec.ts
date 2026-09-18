@@ -14,6 +14,7 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { EngineTransportError } from '../../common/errors/engine-transport.error';
+import { EngineNotSupportedError } from '../../common/errors/engine-not-supported.error';
 import { ConfigService } from '@nestjs/config';
 import { SessionService, AUTOSTART_THROTTLE_MS } from './session.service';
 import { SessionOwnershipService } from './session-ownership.service';
@@ -6981,6 +6982,32 @@ describe('SessionService', () => {
 
       expect(webhookService.dispatch).toHaveBeenCalledWith('sess-uuid-1', 'call.received', expect.anything());
       expect(eventsGateway.emitCallReceived).toHaveBeenCalledTimes(1);
+    });
+
+    // whatsapp-web.js refuses rejectCall because a rejection it sent did not stop the call ringing.
+    // The log must say the auto-reject failed, never that the call was rejected.
+    it('an engine that refuses rejectCall logs the failed auto-reject warn, not Auto-rejected, and still dispatches call.received', async () => {
+      const onCall = await startAndCaptureCallCallback({ autoRejectCalls: true });
+      mockEngine.rejectCall.mockRejectedValue(new EngineNotSupportedError('rejectCall'));
+      const logger = (lifecycle as unknown as { logger: { log: () => void; warn: () => void } }).logger;
+      const log = jest.spyOn(logger, 'log');
+      const warn = jest.spyOn(logger, 'warn');
+
+      try {
+        onCall(callEvent());
+        await flush();
+
+        expect(warn).toHaveBeenCalledWith(
+          'Failed to auto-reject incoming call',
+          expect.objectContaining({ sessionId: 'sess-uuid-1', callId: 'CALL1', action: 'call_auto_reject_failed' }),
+        );
+        expect(log).not.toHaveBeenCalledWith('Auto-rejected incoming call', expect.anything());
+        expect(webhookService.dispatch).toHaveBeenCalledWith('sess-uuid-1', 'call.received', expect.anything());
+        expect(eventsGateway.emitCallReceived).toHaveBeenCalledTimes(1);
+      } finally {
+        log.mockRestore();
+        warn.mockRestore();
+      }
     });
 
     it('drops the event when it arrives from a stale (superseded) engine', async () => {

@@ -122,7 +122,7 @@ export interface WwebjsLifecycleHost {
   /** Arm / disarm the onboarding-modal watcher (./wwebjs-onboarding). */
   startOnboardingWatcher(): void;
   clearOnboardingWatcher(): void;
-  /** Drop every cached live-call handle — the client they point at is going away. */
+  /** Drop every cached ringing call id: the client that saw those calls is going away. */
   clearLiveCalls(): void;
   /** Stand-in promise for the LocalAuth profile removal (./wwebjs-stuck-auth), routed through the
    *  adapter's own method so an instance-level replacement stays authoritative. */
@@ -706,8 +706,8 @@ export class WwebjsLifecycle {
   isPageTransportError(error: unknown): boolean {
     // An HttpException is never a dead page. It is an error THIS application constructed, and its
     // message carries caller-supplied text verbatim: MessageNotFoundError reads
-    // `Message ${messageId} not found in chat ${chatId}`, and GroupNotFoundError, LabelNotFoundError,
-    // ChannelNotFoundError and CallNotFoundError have the same shape. Matching the pattern against
+    // `Message ${messageId} not found in chat ${chatId}`, and GroupNotFoundError, LabelNotFoundError
+    // and ChannelNotFoundError have the same shape. Matching the pattern against
     // one of those hands the CALLER the classifier. A request naming a messageId of "Target closed"
     // made its own 404 read as a transport death: the session was torn down and reconnected, and the
     // caller got a 503. The reactions read needs no role at all, so the lowest-privilege key could
@@ -812,8 +812,7 @@ export class WwebjsLifecycle {
 
   private beginClientTeardown(): Client | null {
     this.tearingDown = true;
-    // Any cached call handle is dead once the client goes away — drop them all so a later
-    // rejectCall() reports not-found instead of acting on a destroyed page.
+    // The cached ringing call ids belong to the client that is going away, so drop them all.
     this.host.clearLiveCalls();
     // Before the clientless early-return: a teardown must always close the navigation window, or a
     // stale stamp could grace the next generation's probe (single-use contract notwithstanding).

@@ -305,7 +305,7 @@
       "created": "생성일",
       "lastActive": "마지막 활동",
       "autoRejectCalls": "통화 자동 거절",
-      "autoRejectCallsHint": "수신 통화가 울리는 즉시 거절됩니다. call.received 웹훅은 그전에 그대로 전송됩니다. 다음 통화부터 적용되며 재시작이 필요하지 않습니다. Baileys 엔진에서만 동작합니다. whatsapp-web.js에서는 더 이상 울리는 통화가 감지되지 않습니다."
+      "autoRejectCallsHint": "수신 통화가 울리는 즉시 거절됩니다. call.received 웹훅은 그전에 그대로 전송됩니다. 다음 통화부터 적용되며 재시작이 필요하지 않습니다. Baileys 엔진에서만 동작합니다. whatsapp-web.js에서는 통화를 거절할 수 없습니다."
     },
     "proxy": {
       "title": "Proxy Configuration",

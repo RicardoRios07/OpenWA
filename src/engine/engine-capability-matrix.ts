@@ -299,10 +299,10 @@ export const CURATED_CAPABILITY_EXCEPTIONS: Record<string, MethodCapability> = {
       'baileys createCallLink(type, {startTime}, timeoutMs) (Socket/chats.d.ts:17) resolves the bare link_create token (Socket/chats.js:586-603), assembled behind CALL_VIDEO_PREFIX / CALL_AUDIO_PREFIX (Defaults/index.d.ts:5-6); wwjs Client.createCallLink(startTime, callType) (index.d.ts:342) resolves the finished link or an empty string (Client.js:3212-3235)',
   },
   rejectCall: {
-    wwjs: { status: 'supported' },
+    wwjs: { status: 'not-available', rootCause: 'library-limitation' },
     baileys: { status: 'supported' },
     evidence:
-      "wwjs Call.reject() (index.d.ts:2417) on the live Call cached from the client 'call' event (index.d.ts:643); baileys rejectCall(callId, callFrom) (Socket/messages-recv.d.ts:10) with the raw `from` JID cached from the 'offer' call event (Types/Call.d.ts). On current WhatsApp Web builds the wwjs 'call' event no longer fires for a ringing call (measured live on OpenWA 0.14.4 on 2026-08-10, Baileys firing call.received and call.rejected on the same bench), so the wwjs cache is never populated: the cell records the implemented method, and docs/29 29.7 carries the caveat",
+      "baileys rejectCall(callId, callFrom) (Socket/messages-recv.d.ts:10) with the raw `from` JID cached from the 'offer' call event (Types/Call.d.ts); measured live on 2026-09-17 with 7.0.0-rc14, a real call fired call.received then call.rejected and auto-reject stopped the caller's phone at once. wwjs Call.reject() exists and is typed Promise<void> (index.d.ts:2417) on the Call from the client 'call' event (index.d.ts:643), but measured live on 2026-09-17 on OpenWA 0.23.4 with WhatsApp Web 2.3000.1047471845-alpha the reject resolved and OpenWA logged the call as auto-rejected while the caller's phone kept ringing until it timed out. The cause is not established. The page function Call.reject() runs, WWebJS.rejectCall, is modified by OpenWA patch 1 (scripts/wwebjs-201832.patch), which reads getMaybeMePnUser()._serialized || $1",
   },
   sendCatalog: {
     wwjs: { status: 'not-available', rootCause: 'library-limitation' },

@@ -38,6 +38,7 @@ import type { ConcurrencyLimiter } from '../../common/utils/concurrency-limiter'
 import { type createLogger } from '../../common/services/logger.service';
 import { createSilentLogger } from './baileys-logger';
 import { BAILEYS_QUERY_BUDGET_MS, withQueryDeadline } from './baileys-query-deadline';
+import { parseWaId, userPart } from '../identity/wa-id';
 
 /**
  * Inbound event handling extracted from BaileysAdapter: the socket event handlers
@@ -404,6 +405,50 @@ export class BaileysEvents {
       payload.actorId = this.host.toNeutralJid(actor);
     }
     this.host.getOnGroupEvent()?.(payload);
+  }
+
+  /**
+   * Baileys `groups.upsert`: this session was added to or joined a group. Baileys turns the w:gp2
+   * `create` notification into this event and a content-less GROUP_CREATE stub, never into
+   * `group-participants.update`. It drops the notification's type and reason, so a new group, an add
+   * to an existing group and an invite-link join all arrive alike. Each entry is reported as a join of
+   * this session's own id through the participants path, which owns the id guard, the authorPn
+   * preference and the receipt timestamp. The entry lists the whole group, so members added with the
+   * session are not reported.
+   */
+  handleGroupsUpsert(
+    groups: Array<{ id?: string; author?: string; authorPn?: string; owner?: string; ownerPn?: string }>,
+  ): void {
+    const selfJid = this.host.normalizedSelfJid();
+    if (!selfJid) {
+      return; // no own id to report as the joining participant
+    }
+    const phone = userPart(selfJid);
+    const lid = this.host.getSocketOrNull()?.user?.lid;
+    const lidUser = lid ? userPart(lid) : undefined;
+    const isSelf = (jid: string | undefined): boolean => {
+      if (!jid) return false;
+      const { kind, userPart: user } = parseWaId(jid);
+      return kind === 'user' ? user === phone : kind === 'lid' && user === lidUser;
+    };
+    for (const group of Array.isArray(groups) ? groups : []) {
+      // Live, whatsapp-web.js emits no group.join when the session created the group, so that entry is
+      // skipped. The acting participant alone does not identify it: an invite-link join may name the
+      // joining session there, so the session must also be the group's owner.
+      if (
+        !group ||
+        ((isSelf(group.authorPn) || isSelf(group.author)) && (isSelf(group.ownerPn) || isSelf(group.owner)))
+      ) {
+        continue;
+      }
+      this.handleGroupParticipantsUpdate({
+        id: group.id,
+        author: group.author,
+        authorPn: group.authorPn,
+        action: 'add',
+        participants: [selfJid],
+      });
+    }
   }
 
   /**
