@@ -432,6 +432,7 @@
       "fields": {
         "sender": "Gönderen",
         "recipient": "Alıcı",
+        "chatId": "Sohbet kimliği",
         "body": "Mesaj içeriği",
         "type": "Mesaj türü",
         "isGroup": "Grup sohbeti mi",

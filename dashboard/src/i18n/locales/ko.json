@@ -432,6 +432,7 @@
       "fields": {
         "sender": "보낸 사람",
         "recipient": "받는 사람",
+        "chatId": "채팅 ID",
         "body": "메시지 본문",
         "type": "메시지 유형",
         "isGroup": "그룹 채팅 여부",

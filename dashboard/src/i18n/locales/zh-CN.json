@@ -432,6 +432,7 @@
       "fields": {
         "sender": "发送者",
         "recipient": "接收者",
+        "chatId": "聊天 ID",
         "body": "消息正文",
         "type": "消息类型",
         "isGroup": "是群聊",

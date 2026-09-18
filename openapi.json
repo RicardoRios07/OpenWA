@@ -11274,7 +11274,7 @@
           },
           "conditions": {
             "type": "object",
-            "description": "Match conditions in the webhook filter format (message family: sender, recipient, body, type, isGroup, fromMe, hasMedia, mentions). All conditions must match (AND). Omitted or empty means the rule matches every inbound message."
+            "description": "Match conditions in the webhook filter format (message family: sender, recipient, chatId, body, type, isGroup, kind, fromMe, hasMedia, mentions). All conditions must match (AND). Omitted or empty means the rule matches every inbound message."
           },
           "cooldownSeconds": {
             "type": "number",
@@ -11311,7 +11311,7 @@
           },
           "conditions": {
             "type": "object",
-            "description": "Match conditions in the webhook filter format (message family: sender, recipient, body, type, isGroup, fromMe, hasMedia, mentions). All conditions must match (AND). Omitted or empty means the rule matches every inbound message.",
+            "description": "Match conditions in the webhook filter format (message family: sender, recipient, chatId, body, type, isGroup, kind, fromMe, hasMedia, mentions). All conditions must match (AND). Omitted or empty means the rule matches every inbound message.",
             "nullable": true
           },
           "replyText": {
@@ -11355,7 +11355,7 @@
           },
           "conditions": {
             "type": "object",
-            "description": "Match conditions in the webhook filter format (message family: sender, recipient, body, type, isGroup, fromMe, hasMedia, mentions). All conditions must match (AND). Omitted or empty means the rule matches every inbound message."
+            "description": "Match conditions in the webhook filter format (message family: sender, recipient, chatId, body, type, isGroup, kind, fromMe, hasMedia, mentions). All conditions must match (AND). Omitted or empty means the rule matches every inbound message."
           },
           "cooldownSeconds": {
             "type": "number",

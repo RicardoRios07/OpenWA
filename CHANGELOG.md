@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Webhook and automation filters accept a `chatId` condition, so a webhook can be scoped to specific groups or chats instead of only to a sender ([#1634](https://github.com/rmyndharis/OpenWA/issues/1634)). Thanks @krishshah9944.
+
 ### Changed
 
 - The PostgreSQL data connection is pinned to UTC: parameters bind as UTC, naive timestamps read back as UTC, every pooled connection sets its session `TimeZone`, and boot fails when the effective zone is not UTC year round.

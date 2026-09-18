@@ -432,6 +432,7 @@
       "fields": {
         "sender": "Expéditeur",
         "recipient": "Destinataire",
+        "chatId": "ID du chat",
         "body": "Corps du message",
         "type": "Type de message",
         "isGroup": "Est une discussion de groupe",

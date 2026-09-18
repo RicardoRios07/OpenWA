@@ -432,6 +432,7 @@
       "fields": {
         "sender": "Sender",
         "recipient": "Recipient",
+        "chatId": "Chat ID",
         "body": "Message body",
         "type": "Message type",
         "isGroup": "Is group chat",

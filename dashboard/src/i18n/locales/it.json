@@ -432,6 +432,7 @@
       "fields": {
         "sender": "Mittente",
         "recipient": "Destinatario",
+        "chatId": "ID chat",
         "body": "Corpo del messaggio",
         "type": "Tipo di messaggio",
         "isGroup": "È una chat di gruppo",
