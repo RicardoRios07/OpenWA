@@ -2351,6 +2351,62 @@ describe('WhatsAppWebJsAdapter ready reconciliation (#251/#273)', () => {
     rmSpy.mockRestore();
   });
 
+  // #1655: a session can be perfectly healthy for messages and unable to see a single incoming call,
+  // because whatsapp-web.js installs the call hook last in the same page evaluate as the message
+  // listeners. The page read that settles it is one line, so ready says it instead of staying quiet.
+  it('warns at ready when the page carries no call hook', async () => {
+    const adapter = newAdapter();
+    const logger = (adapter as unknown as { logger: { warn: jest.Mock } }).logger;
+    const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    // The probe stringifies the collection's Map.set; an untouched one reports native code.
+    const lifecycle = (
+      adapter as unknown as {
+        lifecycle: { client: unknown; status: EngineStatus; markReadyFromClientInfo: () => void };
+      }
+    ).lifecycle;
+    // The promotion early-returns from a terminal status, and a fresh adapter starts DISCONNECTED.
+    lifecycle.status = EngineStatus.AUTHENTICATING;
+    lifecycle.client = {
+      info: { wid: { user: '628123' }, pushname: 'Tester' },
+      pupPage: { evaluate: jest.fn().mockResolvedValue(false) },
+    };
+
+    lifecycle.markReadyFromClientInfo();
+    await new Promise(resolve => setImmediate(resolve));
+
+    const missing = warnSpy.mock.calls.find(
+      ([, meta]) => (meta as { action?: string })?.action === 'call_hook_missing',
+    );
+    expect(missing).toBeDefined();
+    expect(missing?.[1]).toMatchObject({ sessionId: 'sess-1' });
+    warnSpy.mockRestore();
+  });
+
+  it('stays quiet at ready when the call hook is installed', async () => {
+    const adapter = newAdapter();
+    const logger = (adapter as unknown as { logger: { warn: jest.Mock } }).logger;
+    const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const lifecycle = (
+      adapter as unknown as {
+        lifecycle: { client: unknown; status: EngineStatus; markReadyFromClientInfo: () => void };
+      }
+    ).lifecycle;
+    // The promotion early-returns from a terminal status, and a fresh adapter starts DISCONNECTED.
+    lifecycle.status = EngineStatus.AUTHENTICATING;
+    lifecycle.client = {
+      info: { wid: { user: '628123' }, pushname: 'Tester' },
+      pupPage: { evaluate: jest.fn().mockResolvedValue(true) },
+    };
+
+    lifecycle.markReadyFromClientInfo();
+    await new Promise(resolve => setImmediate(resolve));
+
+    expect(
+      warnSpy.mock.calls.find(([, meta]) => (meta as { action?: string })?.action === 'call_hook_missing'),
+    ).toBeUndefined();
+    warnSpy.mockRestore();
+  });
+
   // #981: clearing the auth dir destroys the ONLY copy of the session's WhatsApp credentials, and the
   // loss is permanent — every later start finds an empty profile and can only show a QR. Until now the
   // adapter logged only the FAILURE to delete, so a successful wipe left no trace at all and triage

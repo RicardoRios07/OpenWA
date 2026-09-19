@@ -112,6 +112,13 @@ export interface BaileysEventsHost {
   recordMessageEdit(chatId: string, messageId: string, text: string): void;
   /** Persist an inbound message to the store; undefined when no store is configured. */
   putStoredMessage(msg: WAMessage): Promise<void> | undefined;
+  /**
+   * True exactly once for the id of a message this session sent through the API, whose library echo
+   * is arriving; false for anything the session did not send (see OwnSendRegistry).
+   */
+  consumeOwnSend(id: string | null | undefined): boolean;
+  /** A message this session already delivered or sent, from the persistent store; undefined without a store. */
+  getStoredMessage(messageId: string): Promise<WAMessage | null> | undefined;
   /** The currently-registered onMessage callback, if any (assigned at initialize()). */
   getOnMessage(): EngineEventCallbacks['onMessage'];
   /** The currently-registered onMessageCreate callback, if any (assigned at initialize()). */
@@ -154,18 +161,24 @@ export class BaileysEvents {
       if (!msg.message || !msg.key?.remoteJid) {
         continue; // protocol/empty messages carry no neutral content
       }
-      // Baileys echoes back OUR OWN just-sent messages through this same 'append' path, and
-      // sendContent() already emits onMessageCreate for those via emitOwnSendEcho() — exclude
-      // fromMe on a non-notify batch so that echo doesn't fire onMessageCreate a second time.
-      //
-      // Everything else on an 'append' batch is live traffic, whatever its timestamp says. The tag
-      // marks WhatsApp's offline queue (`node.attrs.offline ? 'append' : 'notify'` in Baileys'
-      // messages-recv), i.e. the messages that arrived while this session was down, which by
-      // definition predate the reconnect. Real history never reaches this handler: it arrives on
-      // messaging-history.set and is captured dispatch-free. Re-delivery is harmless because the
-      // insert oracle dedupes on the WhatsApp message id, so a message already stored is not
-      // dispatched twice.
-      if (event.type !== 'notify' && msg.key.fromMe === true) {
+      // Baileys echoes every message this session sends through the API back through this same
+      // path, tagged 'append', and sendContent() already emits onMessageCreate for those via
+      // emitOwnSendEcho(). WhatsApp replays what the account typed on its phone while the gateway
+      // was down through the same tag (`node.attrs.offline ? 'append' : 'notify'` in Baileys'
+      // messages-recv), and those the session has never seen. Nothing on the batch tells the two
+      // apart except the id, which the adapter recorded when it sent: skip only what we sent, so
+      // the echo cannot fire onMessageCreate twice and the phone's outage-window sends still land
+      // as outgoing messages. Real history never reaches this handler; it arrives on
+      // messaging-history.set and is captured dispatch-free. A re-delivered inbound message is
+      // harmless, since the insert oracle dedupes on the WhatsApp message id and does not dispatch
+      // a stored message again. That oracle does NOT gate dispatch on the own-send path, which is
+      // why the echo has to be caught here, and why a fromMe message the store already holds is
+      // dropped in processInboundMessage before it can be reported a second time.
+      if (msg.key.fromMe === true && this.host.consumeOwnSend(msg.key.id)) {
+        this.host.logger.debug('Skipping the echo of a message this session sent', {
+          msgId: msg.key.id ?? 'unknown',
+          type: event.type,
+        });
         continue;
       }
       // Throttle through the limiter so a burst of media messages can't run unbounded parallel
@@ -337,6 +350,17 @@ export class BaileysEvents {
       }
 
       // --- Normal message: enrich + emit ---
+      // A fromMe message the store already holds was delivered or sent before: WhatsApp re-delivers
+      // a node whose ack was lost on a drop, and the own-send path downstream dispatches message.sent
+      // whatever its insert did, so the second copy has to stop here. The store is written by both
+      // the inbound path below and the send path, and it survives a restart, which the registry
+      // consulted in handleMessagesUpsert does not.
+      if (msg.key.fromMe === true && msg.key.id && (await this.host.getStoredMessage(msg.key.id))) {
+        this.host.logger.debug('Skipping a re-delivered message this session already recorded', {
+          msgId: msg.key.id,
+        });
+        return;
+      }
       const incoming = await this.mapMessage(msg, contentType, { skipMediaDownload: opts?.skipMedia });
       if (msg.key.fromMe === true) {
         this.host.getOnMessageCreate()?.(incoming);

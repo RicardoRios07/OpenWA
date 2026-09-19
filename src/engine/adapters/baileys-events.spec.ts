@@ -99,6 +99,8 @@ function makeHost(overrides: Partial<BaileysEventsHost> = {}): BaileysEventsHost
     recordKeyLidMappings: noop,
     recordMessage: noop,
     recordMessageEdit: noop,
+    consumeOwnSend: () => false,
+    getStoredMessage: () => undefined,
     putStoredMessage: () => undefined,
     getOnMessage: () => undefined,
     getOnMessageCreate: () => undefined,

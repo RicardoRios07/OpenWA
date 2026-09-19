@@ -17,6 +17,7 @@ import { killOrphanedChromiumProcesses, removeStaleSingletonFiles } from './chro
 import { isSupportedProxyUrl, buildProxyLaunchConfig } from './wwebjs-proxy';
 import { BACKPORT_MISSING_MESSAGE, isBackportMissing } from './wwebjs-backport-check';
 import { unappliedPatches, unappliedPatchesMessage } from './engine-patch-status';
+import { reportMissingCallHook } from './wwebjs-call-hook-check';
 import { type WhatsAppWebJsConfig } from './whatsapp-web-js.adapter';
 import { AUTH_FAILURE_REASON, STALE_PROFILE_ADVICE } from '../terminal-engine-failure';
 import { wwjsAuthDir } from '../auth-dir-paths';
@@ -787,6 +788,17 @@ export class WwebjsLifecycle {
     // gets the companion unlinked (~5m later → disconnected: LOGOUT, #982). Dismiss it best-effort
     // and fall back to ACTION_REQUIRED. Started after READY so a non-ready session never arms it.
     this.host.startOnboardingWatcher();
+    // whatsapp-web.js installs its incoming-call hook as the LAST statement of the same page
+    // evaluate that registers the message listeners, and that evaluate has no try/catch: a module
+    // that stops resolving earlier in it leaves the message bridge live and the call hook absent.
+    // The session then looks healthy, keeps delivering messages, and reports no call at all. Warn
+    // once per ready rather than leaving that silent; nothing else changes, since only detection is
+    // lost. Fire-and-forget: a diagnostic must never delay or fail the promotion to READY.
+    void reportMissingCallHook(
+      (this.client as unknown as { pupPage?: { evaluate: <T>(fn: () => T) => Promise<T> } } | null)?.pupPage,
+      this.host.logger,
+      this.host.config.sessionId,
+    );
   }
 
   /** The single status-transition funnel: latches disconnectReported, fires the callback, re-emits

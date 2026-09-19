@@ -168,6 +168,12 @@ const fakeStore = {
   clearSession: jest.fn().mockResolvedValue(undefined),
 };
 
+// clearAllMocks keeps implementations: a store lookup one test taught to return a message must not
+// make a later fromMe delivery look like a re-delivered one (processInboundMessage drops those).
+beforeEach(() => {
+  fakeStore.getMessage.mockReset();
+});
+
 /** A fresh async-iterable stream of the given chunks (the shape `downloadMediaMessage('stream')` returns). */
 function streamOf(...chunks: Buffer[]): AsyncIterable<Buffer> & { destroy: () => void } {
   return {
@@ -2324,29 +2330,87 @@ describe('BaileysAdapter inbound fan-out', () => {
     expect(onMessage).toHaveBeenCalled();
   });
 
-  it('does not double-fire onMessageCreate for a recent append echo of our own send', async () => {
-    // Baileys echoes our own just-sent messages back through messages.upsert tagged 'append' too.
-    // sendContent() already emits onMessageCreate for those via emitOwnSendEcho() (not exercised by
-    // this fakeSock harness) — the recency override must stay scoped to fromMe !== true so this
-    // path doesn't ALSO fire onMessageCreate a second time for the same send.
+  // Baileys echoes every API send back through messages.upsert tagged 'append', and sendContent()
+  // already emits onMessageCreate for it via emitOwnSendEcho(). The echo is told apart by its id,
+  // which the adapter recorded when it sent; nothing else on the batch distinguishes it from a
+  // message the phone typed while the gateway was down.
+  it('does not double-fire onMessageCreate for the append echo of a message this session sent', async () => {
+    fakeSock.sendMessage.mockResolvedValue({
+      key: { remoteJid: '628111@s.whatsapp.net', fromMe: true, id: 'OWN_ECHO' },
+      message: { conversation: 'sent by us' },
+      messageTimestamp: 1700000001,
+    });
     const onMessage = jest.fn();
     const onMessageCreate = jest.fn();
     const adapter = newAdapter();
     await adapter.initialize({ onMessage, onMessageCreate });
-    fakeSock.fire('connection.update', { connection: 'open' }); // sets connectedAt
+    fakeSock.fire('connection.update', { connection: 'open' });
+    await adapter.sendTextMessage('628111@s.whatsapp.net', 'sent by us');
+    await new Promise(r => setImmediate(r));
+    expect(onMessageCreate).toHaveBeenCalledTimes(1); // the adapter's own echo
+
     fakeSock.fire('messages.upsert', {
       type: 'append',
       messages: [
         {
           key: { remoteJid: '628111@s.whatsapp.net', fromMe: true, id: 'OWN_ECHO' },
           message: { conversation: 'sent by us' },
-          messageTimestamp: Math.floor(Date.now() / 1000),
+          messageTimestamp: 1700000001,
         },
       ],
     });
     await new Promise(r => setImmediate(r));
     expect(onMessage).not.toHaveBeenCalled();
-    expect(onMessageCreate).not.toHaveBeenCalled();
+    expect(onMessageCreate).toHaveBeenCalledTimes(1); // the library echo added nothing
+  });
+
+  // The account's own phone kept working while the gateway was down. WhatsApp replays what it sent
+  // in that window through the same 'append' tag as the API echo above, and only the id says it is
+  // not ours. It is an outgoing message the session never saw, so it goes out as onMessageCreate.
+  it('delivers a message the phone sent while the gateway was down', async () => {
+    const onMessage = jest.fn();
+    const onMessageCreate = jest.fn();
+    const adapter = newAdapter();
+    await adapter.initialize({ onMessage, onMessageCreate });
+    fakeSock.fire('connection.update', { connection: 'open' });
+    fakeSock.fire('messages.upsert', {
+      type: 'append',
+      messages: [
+        {
+          key: { remoteJid: '628111@s.whatsapp.net', fromMe: true, id: 'TYPED_ON_PHONE' },
+          message: { conversation: 'replied from the phone during the outage' },
+          messageTimestamp: Math.floor(Date.now() / 1000) - 3600,
+        },
+      ],
+    });
+    await new Promise(r => setImmediate(r));
+    expect(onMessage).not.toHaveBeenCalled();
+    expect(onMessageCreate).toHaveBeenCalledTimes(1);
+  });
+
+  // WhatsApp re-delivers a node whose ack was lost on a socket drop. The inbound path is deduped by
+  // the session's insert oracle, but the own-send path dispatches message.sent whatever the insert
+  // did, so a phone-sent message delivered twice has to be caught before it leaves the adapter. The
+  // store already holds everything this session delivered or sent, and it survives a restart.
+  it('does not dispatch a phone-sent message twice when WhatsApp re-delivers it', async () => {
+    const replayed = {
+      key: { remoteJid: '628111@s.whatsapp.net', fromMe: true, id: 'TYPED_ON_PHONE' },
+      message: { conversation: 'replied from the phone during the outage' },
+      messageTimestamp: Math.floor(Date.now() / 1000) - 3600,
+    };
+    fakeStore.getMessage.mockResolvedValueOnce(null).mockResolvedValueOnce(replayed);
+    const onMessageCreate = jest.fn();
+    const adapter = newAdapter();
+    await adapter.initialize({ onMessageCreate });
+    fakeSock.fire('connection.update', { connection: 'open' });
+
+    fakeSock.fire('messages.upsert', { type: 'append', messages: [replayed] });
+    await new Promise(r => setImmediate(r));
+    expect(onMessageCreate).toHaveBeenCalledTimes(1);
+
+    fakeSock.fire('messages.upsert', { type: 'append', messages: [replayed] }); // the unacked re-delivery
+    await new Promise(r => setImmediate(r));
+    expect(onMessageCreate).toHaveBeenCalledTimes(1);
   });
 
   it('emits onMessageAck from messages.update with a neutral status', async () => {
