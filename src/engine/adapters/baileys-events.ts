@@ -102,8 +102,6 @@ export interface BaileysEventsHost {
   loadLib(): Promise<typeof BaileysLib>;
   /** Session proxy dispatcher for the media download; undefined = direct. */
   getFetchDispatcher(): Dispatcher | undefined;
-  /** Unix-seconds timestamp of the last 'open' connection.update — the live-vs-history discriminator. */
-  readonly connectedAt: number;
   /** The adapter's inbound media download gate (shared so the bound holds across all inbound paths). */
   readonly inboundLimiter: ConcurrencyLimiter;
   /** Learn any lid->pn pair a message key carries (also writes through to the persistent table). */
@@ -156,24 +154,19 @@ export class BaileysEvents {
       if (!msg.message || !msg.key?.remoteJid) {
         continue; // protocol/empty messages carry no neutral content
       }
-      if (event.type !== 'notify') {
-        // Baileys echoes back OUR OWN just-sent messages through this same 'append' path too, and
-        // sendContent() already emits onMessageCreate for those via emitOwnSendEcho() — always
-        // exclude fromMe here (unconditionally, regardless of timestamp) so that echo doesn't fire
-        // onMessageCreate a second time.
-        if (msg.key.fromMe === true) {
-          continue;
-        }
-        // For everyone else: gate on the message's own timestamp vs. this connection's open time,
-        // not the upsert batch's `type` tag. `type: 'append'` usually means real history-sync
-        // backfill, but Baileys can also tag a genuinely new CUSTOMER message 'append' when it
-        // arrives in the same window as a reconnect's state-sync handshake — a strict
-        // `type !== 'notify'` filter silently drops that message (observed as "the first message
-        // after a reconnect gets ignored"). A message sent AFTER this connection opened is live
-        // regardless of which tag the batch carries; true backfill always predates it.
-        if (toUnixSeconds(msg.messageTimestamp) < this.host.connectedAt) {
-          continue;
-        }
+      // Baileys echoes back OUR OWN just-sent messages through this same 'append' path, and
+      // sendContent() already emits onMessageCreate for those via emitOwnSendEcho() — exclude
+      // fromMe on a non-notify batch so that echo doesn't fire onMessageCreate a second time.
+      //
+      // Everything else on an 'append' batch is live traffic, whatever its timestamp says. The tag
+      // marks WhatsApp's offline queue (`node.attrs.offline ? 'append' : 'notify'` in Baileys'
+      // messages-recv), i.e. the messages that arrived while this session was down, which by
+      // definition predate the reconnect. Real history never reaches this handler: it arrives on
+      // messaging-history.set and is captured dispatch-free. Re-delivery is harmless because the
+      // insert oracle dedupes on the WhatsApp message id, so a message already stored is not
+      // dispatched twice.
+      if (event.type !== 'notify' && msg.key.fromMe === true) {
+        continue;
       }
       // Throttle through the limiter so a burst of media messages can't run unbounded parallel
       // downloads (each a full decrypted buffer in heap). Ordering stays correct — the message store

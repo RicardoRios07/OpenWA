@@ -2254,21 +2254,51 @@ describe('BaileysAdapter inbound fan-out', () => {
     expect(onMessage).not.toHaveBeenCalled();
   });
 
-  it('ignores an append upsert with no/old timestamp (real history backfill)', async () => {
+  // WhatsApp replays what it queued while the session was down, and Baileys tags that batch
+  // 'append' (messages-recv.js: `node.attrs.offline ? 'append' : 'notify'`). Those messages
+  // necessarily predate the reconnect, so a timestamp gate drops exactly the traffic an operator
+  // most needs. Real history arrives on messaging-history.set instead, which never dispatches.
+  it('processes an append upsert that predates the reconnect (WhatsApp offline queue)', async () => {
     const onMessage = jest.fn();
     const adapter = newAdapter();
     await adapter.initialize({ onMessage });
-    fakeSock.fire('connection.update', { connection: 'open' }); // sets connectedAt
+    fakeSock.fire('connection.update', { connection: 'open' });
     fakeSock.fire('messages.upsert', {
       type: 'append',
       messages: [
         {
-          key: { remoteJid: '628111@s.whatsapp.net', fromMe: false, id: 'OLD' },
-          message: { conversation: 'old' },
-          messageTimestamp: Math.floor(Date.now() / 1000) - 3600, // an hour before connectedAt
+          key: { remoteJid: '628111@s.whatsapp.net', fromMe: false, id: 'QUEUED_WHILE_DOWN' },
+          message: { conversation: 'sent while the gateway was down' },
+          messageTimestamp: Math.floor(Date.now() / 1000) - 3600, // an hour before the reconnect
         },
       ],
     });
+    await new Promise(r => setImmediate(r));
+    expect(onMessage).toHaveBeenCalledTimes(1);
+  });
+
+  // The invariant the offline-queue case above rests on: real history is bulk, arrives on its own
+  // event, and is handed over dispatch-free. Nothing here reaches the message webhook.
+  it('never dispatches bulk history as an inbound message', async () => {
+    const onMessage = jest.fn();
+    const onHistoryMessages = jest.fn();
+    const adapter = newAdapter();
+    await adapter.initialize({ onMessage, onHistoryMessages });
+    fakeSock.fire('connection.update', { connection: 'open' });
+    fakeSock.fire('messaging-history.set', {
+      contacts: [],
+      chats: [],
+      messages: [
+        {
+          key: { remoteJid: '628111@s.whatsapp.net', fromMe: false, id: 'HIST' },
+          message: { conversation: 'from the history sync' },
+          messageTimestamp: 1700000000,
+        },
+      ],
+    });
+    await new Promise(r => setImmediate(r));
+    await new Promise(r => setImmediate(r));
+    expect(onHistoryMessages).toHaveBeenCalledTimes(1);
     expect(onMessage).not.toHaveBeenCalled();
   });
 
