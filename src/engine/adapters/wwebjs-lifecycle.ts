@@ -8,6 +8,7 @@ import {
   EngineStatus,
 } from '../interfaces/whatsapp-engine.interface';
 import { EngineNotReadyError } from '../../common/errors/engine-not-ready.error';
+import { EngineTransportError } from '../../common/errors/engine-transport.error';
 import { type createLogger } from '../../common/services/logger.service';
 import { MAX_TIMER_MS } from '../../config/configuration';
 import { resolveWebVersionPin } from '../wa-web-version';
@@ -1073,7 +1074,13 @@ export class WwebjsLifecycle {
         }
       }
     }
-    // Every attempt hit a transient navigation/timeout: surface the last one rather than a hang.
-    throw lastError;
+    // Every attempt hit a transient navigation/timeout, so the budget ran out on the transport rather
+    // than on anything the caller sent. Reported as EngineTransportError (503) so a caller reads it as
+    // retryable: a plain Error here surfaced as a 500, which says the gateway is broken and that
+    // retrying is pointless. The last attempt's reason rides along as the detail.
+    throw new EngineTransportError(
+      `Pairing code could not be generated after ${PAIRING_CODE_MAX_ATTEMPTS} attempts: ` +
+        `${lastError instanceof Error ? lastError.message : String(lastError)}`,
+    );
   }
 }

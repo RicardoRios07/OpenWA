@@ -379,6 +379,7 @@
       "phoneLabel": "Numéro de téléphone",
       "phonePlaceholder": "ex. : 919876543210",
       "phoneHint": "Chiffres uniquement (sans +, espaces ni tirets) au format international (indicatif du pays + numéro).",
+      "relinkWarning": "Sur le moteur whatsapp-web.js, demander un code pour un numéro qui a déjà une session liée peut amener WhatsApp à dissocier cet appareil. Utilisez l'onglet QR si cette session doit rester active.",
       "invalidPhone": "Saisissez un numéro de téléphone valide : 6 à 15 chiffres, indicatif du pays en premier, sans symboles.",
       "generateButton": "Générer le code de liaison",
       "generating": "Génération du code de liaison...",

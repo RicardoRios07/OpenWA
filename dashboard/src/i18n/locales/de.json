@@ -379,6 +379,7 @@
       "phoneLabel": "Telefonnummer",
       "phonePlaceholder": "z. B. 491701234567",
       "phoneHint": "Nur Ziffern im internationalen Format (Ländervorwahl + Nummer), ohne +, Leerzeichen oder Bindestriche.",
+      "relinkWarning": "Auf der whatsapp-web.js-Engine kann eine Code-Anfrage für eine Nummer, die bereits eine verknüpfte Sitzung hat, dazu führen, dass WhatsApp dieses Gerät trennt. Nutze den QR-Tab, wenn diese Sitzung aktiv bleiben muss.",
       "invalidPhone": "Gib eine gültige Telefonnummer ein: 6–15 Ziffern, zuerst die Ländervorwahl, keine Sonderzeichen.",
       "generateButton": "Kopplungscode erstellen",
       "generating": "Kopplungscode wird erstellt...",

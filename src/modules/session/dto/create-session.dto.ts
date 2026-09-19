@@ -20,8 +20,10 @@ export class CreateSessionDto {
     description:
       'Session configuration. Only three keys are read: autoRejectCalls (boolean, default false, ' +
       'Baileys engine only) rejects incoming calls as soon as they ring — the call.received event is still emitted ' +
-      'first; maxReconnectAttempts (0-20, default unlimited) caps consecutive reconnects; and ' +
-      'reconnectBaseDelay (1000-300000 ms, default 5000) sets the backoff base. Anything else is ' +
+      'first; maxReconnectAttempts (0-20, default unlimited) caps consecutive reconnects and ' +
+      'reconnectBaseDelay (1000-300000 ms, default 5000) sets the backoff base, both for the ' +
+      "gateway's own reconnect only (on Baileys the engine retries a transient drop itself, with a " +
+      'fixed backoff and no cap). Anything else is ' +
       'stored but ignored. All three can be changed later with PATCH /api/sessions/{sessionId}/config, ' +
       'without restarting the session.',
     example: { autoRejectCalls: false, maxReconnectAttempts: 5, reconnectBaseDelay: 5000 },

@@ -299,7 +299,9 @@ in it is stored but ignored).
 ```
 
 `maxReconnectAttempts: null` means unlimited (the default); `reconnectBaseDelay` is milliseconds.
-See §5 (Database Design) for what each key does and the moment it is read.
+Both bound the gateway's own reconnect, which on Baileys covers only the reconnect after a
+logged-out close: that engine retries a transient drop internally, with a fixed 1s to 60s backoff
+and no attempt cap. See §5 (Database Design) for what each key does and the moment it is read.
 
 **Errors:** `401` missing/invalid key, or key not scoped to this session · `404` session not found
 
@@ -321,11 +323,11 @@ and therefore apply on the next start, leaving a reconnect sequence already in f
 
 **Request body** — `UpdateSessionConfigDto` (any subset; each key also accepts `null`)
 
-| Field                  | Type    | Constraints               | Description                                                        |
-| ---------------------- | ------- | ------------------------- | ------------------------------------------------------------------ |
-| `autoRejectCalls`      | boolean | —                         | Auto-reject every incoming call as soon as it rings (Baileys only) |
-| `maxReconnectAttempts` | number  | integer, 0–20             | Reconnect attempt cap (`0` disables reconnect; `null` = unlimited) |
-| `reconnectBaseDelay`   | number  | integer, 1000–300000 (ms) | Base delay of the reconnect backoff                                |
+| Field                  | Type    | Constraints               | Description                                                                                                                                                                                      |
+| ---------------------- | ------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `autoRejectCalls`      | boolean | —                         | Auto-reject every incoming call as soon as it rings (Baileys only)                                                                                                                               |
+| `maxReconnectAttempts` | number  | integer, 0–20             | Reconnect attempt cap (`0` disables reconnect; `null` = unlimited). Bounds the gateway's own reconnect: every reconnect on whatsapp-web.js, and on Baileys only the one after a logged-out close |
+| `reconnectBaseDelay`   | number  | integer, 1000–300000 (ms) | Base delay of the reconnect backoff, on the same engine scope                                                                                                                                    |
 
 ```json
 { "maxReconnectAttempts": 5 }
@@ -773,6 +775,8 @@ Returned via `transformSession`.
 
 Request an 8-char pairing code to link via phone number (alternative to QR).
 
+> ⚠️ **On the whatsapp-web.js engine, only request a code for a number you are prepared to re-link.** A request for a number that already has a linked session has been observed to end with WhatsApp revoking that device: the linked session logs a LOGOUT, its credentials are deleted, and it falls back to `qr_ready` with no phone. Nothing here refuses such a request: the guards check the session's state, never the number. The request runs inside the shared WhatsApp Web page and resets its linking mode before asking for a code, so the blast radius is the account rather than the session. Baileys was not affected in the same tests. Link by QR when a session of that number must stay up.
+
 **Auth:** API key (OPERATOR) · **Scope:** session-scoped
 
 **Path parameters**
@@ -799,7 +803,7 @@ Request an 8-char pairing code to link via phone number (alternative to QR).
 
 `status` is the lowercase session status.
 
-**Errors:** `400` validation, or session not started, or already authenticated · `401` · `403` · `404` not found · `409` session not waiting to be linked yet; wait for `status` to read `qr_ready` and retry (after a code was accepted, wait for `ready` instead). On Baileys a session that already reads `qr_ready` can still answer `409` while its socket is closing, for up to the WebSocket close timeout (30 s); that is retryable and the status follows shortly.
+**Errors:** `400` validation, or session not started, or already authenticated · `401` · `403` · `404` not found · `409` session not waiting to be linked yet; wait for `status` to read `qr_ready` and retry (after a code was accepted, wait for `ready` instead). On Baileys a session that already reads `qr_ready` can still answer `409` while its socket is closing, for up to the WebSocket close timeout (30 s); that is retryable and the status follows shortly. · `503` whatsapp-web.js only: every attempt landed while WhatsApp Web was reloading its own QR page, so the request never reached WhatsApp; retryable, and the last attempt's reason rides in the message.
 
 #### POST /api/sessions/:sessionId/presence/subscribe
 

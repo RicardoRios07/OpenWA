@@ -911,6 +911,9 @@
           },
           "409": {
             "description": "The session is not waiting to be linked: the engine is still connecting, or reconnecting after a drop, so the request never reached WhatsApp. Wait for `status` to read `qr_ready` and retry. Once a code has been accepted the session moves through `authenticating` and `initializing` to `ready` and answers this until then; wait for `ready` in that case. A session that reads `ready` is already linked and answers `400` instead. One window answers this while the session still reads `qr_ready`: on the Baileys engine a socket that has begun closing stops accepting a pairing request before the status catches up, which on a silently dropped connection takes until the WebSocket's close timeout (30 s); retry, and the status follows shortly."
+          },
+          "503": {
+            "description": "The pairing code could not be generated: every attempt landed while WhatsApp Web was reloading its own page, so the request never reached WhatsApp. The condition is transient and the request is worth retrying; the last attempt's reason is carried in the message. The Baileys engine does not answer this, having no page to reload."
           }
         },
         "summary": "Request an 8-char pairing code to link via phone number (alternative to QR)",
@@ -10094,7 +10097,7 @@
           },
           "config": {
             "type": "object",
-            "description": "Session configuration. Only three keys are read: autoRejectCalls (boolean, default false, Baileys engine only) rejects incoming calls as soon as they ring — the call.received event is still emitted first; maxReconnectAttempts (0-20, default unlimited) caps consecutive reconnects; and reconnectBaseDelay (1000-300000 ms, default 5000) sets the backoff base. Anything else is stored but ignored. All three can be changed later with PATCH /api/sessions/{sessionId}/config, without restarting the session.",
+            "description": "Session configuration. Only three keys are read: autoRejectCalls (boolean, default false, Baileys engine only) rejects incoming calls as soon as they ring — the call.received event is still emitted first; maxReconnectAttempts (0-20, default unlimited) caps consecutive reconnects and reconnectBaseDelay (1000-300000 ms, default 5000) sets the backoff base, both for the gateway's own reconnect only (on Baileys the engine retries a transient drop itself, with a fixed backoff and no cap). Anything else is stored but ignored. All three can be changed later with PATCH /api/sessions/{sessionId}/config, without restarting the session.",
             "example": {
               "autoRejectCalls": false,
               "maxReconnectAttempts": 5,
@@ -10250,13 +10253,13 @@
           },
           "maxReconnectAttempts": {
             "type": "number",
-            "description": "Reconnect attempt cap; `null` means unlimited",
+            "description": "Reconnect attempt cap; `null` means unlimited. Bounds the gateway's own reconnect (every reconnect on whatsapp-web.js; on Baileys only the one after a logged-out close).",
             "example": 5,
             "nullable": true
           },
           "reconnectBaseDelay": {
             "type": "number",
-            "description": "Base reconnect backoff in milliseconds",
+            "description": "Base reconnect backoff in milliseconds, on the same engine scope as `maxReconnectAttempts`",
             "example": 5000
           }
         },
@@ -10277,7 +10280,7 @@
           },
           "maxReconnectAttempts": {
             "type": "number",
-            "description": "Cap on consecutive reconnect attempts (`0` disables reconnect entirely). Send `null` for unlimited, which is the default. Applies on the next session start, not to a reconnect sequence already in flight.",
+            "description": "Cap on consecutive reconnect attempts (`0` disables reconnect entirely). Send `null` for unlimited, which is the default. Applies on the next session start, not to a reconnect sequence already in flight. Bounds the gateway's own reconnect, which is every reconnect on whatsapp-web.js and, on Baileys, only the one after a logged-out close: the Baileys engine retries a transient drop itself, with a fixed 1s to 60s backoff and no cap.",
             "minimum": 0,
             "maximum": 20,
             "example": 5,
@@ -10285,7 +10288,7 @@
           },
           "reconnectBaseDelay": {
             "type": "number",
-            "description": "Base delay of the reconnect backoff in milliseconds. Applies on the next session start, not to a reconnect sequence already in flight.",
+            "description": "Base delay of the reconnect backoff in milliseconds. Applies on the next session start, not to a reconnect sequence already in flight. Same engine scope as `maxReconnectAttempts`: the Baileys engine's internal retry uses its own fixed backoff instead.",
             "minimum": 1000,
             "maximum": 300000,
             "example": 5000,

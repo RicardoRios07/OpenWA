@@ -379,6 +379,7 @@
       "phoneLabel": "電話號碼",
       "phonePlaceholder": "例如：919876543210",
       "phoneHint": "只可輸入數字（不可有 +、空格或連字號），須為國際格式（國家代碼 + 號碼）。",
+      "relinkWarning": "在 whatsapp-web.js 引擎上，為已經有連結工作階段的號碼申請配對碼，可能會令 WhatsApp 解除該裝置的連結。如果該工作階段必須維持運作，請改用 QR 碼分頁。",
       "invalidPhone": "請輸入有效的電話號碼：6 至 15 位數字，國家代碼在前，不可有符號。",
       "generateButton": "產生配對碼",
       "generating": "正在產生配對碼...",

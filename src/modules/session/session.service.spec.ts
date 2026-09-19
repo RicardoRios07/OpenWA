@@ -6089,6 +6089,55 @@ describe('SessionService', () => {
         status: SessionStatus.DISCONNECTED,
       });
     });
+
+    // whatsapp-web.js reports DISCONNECTED synchronously on entry to its teardown and only then
+    // awaits browser.close(), so the engine is still registered when the callback fires. Announcing
+    // there tells every consumer the session is down while GET /sessions still answers
+    // engineLoaded: true, and the write after the eviction is dropped as a duplicate, so the
+    // corrected view is never announced at all.
+    it('announces the stop only after the engine is evicted', async () => {
+      const session = createMockSession();
+      (repository.findOne as jest.Mock).mockResolvedValue(session);
+      (repository.update as jest.Mock).mockResolvedValue({ affected: 1 });
+
+      await service.start('sess-uuid-1');
+      const callbacks = (mockEngine.initialize.mock.calls as [EngineEventCallbacks][])[0][0];
+
+      const engineStillRegistered: boolean[] = [];
+      (eventsGateway.emitSessionStatus as jest.Mock).mockImplementation((id: string) => {
+        engineStillRegistered.push(registry.has(id));
+      });
+      mockEngine.disconnect.mockImplementation(async () => {
+        callbacks.onStateChanged?.(EngineStatus.DISCONNECTED);
+        await Promise.resolve(); // the real teardown awaits browser.close() after reporting
+      });
+
+      await service.stop('sess-uuid-1');
+
+      const emits = (eventsGateway.emitSessionStatus as jest.Mock).mock.calls as [string, SessionStatus][];
+      const disconnectedEmits = emits.filter(c => c[1] === SessionStatus.DISCONNECTED);
+      expect(disconnectedEmits).toHaveLength(1);
+      expect(engineStillRegistered).toEqual([false]);
+    });
+
+    // The suppression is keyed to the engine instance being torn down, so a mark left behind by a
+    // stop that never ran cannot mute a later disconnect the session really had.
+    it('still announces a disconnect after a stop that failed to find the session', async () => {
+      const session = createMockSession();
+      (repository.findOne as jest.Mock).mockResolvedValue(session);
+      (repository.update as jest.Mock).mockResolvedValue({ affected: 1 });
+      await service.start('sess-uuid-1');
+      const callbacks = (mockEngine.initialize.mock.calls as [EngineEventCallbacks][])[0][0];
+
+      (repository.findOne as jest.Mock).mockResolvedValueOnce(null);
+      await expect(service.stop('sess-uuid-1')).rejects.toThrow(NotFoundException);
+
+      (eventsGateway.emitSessionStatus as jest.Mock).mockClear();
+      callbacks.onStateChanged?.(EngineStatus.DISCONNECTED);
+      await new Promise(resolve => setImmediate(resolve));
+
+      expect(eventsGateway.emitSessionStatus).toHaveBeenCalledWith('sess-uuid-1', SessionStatus.DISCONNECTED);
+    });
   });
 
   // ── getQRCode ─────────────────────────────────────────────────────

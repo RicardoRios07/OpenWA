@@ -454,6 +454,26 @@ test('a typed pairing phone number survives toggling to the QR tab and back', as
   );
 });
 
+// Nothing server-side refuses a pairing code for a number linked elsewhere, so the panel has to say
+// what it can cost before the operator types one.
+test('the phone pairing tab warns that a code can unlink an existing session', async () => {
+  const { screen, fireEvent, within } = rtl;
+  resetFetchCalls();
+  renderSessions();
+
+  await screen.findByText('new-device');
+  const qrCard = screen.getByText('new-device').closest('.session-card') as HTMLElement;
+  fireEvent.click(within(qrCard).getByRole('button', { name: 'Show QR' }));
+  await screen.findByAltText('QR');
+
+  fireEvent.click(screen.getByRole('tab', { name: 'Link with Phone Number' }));
+
+  assert.ok(
+    screen.getByText(/can make WhatsApp unlink that device/i),
+    'the phone pairing tab offered a code with no warning',
+  );
+});
+
 test('stopping a session dismisses its own open QR modal', async () => {
   const { screen, fireEvent, within, waitFor } = rtl;
   resetFetchCalls();
@@ -769,6 +789,32 @@ test('a disconnected push keeps the QR modal while the engine is still registere
     // The push drops engineLoaded, so the card offers Start until the re-read restores it and brings Stop
     // back: once Stop is there, the re-read has been applied.
     await within(card).findByRole('button', { name: 'Stop' });
+    assert.ok(screen.queryByRole('dialog'), 'the QR modal closed while the engine was still registered');
+  } finally {
+    SESSIONS.pop();
+  }
+});
+
+// The code on screen belongs to the connection that just dropped, so it is cleared even when the
+// modal stays: the engine reconnects and pushes a fresh one, and a dead code must not be scannable
+// in the meantime.
+test('a disconnected push blanks the displayed QR code', async () => {
+  const { screen, fireEvent, within, waitFor } = rtl;
+  resetFetchCalls();
+  window.sessionStorage.setItem('openwa_api_key', 'test-key');
+  const row: Session = { ...SESSION_QR, id: 'sess-blank-1', name: 'blanked', status: 'qr_ready', engineLoaded: true };
+  SESSIONS.push(row);
+  try {
+    renderSessions();
+
+    const card = (await screen.findByText('blanked')).closest('.session-card') as HTMLElement;
+    fireEvent.click(within(card).getByRole('button', { name: 'Show QR' }));
+    await screen.findByAltText('QR');
+
+    row.status = 'disconnected';
+    pushSessionStatus(row.id, 'disconnected');
+
+    await waitFor(() => assert.ok(!screen.queryByAltText('QR'), 'the dead QR code stayed on screen'));
     assert.ok(screen.queryByRole('dialog'), 'the QR modal closed while the engine was still registered');
   } finally {
     SESSIONS.pop();

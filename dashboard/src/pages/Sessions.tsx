@@ -165,6 +165,7 @@ export function Sessions() {
     handleCloseQRModal,
     applyQrPush,
     dismissQrForSession,
+    clearQrCodeForSession,
   } = useSessionPairing({ sessions, sessionsRef, reloadSessions: fetchSessions });
 
   const {
@@ -250,7 +251,11 @@ export function Sessions() {
           // that means two different things — an engine still registered through its automatic
           // reconnect backoff, or a session stopped with no engine at all — and only the server can
           // say which, so the offered actions must not be guessed from the status here.
-          // The same answer decides whether an open QR modal for it can still show a code.
+          // The same answer decides whether an open QR modal for it can be closed outright.
+          // Either way the code on screen was minted by a connection that is now gone, so blank it
+          // first: scanning it cannot work, and the modal shows its loading state until the session
+          // is back at `qr_ready` with a fresh one.
+          clearQrCodeForSession(event.sessionId);
           void fetchSessions().then(rows => {
             if (rows.find(s => s.id === event.sessionId)?.engineLoaded === false) {
               dismissQrForSession(event.sessionId);
@@ -269,7 +274,7 @@ export function Sessions() {
           toast.error(t('sessions.toasts.failedTitle'), t('sessions.toasts.failedDesc'));
         }
       },
-      [toast, t, fetchSessions, queryClient, dismissQrForSession],
+      [toast, t, fetchSessions, queryClient, dismissQrForSession, clearQrCodeForSession],
     ),
   });
 
@@ -770,6 +775,11 @@ export function Sessions() {
               // Pairing Code Content
               <div className="pairing-container" role="tabpanel">
                 {pairingError && <div className="pairing-error">{pairingError}</div>}
+                {/* The guards behind this button check the session's state, never the number: a code
+                    requested for a number linked elsewhere has been seen to unlink that device on the
+                    whatsapp-web.js engine. Shown on both engines, since the page cannot tell which one
+                    a session runs without another round-trip, and the copy names the engine. */}
+                <div className="pairing-warning">{t('sessions.pairing.relinkWarning')}</div>
 
                 {!pairingCode ? (
                   <div className="pairing-form">

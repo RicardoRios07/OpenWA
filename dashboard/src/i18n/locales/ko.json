@@ -379,6 +379,7 @@
       "phoneLabel": "전화번호",
       "phonePlaceholder": "예: 919876543210",
       "phoneHint": "국제 형식(국가 코드 + 번호)으로 숫자만 입력하세요(+, 공백, 하이픈 제외).",
+      "relinkWarning": "whatsapp-web.js 엔진에서는 이미 연결된 세션이 있는 번호로 코드를 요청하면 WhatsApp이 해당 기기의 연결을 해제할 수 있습니다. 그 세션을 유지해야 한다면 QR 탭을 사용하세요.",
       "invalidPhone": "올바른 전화번호를 입력하세요: 6~15자리 숫자, 국가 코드로 시작, 기호 없이.",
       "generateButton": "페어링 코드 생성",
       "generating": "페어링 코드를 생성하는 중...",

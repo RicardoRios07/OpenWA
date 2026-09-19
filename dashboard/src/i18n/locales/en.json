@@ -384,6 +384,7 @@
       "phoneLabel": "Phone Number",
       "phonePlaceholder": "e.g., 919876543210",
       "phoneHint": "Digits only (no +, spaces, or dashes) in international format (country code + number).",
+      "relinkWarning": "On the whatsapp-web.js engine, requesting a code for a number that already has a linked session can make WhatsApp unlink that device. Use the QR tab if that session must stay up.",
       "invalidPhone": "Enter a valid phone number: 6–15 digits, country code first, no symbols.",
       "generateButton": "Generate Pairing Code",
       "generating": "Generating pairing code...",
