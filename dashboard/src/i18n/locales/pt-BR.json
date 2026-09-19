@@ -113,6 +113,7 @@
     "groupSubtitle": "Grupo",
     "privateContactSubtitle": "Contato privado",
     "deleteConfirm": "Excluir esta mensagem para todos?",
+    "promptButtons": "Opções da mensagem",
     "messageDeleted": "🚫 Esta mensagem foi excluída",
     "messageMasked": "🔒 Ocultada pelo WhatsApp em dispositivos vinculados — verifique no seu telefone principal",
     "kind": {
@@ -162,6 +163,7 @@
       "send": "Erro ao enviar a mensagem",
       "react": "Erro ao reagir à mensagem",
       "delete": "Erro ao excluir a mensagem",
+      "clickButton": "Erro ao clicar no botão",
       "fileTooLarge": "O arquivo é muito grande (máx. 18 MB)"
     },
     "loadMessagesError": "Não foi possível carregar as mensagens. Verifique os registros do servidor.",

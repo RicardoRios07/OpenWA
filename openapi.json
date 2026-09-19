@@ -3019,6 +3019,61 @@
         ]
       }
     },
+    "/api/sessions/{sessionId}/messages/click-button": {
+      "post": {
+        "description": "Sends a structured button/list reply quoted to a previously received prompt. Not a native UI tap — WhatsApp may reject or treat it differently. Classic button/template/list prompts are supported; native-flow interactiveMessage replies are unverified. whatsapp-web.js returns 501. URL/call CTA buttons cannot be clicked this way. The prompt must still be in the engine store (a reloaded bubble can render choices from persisted metadata and then 404).",
+        "operationId": "MessageController_clickButton",
+        "parameters": [
+          {
+            "name": "sessionId",
+            "required": true,
+            "in": "path",
+            "description": "Session ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClickButtonDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Button reply sent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponseDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Session not active, prompt is not clickable, buttonId is not among its choices, or recipient unreachable"
+          },
+          "404": {
+            "description": "No such message — the id is outside the engine's lookup window (roughly the last hundred messages of the chat, or absent from the Baileys store) or the message was revoked."
+          },
+          "409": {
+            "description": "The session is not connected — an engine exists for it but is not `ready`: disconnected, reconnecting, or still initializing, so the request never reached WhatsApp. Wait for `ready` and retry. A session that was never started answers `400` instead, and the session lifecycle routes answer `409` for a conflicting state rather than this. One window answers this while the session still reads `ready`: WhatsApp Web periodically reloads its own page and the engine re-injects into it — for those few seconds the answer is a `409` naming the reload; retry shortly."
+          },
+          "501": {
+            "description": "The active engine cannot serve this operation. It is part of the engine contract, but the engine currently running has no implementation for it."
+          }
+        },
+        "summary": "Click a button on a WhatsApp Business prompt (Baileys only)",
+        "tags": [
+          "messages"
+        ]
+      }
+    },
     "/api/sessions/{sessionId}/messages/forward": {
       "post": {
         "operationId": "MessageController_forward",
@@ -11883,6 +11938,32 @@
           "chatId",
           "quotedMessageId",
           "text"
+        ]
+      },
+      "ClickButtonDto": {
+        "type": "object",
+        "properties": {
+          "chatId": {
+            "type": "string"
+          },
+          "messageId": {
+            "type": "string",
+            "description": "WhatsApp id of the business prompt message that offered the buttons."
+          },
+          "buttonId": {
+            "type": "string",
+            "description": "Stable id of the choice to tap (inbound `buttons[].id`). URL/call CTA buttons cannot be clicked this way."
+          },
+          "text": {
+            "type": "string",
+            "description": "Visible label of the choice. When omitted, resolved from the stored prompt; falls back to buttonId.",
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "chatId",
+          "messageId",
+          "buttonId"
         ]
       },
       "ForwardMessageDto": {

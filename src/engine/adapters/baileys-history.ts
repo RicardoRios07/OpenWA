@@ -4,6 +4,8 @@ import { EngineEventCallbacks, IncomingMessage } from '../interfaces/whatsapp-en
 import {
   buildIncomingMessageFromBaileys,
   extractBaileysBody,
+  extractBaileysButtonReply,
+  extractBaileysButtons,
   extractBaileysCommerce,
   isBaileysCatalogShare,
 } from './baileys-message-mapper';
@@ -150,6 +152,8 @@ export class BaileysHistory {
     }
     const body = extractBaileysBody(content);
     const commerce = extractBaileysCommerce(content, contentType);
+    const button = extractBaileysButtonReply(content, contentType);
+    const buttons = extractBaileysButtons(content, contentType);
     return buildIncomingMessageFromBaileys(
       {
         id: msg.key.id,
@@ -165,6 +169,8 @@ export class BaileysHistory {
         // Same commerce mapping as the live path, so a whole-catalog share is `unknown` on both.
         order: commerce.order,
         product: commerce.product,
+        button,
+        buttons,
         isCatalogShare: isBaileysCatalogShare(content),
         // Populate the disappearing-messages timer using the same extraction the live path and the
         // session-store cache share (`msg.ephemeralDuration` primary, `contextInfo.expiration` fallback),

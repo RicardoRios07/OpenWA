@@ -433,6 +433,12 @@ export const CURATED_CAPABILITY_EXCEPTIONS: Record<string, MethodCapability> = {
     evidence:
       "wwjs Message.vote(selectedOptions: string[]) (index.d.ts:1376) matches poll options BY NAME against msg.pollOptions and throws a bare STRING on a non-poll target (Message.js:1009-1040); baileys has no vote-send helper at all — only decryptPollVote for RECEIVING (Utils/process-message.d.ts), so sending needs a hand-built proto.Message.PollUpdateMessage with HMAC-SHA256 vote encryption keyed by the poll creation's messageSecret",
   },
+  clickButton: {
+    wwjs: { status: 'not-available', rootCause: 'library-limitation' },
+    baileys: { status: 'supported' },
+    evidence:
+      'wwjs has no interactive button-reply send path; baileys sendMessage({buttonReply,type}) / sendMessage({listReply}) for buttonsMessage, templateMessage and listMessage (Types/Message.d.ts ButtonReplyInfo / listReply; Utils/messages.js). Native-flow interactiveMessage has no helper and is unverified — the adapter sends a template buttonReply, not InteractiveResponseMessage, and must not be advertised as fully supported until a live business native-flow prompt confirms the server accepts it',
+  },
   unpinMessage: {
     wwjs: { status: 'supported' },
     baileys: { status: 'supported' },

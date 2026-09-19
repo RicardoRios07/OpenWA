@@ -17,6 +17,7 @@ import {
 } from '../interfaces/whatsapp-engine.interface';
 import { toEngineParticipants } from './baileys-groups';
 import { buildVCard } from './vcard';
+import { resolveBaileysButtonClick } from './baileys-message-mapper';
 import { loadRemoteMediaBuffer } from '../../common/media/load-remote-media';
 import { BadRequestException, InternalServerErrorException } from '@nestjs/common';
 import { EngineRefusedError } from '../../common/errors/engine-refused.error';
@@ -475,6 +476,39 @@ export class BaileysMessaging {
     // published in docs/06.
     this.assertStoredInChat(quoted, chatId, quotedMsgId);
     return this.sendContent(chatId, { text, ...this.withMentions(mentions) }, { quoted });
+  }
+
+  /**
+   * Send a structured button/list reply against a stored business prompt.
+   *
+   * Classic prompts (`buttonsMessage` / `templateMessage` / `listMessage`) go through Baileys'
+   * `buttonReply` / `listReply` helpers via {@link sendContent}, so the send inherits
+   * `withEphemeral`, the store put and the own-send echo. Native-flow `interactiveMessage` has no
+   * helper; it uses the template `buttonReply` shape, which is unverified against a live business
+   * native-flow prompt.
+   */
+  async clickButton(chatId: string, messageId: string, buttonId: string, text?: string): Promise<MessageResult> {
+    this.host.ensureReady();
+    const quoted = await this.requireStored(messageId);
+    this.assertStoredInChat(quoted, chatId, messageId);
+
+    const b = await this.host.loadLib();
+    const normalized = b.normalizeMessageContent(quoted.message ?? undefined) ?? quoted.message ?? {};
+    const contentType = b.getContentType(normalized);
+    const resolved = resolveBaileysButtonClick(normalized, contentType, buttonId, text);
+    if (!resolved.ok) {
+      if (resolved.error === 'unknown_button') {
+        throw new BadRequestException(
+          `buttonId "${buttonId}" is not among the clickable choices on message ${messageId}`,
+        );
+      }
+      throw new BadRequestException(
+        `message ${messageId} is not a WhatsApp Business button/list prompt that can be clicked`,
+      );
+    }
+
+    const result = await this.sendContent(chatId, resolved.payload.content as AnyMessageContent, { quoted });
+    return { ...result, body: resolved.payload.text };
   }
 
   async forwardMessage(fromChatId: string, toChatId: string, messageId: string): Promise<MessageResult> {

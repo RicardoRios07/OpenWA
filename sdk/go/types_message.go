@@ -130,6 +130,14 @@ type ReplyMessageRequest struct {
 	Mentions []string `json:"mentions,omitempty"`
 }
 
+// ClickButtonRequest taps a choice on a WhatsApp Business prompt. Baileys only.
+type ClickButtonRequest struct {
+	ChatID    string `json:"chatId"`
+	MessageID string `json:"messageId"`
+	ButtonID  string `json:"buttonId"`
+	Text      string `json:"text,omitempty"`
+}
+
 // ForwardMessageRequest forwards a message between chats.
 type ForwardMessageRequest struct {
 	FromChatID string `json:"fromChatId"`

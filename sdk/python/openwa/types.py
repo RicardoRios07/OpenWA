@@ -1104,6 +1104,15 @@ class VotePollRequest(TypedDict):
     options: list[str]
 
 
+class ClickButtonRequest(TypedDict):
+    """Click a choice on a WhatsApp Business prompt. Baileys only."""
+
+    chatId: str
+    messageId: str
+    buttonId: str
+    text: NotRequired[str]
+
+
 class StarMessageRequest(TypedDict):
     """Star or unstar a message. Best-effort on whatsapp-web.js."""
 

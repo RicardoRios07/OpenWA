@@ -113,6 +113,7 @@
     "groupSubtitle": "Grup",
     "privateContactSubtitle": "Özel kişi",
     "deleteConfirm": "Bu mesaj herkesten silinsin mi?",
+    "promptButtons": "Mesaj seçenekleri",
     "messageDeleted": "🚫 Bu mesaj silindi",
     "messageMasked": "🔒 Bağlı cihazlar için WhatsApp tarafından gizlendi — ana telefonunuzu kontrol edin",
     "kind": {
@@ -162,6 +163,7 @@
       "send": "Mesaj gönderilemedi",
       "react": "Mesaja tepki verilemedi",
       "delete": "Mesaj silinemedi",
+      "clickButton": "Düğmeye tıklanamadı",
       "fileTooLarge": "Dosya çok büyük (maks 18 MB)"
     },
     "loadMessagesError": "Mesajlar yüklenemedi. Sunucu kayıtlarını kontrol edin.",

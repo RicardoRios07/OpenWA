@@ -113,6 +113,7 @@
     "groupSubtitle": "Gruppe",
     "privateContactSubtitle": "Privater Kontakt",
     "deleteConfirm": "Diese Nachricht für alle löschen?",
+    "promptButtons": "Nachrichtenoptionen",
     "messageDeleted": "🚫 Diese Nachricht wurde gelöscht",
     "messageMasked": "🔒 Von WhatsApp für verknüpfte Geräte ausgeblendet — prüfe dein Haupttelefon",
     "kind": {
@@ -162,6 +163,7 @@
       "send": "Nachricht konnte nicht gesendet werden",
       "react": "Reaktion auf die Nachricht fehlgeschlagen",
       "delete": "Nachricht konnte nicht gelöscht werden",
+      "clickButton": "Schaltfläche konnte nicht angeklickt werden",
       "fileTooLarge": "Die Datei ist zu groß (max. 18 MB)"
     },
     "loadMessagesError": "Nachrichten konnten nicht geladen werden. Prüfe die Serverprotokolle.",

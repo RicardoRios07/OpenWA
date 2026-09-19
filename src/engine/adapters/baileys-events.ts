@@ -15,6 +15,8 @@ import {
 import {
   buildIncomingMessageFromBaileys,
   extractBaileysBody,
+  extractBaileysButtonReply,
+  extractBaileysButtons,
   extractBaileysCommerce,
   extractBaileysContext,
   extractBaileysLocation,
@@ -1006,6 +1008,10 @@ export class BaileysEvents {
     // Commerce ids (order token, product id): the generic path sees an empty body and drops them,
     // and they are the only handle a caller has on the order or the product.
     const commerce = extractBaileysCommerce(normalized, contentType);
+    // Button / list / native-flow reply ids: body carries the visible label; this is the stable id.
+    const button = extractBaileysButtonReply(normalized, contentType);
+    // Prompt choices (Sim/Não, list rows, …) offered by a business interactive message.
+    const buttons = extractBaileysButtons(normalized, contentType);
 
     return buildIncomingMessageFromBaileys(
       {
@@ -1024,6 +1030,8 @@ export class BaileysEvents {
         quotedMessage: context.quotedMessage,
         order: commerce.order,
         product: commerce.product,
+        button,
+        buttons,
         isCatalogShare: isBaileysCatalogShare(normalized),
         ephemeralDuration: context.ephemeralDuration,
         mentionedJids: context.mentionedJids,

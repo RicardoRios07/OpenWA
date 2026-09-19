@@ -113,6 +113,7 @@
     "groupSubtitle": "Groupe",
     "privateContactSubtitle": "Contact privé",
     "deleteConfirm": "Supprimer ce message pour tout le monde ?",
+    "promptButtons": "Choix du message",
     "messageDeleted": "🚫 Ce message a été supprimé",
     "messageMasked": "🔒 Masqué par WhatsApp sur les appareils liés — consultez votre téléphone principal",
     "kind": {
@@ -162,6 +163,7 @@
       "send": "Échec de l'envoi du message",
       "react": "Échec de la réaction au message",
       "delete": "Échec de la suppression du message",
+      "clickButton": "Échec du clic sur le bouton",
       "fileTooLarge": "Le fichier est trop volumineux (max 18 Mo)"
     },
     "loadMessagesError": "Impossible de charger les messages. Vérifiez les journaux du serveur.",

@@ -35,6 +35,7 @@ function createMockEngine() {
     sendContactMessage: jest.fn().mockResolvedValue(mockEngineResult),
     sendPollMessage: jest.fn().mockResolvedValue(mockEngineResult),
     replyToMessage: jest.fn().mockResolvedValue(mockEngineResult),
+    clickButton: jest.fn().mockResolvedValue({ ...mockEngineResult, body: 'Sim' }),
     forwardMessage: jest.fn().mockResolvedValue(mockEngineResult),
     sendChatState: jest.fn().mockResolvedValue(undefined),
   };
@@ -997,6 +998,56 @@ describe('MessageSendService', () => {
       });
 
       expect(mockEngine.replyToMessage).toHaveBeenCalledWith('group@g.us', 'wa-quoted-1', 'hi @62811', ['62811@c.us']);
+    });
+  });
+
+  describe('clickButton', () => {
+    it('calls the engine and persists the resolved label, not the raw buttonId', async () => {
+      await service.clickButton('sess-1', {
+        chatId: 'test@c.us',
+        messageId: 'PROMPT-1',
+        buttonId: 'yes',
+      });
+
+      expect(mockEngine.clickButton).toHaveBeenCalledWith('test@c.us', 'PROMPT-1', 'yes', undefined);
+      expect(repository.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: 'yes',
+          type: 'text',
+          status: MessageStatus.PENDING,
+          metadata: {
+            button: { id: 'yes', text: undefined },
+            quotedMessage: { id: 'PROMPT-1', body: '' },
+          },
+        }),
+      );
+      expect(repository.save).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          body: 'Sim',
+          status: MessageStatus.SENT,
+          metadata: {
+            quotedMessage: { id: 'PROMPT-1', body: '' },
+            button: { id: 'yes', text: 'Sim' },
+          },
+        }),
+      );
+    });
+
+    it('routes an engine refusal through failSend so the pending row is marked failed', async () => {
+      mockEngine.clickButton.mockRejectedValueOnce(
+        new BadRequestException('message PROMPT-1 is not a WhatsApp Business button/list prompt that can be clicked'),
+      );
+
+      await expect(
+        service.clickButton('sess-1', { chatId: 'test@c.us', messageId: 'PROMPT-1', buttonId: 'yes' }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(repository.save).toHaveBeenCalledWith(expect.objectContaining({ status: MessageStatus.FAILED }));
+      expect(hookManager.execute).toHaveBeenCalledWith(
+        'message:failed',
+        expect.objectContaining({ sessionId: 'sess-1', type: 'click-button' }),
+        expect.anything(),
+      );
     });
   });
 

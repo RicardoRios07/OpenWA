@@ -516,6 +516,41 @@ export class MessageSendService {
     return this.persistSentState(message, result);
   }
 
+  async clickButton(
+    sessionId: string,
+    dto: { chatId: string; messageId: string; buttonId: string; text?: string },
+  ): Promise<MessageResponseDto> {
+    const finalDto = await this.applySendingGate(sessionId, 'click-button', dto);
+    const engine = this.getEngine(sessionId);
+
+    const message = await this.saveOutgoingMessage(sessionId, {
+      chatId: finalDto.chatId,
+      body: finalDto.text || finalDto.buttonId,
+      type: 'text',
+      metadata: {
+        quotedMessage: { id: finalDto.messageId, body: '' },
+        button: { id: finalDto.buttonId, text: finalDto.text },
+      },
+    });
+
+    let result: MessageResult;
+    try {
+      result = await engine.clickButton(finalDto.chatId, finalDto.messageId, finalDto.buttonId, finalDto.text);
+    } catch (error) {
+      return this.failSend(sessionId, 'click-button', message, finalDto, error);
+    }
+    // The engine resolves the visible label from the stored prompt when the caller omitted `text`.
+    // Persist that label (not the raw buttonId) so the row agrees with what went on the wire.
+    if (result.body) {
+      message.body = result.body;
+      message.metadata = {
+        ...(message.metadata ?? {}),
+        button: { id: finalDto.buttonId, text: result.body },
+      };
+    }
+    return this.persistSentState(message, result);
+  }
+
   async forward(
     sessionId: string,
     dto: { fromChatId: string; toChatId: string; messageId: string },

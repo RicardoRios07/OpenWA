@@ -113,6 +113,7 @@
     "groupSubtitle": "群組",
     "privateContactSubtitle": "私人聯絡人",
     "deleteConfirm": "為所有人刪除此訊息？",
+    "promptButtons": "訊息選項",
     "messageDeleted": "🚫 此訊息已被刪除",
     "messageMasked": "🔒 WhatsApp 已對已連結裝置隱藏此訊息 — 請在主手機上查看",
     "kind": {
@@ -162,6 +163,7 @@
       "send": "傳送訊息失敗",
       "react": "回應訊息失敗",
       "delete": "刪除訊息失敗",
+      "clickButton": "點擊按鈕失敗",
       "fileTooLarge": "檔案過大（最大 18 MB）"
     },
     "loadMessagesError": "無法載入訊息。請檢查伺服器日誌。",

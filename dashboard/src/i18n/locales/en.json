@@ -113,6 +113,7 @@
     "groupSubtitle": "Group",
     "privateContactSubtitle": "Private contact",
     "deleteConfirm": "Delete this message for everyone?",
+    "promptButtons": "Message choices",
     "messageDeleted": "🚫 This message was deleted",
     "messageMasked": "🔒 Masked by WhatsApp for linked devices — check your primary phone",
     "kind": {
@@ -162,6 +163,7 @@
       "send": "Failed to send message",
       "react": "Failed to react to message",
       "delete": "Failed to delete message",
+      "clickButton": "Failed to click button",
       "fileTooLarge": "File is too large (max 18 MB)"
     },
     "loadMessagesError": "Couldn't load messages. Check the server logs.",

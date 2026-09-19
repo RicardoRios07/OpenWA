@@ -28,6 +28,7 @@ import {
   patchMatchingMessage,
   byMessageId,
   getMediaSrc,
+  liveMessageMetadata,
   type ChatMessageView,
   type MessageMedia,
 } from '../utils/chatMessages';
@@ -78,6 +79,8 @@ interface IncomingWsMessage {
   // The backend emits `call` as a top-level field on the live `message.received` event (it's only
   // folded into `metadata` on the persisted/history path), so declare it here to carry it through.
   call?: { video: boolean; missed: boolean };
+  /** Business prompt choices (Baileys); top-level on the live event, folded into metadata for the UI. */
+  buttons?: Array<{ id: string; text: string }>;
   metadata?: ChatMessageView['metadata'];
   kind?: ChatKind;
   /** Group poster: `from` is the group JID, so `contact`/`author` identify who actually sent it. */
@@ -371,11 +374,7 @@ export function Chats() {
         status: 'sent',
         timestamp: newMsg.timestamp,
         createdAt: new Date(newMsg.timestamp * 1000).toISOString(),
-        metadata: newMsg.metadata || {
-          media: newMsg.media,
-          quotedMessage: newMsg.quotedMessage,
-          call: newMsg.call,
-        },
+        metadata: liveMessageMetadata(newMsg),
         kind: newMsg.kind,
       };
 
@@ -645,6 +644,22 @@ export function Chats() {
       updateMessage(selectedSessionId, activeChat.id, msg.id, { body: '', type: 'revoked' });
     } catch (err) {
       showErrorToast(t('chats.errors.delete'), err instanceof Error ? err.message : undefined);
+    }
+  };
+
+  const handleClickButton = async (msg: ChatMessageView, button: { id: string; text: string }) => {
+    if (!selectedSessionId || !activeChat) return;
+    const msgId = msg.waMessageId || msg.id;
+    try {
+      await messageApi.clickButton(selectedSessionId, {
+        chatId: activeChat.id,
+        messageId: msgId,
+        buttonId: button.id,
+        text: button.text,
+      });
+    } catch (err) {
+      showErrorToast(t('chats.errors.clickButton'), err instanceof Error ? err.message : undefined);
+      throw err;
     }
   };
 
@@ -957,6 +972,7 @@ export function Chats() {
                   onReply={setReplyingTo}
                   onReact={handleReactMessage}
                   onDelete={handleDeleteMessage}
+                  onClickButton={handleClickButton}
                 />
 
                 {/* Composer: attachment preview, emoji panel, reply banner, input bar —
