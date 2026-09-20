@@ -118,12 +118,22 @@ export class BaileysSessionStore {
 
   upsertContacts(records: Partial<BaileysContact>[] = []): void {
     for (const r of records) {
-      if (!r.id) {
+      // History-sync / app-state rows sometimes key the person as `lid` and leave `id` empty.
+      const id = r.id ?? r.lid;
+      if (!id) {
         continue;
       }
-      const existing = this.contacts.get(r.id) ?? { id: r.id };
-      const merged: BaileysContact = { ...existing, ...r };
-      this.contacts.set(r.id, merged);
+      // Groups/newsletters/status arrive in the same history-sync contact array as people; they
+      // are not address-book entries and must not occupy the contact cap or GET /contacts.
+      const kind = parseWaId(id).kind;
+      if (kind === 'group' || kind === 'newsletter' || kind === 'broadcast' || kind === 'status') {
+        continue;
+      }
+      const existing = this.contacts.get(id) ?? { id };
+      const merged: BaileysContact = { id: existing.id };
+      this.assignDefined(merged, existing);
+      this.assignDefined(merged, { ...r, id });
+      this.contacts.set(id, merged);
       // Capture a lid->phone pair from the merged record (lid + phone can arrive in separate updates).
       // `phoneNumber` is the authoritative PN field; fall back to `id` itself only when it's already
       // in the phone dialect (a lid-only contact's `id` is `<lid>@lid`, which is not a usable phone).
@@ -131,6 +141,20 @@ export class BaileysSessionStore {
       if (merged.lid && phone) {
         this.lidToPn.set(merged.lid, phone);
         this.persistLidMapping(merged.lid, phone);
+      }
+    }
+  }
+
+  /**
+   * Copy own enumerable fields whose value is not `undefined`. History-sync contacts always include
+   * `name: displayName || name || username || undefined`, and a later `{ ...existing, ...partial }`
+   * spread would wipe a saved address-book name that arrived first via `contacts.upsert`.
+   */
+  private assignDefined(target: BaileysContact, source: Partial<BaileysContact>): void {
+    for (const key of Object.keys(source) as (keyof BaileysContact)[]) {
+      const value = source[key];
+      if (value !== undefined) {
+        (target as unknown as Record<string, unknown>)[key] = value;
       }
     }
   }
@@ -276,12 +300,42 @@ export class BaileysSessionStore {
   }
 
   listContacts(): Contact[] {
-    return [...this.contacts.values()].map(c => this.toNeutralContact(c));
+    // GET /contacts is the address book, not "everyone this session has ever seen". Baileys
+    // documents `name` as the one YOU saved; `notify` is only the pushname they set themselves.
+    return [...this.contacts.values()].filter(c => c.name).map(c => this.toNeutralContact(c));
   }
 
   findContact(id: string): Contact | null {
-    const c = this.contacts.get(id) ?? this.contacts.get(this.toEngineJid(id));
-    return c ? this.toNeutralContact(c) : null;
+    const parsed = parseWaId(id);
+    const keys = [id, this.toEngineJid(id)];
+    if (parsed.kind === 'lid') {
+      keys.push(`${parsed.userPart}@lid`);
+    }
+    if (parsed.kind === 'user') {
+      keys.push(`${parsed.userPart}@s.whatsapp.net`, `${parsed.userPart}@c.us`);
+    }
+    for (const key of keys) {
+      const direct = this.contacts.get(key);
+      if (direct) {
+        return this.toNeutralContact(direct);
+      }
+    }
+    if (parsed.kind !== 'user' && parsed.kind !== 'lid') {
+      return null;
+    }
+    const want = parsed.userPart;
+    for (const c of this.contacts.values()) {
+      const phone = c.phoneNumber
+        ? userPart(c.phoneNumber)
+        : c.id.endsWith('@s.whatsapp.net') || c.id.endsWith('@c.us')
+          ? userPart(c.id)
+          : '';
+      const lid = c.lid ? userPart(c.lid) : c.id.endsWith('@lid') ? userPart(c.id) : '';
+      if (phone === want || lid === want) {
+        return this.toNeutralContact(c);
+      }
+    }
+    return null;
   }
 
   listChats(): ChatSummary[] {

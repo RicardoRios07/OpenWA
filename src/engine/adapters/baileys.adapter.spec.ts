@@ -77,6 +77,11 @@ class FakeSock extends EventEmitter {
   // Baileys answers this by emitting its own connection.update carrying the result, so the default
   // mirrors that: resolving alone proves nothing reached the adapter.
   public fetchAccountReachoutTimelock = jest.fn().mockResolvedValue({ isActive: false });
+  public resyncAppState = jest.fn().mockResolvedValue(undefined);
+  public authState = {
+    creds: { accountSyncCounter: 0 },
+    keys: { set: jest.fn().mockResolvedValue(undefined) },
+  };
   public signalRepository: { lidMapping: { getLIDForPN: jest.Mock } } | undefined;
   fire(event: string, arg: unknown): void {
     this.emitter.emit(event, arg);
@@ -122,6 +127,7 @@ jest.mock('@whiskeysockets/baileys', () => ({
   normalizeMessageContent: jest.fn((c: unknown) => c),
   // The pinned protocol node targets this JID; exported from the real module's WABinary surface.
   S_WHATSAPP_NET: '@s.whatsapp.net',
+  ALL_WA_PATCH_NAMES: ['critical_block', 'critical_unblock_low', 'regular_high', 'regular_low', 'regular'],
   DisconnectReason: { loggedOut: 401, forbidden: 403, restartRequired: 515, connectionReplaced: 440 },
   proto: {
     Message: {
@@ -5003,13 +5009,23 @@ describe('BaileysAdapter contact + chat reads', () => {
 
   it('populates contacts from contacts.upsert and reads them', async () => {
     const adapter = await ready();
-    fakeSock.fire('contacts.upsert', [{ id: '628111@s.whatsapp.net', notify: 'Al' }]);
+    fakeSock.fire('contacts.upsert', [{ id: '628111@s.whatsapp.net', name: 'Al', notify: 'Al' }]);
     const contacts = await adapter.getContacts();
     expect(contacts).toHaveLength(1);
-    expect(contacts[0]).toMatchObject({ id: '628111@c.us', pushName: 'Al', number: '628111' });
+    expect(contacts[0]).toMatchObject({ id: '628111@c.us', name: 'Al', pushName: 'Al', number: '628111' });
     expect((await adapter.getContactById('628111@s.whatsapp.net'))?.number).toBe('628111');
     expect((await adapter.getContactById('628111@c.us'))?.id).toBe('628111@c.us'); // neutral id round-trips
     expect(await adapter.getContactById('x@s.whatsapp.net')).toBeNull();
+  });
+
+  it('does not list a pushname-only peer on GET /contacts (address book only)', async () => {
+    const adapter = await ready();
+    fakeSock.fire('contacts.upsert', [{ id: '628111@s.whatsapp.net', notify: 'Al' }]);
+    await expect(adapter.getContacts()).resolves.toHaveLength(0);
+    await expect(adapter.getContactById('628111@c.us')).resolves.toMatchObject({
+      pushName: 'Al',
+      isMyContact: false,
+    });
   });
 
   it('populates chats + last message and reads getChats', async () => {
@@ -5049,9 +5065,13 @@ describe('BaileysAdapter contact + chat reads', () => {
       messages: [],
       lidPnMappings: [{ lid: '111@lid', pn: '628999@s.whatsapp.net' }],
     });
-    expect(await adapter.getContacts()).toHaveLength(1);
+    expect(await adapter.getContacts()).toHaveLength(0);
     expect(await adapter.resolveContactPhone('111@lid')).toBe('628999');
     expect(await adapter.resolveContactPhone('628222@s.whatsapp.net')).toBe('628222');
+    expect(await adapter.getContactById('628222@c.us')).toMatchObject({
+      pushName: 'Bob',
+      isMyContact: false,
+    });
   });
 
   it('contact/chat reads reject with EngineNotReadyError before connect', async () => {

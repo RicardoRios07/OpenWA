@@ -46,6 +46,43 @@ describe('BaileysSessionStore', () => {
     expect(store.listContacts()).toHaveLength(1);
   });
 
+  it('does not let a later history-sync row wipe a saved name with undefined', () => {
+    // Baileys history contacts always include `name: displayName || name || username || undefined`.
+    // Spreading that onto an address-book upsert that already had a name used to clear it.
+    store.upsertContacts([{ id: '628111@s.whatsapp.net', name: 'Alice', notify: 'Al' }]);
+    store.upsertContacts([{ id: '628111@s.whatsapp.net', name: undefined, notify: 'Al' }]);
+    expect(store.findContact('628111@s.whatsapp.net')).toMatchObject({ name: 'Alice', pushName: 'Al' });
+  });
+
+  it('accepts a contact keyed only by lid (id omitted) and finds it by phone', () => {
+    store.upsertContacts([{ lid: '111@lid', phoneNumber: '628111@s.whatsapp.net', name: 'Ada' }]);
+    expect(store.findContact('111@lid')?.name).toBe('Ada');
+    expect(store.findContact('628111@c.us')?.name).toBe('Ada');
+    expect(store.listContacts()[0]).toMatchObject({ id: '628111@c.us', name: 'Ada', number: '628111' });
+  });
+
+  it('drops groups/newsletters/status from the contact map (they are not address-book entries)', () => {
+    store.upsertContacts([
+      { id: '120363-9@g.us', name: 'Team' },
+      { id: '123@newsletter', name: 'Channel' },
+      { id: 'status@broadcast' },
+      { id: '628111@s.whatsapp.net', name: 'Alice' },
+    ]);
+    expect(store.listContacts()).toHaveLength(1);
+    expect(store.findContact('120363-9@g.us')).toBeNull();
+    expect(store.findContact('628111@c.us')?.name).toBe('Alice');
+  });
+
+  it('does not promote a chat partner into the address book', () => {
+    store.upsertChats([
+      { id: '628111@s.whatsapp.net', name: 'Alice' },
+      { id: '120363-9@g.us', name: 'Team' },
+    ]);
+    expect(store.findContact('628111@c.us')).toBeNull();
+    expect(store.listContacts()).toHaveLength(0);
+    expect(store.listChats()).toHaveLength(2);
+  });
+
   /**
    * Baileys documents `name` as the one YOU saved and `notify` as the pushname the contact set
    * themselves, so a contact carrying only `notify` is not in the addressbook. Reporting true for
@@ -60,6 +97,7 @@ describe('BaileysSessionStore', () => {
     expect(store.findContact('628222@s.whatsapp.net')?.isMyContact).toBe(false);
     // The pushname still surfaces either way; it is the addressbook claim that changed.
     expect(store.findContact('628222@s.whatsapp.net')?.pushName).toBe('Bob');
+    expect(store.listContacts()).toEqual([expect.objectContaining({ id: '628111@c.us', name: 'Alice' })]);
   });
 
   describe('archived, pinned and muted state', () => {
@@ -633,14 +671,14 @@ describe('BaileysSessionStore', () => {
     it('treats 0 as unbounded (legacy behaviour)', () => {
       const s = storeWithCap('0');
       for (let i = 0; i < 100; i++) {
-        s.upsertContacts([{ id: `62${1000 + i}@s.whatsapp.net` }]);
+        s.upsertContacts([{ id: `62${1000 + i}@s.whatsapp.net`, name: 'x' }]);
       }
       expect(s.listContacts()).toHaveLength(100);
     });
 
     it('falls back to the 5000 default for a garbage override', () => {
       const s = storeWithCap('not-a-number');
-      s.upsertContacts(Array.from({ length: 5001 }, (_, i) => ({ id: `62${100000 + i}@s.whatsapp.net` })));
+      s.upsertContacts(Array.from({ length: 5001 }, (_, i) => ({ id: `62${100000 + i}@s.whatsapp.net`, name: 'x' })));
       expect(s.listContacts()).toHaveLength(5000);
       expect(s.findContact('62100000@s.whatsapp.net')).toBeNull(); // the oldest went first
       expect(s.findContact('62105000@s.whatsapp.net')).not.toBeNull();
@@ -648,7 +686,7 @@ describe('BaileysSessionStore', () => {
 
     it('treats a blank override as unset, not as 0 (unbounded)', () => {
       const s = storeWithCap('');
-      s.upsertContacts(Array.from({ length: 5001 }, (_, i) => ({ id: `62${100000 + i}@s.whatsapp.net` })));
+      s.upsertContacts(Array.from({ length: 5001 }, (_, i) => ({ id: `62${100000 + i}@s.whatsapp.net`, name: 'x' })));
       expect(s.listContacts()).toHaveLength(5000);
     });
   });

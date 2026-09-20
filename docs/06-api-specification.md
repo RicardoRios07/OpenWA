@@ -2328,6 +2328,8 @@ The `Contact` object returned by the list and get-by-id routes has this shape:
 
 List all contacts for a session, returned as an in-memory paginated window.
 
+On Baileys the list is the saved address book: contacts with a name saved on the phone (`isMyContact: true`), rebuilt from WhatsApp's app-state contact collection on connect, including after a process restart. A peer known only by its pushname is not listed but still resolves through the get-by-id route below with `isMyContact: false`. whatsapp-web.js lists what the WhatsApp Web page holds, which also includes unsaved chat partners (`isMyContact: false`).
+
 **Auth:** API key
 
 **Path parameters**

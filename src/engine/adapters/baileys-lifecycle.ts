@@ -433,7 +433,17 @@ export class BaileysLifecycle {
     sock.ev.on('groups.upsert', groups => this.host.handleGroupsUpsert(groups));
     sock.ev.on('group.join-request', event => this.host.handleGroupJoinRequest(event));
     sock.ev.on('messaging-history.set', history => {
-      this.host.upsertContacts(history.contacts);
+      // History sync copies conversation.displayName into `name`, which is a chat title — not the
+      // address-book saved name (that arrives via contacts.upsert from app-state contactAction).
+      // Fold the title into notify so chat-name fallback still works, and leave `name` unset so
+      // GET /contacts stays the agenda rather than every 1:1 the account has ever opened.
+      this.host.upsertContacts(
+        (history.contacts ?? []).map(c => ({
+          ...c,
+          notify: c.notify ?? c.name,
+          name: undefined,
+        })),
+      );
       this.host.upsertChats(history.chats);
       this.host.addLidMappings(history.lidPnMappings ?? []);
       void this.host.captureHistoryMessages(history.messages ?? []);
