@@ -2352,8 +2352,9 @@ describe('WhatsAppWebJsAdapter ready reconciliation (#251/#273)', () => {
   });
 
   // #1655: a session can be perfectly healthy for messages and unable to see a single incoming call,
-  // because whatsapp-web.js installs the call hook last in the same page evaluate as the message
-  // listeners. The page read that settles it is one line, so ready says it instead of staying quiet.
+  // because whatsapp-web.js patches the call collection only when the page's module for it exposes
+  // an `.on` method, and the rest of its evaluate completes either way. The page read that settles
+  // it is one line, so ready says it instead of staying quiet.
   it('warns at ready when the page carries no call hook', async () => {
     const adapter = newAdapter();
     const logger = (adapter as unknown as { logger: { warn: jest.Mock } }).logger;
@@ -3813,7 +3814,7 @@ describe('WhatsAppWebJsAdapter call event + rejectCall', () => {
   });
 
   it.each([{ id: '' }, { id: undefined }, { from: '' }, { from: undefined }, null])(
-    'drops a malformed call (%o) — nothing emitted, nothing cached',
+    'drops a malformed call (%o): nothing emitted, nothing cached',
     malformed => {
       const { onCall, client } = wireCallHandler();
 
