@@ -166,7 +166,11 @@ Four tables live on the data connection, each created by a hand-authored dual-di
   `(pluginId, instanceId, providerDeliveryId)` deduplication plus a queue job id keyed on the delivery id
   provides best-effort de-duplication when the provider supplies a stable delivery id. Standard Webhooks defaults
   to its signed `webhook-id`; other handlers must remain idempotent because arbitrary provider headers
-  are not authenticated by every scheme. Freshness is enforced whenever a route declares
+  are not authenticated by every scheme. A route whose provider mints a fresh delivery id on every retry
+  attempt can declare `dedupOn: "body"` to key retries on the raw body instead: byte-identical bodies
+  then collapse within `INGRESS_DEDUP_RETENTION_DAYS`, the persisted delivery id and the `{id}` ack
+  token become that content hash, and a provider whose retries legitimately differ in the signed body
+  should keep the default, since `body` would dedup nothing for it. Freshness is enforced whenever a route declares
   `signature.timestampHeader`: the declared `toleranceSec` wins, and otherwise the host default
   (`INGRESS_TIMESTAMP_TOLERANCE_SEC`, default 300) applies — a declared timestamp is never accepted
   without a freshness check. Freshness alone is not replay protection, though: an **unsigned**

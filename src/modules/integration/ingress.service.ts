@@ -164,7 +164,10 @@ export class IngressService {
     // Other schemes retain the existing x-delivery/body-hash behavior for compatibility.
     const defaultDedupHeader = route.signature.scheme === 'standard-webhooks' ? 'webhook-id' : 'x-delivery';
     const dedupHeader = (route.dedupHeader ?? route.signature.dedupHeader ?? defaultDedupHeader).toLowerCase();
-    const deliveryId = req.headers[dedupHeader] ?? deriveDeliveryId(req);
+    // A route that declares dedupOn: 'body' keys retries on the raw body: its provider mints a fresh
+    // delivery id per attempt, so trusting the header would let every retry through as new.
+    const deliveryId =
+      route.dedupOn === 'body' ? deriveDeliveryId(req) : (req.headers[dedupHeader] ?? deriveDeliveryId(req));
     // Provider request headers persist with the event (redrive/debugging); credentials must not.
     // Signature headers are re-derivable, auth material is not — redact before the first write.
     // A shared-secret route carries the instance secret itself in its declared header.

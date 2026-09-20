@@ -250,6 +250,40 @@ Proxy egress (if WhatsApp is blocked on your network) is configured **per sessio
 unreachable proxy silently blocks the WhatsApp WebSocket (see the _No QR code appears, or `/start`
 returns `504`_ entry below).
 
+### Issue: Linking asks for a passkey and never completes (both engines)
+
+**Symptoms:**
+
+- The phone shows "Create a passkey to log in" or "Continue on your other device" during linking, by QR or by pairing code
+- The session stays `qr_ready` on both engines; on Baileys the log shows `408` or `428` close loops, and a pairing code never appears
+- On whatsapp-web.js the page shows a "Quick security check with Passkey" modal that never succeeds
+
+**Cause:** WhatsApp added a passkey (WebAuthn) step to its companion linking handshake for some
+accounts. That step is enforced server-side inside the linking frames, which live in the engine
+libraries; neither whatsapp-web.js 1.34.7 nor Baileys 7.0.0-rc14 implements it, and OpenWA passes the
+QR string and the pairing-code request straight through to those libraries. There is no OpenWA-side
+fix, and nothing on the client side changes the outcome: switching engine, using a pairing code instead
+of a QR, or presenting a different client identity (`BAILEYS_BROWSER_NAME` or otherwise) all end at the
+same gate. Re-registering the number as a different account type has also been tried by the community
+and did not hold; the block returned on its own within days. Tracked in
+[#560](https://github.com/rmyndharis/OpenWA/issues/560) and upstream in
+[WhiskeySockets/Baileys#2672](https://github.com/WhiskeySockets/Baileys/issues/2672); the only durable
+change will come from the engine libraries implementing the step.
+
+### Issue: Phone-number pairing fails with "Couldn't link device" (Baileys)
+
+**Symptoms:**
+
+- `POST /api/sessions/:sessionId/pairing-code` returns a code, but the phone answers "Couldn't link device" after it is entered
+- The engine log then shows a `401` close with `Session disconnected: logged out`, the auth directory is cleared, and the session comes back at `qr_ready` with no phone
+- Linking the same account by QR works
+
+**Cause:** the pairing request carries the linked-device identity, and some accounts reject a
+non-standard one. The default device name is `OpenWA`; set `BAILEYS_BROWSER_NAME=Ubuntu` (or another
+standard OS name), restart the session, and request a fresh code. The name applies to new pairings only;
+a session that is already linked keeps the name it was paired with until it is re-linked. See the
+phone-number pairing example in `docs/examples/session-phone-number-pairing.md`.
+
 ### Issue: No QR code appears, or `POST /api/sessions/:sessionId/start` returns `504`
 
 **Symptoms:**

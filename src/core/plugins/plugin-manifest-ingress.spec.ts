@@ -72,6 +72,18 @@ describe('validateIngressManifest', () => {
     expect(() => validateIngressManifest(m as never)).toThrow(/toleranceSec/);
   });
 
+  it('rejects a dedupOn value other than header or body', () => {
+    const m = baseManifest();
+    (m.ingress[0] as { dedupOn?: string }).dedupOn = 'bdy';
+    expect(() => validateIngressManifest(m as never)).toThrow(/dedupOn/);
+  });
+
+  it('accepts dedupOn: body', () => {
+    const m = baseManifest();
+    (m.ingress[0] as { dedupOn?: string }).dedupOn = 'body';
+    expect(() => validateIngressManifest(m as never)).not.toThrow();
+  });
+
   it('rejects a duplicate route within one manifest', () => {
     const m = baseManifest();
     m.ingress.push({ ...m.ingress[0] });

@@ -268,6 +268,16 @@ export interface PluginIngressRoute {
   // ordering key (P1). Absent => the P1 lock falls back to per-instance serialization. The host never
   // needs to understand the provider's schema beyond this one pointer.
   conversationId?: { header?: string; jsonPointer?: string };
+  /**
+   * What identifies a retry of the same delivery. `header` (the default) trusts the dedup header
+   * whenever the provider sends one and falls back to a hash of the raw body only when it is
+   * absent. `body` keys every delivery on that hash regardless of the header, for a provider that
+   * mints a fresh delivery id on each retry attempt, so its retries would otherwise never dedup.
+   * Byte-identical bodies collapse within `INGRESS_DEDUP_RETENTION_DAYS`; a provider whose retries
+   * legitimately differ in the body (a fresh timestamp or nonce inside the signed payload) keeps
+   * the default, since `body` would then dedup nothing.
+   */
+  dedupOn?: 'header' | 'body';
   /** Optional synchronous-response contract (host-side preflight + ack). Additive; absent = today's
    *  default 202 fast-ack, byte-identical. Validated by validateIngressManifest. */
   response?: IngressResponseContract;
@@ -346,6 +356,11 @@ export function validateIngressManifest(manifest: PluginManifest, allowUnsignedI
     if (r.signature.toleranceSec !== undefined && r.signature.toleranceSec <= 0) {
       throw new Error(
         `Plugin ${manifest.id}: route '${r.route}' toleranceSec must be > 0 (a replay guard would be a no-op)`,
+      );
+    }
+    if (r.dedupOn !== undefined && r.dedupOn !== 'header' && r.dedupOn !== 'body') {
+      throw new Error(
+        `Plugin ${manifest.id}: route '${r.route}' dedupOn must be 'header' or 'body' (got '${String(r.dedupOn)}')`,
       );
     }
     if (r.response) {
