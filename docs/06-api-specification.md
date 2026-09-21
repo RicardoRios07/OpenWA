@@ -5343,6 +5343,39 @@ Get the currently active engine type.
 
 ---
 
+#### GET /api/infra/update-check
+
+Compare the running version with the latest published OpenWA release. The dashboard uses it to show
+admins a link to the release notes next to the version. The gateway reads GitHub's latest release
+through the SSRF-guarded fetch and caches the answer for six hours (fifteen minutes after a failure).
+The request goes out directly, not through `HTTP(S)_PROXY`. A pre-release or draft is never offered. A
+failure never becomes an error response: an instance that has never reached `api.github.com` answers
+`latest: null`, and one that has keeps the last release it saw. `UPDATE_CHECK_ENABLED=false` turns the
+outbound request off.
+
+A running pre-release counts as older than its own final release, so `X.Y.Z` is offered to an
+instance on `X.Y.Z-rc.1`.
+
+`current` is the running code's `package.json` version, so a build from `main` reports the last
+release number until the next release bumps it.
+
+**Auth:** API key (ADMIN)
+
+**Response** `200`
+
+```json
+{
+  "current": "0.23.5",
+  "latest": "0.23.6",
+  "updateAvailable": true,
+  "releaseUrl": "https://github.com/rmyndharis/OpenWA/releases/tag/v0.23.6"
+}
+```
+
+**Errors:** `401` · `403`
+
+---
+
 #### GET /api/infra/config
 
 Read the effective infrastructure config used to hydrate the dashboard form. Each field resolves with the boot precedence: a value pinned by the host environment (e.g. Compose `environment:`) or the project `.env` wins over `data/.env.generated`, while a key that only ever lived in the saved file reports the freshly-saved value even before a restart applies it ("saved, pending restart"). **Secrets are never returned** — only `*Set`/`*CredentialsSet` booleans indicate that a secret is stored.

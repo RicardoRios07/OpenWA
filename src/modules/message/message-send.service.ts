@@ -186,6 +186,15 @@ export class MessageSendService {
     // requests trip the breaker on a healthy session.
     if (countsTowardSendBreaker(error)) {
       this.pacing.recordSendFailure(sessionId);
+      // The same classification picks the failures worth a log line. Otherwise an engine-side failure
+      // leaves only Nest's generic `[ExceptionsHandler]` line, with no session, chat or message type to
+      // correlate it with; a minified page error reads as `t: t` there.
+      this.logger.warn(`Send failed in the engine (${type})`, {
+        sessionId,
+        chatId: message.chatId,
+        messageId: message.id,
+        error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+      });
     }
     await this.saveFailedMessage(message);
     // Sanitize the hook payload: an SSRF block's raw .message names the resolved internal address

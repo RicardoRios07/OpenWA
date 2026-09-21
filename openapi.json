@@ -4232,6 +4232,29 @@
         ]
       }
     },
+    "/api/infra/update-check": {
+      "get": {
+        "description": "Reads the latest published GitHub release through the SSRF-guarded fetch and caches it. Set UPDATE_CHECK_ENABLED=false to turn the outbound request off.",
+        "operationId": "InfraStatusController_getUpdateCheck",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Update check result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InfraUpdateCheckResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Compare the running version with the latest OpenWA release",
+        "tags": [
+          "infrastructure"
+        ]
+      }
+    },
     "/api/infra/health": {
       "get": {
         "operationId": "InfraStatusController_healthCheck",
@@ -13526,6 +13549,39 @@
         },
         "required": [
           "engineType"
+        ]
+      },
+      "InfraUpdateCheckResponseDto": {
+        "type": "object",
+        "properties": {
+          "current": {
+            "type": "string",
+            "description": "Version of the running code.",
+            "example": "0.23.5"
+          },
+          "latest": {
+            "type": "string",
+            "nullable": true,
+            "description": "Latest published release, or null when the check is off or GitHub has not been reached yet. A later failed check keeps the last known release.",
+            "example": "0.23.6"
+          },
+          "updateAvailable": {
+            "type": "boolean",
+            "description": "Whether `latest` is newer than `current`.",
+            "example": true
+          },
+          "releaseUrl": {
+            "type": "string",
+            "nullable": true,
+            "description": "Release notes page for `latest`.",
+            "example": "https://github.com/rmyndharis/OpenWA/releases/tag/v0.23.6"
+          }
+        },
+        "required": [
+          "current",
+          "latest",
+          "updateAvailable",
+          "releaseUrl"
         ]
       },
       "InfraHealthResponseDto": {
