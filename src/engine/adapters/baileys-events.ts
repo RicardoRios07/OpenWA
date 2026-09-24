@@ -22,6 +22,7 @@ import {
   extractBaileysLocation,
   isBaileysCatalogShare,
   mapBaileysStatus,
+  setBaileysText,
 } from './baileys-message-mapper';
 import { buildEditedMessage } from './message-mapper';
 import { toUnixSeconds } from './baileys-history';
@@ -114,6 +115,8 @@ export interface BaileysEventsHost {
   recordMessageEdit(chatId: string, messageId: string, text: string): void;
   /** Persist an inbound message to the store; undefined when no store is configured. */
   putStoredMessage(msg: WAMessage): Promise<void> | undefined;
+  /** Rewrite a stored message in place (see BaileysMessageStore.update); undefined without a store. */
+  updateStoredMessage(messageId: string, change: (stored: WAMessage) => WAMessage | null): Promise<void> | undefined;
   /**
    * True exactly once for the id of a message this session sent through the API, whose library echo
    * is arriving; false for anything the session did not send (see OwnSendRegistry).
@@ -156,7 +159,39 @@ export class BaileysEvents {
     { callFrom: string; expiresAt: number; from: string; isVideo: boolean; isGroup: boolean }
   >();
 
+  /** How many ids the record of deletes for everyone keeps before it forgets the oldest. */
+  static readonly DELETED_FOR_EVERYONE_LIMIT = 5_000;
+
+  /**
+   * Inbound messages still being processed, by id, with the key of the latest delivery, so an edit or
+   * delete of one waits for its store write and a delete can be checked against its target meanwhile.
+   */
+  private readonly inboundInFlight = new Map<string, { key: WAMessageKey; done: Promise<void> }>();
+
+  /**
+   * Ids of messages deleted for everyone, oldest first. The stored copy is emptied too, but that can
+   * land late: a delete can overtake the original while it downloads its media, and a repeat delivery
+   * can be stored after the delete was applied. Whatever the store holds meanwhile, a message named
+   * here is never quoted, forwarded or reacted to, nor stored with its content. Bounded, because the
+   * windows it covers close once the original's processing settles, and the store has caught up then.
+   */
+  private readonly deletedForEveryone = new Set<string>();
+
   constructor(private readonly host: BaileysEventsHost) {}
+
+  /** Whether a delete for everyone of this message was accepted (see deletedForEveryone). */
+  wasDeletedForEveryone(messageId: string): boolean {
+    return this.deletedForEveryone.has(messageId);
+  }
+
+  /** Record an accepted delete for everyone of this message (see deletedForEveryone). */
+  markDeletedForEveryone(messageId: string): void {
+    this.deletedForEveryone.add(messageId);
+    if (this.deletedForEveryone.size > BaileysEvents.DELETED_FOR_EVERYONE_LIMIT) {
+      const [oldest] = this.deletedForEveryone;
+      this.deletedForEveryone.delete(oldest);
+    }
+  }
 
   handleMessagesUpsert(event: { messages: WAMessage[]; type: string }): void {
     for (const msg of event.messages) {
@@ -177,7 +212,7 @@ export class BaileysEvents {
       // does not gate dispatch on the own-send path at all, which is also why the echo is caught here.
       //
       // Only ids this session SENT are consumed here. Claiming every inbound fromMe id instead, to
-      // close the window where two deliveries of one id arrive before the store write commits, costs
+      // close the window where two deliveries of one id arrive before the first is stored, costs
       // more than it buys: a first delivery that reports nothing (a partial decrypt arrives as
       // protocol noise and is dropped below) would claim the id, and the decryption-retry delivery
       // that carries the real body would then be swallowed as a repeat and the message lost. A
@@ -197,7 +232,7 @@ export class BaileysEvents {
       // and the message keeps its media either way. The catch below is the teardown path: the
       // limiter rejects only when it has been closed, since processInboundMessage handles its own
       // failures (a media download that fails emits the omitted marker rather than throwing).
-      void this.host.inboundLimiter
+      const processed = this.host.inboundLimiter
         .run(() => this.processInboundMessage(msg))
         .catch((error: unknown) => {
           // Only one failure can actually land here today: the limiter closing, an orderly teardown.
@@ -215,6 +250,19 @@ export class BaileysEvents {
           );
           return this.processInboundMessage(msg, { skipMedia: true });
         });
+      const id = msg.key.id;
+      if (id) {
+        // A repeat delivery can arrive while the first is still downloading and finish before it, so
+        // a change waits for every delivery in flight, not only the latest.
+        const tracked = {
+          key: msg.key,
+          done: Promise.all([this.inboundInFlight.get(id)?.done, processed]).then(() => undefined),
+        };
+        this.inboundInFlight.set(id, tracked);
+        void tracked.done.finally(() => {
+          if (this.inboundInFlight.get(id) === tracked) this.inboundInFlight.delete(id);
+        });
+      }
     }
   }
 
@@ -276,6 +324,18 @@ export class BaileysEvents {
             body: '',
             timestamp: toUnixSeconds(msg.messageTimestamp),
           };
+          // While the target is still being processed, the store change waits for it and lands after
+          // this delete is announced, and a repeat delivery may already hold the content in the store:
+          // record the delete now, checked against the target's own key.
+          const target = this.inboundInFlight.get(revoked.id);
+          if (target && this.mayChange(target.key, msg.key, true)) {
+            this.markDeletedForEveryone(revoked.id);
+          }
+          // The stored copy keeps its key, so a late re-delivery is still recognised and a delete
+          // for me can still address it, but loses its content, so nothing can quote or resend it.
+          this.changeStoredMessage(pm.key?.id, stored =>
+            this.mayChange(stored.key, msg.key, true) ? { ...stored, message: null } : null,
+          );
           this.host.getOnMessageRevoked()?.(revoked);
           return;
         }
@@ -318,6 +378,12 @@ export class BaileysEvents {
             editedContentType === 'stickerMessage';
           const edited: EditedMessage = buildEditedMessage(base, hasMedia);
           this.host.recordMessageEdit(remoteJid, edited.messageId, edited.body);
+          this.changeStoredMessage(edited.messageId, stored => {
+            const content = this.mayChange(stored.key, msg.key, false)
+              ? b.normalizeMessageContent(stored.message ?? undefined)
+              : undefined;
+            return content && setBaileysText(content, edited.body) ? stored : null;
+          });
           this.host.getOnMessageEdited()?.(edited);
           return;
         }
@@ -372,7 +438,7 @@ export class BaileysEvents {
       // whose ack was lost on a drop, so the second copy has to stop here. Downstream would not catch
       // it: the own-send path dispatches message.sent whatever its insert did, and the inbound path
       // runs the message:received plugin hook before its insert oracle dedupes. The store is written
-      // by the inbound path below, only after dispatch, and by the send path, and it survives a
+      // by the inbound path below, just before dispatch, and by the send path, and it survives a
       // restart, which the registry consulted in handleMessagesUpsert does not. The read fails open
       // (see readStoredMessage).
       const storedId = msg.key.id ?? null;
@@ -390,16 +456,20 @@ export class BaileysEvents {
       const incoming = await this.mapMessage(msg, contentType, {
         skipMediaDownload: opts?.skipMedia || ownStatusPost,
       });
+      // Stored before it is announced: whoever hears about this message may act on it at once (a quoted
+      // reply, a reaction, a read receipt), and the store holds a read of an id until its write lands.
+      // A message deleted for everyone while it was being processed is stored as the delete leaves it.
+      const deleted = storedId !== null && this.deletedForEveryone.has(storedId);
+      void this.host.putStoredMessage(deleted ? { ...msg, message: null } : msg)?.catch(err =>
+        this.host.logger.warn('Failed to persist message to store', {
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
       if (msg.key.fromMe === true) {
         this.host.getOnMessageCreate()?.(incoming);
       } else {
         this.host.getOnMessage()?.(incoming);
       }
-      void this.host.putStoredMessage(msg)?.catch(err =>
-        this.host.logger.warn('Failed to persist message to store', {
-          error: err instanceof Error ? err.message : String(err),
-        }),
-      );
       this.host.recordMessage(msg);
     } catch (err) {
       this.host.logger.error(
@@ -430,6 +500,47 @@ export class BaileysEvents {
       });
       return null;
     }
+  }
+
+  /**
+   * Apply an edit or a delete for everyone to the stored copy of the message it targets, which is
+   * what a later quote or forward reads and what a retry resend falls back to. WhatsApp delivers the
+   * change after the message, but the message can still be downloading its media, or waiting for a
+   * limiter slot, when the change is processed, and a change written first would be overwritten by
+   * the original. So the write waits for the original's own processing, which has called put() by
+   * the time it settles, and the store queues the change behind that put. With nothing in flight the
+   * change reaches the store at once: this is called before the change is announced, so a read by
+   * whoever hears of it waits for the write, as a read of a just-announced message waits for its put.
+   * Detached and best-effort, like the put.
+   */
+  private changeStoredMessage(
+    messageId: string | null | undefined,
+    change: (stored: WAMessage) => WAMessage | null,
+  ): void {
+    if (!messageId) return;
+    const apply = async (): Promise<void> => this.host.updateStoredMessage(messageId, change);
+    const inFlight = this.inboundInFlight.get(messageId)?.done;
+    void (inFlight ? inFlight.then(apply) : apply()).catch(err =>
+      this.host.logger.warn('Failed to apply an edit or delete to the message store', {
+        msgId: messageId,
+        error: err instanceof Error ? err.message : String(err),
+      }),
+    );
+  }
+
+  /**
+   * Whether an edit or delete sent under `envelope` may change the stored message `target`. Baileys
+   * checks neither the chat nor the sender of either (Utils/process-message.js), so the stored copy
+   * changes only for one from the same chat and from the message's author. A group admin may delete
+   * anyone's message, which nothing here can verify, so a group delete skips the author check.
+   * Compared in the neutral dialect, so a chat or sender seen by lid once and by phone once matches.
+   */
+  private mayChange(target: WAMessageKey, envelope: WAMessageKey, isDelete: boolean): boolean {
+    const chat = (key: WAMessageKey): string => this.host.toNeutralJid(key.remoteJid ?? '');
+    const author = (key: WAMessageKey): string =>
+      key.fromMe === true ? 'fromMe' : this.host.toNeutralJid(key.participant || key.remoteJid || '');
+    if (chat(target) !== chat(envelope)) return false;
+    return (isDelete && parseWaId(chat(target)).kind === 'group') || author(target) === author(envelope);
   }
 
   handleMessagesUpdate(updates: Array<{ key?: { id?: string | null }; update?: { status?: number | null } }>): void {
