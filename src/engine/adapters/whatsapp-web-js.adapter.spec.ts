@@ -6012,7 +6012,7 @@ describe('WhatsAppWebJsAdapter page transport error detection (wedged page fast-
       },
       { id: { $1: '222@c.us' }, name: 'Bob', pushname: 'Bobby', number: '222', isMyContact: false, isBlocked: true },
     ];
-    const evaluate = jest.fn().mockResolvedValue(raw);
+    const evaluate = jest.fn().mockResolvedValue({ rows: raw, failed: 0 });
     const { adapter } = readyAdapter({ pupPage: { evaluate } });
 
     await expect(adapter.getContacts()).resolves.toEqual([
@@ -6029,7 +6029,7 @@ describe('WhatsAppWebJsAdapter page transport error detection (wedged page fast-
     const good1 = { id: { _serialized: '111@c.us' }, name: 'Alice', number: '111' };
     const unreadable = { id: {}, name: 'Ghost', number: '000' };
     const good2 = { id: { $1: '222@c.us' }, name: 'Bob', number: '222' };
-    const evaluate = jest.fn().mockResolvedValue([good1, unreadable, good2]);
+    const evaluate = jest.fn().mockResolvedValue({ rows: [good1, unreadable, good2], failed: 0 });
     const { adapter } = readyAdapter({ pupPage: { evaluate } });
     const logger = (adapter as unknown as { logger: { warn: (m: string) => void } }).logger;
     const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => undefined);
@@ -6038,6 +6038,40 @@ describe('WhatsAppWebJsAdapter page transport error detection (wedged page fast-
 
     expect(contacts.map(c => c.id)).toEqual(['111@c.us', '222@c.us']);
     expect(warnSpy).toHaveBeenCalledWith('Skipped 1 contact(s) without a serialized id');
+  });
+
+  // #1720: a contact model WhatsApp Web cannot read is skipped in-page; the rest of the address
+  // book still answers, and the count and first error reach one warn line.
+  it('keeps the readable contacts when WhatsApp Web could not read some, and warns once', async () => {
+    const good = { id: { _serialized: '111@c.us' }, name: 'Alice', number: '111' };
+    const evaluate = jest.fn().mockResolvedValue({
+      rows: [good],
+      failed: 2,
+      firstError: 'getAlternateUserWid - Invalid get call using deviceWid',
+    });
+    const { adapter, onDisconnected } = readyAdapter({ pupPage: { evaluate } });
+    const logger = (adapter as unknown as { logger: { warn: (m: string, c?: unknown) => void } }).logger;
+    const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => undefined);
+
+    const contacts = await adapter.getContacts();
+
+    expect(contacts.map(c => c.id)).toEqual(['111@c.us']);
+    expect(warnSpy).toHaveBeenCalledWith('Skipped 2 contact(s) WhatsApp Web could not read', {
+      error: 'getAlternateUserWid - Invalid get call using deviceWid',
+    });
+    expect(onDisconnected).not.toHaveBeenCalled();
+  });
+
+  // When no model at all could be read, the page is broken as a whole; an empty 200 would read as an
+  // address book with every contact deleted, so the failure still reaches the caller.
+  it('fails the read when WhatsApp Web could not read any contact', async () => {
+    const evaluate = jest.fn().mockResolvedValue({ rows: [], failed: 3, firstError: 'x is not a function' });
+    const { adapter, onDisconnected } = readyAdapter({ pupPage: { evaluate } });
+
+    await expect(adapter.getContacts()).rejects.toThrow(
+      'WhatsApp Web could not read any of 3 contact(s): x is not a function',
+    );
+    expect(onDisconnected).not.toHaveBeenCalled();
   });
 
   // A rejection that carries no transport-death signature is an ordinary failure, not a dead page —

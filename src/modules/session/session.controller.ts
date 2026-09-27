@@ -601,15 +601,27 @@ export class SessionController {
       'Publishes whether this account appears online. WhatsApp routes notifications away from the ' +
       'phone while a linked device announces itself online, so a headless bot that never goes ' +
       "offline suppresses the phone's own alerts — set `available: false` to hand them back.\n\n" +
-      'The setting belongs to the connection: it does not survive a restart or reconnect and must ' +
-      'be re-issued after `session.status` reports one (on Baileys the socket re-announces itself ' +
-      'per its connect-time behaviour). Supported on both engines.',
+      'A successful call is remembered for the life of the running engine and re-applied once each ' +
+      'time that connection opens, including a Baileys transient reconnect: the socket announces ' +
+      'itself on connect (`available` unless `BAILEYS_MARK_ONLINE_ON_CONNECT=false`), which would ' +
+      "otherwise replace the caller's choice. The preference is dropped whenever the gateway replaces " +
+      'the engine: stop, restart, reconnect recovery, a watchdog recycle, or a takeover by another ' +
+      'node. Re-issue it after `session.status` reports `ready` again. On Baileys, typing, recording ' +
+      'and outbound sends do not publish global presence.\n\n' +
+      'On Baileys the call fails with 409 when the account push name has not synced yet — the ' +
+      'library would otherwise accept the request and send nothing. Supported on both engines.',
   })
   @ApiParam({ name: 'sessionId', description: 'Session ID' })
   @ApiResponse({ status: 200, description: 'Presence published', type: SessionActionResponseDto })
   @ApiResponse({ status: 400, description: 'Session not started, or validation failed' })
   @ApiResponse({ status: 404, description: 'Session not found' })
-  @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
+  @ApiResponse({
+    status: 409,
+    description:
+      ENGINE_NOT_READY_409 +
+      ' On Baileys this route also answers `409` for a `ready` session whose account push name has ' +
+      'not synced yet. Nothing was sent, and a retry succeeds only once the name has synced.',
+  })
   async setOnlinePresence(
     @Param('sessionId', ParseUUIDPipe) id: string,
     @Body() dto: SetOwnPresenceDto,

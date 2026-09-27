@@ -19,6 +19,13 @@ interface LeanContact {
   isBlocked: boolean;
 }
 
+/** What {@link readLeanContacts} returns: the readable rows, and how many models threw instead. */
+interface LeanContactRead {
+  rows: LeanContact[];
+  failed: number;
+  firstError?: string;
+}
+
 /**
  * Read the contact list IN-PAGE, projected to only the fields {@link WwebjsContacts.toContact} keeps,
  * yielding to the page event loop every 256 contacts so the liveness probe's queued `getState()`
@@ -34,7 +41,7 @@ interface LeanContact {
  * `BusinessProfile.find` is skipped: its only output, `res.businessProfile`, is not one of the six
  * fields, so dropping it costs nothing and saves a network fetch per business contact.
  */
-export async function readLeanContacts(): Promise<LeanContact[]> {
+export async function readLeanContacts(): Promise<LeanContactRead> {
   const w = window as unknown as {
     require: (m: string) => { Contact: { getModelsArray: () => unknown[] } };
     WWebJS: {
@@ -49,22 +56,33 @@ export async function readLeanContacts(): Promise<LeanContact[]> {
     };
   };
   const models = w.require('WAWebCollections').Contact.getModelsArray();
-  const out: LeanContact[] = [];
+  const rows: LeanContact[] = [];
+  let failed = 0;
+  let firstError: string | undefined;
   for (let i = 0; i < models.length; i++) {
-    const m = w.WWebJS.getContactModel(models[i]);
-    out.push({
-      id: m.id,
-      name: m.name,
-      pushname: m.pushname,
-      number: m.userid,
-      isMyContact: m.isMyContact,
-      isBlocked: m.isBlocked,
-    });
+    // One model WhatsApp Web cannot read (getContactModel's getAlternateUserWid throws "Invalid get
+    // call using deviceWid" for a device-scoped wid, #1720) must not reject the whole walk. It is
+    // counted and skipped; whatsapp-web.js's own getContacts() never returned such an entry either,
+    // because its Promise.all rejected on it.
+    try {
+      const m = w.WWebJS.getContactModel(models[i]);
+      rows.push({
+        id: m.id,
+        name: m.name,
+        pushname: m.pushname,
+        number: m.userid,
+        isMyContact: m.isMyContact,
+        isBlocked: m.isBlocked,
+      });
+    } catch (error) {
+      failed++;
+      if (firstError === undefined) firstError = error instanceof Error ? error.message : String(error);
+    }
     // Yield every 256 contacts so the getState() liveness probe can interleave (#1501);
     // raise the stride if the read ever gets too chatty on a very large address book.
     if ((i & 0xff) === 0xff) await new Promise(resolve => setTimeout(resolve));
   }
-  return out;
+  return { rows, failed, firstError };
 }
 
 /**
@@ -103,13 +121,18 @@ export class WwebjsContacts {
     this.host.ensureReady();
 
     let raw: RawWwebjsContact[];
+    let unreadable: number;
+    let firstError: string | undefined;
     try {
       // A direct in-page walk that yields so the liveness probe is not starved (see readLeanContacts,
       // #1501), instead of whatsapp-web.js's atomic client.getContacts(). The projected rows are a
       // strict subset of a Contact; the mapping below reads only those six fields.
       const page = (this.client() as unknown as { pupPage?: { evaluate: <T>(fn: () => Promise<T>) => Promise<T> } })
         .pupPage;
-      raw = ((await page?.evaluate(readLeanContacts)) ?? []) as unknown as RawWwebjsContact[];
+      const read = await page?.evaluate(readLeanContacts);
+      raw = (read?.rows ?? []) as unknown as RawWwebjsContact[];
+      unreadable = read?.failed ?? 0;
+      firstError = read?.firstError;
     } catch (error) {
       // A dead page surfaces here as a raw Puppeteer error; convert it to the documented transport
       // failure the way wwebjs-chats.ts does, so a transport death answers 503 instead of a bare 500.
@@ -118,6 +141,13 @@ export class WwebjsContacts {
         throw new EngineTransportError('Transport died while reading contacts');
       }
       throw error;
+    }
+
+    // Every model threw: a systemic page failure (a renamed WA Web module, WWebJS not injected), not
+    // one unreadable entry. Answer an error, as before the per-entry catch, rather than an empty
+    // address book that a syncing consumer would read as every contact deleted.
+    if (raw.length === 0 && unreadable > 0) {
+      throw new Error(`WhatsApp Web could not read any of ${unreadable} contact(s): ${firstError}`);
     }
 
     // Read every id through readWid (so the `_serialized`->`$1` rename lands here too) and skip
@@ -135,6 +165,9 @@ export class WwebjsContacts {
     }
     if (skipped > 0) {
       this.host.logger.warn(`Skipped ${skipped} contact(s) without a serialized id`);
+    }
+    if (unreadable > 0) {
+      this.host.logger.warn(`Skipped ${unreadable} contact(s) WhatsApp Web could not read`, { error: firstError });
     }
     return contacts;
   }

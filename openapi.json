@@ -1218,7 +1218,7 @@
     },
     "/api/sessions/{sessionId}/presence": {
       "put": {
-        "description": "Publishes whether this account appears online. WhatsApp routes notifications away from the phone while a linked device announces itself online, so a headless bot that never goes offline suppresses the phone's own alerts — set `available: false` to hand them back.\n\nThe setting belongs to the connection: it does not survive a restart or reconnect and must be re-issued after `session.status` reports one (on Baileys the socket re-announces itself per its connect-time behaviour). Supported on both engines.",
+        "description": "Publishes whether this account appears online. WhatsApp routes notifications away from the phone while a linked device announces itself online, so a headless bot that never goes offline suppresses the phone's own alerts — set `available: false` to hand them back.\n\nA successful call is remembered for the life of the running engine and re-applied once each time that connection opens, including a Baileys transient reconnect: the socket announces itself on connect (`available` unless `BAILEYS_MARK_ONLINE_ON_CONNECT=false`), which would otherwise replace the caller's choice. The preference is dropped whenever the gateway replaces the engine: stop, restart, reconnect recovery, a watchdog recycle, or a takeover by another node. Re-issue it after `session.status` reports `ready` again. On Baileys, typing, recording and outbound sends do not publish global presence.\n\nOn Baileys the call fails with 409 when the account push name has not synced yet — the library would otherwise accept the request and send nothing. Supported on both engines.",
         "operationId": "SessionController_setOnlinePresence",
         "parameters": [
           {
@@ -1259,7 +1259,7 @@
             "description": "Session not found"
           },
           "409": {
-            "description": "The session is not connected: an engine exists for it but is not `ready`, meaning disconnected, reconnecting, or still initializing, so the request never reached WhatsApp. Wait for `ready` and retry. A session that was never started answers `400` instead, and the session lifecycle routes answer `409` for a conflicting state rather than this. One window answers this while the session still reads `ready`: WhatsApp Web periodically reloads its own page and the engine re-injects into it, and for those few seconds the answer is a `409` naming the reload; retry shortly."
+            "description": "The session is not connected: an engine exists for it but is not `ready`, meaning disconnected, reconnecting, or still initializing, so the request never reached WhatsApp. Wait for `ready` and retry. A session that was never started answers `400` instead, and the session lifecycle routes answer `409` for a conflicting state rather than this. One window answers this while the session still reads `ready`: WhatsApp Web periodically reloads its own page and the engine re-injects into it, and for those few seconds the answer is a `409` naming the reload; retry shortly. On Baileys this route also answers `409` for a `ready` session whose account push name has not synced yet. Nothing was sent, and a retry succeeds only once the name has synced."
           }
         },
         "summary": "Set the account's own global presence (appear online or offline)",

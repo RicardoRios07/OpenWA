@@ -80,6 +80,18 @@ describe('the non-root drop is enforced, not merely documented', () => {
     const entrypoint = fs.readFileSync(path.join(__dirname, '..', '..', 'docker-entrypoint.sh'), 'utf8');
     expect(entrypoint).toMatch(/exec\s+gosu\s+openwa/);
   });
+
+  // The stale Chromium Singleton* entries are symlinks. A bind mount that refuses to chown a symlink
+  // (Docker Desktop file sharing) fails the recursive chown under `set -e`, so the cleanup has to run
+  // first or it never runs and the container crash-loops (#1722).
+  it('clears stale Chromium locks before the recursive chown', () => {
+    const entrypoint = fs.readFileSync(path.join(__dirname, '..', '..', 'docker-entrypoint.sh'), 'utf8');
+    const cleanup = entrypoint.search(/^rm -f \/app\/data\/sessions\/\*\/Singleton\*/m);
+    const chown = entrypoint.search(/^chown -R openwa:openwa \/app\/data/m);
+    expect(cleanup).toBeGreaterThan(-1);
+    expect(chown).toBeGreaterThan(-1);
+    expect(cleanup).toBeLessThan(chown);
+  });
 });
 
 /**
