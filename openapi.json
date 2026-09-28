@@ -1098,7 +1098,7 @@
             "description": "The session is not connected: an engine exists for it but is not `ready`, meaning disconnected, reconnecting, or still initializing, so the request never reached WhatsApp. Wait for `ready` and retry. A session that was never started answers `400` instead, and the session lifecycle routes answer `409` for a conflicting state rather than this. One window answers this while the session still reads `ready`: WhatsApp Web periodically reloads its own page and the engine re-injects into it, and for those few seconds the answer is a `409` naming the reload; retry shortly."
           },
           "503": {
-            "description": "The whatsapp-web.js page connection died mid-read, so nothing could be read. Deliberately not reported as an empty list — a page that went away says nothing about the chats."
+            "description": "The whatsapp-web.js page connection died mid-read, or WhatsApp Web did not answer within the protocol timeout, so nothing could be read. Deliberately not reported as an empty list: a page that went away says nothing about the chats."
           }
         },
         "summary": "Get active chats for a session",
@@ -4477,6 +4477,9 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "STORAGE_TYPE is s3 but the bucket is unreachable or its credentials are missing; nothing was read or written."
           }
         },
         "summary": "Get file count in current storage",
@@ -4499,6 +4502,9 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "STORAGE_TYPE is s3 but the bucket is unreachable or its credentials are missing; nothing was read or written."
           }
         },
         "summary": "Export all storage files as tar.gz",
@@ -4532,6 +4538,9 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "STORAGE_TYPE is s3 but the bucket is unreachable or its credentials are missing; nothing was read or written."
           }
         },
         "summary": "Import storage files from tar.gz",
@@ -4593,7 +4602,7 @@
             "description": "The session is not connected: an engine exists for it but is not `ready`, meaning disconnected, reconnecting, or still initializing, so the request never reached WhatsApp. Wait for `ready` and retry. A session that was never started answers `400` instead, and the session lifecycle routes answer `409` for a conflicting state rather than this. One window answers this while the session still reads `ready`: WhatsApp Web periodically reloads its own page and the engine re-injects into it, and for those few seconds the answer is a `409` naming the reload; retry shortly."
           },
           "503": {
-            "description": "The WhatsApp page died while reading contacts, retry shortly"
+            "description": "The WhatsApp page died while reading contacts, or WhatsApp Web did not answer within the protocol timeout. Retry shortly."
           }
         },
         "summary": "Get all contacts for a session",
@@ -8431,7 +8440,7 @@
             }
           },
           "400": {
-            "description": "Product has no image — a product card requires one."
+            "description": "Product has no image (a product card requires one), a plugin blocked the send, or a plugin returned an invalid productId or body."
           },
           "404": {
             "description": "Product id not found in the session catalog."
@@ -9440,6 +9449,9 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "The instance is disabled or deleted; its dead-lettered deliveries cannot be re-dispatched."
           }
         },
         "tags": [
@@ -10332,7 +10344,7 @@
           },
           "config": {
             "type": "object",
-            "description": "Session configuration. Only three keys are read: autoRejectCalls (boolean, default false, Baileys engine only) rejects incoming calls as soon as they ring, and the call.received event is still emitted first; maxReconnectAttempts (0-20, default unlimited) caps consecutive reconnects and reconnectBaseDelay (1000-300000 ms, default 5000) sets the backoff base, both for the gateway's own reconnect only (on Baileys the engine retries a transient drop itself, with a fixed backoff and no cap). Anything else is stored but ignored. All three can be changed later with PATCH /api/sessions/{sessionId}/config without a restart: autoRejectCalls applies from the next incoming call, the two reconnect settings from the next session start.",
+            "description": "Session configuration. Only three keys are read: autoRejectCalls (boolean, default false, Baileys engine only) rejects incoming calls as soon as they ring, and the call.received event is still emitted first; maxReconnectAttempts (0-20, default unlimited) caps consecutive reconnects (the count restarts once the session has stayed READY for 5 minutes) and reconnectBaseDelay (1000-300000 ms, default 5000) sets the backoff base, both for the gateway's own reconnect only (on Baileys the engine retries a transient drop itself, with a fixed backoff and no cap). Anything else is stored but ignored. All three can be changed later with PATCH /api/sessions/{sessionId}/config without a restart: autoRejectCalls applies from the next incoming call, the two reconnect settings from the next session start.",
             "example": {
               "autoRejectCalls": false,
               "maxReconnectAttempts": 5,
@@ -11104,9 +11116,8 @@
         "type": "object",
         "properties": {
           "conditions": {
-            "minItems": 1,
             "maxItems": 20,
-            "description": "Every condition must match (AND) for the webhook to fire.",
+            "description": "Every condition must match (AND) for the webhook to fire. An empty list means no filter: the webhook fires on every subscribed event.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/WebhookFilterConditionDto"
@@ -11637,7 +11648,7 @@
           "author": {
             "type": "string",
             "nullable": true,
-            "description": "Group participant who posted the message (`from` is the group JID there).",
+            "description": "Sender of a group, status or broadcast-list message (`from` is the group or `@broadcast` id there).",
             "example": "628123456789@c.us"
           },
           "from": {
@@ -12658,7 +12669,7 @@
           },
           "author": {
             "type": "string",
-            "description": "Group participant who actually sent it (`from` is the group JID there).",
+            "description": "Sender of a group, status or broadcast-list message (`from` is the group or `@broadcast` id there).",
             "example": "628123456789@c.us"
           },
           "mentionedIds": {
@@ -14724,6 +14735,11 @@
             "description": "Objects written.",
             "example": 128
           },
+          "failed": {
+            "type": "number",
+            "description": "Archive entries the store refused to write. `imported` is false when entries failed and none was written.",
+            "example": 0
+          },
           "storageType": {
             "type": "string",
             "enum": [
@@ -14736,6 +14752,7 @@
         "required": [
           "imported",
           "count",
+          "failed",
           "storageType"
         ]
       },

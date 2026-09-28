@@ -908,6 +908,7 @@
       "dontClose": "Si prega di non chiudere questa finestra",
       "successMsg": "Il server è di nuovo online! La pagina si ricaricherà automaticamente.",
       "errorMsg": "Il server non ha risposto dopo 30 secondi. Controlla i log di Docker e riavvia manualmente.",
+      "outcomeUnknown": "Il proxy è andato in timeout prima che il server rispondesse. Il riavvio potrebbe essere ancora in corso; ricarica la pagina tra un minuto per verificare.",
       "reload": "Ricarica Pagina"
     },
     "toasts": {

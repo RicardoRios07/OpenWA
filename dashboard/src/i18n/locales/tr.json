@@ -922,6 +922,7 @@
       "dontClose": "Lütfen bu pencereyi kapatmayın",
       "successMsg": "Sunucu tekrar çevrimiçi! Sayfa otomatik olarak yeniden yüklenecektir.",
       "errorMsg": "Sunucu 30 saniye sonra yanıt vermedi. Lütfen Docker kayıtlarını kontrol edin ve manuel olarak yeniden başlatın.",
+      "outcomeUnknown": "Sunucu yanıt vermeden önce proxy zaman aşımına uğradı. Yeniden başlatma hâlâ sürüyor olabilir; kontrol etmek için bir dakika sonra sayfayı yeniden yükleyin.",
       "reload": "Sayfayı Yeniden Yükle"
     },
     "toasts": {

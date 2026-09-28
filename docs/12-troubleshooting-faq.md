@@ -646,10 +646,12 @@ The reconnect backoff is configured **per session**, not by environment variable
 `reconnectBaseDelay` is the exponential-backoff base in milliseconds (clamped to 1000–300000,
 default 5000). `maxReconnectAttempts` is clamped to 0–20 — `0` disables auto-reconnect entirely, and
 leaving it unset means unlimited retries with the delay parking at a 5-minute cap. Both keys bound
-the gateway's own reconnect. On Baileys that is only the reconnect after a logged-out close: every
-other drop is retried inside the engine, with a fixed 1s to 60s backoff and no attempt cap, so a
-session behind an unreachable network keeps retrying there whatever these keys say. Subscribe to the
-`session.reconnect_loop` webhook to be alerted on every 5th consecutive attempt.
+the gateway's own reconnect, whose attempt count restarts only once the session has stayed READY for
+5 minutes, so a session that keeps dropping sooner than that spends a finite cap and ends FAILED. On
+Baileys that is only the reconnect after a logged-out close: every other drop is retried inside the
+engine, with a fixed 1s to 60s backoff and no attempt cap, so a session behind an unreachable network
+keeps retrying there whatever these keys say. Subscribe to the `session.reconnect_loop` webhook to be
+alerted on every 5th consecutive attempt.
 
 On a slow host, raise the first-boot init wait with `WWEBJS_AUTH_TIMEOUT_MS` (see _QR generation
 times out on slow first boot_ above).
@@ -675,7 +677,7 @@ curl -H "X-API-Key: $API_KEY" \
 curl -H "X-API-Key: $API_KEY" \
   http://localhost:2785/api/infra/status
 
-# Rate limiting is global (throttler, env-configured) — there is no per-session rate-limit endpoint
+# Rate limiting is env-configured, per route and client IP; there is no per-session rate-limit endpoint
 ```
 
 **Common Causes:**
@@ -777,7 +779,7 @@ quoting the message it printed.
 > A patch that never applied is not fatal on its own: only the capability it repairs is affected and
 > the rest of the gateway runs normally, which is why this is easy to misread as a bug in one route.
 
-### Issue: Reads on a large account fail with `Runtime.callFunctionOn timed out`
+### Issue: Reads on a large account fail with `did not answer ... in time` or `Runtime.callFunctionOn timed out`
 
 > **Engine:** This issue applies to the `whatsapp-web.js` engine only (Chromium/Puppeteer-based). It does not affect `ENGINE_TYPE=baileys`.
 
@@ -785,13 +787,16 @@ quoting the message it printed.
 
 - `GET /api/sessions/{id}/chats` (or another read that walks the whole store) fails on an account
   with thousands of chats, while smaller accounts on the same deployment are fine
-- The error names a CDP method and the setting: `Runtime.callFunctionOn timed out. Increase the 'protocolTimeout' setting in launch/connect calls for a higher timeout if needed.`
+- The chat and contact lists answer `503` with `WhatsApp Web did not answer the chat list read in time`
+  (or `the contact list read`); another read may answer `500` with the raw error, which names a CDP
+  method and the setting: `Runtime.callFunctionOn timed out. Increase the 'protocolTimeout' setting in launch/connect calls for a higher timeout if needed.`
 - The session stays `ready` and the next request works, so the page did not die
 
 **Cause:** Puppeteer gives every browser command a time budget, 180 000 ms by default, and one
 `getChats()` over a very large store can run past it. The renderer is still working; only the
 command is dropped. That is also why this is **not** treated as a dead page — a transport death
-answers `503` and takes the session down with it, and this is just a slow command on a live page.
+takes the session down with it, while this is just a slow command on a live page. The chat and contact
+lists answer it with a `503` as well, but the session stays `ready`.
 
 **Solution:** raise the budget for that deployment.
 

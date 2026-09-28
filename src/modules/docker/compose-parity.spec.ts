@@ -318,6 +318,7 @@ describe('DockerService managed specs ↔ docker-compose.yml parity', () => {
       POSTGRES_BUILTIN: 'dashboard-managed',
       REDIS_BUILTIN: 'dashboard-managed',
       MINIO_BUILTIN: 'dashboard-managed',
+      QUEUE_ENABLED: 'dashboard-managed (.env.example documents that a host value is not forwarded)',
       WEBHOOK_SSRF_PROTECT: 'fails safe (default on)',
       // The dev stack manages no built-in datastores; its daemon is the host's local socket, and a
       // stray DOCKER_HOST would point the app at an unrelated daemon.

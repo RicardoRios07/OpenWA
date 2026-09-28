@@ -9,7 +9,11 @@ import { workerConnectionOptions, webhookWorkerConcurrency } from '../redis-conn
 import { WebhookJobData, WebhookPayload } from '../../webhook/webhook.service';
 import { Webhook } from '../../webhook/entities/webhook.entity';
 import { WebhookDeliveryFailure } from '../../webhook/entities/webhook-delivery-failure.entity';
-import { recordWebhookDeliveryFailure, statusCodeFromError } from '../../webhook/utils/record-delivery-failure';
+import {
+  clearDeliveryFailureRows,
+  recordWebhookDeliveryFailure,
+  statusCodeFromError,
+} from '../../webhook/utils/record-delivery-failure';
 import { buildDeliveryHeaders, postWebhookPayload } from '../../webhook/utils/deliver-once';
 import { HookManager } from '../../../core/hooks';
 import { redactSsrfError } from '../../../common/security/ssrf-guard';
@@ -90,8 +94,8 @@ export class WebhookProcessor extends WorkerHost {
     try {
       // The job carries a snapshot taken at enqueue time. Re-read the row before every attempt: a
       // webhook that was deleted, disabled or unsubscribed from this event since then must not
-      // receive it (the reconciler skips only deleted and disabled rows; neither re-applies the
-      // webhook's filters, which need the event data). Completing the job instead of throwing
+      // receive it (the reconciler applies the same test; neither re-applies the webhook's filters,
+      // which need the event data). Completing the job instead of throwing
       // stops the retries and files no dead-letter row. Otherwise deliver with the CURRENT url,
       // headers and secret, as the reconciler's replay does, so a receiver move or a rotated
       // secret or auth header applies to jobs already waiting in the queue.
@@ -185,6 +189,11 @@ export class WebhookProcessor extends WorkerHost {
         { webhookId, deliveryId: payload.deliveryId, action: 'webhook_bookkeeping_failed' },
       );
     }
+
+    // A delivered event must not stay listed as lost. A failure row exists for it only when an
+    // earlier dispatch of the same delivery was shed, refused or failed before this job ran. An
+    // indexed delete that usually matches nothing.
+    await clearDeliveryFailureRows(this.failureRepository, this.logger, webhookId, payload.idempotencyKey);
 
     // Execute hook after successful delivery
     await this.hookManager.execute(

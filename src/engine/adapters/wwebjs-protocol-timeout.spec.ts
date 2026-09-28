@@ -220,6 +220,21 @@ describe('a protocol timeout is a 503, never a not-found verdict', () => {
     expect(reportIfPageTransportError).not.toHaveBeenCalled();
   });
 
+  // The two list reads walk the whole store in one command, so they are the ones a large account
+  // pushes past the budget; neither has a not-found verdict, but a raw rethrow would answer 500.
+  it.each([
+    ['getContacts', (host: WwebjsEngineHost) => new WwebjsContacts(host).getContacts(), 'pupPage'],
+    ['getChats', (host: WwebjsEngineHost) => chats(host).getChats(), 'getChats'],
+  ] as const)('%s answers an expired protocolTimeout with a 503 and reports no death', async (_op, call, via) => {
+    const timeout = jest.fn().mockRejectedValue(new Error(await puppeteerProtocolTimeoutMessage()));
+    const client = via === 'pupPage' ? { pupPage: { evaluate: timeout } } : { getChats: timeout };
+    const { host, reportIfPageTransportError } = makeHost(client as unknown as Record<string, jest.Mock>);
+
+    await expect(call(host)).rejects.toBeInstanceOf(EngineTransportError);
+    expect(timeout).toHaveBeenCalledTimes(1);
+    expect(reportIfPageTransportError).not.toHaveBeenCalled();
+  });
+
   // Negative twin: an ordinary page-side refusal keeps its not-found verdict.
   it.each([
     ['getGroupInfo', null],

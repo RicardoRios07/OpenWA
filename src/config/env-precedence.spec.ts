@@ -288,17 +288,29 @@ describe('every key the dashboard writes is commented out in .env.example', () =
     expect(viaSecretHelper()).toContain('REDIS_PASSWORD');
   });
 
-  const uncommentedKeys = (file: string): string[] =>
-    fs
-      .readFileSync(path.join(__dirname, '../..', file), 'utf8')
+  const assignedKeys = (text: string): string[] =>
+    text
       .split('\n')
       .map(line => /^([A-Z0-9_]+)=/.exec(line)?.[1])
       .filter((key): key is string => key !== undefined);
+  const uncommentedKeys = (file: string): string[] =>
+    assignedKeys(fs.readFileSync(path.join(__dirname, '../..', file), 'utf8'));
 
   it('ships none of them uncommented in .env.example', () => {
     const uncommented = uncommentedKeys('.env.example');
     expect(uncommented).toContain('NODE_ENV'); // the file really does ship some keys uncommented
     expect(uncommented.filter(key => dashboardOwned().includes(key))).toEqual([]);
+  });
+
+  // docs/10 section 10.5 presents its .env block as an excerpt of .env.example, so operators copy it
+  // the same way and it has to follow the same rule. A published pepper is no secret either.
+  it('ships none of them uncommented in the docs/10 environment excerpt', () => {
+    const docs = fs.readFileSync(path.join(__dirname, '../../docs/10-devops-infrastructure.md'), 'utf8');
+    const section = docs.slice(docs.indexOf('## 10.5 Environment Configuration'));
+    const uncommented = assignedKeys(/```bash\n([\s\S]*?)```/.exec(section)?.[1] ?? '');
+    expect(uncommented).toContain('NODE_ENV'); // the block was found and does ship some keys uncommented
+    expect(uncommented.filter(key => dashboardOwned().includes(key))).toEqual([]);
+    expect(uncommented).not.toContain('API_KEY_PEPPER');
   });
 
   /**

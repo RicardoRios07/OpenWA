@@ -91,7 +91,14 @@ export async function loadRemoteMedia(url: string, sessionProxyUrl: string | und
   // `sessionProxyUrl` routes the fetch through this session's egress proxy (#1626); the browser's
   // own requests already ride Chromium's --proxy-server, this one is made by the gateway itself.
   const { data, mimetype } = await loadRemoteMediaBuffer(url, sessionProxyUrl);
-  const filename = new URL(url).pathname.split('/').pop() || undefined;
+  // The pathname keeps its percent-encoding, and the recipient would see `Laporan%20Bulanan.pdf`. A
+  // malformed escape keeps the raw name, and a decoded slash is replaced so the label stays one name.
+  let filename = new URL(url).pathname.split('/').pop() || undefined;
+  try {
+    filename = filename && decodeURIComponent(filename).replace(/[/\\]/g, '_');
+  } catch {
+    // URIError: keep the raw basename.
+  }
   return new MessageMedia(mimetype || 'application/octet-stream', data.toString('base64'), filename);
 }
 
@@ -620,31 +627,43 @@ export class WwebjsMessaging {
       // The forward's send leg fails with `No LID for user` for a LID-migrated destination, so resolve
       // it (and self-heal a stale mapping) via sendResolved. Capture the id actually sent to so the
       // id-recovery below reads back from the SAME (resolved) chat, not the raw @c.us (#583 R1).
+      // The ids already in that chat are read first, on every attempt, so the recovery below can tell
+      // the forwarded copy from an earlier send with the same whole-second timestamp. A failed read
+      // never blocks the forward; it only leaves the copy unidentified.
       let resolvedTo = toChatId;
-      await this.sendResolved(toChatId, to => {
+      let before = undefined as Set<string> | undefined;
+      await this.sendResolved(toChatId, async to => {
         resolvedTo = to;
+        before = undefined;
+        try {
+          before = new Set((await this.recentOwnMessages(to)).map(m => toMessageResult(m).id));
+        } catch (error) {
+          this.host.logger.warn(`Could not read the destination chat before forwarding: ${String(error)}`);
+        }
         return msgToForward.forward(to);
       });
 
       // whatsapp-web.js's forward() returns void, so BEST-EFFORT recover the REAL id of the sent copy by
-      // reading it back from the destination chat (the most recent outgoing message). The delivery-ack
-      // matcher keys on this id, so a synthetic one would leave the forward stuck at SENT; Baileys already
+      // reading it back from the destination chat: the one outgoing message that was not there before
+      // the forward, or, when several appeared, the only one marked forwarded. The delivery-ack matcher
+      // keys on this id, so a synthetic one would leave the forward stuck at SENT; Baileys already
       // returns the real id. The forward already succeeded here, so recovery must NEVER fail the operation.
-      // When the copy can't be identified we return an explicit-unknown id (empty): message.service then
-      // leaves the row's waMessageId unset so no ack can mis-match it — unlike a synthetic or source id,
-      // which could cross-drive another row's delivery status. Concurrent forwards to the same chat may
-      // mis-identify the copy — acceptable for delivery-status accuracy.
+      // When the copy can't be identified (no snapshot, or no single candidate, as with two forwards
+      // to the same chat at once) we return an explicit-unknown id (empty): message.service then
+      // leaves the row's waMessageId unset so no ack can mis-match it. A wrong id is worse: persisting
+      // it merges the forward's row into the other message's.
       try {
-        const destChat = await this.client().getChatById(resolvedTo);
-        const sentByMe = (await destChat?.fetchMessages({ limit: 5, fromMe: true })) ?? [];
-        let sent: (typeof sentByMe)[number] | undefined;
-        for (const m of sentByMe) {
-          if (!sent || m.timestamp > sent.timestamp) {
-            sent = m;
+        if (before) {
+          const known = before;
+          const fresh = (await this.recentOwnMessages(resolvedTo)).filter(m => {
+            const id = toMessageResult(m).id;
+            return id !== '' && !known.has(id);
+          });
+          const forwarded = fresh.filter(m => m.isForwarded);
+          const sent = fresh.length === 1 ? fresh[0] : forwarded.length === 1 ? forwarded[0] : undefined;
+          if (sent) {
+            return toMessageResult(sent);
           }
-        }
-        if (sent) {
-          return toMessageResult(sent);
         }
       } catch (error) {
         // Still surface a dead page even though the send itself succeeded (detection only; the
@@ -657,6 +676,12 @@ export class WwebjsMessaging {
       this.host.reportIfPageTransportError(error, 'forwardMessage');
       throw error;
     }
+  }
+
+  /** The last few messages this account sent to a chat, in the order whatsapp-web.js returns them. */
+  private async recentOwnMessages(chatId: string): Promise<Message[]> {
+    const chat = await this.client().getChatById(chatId);
+    return (await chat?.fetchMessages({ limit: 5, fromMe: true })) ?? [];
   }
 
   async reactToMessage(chatId: string, messageId: string, emoji: string): Promise<void> {

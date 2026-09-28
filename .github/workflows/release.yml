@@ -423,7 +423,9 @@ jobs:
           name: v${{ steps.version.outputs.VERSION }}
           body: ${{ steps.changelog.outputs.NOTES }}
           draft: false
-          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
+          # Same rule as the image channels below: any tag with a '-' suffix is a prerelease, so a
+          # tag kept off X.Y and latest can never become GitHub's "Latest" release either.
+          prerelease: ${{ contains(github.ref_name, '-') }}
 
   # ──── Docker Image with Version Tag ───────────────────────────────
   docker:
@@ -476,8 +478,9 @@ jobs:
             docker.io/rmyndharis/openwa
           tags: |
             type=semver,pattern={{version}}
-            # The mutable channels (X.Y, latest) are disabled for prereleases: an rc/beta/alpha
-            # build must never become what `docker pull openwa:0.11` or `:latest` resolves to.
+            # The mutable channels (X.Y, latest) are disabled for prereleases, meaning any tag with
+            # a '-' suffix (rc, beta, alpha or any other): such a build must never become what
+            # `docker pull openwa:0.11` or `:latest` resolves to.
             # The exact prerelease tag ({{version}}) is still published.
             type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref_name, '-') }}
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}

@@ -49,9 +49,9 @@ class WebhookFilterConditionDto {
 class WebhookFiltersDto {
   @ApiProperty({
     type: [WebhookFilterConditionDto],
-    minItems: 1,
     maxItems: MAX_CONDITIONS,
-    description: 'Every condition must match (AND) for the webhook to fire.',
+    description:
+      'Every condition must match (AND) for the webhook to fire. An empty list means no filter: the webhook fires on every subscribed event.',
   })
   conditions!: WebhookFilterConditionDto[];
 }

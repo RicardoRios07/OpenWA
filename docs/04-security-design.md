@@ -158,9 +158,12 @@ sub-resource, no per-entry `active` flag. Enforcement lives in two places:
 
 ### IPv6 Support
 
-CIDR matching is IPv4-only: an IPv6 range in `allowedIps` never matches. An exact IPv6 address still
-works, by literal comparison — IPv4-mapped forms (`::ffff:203.0.113.50`) are normalized to their bare
-IPv4 address first.
+`allowedIps` accepts IPv4 addresses and IPv4 CIDR ranges only; the API rejects an IPv6 entry. An
+IPv6 address or range already stored on a key created before v0.4.3, when the API started rejecting
+them, is matched as written. An IPv4-mapped client address (`::ffff:203.0.113.50`) is normalized to its bare IPv4 address before
+matching. `TRUSTED_PROXIES` accepts IPv4 and IPv6 addresses and CIDR ranges (for example `fd00::/8`);
+an entry that is neither is ignored, with a warning at boot. A trusted proxy that appends a port to
+an `X-Forwarded-For` hop (`203.0.113.7:51000`, `[2001:db8::1]:443`) resolves to the bare address.
 
 ## 4.4 Data Encryption
 
@@ -251,7 +254,7 @@ flowchart LR
     RL -->|Under Limit| APP[Application]
     RL -->|Over Limit| ERR[429 Too Many Requests]
 
-    subgraph Limits["Global windows (per client IP)"]
+    subgraph Limits["Windows (per route, per client IP)"]
         T1[short: 10 / 1s]
         T2[medium: 100 / 60s]
         T3[long: 1000 / 1h]
@@ -260,7 +263,7 @@ flowchart LR
 
 ### Windows
 
-All limits are **global and per client IP** (resolved through `TRUSTED_PROXIES`), applied by a global `ThrottlerGuard`. There is **no per-endpoint limit table** — these three windows apply to every non-exempt route, and exceeding any one returns `429 Too Many Requests`:
+Each window is counted **per route handler per client IP** (the IP resolved through `TRUSTED_PROXIES`) by a global `ThrottlerGuard`, so a client gets the full budget on every endpoint; for an aggregate per-client cap, add a limiter at your reverse proxy. There is **no per-endpoint limit table**: these three windows apply to every non-exempt route, and exceeding any one returns `429 Too Many Requests`:
 
 | Window   | Default limit | Window length | Env overrides                                       |
 | -------- | ------------- | ------------- | --------------------------------------------------- |
@@ -270,7 +273,7 @@ All limits are **global and per client IP** (resolved through `TRUSTED_PROXIES`)
 
 TTL values are in milliseconds. The `/api/metrics` and `/api/health*` routes are exempt (`@SkipThrottle`). To enforce tighter per-route limits, lower the global windows or add a limiter at your reverse proxy.
 
-An IPv6 client is keyed on its /64, so rotating addresses inside one allocation does not mint fresh buckets. The same key is used by every other per-client limit: the MCP and Bull Board pre-auth throttles, the WebSocket limits below, the per-client share of the in-flight body budget, and the health route's auth-failure audit bound. `allowedIps` matching and audit rows still see the full address.
+An IPv6 client is keyed on its /64, so rotating addresses inside one allocation does not mint fresh buckets. The same key is used by every other per-client limit: the MCP and Bull Board pre-auth throttles, the WebSocket limits below, the per-client share of the in-flight body budget, the health route's auth-failure audit bound, and the REST and queue-dashboard auth-failure audit bound. `allowedIps` matching and audit rows still see the full address.
 
 ### Response on limit
 
@@ -492,7 +495,7 @@ flowchart TB
 
 ### Security Alerts
 
-> **Not implemented.** There is no alerting or automatic temp-block subsystem; the table below is a design target, not shipped behavior. The signals do get recorded — rejected authentication and WebSocket rate-limit violations write persisted audit rows (the latter sampled), and an IP-restricted key used from a disallowed IP also emits a `logger.warn` — but nothing acts on them. Forward the audit log / application log to your SIEM to build these alerts.
+> **Not implemented.** There is no alerting or automatic temp-block subsystem; the table below is a design target, not shipped behavior. The signals do get recorded: rejected authentication and WebSocket rate-limit violations write persisted audit rows, and an IP-restricted key used from a disallowed IP also emits a `logger.warn`; but nothing acts on them. A REST or queue-dashboard rejection that names no stored key (missing or unknown) is capped at 10 rows per client IP per minute; a rejection of a stored key (revoked, expired, IP or session refused, insufficient role) is recorded every time there. The public `/api/health` route bounds every auth-failure row it writes, stored key or not, at 10 per client IP per minute. Rate-limit violations are sampled. Forward the audit log / application log to your SIEM to build these alerts.
 
 | Event                | Severity | Intended action (roadmap) |
 | -------------------- | -------- | ------------------------- |
@@ -539,10 +542,12 @@ flowchart TB
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------- |
 | Database credentials              | Environment variable                                                                                               | 90 days                                         |
 | Redis password                    | Environment variable                                                                                               | 90 days                                         |
-| API master key (`API_MASTER_KEY`) | Environment variable                                                                                               | 180 days                                        |
+| API master key (`API_MASTER_KEY`) | Environment variable (first-boot seed only)                                                                        | Not via the env var; see the note below         |
 | API key pepper (`API_KEY_PEPPER`) | Environment variable                                                                                               | Rotating it invalidates all existing key hashes |
 | Webhook secrets                   | Database — **plaintext**; not in the webhook read DTOs, and omitted from `GET /api/infra/export-data` webhook rows | Per webhook                                     |
 | Session auth state                | File system (data volume) — **not encrypted**                                                                      | Never (tied to the WA session)                  |
+
+> `API_MASTER_KEY` only seeds the first ADMIN key, and is read only while the key table is empty. Changing it later has no effect: the new value never authenticates and the seeded key stays valid. Rotate by minting a new ADMIN key with `POST /api/auth/api-keys` and revoking the seeded `Default Admin Key`.
 
 > There is no application `ENCRYPTION_KEY` — OpenWA does not encrypt data at rest (see §4.4). The rotation cadences above are operational recommendations, not enforced by the app.
 
@@ -612,7 +617,7 @@ const masterKey = getSecret('API_MASTER_KEY');
 
 ### Key Rotation Procedure
 
-> **Not applicable today.** OpenWA stores no encrypted-at-rest data (see §4.4), so there is no data-encryption key to rotate and no `rotateEncryptionKey()` in the codebase. The flow below is illustrative for if/when field-level encryption is added. To rotate the `API_MASTER_KEY` or `API_KEY_PEPPER`, use the API-key endpoints (§4.2) — rotating the pepper invalidates existing key hashes.
+> **Not applicable today.** OpenWA stores no encrypted-at-rest data (see §4.4), so there is no data-encryption key to rotate and no `rotateEncryptionKey()` in the codebase. The flow below is illustrative for if/when field-level encryption is added. To rotate the key seeded from `API_MASTER_KEY`, mint a new ADMIN key through the API-key endpoints (§4.2) and revoke the seeded one; editing the env var has no effect after first boot. Rotating `API_KEY_PEPPER` invalidates every existing key hash.
 
 ```mermaid
 flowchart TB

@@ -141,13 +141,12 @@ export class BulkMessageService implements OnApplicationBootstrap {
   async onApplicationBootstrap(): Promise<void> {
     const processing = await this.batchRepository.find({ where: { status: BatchStatus.PROCESSING } });
     const orphaned = await this.ownedByThisNode(processing);
+    let failed = 0;
     for (const batch of orphaned) {
-      await this.failOrphanedBatch(batch);
+      if (await this.failOrphanedBatch(batch)) failed++;
     }
-    if (orphaned.length > 0) {
-      this.logger.warn(
-        `Marked ${orphaned.length} orphaned PROCESSING batch(es) FAILED on startup (interrupted by a restart)`,
-      );
+    if (failed > 0) {
+      this.logger.warn(`Marked ${failed} orphaned PROCESSING batch(es) FAILED on startup (interrupted by a restart)`);
     }
     const skipped = processing.length - orphaned.length;
     if (skipped > 0) {
@@ -155,10 +154,18 @@ export class BulkMessageService implements OnApplicationBootstrap {
     }
   }
 
-  private async failOrphanedBatch(batch: MessageBatch): Promise<void> {
-    batch.status = BatchStatus.FAILED;
+  /**
+   * Guarded on PROCESSING in the UPDATE itself: the row was read before this write, and a batch that
+   * finalized in between must keep its real status, progress and results. Returns whether the row
+   * was still PROCESSING and is now FAILED.
+   */
+  private async failOrphanedBatch(batch: MessageBatch): Promise<boolean> {
     this.stripBatchMediaPayloads(batch.messages);
-    await this.batchRepository.save(batch);
+    const failed = await this.batchRepository.update({ id: batch.id, status: BatchStatus.PROCESSING }, {
+      status: BatchStatus.FAILED,
+      messages: batch.messages,
+    } as QueryDeepPartialEntity<MessageBatch>);
+    return Boolean(failed.affected);
   }
 
   /**
@@ -166,16 +173,23 @@ export class BulkMessageService implements OnApplicationBootstrap {
    * Same policy as the boot reaper and for the same reason: the dead node's already-sent messages
    * are unknowable, so resuming risks double-sends — FAILED with the payloads stripped is the
    * honest terminal state, and the caller can re-issue the batch knowingly.
+   *
+   * A batch this process is running itself is not orphaned: the adoption claims the session before
+   * its engine finishes initializing, so a bulk request routed here in that window starts a batch
+   * that is already PROCESSING by the time the caller reaps. Only the dead holder's batches go.
    */
   async reapProcessingBatches(sessionId: string, reason: string): Promise<number> {
-    const processing = await this.batchRepository.find({ where: { status: BatchStatus.PROCESSING, sessionId } });
+    const processing = (
+      await this.batchRepository.find({ where: { status: BatchStatus.PROCESSING, sessionId } })
+    ).filter(batch => !this.processingBatches.has(batch.id));
+    let failed = 0;
     for (const batch of processing) {
-      await this.failOrphanedBatch(batch);
+      if (await this.failOrphanedBatch(batch)) failed++;
     }
-    if (processing.length > 0) {
-      this.logger.warn(`Marked ${processing.length} PROCESSING batch(es) FAILED for session ${sessionId} (${reason})`);
+    if (failed > 0) {
+      this.logger.warn(`Marked ${failed} PROCESSING batch(es) FAILED for session ${sessionId} (${reason})`);
     }
-    return processing.length;
+    return failed;
   }
 
   /**

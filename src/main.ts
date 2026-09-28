@@ -24,6 +24,7 @@ import {
   isNodeEnvUnset,
 } from './config/bootstrap-security';
 import { BullBoardAuthMiddleware } from './common/security/bull-board-auth.middleware';
+import { invalidTrustedProxies } from './common/utils/ip';
 import { AuthService } from './modules/auth/auth.service';
 import { AuditService } from './modules/audit/audit.service';
 import { Request, Response, NextFunction } from 'express';
@@ -91,6 +92,15 @@ async function bootstrap() {
     bootstrapLogger.warn(
       'API_KEY_PEPPER is not set in production: stored API-key hashes use plain SHA-256. ' +
         'Set API_KEY_PEPPER and re-issue keys to enable HMAC hashing.',
+    );
+  }
+
+  // Advisory (not enforced): a TRUSTED_PROXIES entry that is not an IP or CIDR never matches, so the
+  // proxy it meant to name is treated as a client. Failing the boot would break configs that run today.
+  const badTrustedProxies = invalidTrustedProxies(process.env.TRUSTED_PROXIES);
+  if (badTrustedProxies.length > 0) {
+    bootstrapLogger.warn(
+      `TRUSTED_PROXIES entries that are not an IP address or CIDR range are ignored: ${badTrustedProxies.join(', ')}`,
     );
   }
 

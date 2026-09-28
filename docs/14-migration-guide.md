@@ -205,6 +205,10 @@ curl -X POST 'http://localhost:2785/api/infra/import-data' \
 
 OpenWA v0.2+ supports migrating media files between storage backends:
 
+On an S3/MinIO backend, confirm `GET /api/infra/status` reports `storage.s3Available: true` before the
+export (S3 to Local) and before the import (Local to S3). While the bucket is unusable these routes
+answer `503` instead of running against the local fallback directory.
+
 ```bash
 # Step 1: Check current storage file count
 curl -s 'http://localhost:2785/api/infra/storage/files/count' \
@@ -286,14 +290,18 @@ BullMQ stores job data in Redis. When switching Redis instances, pending jobs ma
 **Best Practice - Drain Queue Before Switching:**
 
 ```bash
-# Step 1: Check queue status via Bull Board
-# Visit: http://localhost:2785/api/admin/queues
+# Step 1: Read both queues' depth from Bull Board's JSON route. Bull Board takes an ADMIN key only in
+# a request header (X-API-Key or Authorization: Bearer), never in the URL, so a plain browser tab on
+# /api/admin/queues gets 401; open the HTML board through a reverse proxy or client that adds one.
+curl -s 'http://localhost:2785/api/admin/queues/api/queues' \
+  -H 'X-API-Key: ADMIN_KEY' | jq '.queues[] | {name, waiting: .counts.waiting, active: .counts.active, delayed: .counts.delayed}'
 
-# Step 2: Wait until the webhook and ingress queues are empty (Bull Board shows webhook-queue and ingress-queue; there is no MESSAGE queue)
-# Or check via API:
+# Step 2: Wait until waiting, active and delayed are 0 for both webhook-queue and ingress-queue
+# (there is no MESSAGE queue). /api/infra/status is a shortcut for the webhook queue only: it does
+# not count ingress-queue, and it reports zeros when Redis is unreachable.
 curl -s 'http://localhost:2785/api/infra/status' \
-  -H 'X-API-Key: YOUR_KEY' | jq '.queue'
-# Wait for: pending: 0
+  -H 'X-API-Key: ADMIN_KEY' | jq '.queue.webhooks.pending'
+# Wait for: 0
 
 # Step 3: Change Redis configuration
 REDIS_HOST=new-redis-host.com
@@ -309,7 +317,7 @@ docker compose up -d
 | Built-in → External Redis | ⚠️      | Drain queue first |
 
 > [!WARNING]
-> **Job Loss Prevention**: Always ensure the `webhook-queue` and `ingress-queue` queues are empty before switching Redis instances (there is no MESSAGE queue). Check the `/api/admin/queues` dashboard.
+> **Job Loss Prevention**: Always ensure the `webhook-queue` and `ingress-queue` queues are empty before switching Redis instances (there is no MESSAGE queue). Check both with the header-authenticated Bull Board JSON route in Step 1; the `/api/admin/queues` board needs an ADMIN key in the `X-API-Key` header or as an `Authorization: Bearer` token (never in the URL), so a browser reaches it only through a reverse proxy that adds one.
 
 ### Infrastructure Migration Summary
 
@@ -793,6 +801,7 @@ docker compose run --rm openwa-api npm run migration:run:prod
 
 | Release  | Change                                                                                                                                                                                                                                                                                                                       | Action                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `0.23.8` | `POST /api/sessions/:sessionId/messages/send-product` passes the `message:sending` plugin gate (type `product`, input `{ chatId, productId, body }`); a rewritten `chatId` is ignored                                                                                                                                        | Branch on `source`/`type` before reading send-DTO fields; a veto now answers `400`                                                                                                                                                                                                                                                                                                                                                                                             |
 | `0.23.6` | A media URL passed to a send route or to `POST /media/convert/voice` or `.../convert/video`, and the link preview of a text send, are fetched through the egress proxy of the session named in the request instead of leaving from the gateway's own address                                                                 | Set `SESSION_PROXY_URL_FETCH=false` if a session proxy is a WhatsApp-only route that cannot reach arbitrary media hosts                                                                                                                                                                                                                                                                                                                                                        |
 | `0.23.0` | Typed SDK clients: `markRead` and `subscribePresence` each take their own request type instead of the shared `MarkChatRequest`, which now serves `markUnread` alone                                                                                                                                                          | Go and Java: swap the type at both call sites. Typed Python: only at `markRead`, its `subscribePresence` body being structurally identical. JavaScript and PHP need no change; the wire body is unchanged                                                                                                                                                                                                                                                                      |
 | `0.22.0` | Baileys refuses a reply whose quoted id, or a forward whose `fromChatId`, does not name the addressed chat, with the `404` whatsapp-web.js already answered; leaving a group, unsubscribing from a channel and labelling a channel surface WhatsApp's refusal; membership requests for an id that is not a group are refused | Handle a refusal on those six calls, which previously answered `200` whatever happened                                                                                                                                                                                                                                                                                                                                                                                         |

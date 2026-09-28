@@ -175,7 +175,8 @@ export class PluginSandboxBridge {
   /**
    * Dispatch a queued ingress job into its plugin's live sandbox worker. Called from IngressProcessor,
    * mirroring checkPluginHealth's sandboxHosts lookup. Throws when the plugin has no live
-   * worker (disabled/crashed since the job was enqueued) or when the worker's handler itself reports
+   * worker (disabled/crashed since the job was enqueued), when the instance was disabled or deleted
+   * since, or when the worker's handler itself reports
    * failure (`!result.ok`, e.g. a 502/504/500) — either way BullMQ's retry/DLQ machinery takes over.
    */
   async dispatchWebhookForInstance(d: IngressJobData): Promise<void> {
@@ -193,6 +194,14 @@ export class PluginSandboxBridge {
     // Missing/hot-swapped route metadata fails closed.
     const verified = route ? route.signature.scheme !== 'none' : false;
     const instance = await this.hostServices.getPluginInstancePort().resolve(d.pluginId, d.instanceId);
+    // The live door and the reconciler refuse an unknown or disabled instance; a queued job, a retry,
+    // the inline fallback and a redrive all land here instead, so the same rule is enforced once more.
+    // A missing row must never fall through to the base config below: a wildcard instance projects its
+    // own config there, so the delivery would run with another instance's endpoint and credentials.
+    // Throwing hands the job to the normal retry/dead-letter path.
+    if (!instance || instance.enabled === false) {
+      throw new Error('instance ' + d.instanceId + ' of plugin ' + d.pluginId + ' is disabled or deleted');
+    }
     // Three layers, most specific last: the base ('*') config, then the operator's per-session
     // override from PUT /plugins/:id/sessions/:sessionId/config, then THIS instance's own config.
     // The instance layer is what keeps two instances sharing one session scope apart — provisioning

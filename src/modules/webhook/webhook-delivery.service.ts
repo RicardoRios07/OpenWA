@@ -8,7 +8,7 @@ import { setTimeout } from 'node:timers/promises';
 import { Webhook } from './entities/webhook.entity';
 import { WebhookOutboxService } from './webhook-outbox.service';
 import { WebhookDeliveryFailure } from './entities/webhook-delivery-failure.entity';
-import { recordWebhookDeliveryFailure } from './utils/record-delivery-failure';
+import { clearDeliveryFailureRows, recordWebhookDeliveryFailure } from './utils/record-delivery-failure';
 import {
   buildDeliveryHeaders,
   generateSignature,
@@ -42,7 +42,6 @@ export interface WebhookJobData {
   url: string;
   event: string;
   payload: WebhookPayload;
-  headers: Record<string, string>;
   attempt: number;
   maxRetries: number;
 }
@@ -84,7 +83,7 @@ interface DispatchEventContext {
  * The webhook delivery engine: given an event occurrence, fan it out to the session's matching
  * webhooks — bounded by the dispatch limiter — through the BullMQ queue when enabled (with a
  * direct-delivery fallback when enqueue fails) or through direct inline delivery when not.
- * Records terminally failed deliveries in webhook_delivery_failures. Webhook registration/CRUD
+ * Records failed and unsent deliveries in webhook_delivery_failures. Webhook registration/CRUD
  * lives on WebhookService, which delegates dispatch here.
  */
 const isPlainObject = (value: unknown): boolean => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -457,6 +456,10 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
     const { finalPayload, body, headers } = preflight;
     // Use queue if available, otherwise fallback to direct delivery
     if (this.queueEnabled && this.webhookQueue) {
+      // A replay's attempts-0 row is not cleared here. It stays until the delivery resolves: a
+      // successful POST (the processor's, or the fallback's when the add fails) clears it, and a
+      // terminal failure replaces it right after filing its own row. A restart or a lost job at
+      // any point before that still leaves the event on record.
       return this.enqueueWithFallback(webhook, finalPayload, body, headers, deliveryId, idempotencyKey, ctx);
     }
     return this.deliverDirect(webhook, finalPayload, body, headers, deliveryId, ctx);
@@ -473,15 +476,13 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
   ): Promise<WebhookDeliveryOutcome> {
     const { sessionId, event } = ctx;
     try {
-      // The job's headers are the enqueue-time snapshot. The processor rebuilds them (and the
-      // signature) from the current webhook row on every attempt, so a secret or header rotated
-      // while the job waits is honoured.
+      // No headers are stored: the processor builds them and the signature from the current row on
+      // every attempt, so custom headers (which may carry receiver credentials) never reach Redis.
       const jobData: WebhookJobData = {
         webhookId: webhook.id,
         url: webhook.url,
         event,
         payload: finalPayload,
-        headers,
         attempt: 1,
         maxRetries: webhook.retryCount,
       };
@@ -772,6 +773,9 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
           { webhookId: webhook.id, deliveryId: payload.deliveryId, action: 'webhook_bookkeeping_failed' },
         );
       }
+      // A delivered event must not stay listed as lost: a replay of a shed, refused or failed
+      // dispatch, or a re-emitted event, reuses the key an earlier failure row was filed under.
+      await clearDeliveryFailureRows(this.failureRepository, this.logger, webhook.id, payload.idempotencyKey);
 
       this.logger.debug(`Webhook delivered to ${webhook.id}`, {
         webhookId: webhook.id,
@@ -793,6 +797,8 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
       }
       // All direct-path retries exhausted — persist a durable failure record before giving up, mirroring
       // the queued processor's final-attempt path so the queue-disabled path isn't a blind spot.
+      // The recorder writes this row first and only then removes an attempts-0 row of the same
+      // delivery (a shed or refused dispatch), so a restart at any point keeps a record.
       const recorded = await recordTerminalFailure(this.failureRepository, this.logger, {
         webhookId: webhook.id,
         sessionId: payload.sessionId,

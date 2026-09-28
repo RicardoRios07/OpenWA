@@ -121,7 +121,6 @@ services:
       # raise this for large documents (e.g. BODY_SIZE_LIMIT=50mb). Blank keeps the app default of 25mb.
       - BODY_SIZE_LIMIT=${BODY_SIZE_LIMIT:-}
       - TRUSTED_PROXIES=${TRUSTED_PROXIES:-}
-      - QUEUE_ENABLED=${QUEUE_ENABLED:-false}
       # Opt-in feature flags. Forwarded explicitly for the same reason as docker-compose.yml: this
       # file has no env_file, so a variable absent from this list never reaches the container and
       # the feature it gates stays off however the operator's .env is written.

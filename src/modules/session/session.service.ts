@@ -1,4 +1,5 @@
 import {
+  BadGatewayException,
   HttpException,
   Injectable,
   NotFoundException,
@@ -595,10 +596,11 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
       if (this.ownership) await this.assertNotHeldElsewhere(id);
       session = await this.engineLifecycle.stop(id);
     } catch (error) {
-      // Deliberately no release here, unlike logout()/forceKill(): this catch also carries the
-      // foreign-node 409, where the claim is the peer's and a blanket release would delete it. The
-      // local-502 path keeps the claim, and only claims with a live engine are renewed — it lapses
-      // at lease TTL instead of pinning the session here.
+      // Only the local 502 (SESSION_STOP_INCOMPLETE) releases: it evicted the engine and wrote
+      // DISCONNECTED, and a claim left to lapse still names this node, so a peer's takeover sweep
+      // would adopt the row and start the session the operator just stopped. A released claim is
+      // not adopted. The foreign-node 409 keeps its claim (it is the peer's), and so does a 404.
+      if (error instanceof BadGatewayException) await this.releaseUnlessEngineActive(id);
       this.discardStopMarkForMissingSession(id, error);
       throw error;
     }

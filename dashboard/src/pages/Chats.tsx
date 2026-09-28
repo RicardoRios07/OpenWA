@@ -396,8 +396,10 @@ export function Chats() {
   );
 
   // 3. WebSocket integration for real-time messages
+  // Synced in a layout effect: a socket frame handled after the list commits but before passive
+  // effects flush would otherwise see the previous list, miss the chat and refetch the whole list.
   const chatsRef = useRef(chats);
-  useEffect(() => {
+  useLayoutEffect(() => {
     chatsRef.current = chats;
   });
   const handleIncomingMessage = useCallback(
@@ -592,6 +594,7 @@ export function Chats() {
   // banner's retry refreshes too. The transition logic is unit-tested in utils/reconnectState.
   const reconnectHadConnected = useRef(false);
   const reconnectWasDisconnected = useRef(false);
+  const activeChatId = activeChat?.id;
   useEffect(() => {
     const decision = nextReconnectState({
       isConnected,
@@ -606,8 +609,21 @@ export function Chats() {
       // Statuses are live now (status.received): a story posted during the socket gap would
       // otherwise stay invisible until a focus refetch.
       queryClient.invalidateQueries({ queryKey: ['contact-statuses', selectedSessionId] });
+      // The sidebar list is local state, so previews, unread counts and chats started during the gap
+      // only show after a refetch. Background mode keeps the current list on screen meanwhile.
+      // The open chat's gap messages are read on screen: mark them read and keep its row at zero,
+      // since the snapshot still counts them (the same rule a live frame and opening a chat follow).
+      const readChatId = canWrite ? activeChatId : undefined;
+      if (readChatId) markChatRead(readChatId);
+      // The zeroing waits for the refetch, by when another session's list may be on screen; like a send's
+      // promote, it applies only while the list is still this session's.
+      void loadChats(selectedSessionId, { background: true }).then(() => {
+        if (readChatId && chatsSessionRef.current === selectedSessionId) {
+          setChats(prev => prev.map(c => (c.id === readChatId ? { ...c, unreadCount: 0 } : c)));
+        }
+      });
     }
-  }, [isConnected, connectionFailed, selectedSessionId, queryClient]);
+  }, [isConnected, connectionFailed, selectedSessionId, queryClient, loadChats, activeChatId, canWrite, markChatRead]);
 
   useEffect(() => {
     if (selectedSessionId && isConnected) {

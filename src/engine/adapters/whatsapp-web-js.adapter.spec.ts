@@ -570,6 +570,21 @@ describe('loadRemoteMedia — routes through the SSRF-pinned media fetch', () =>
     expect(undiciFetch).not.toHaveBeenCalled();
   });
 
+  it('names the file after the percent-decoded URL basename', async () => {
+    (undiciFetch as jest.Mock).mockResolvedValue(fakeResponse([1], { 'content-type': 'application/pdf' }));
+
+    const name = async (url: string): Promise<string | undefined> =>
+      (await loadRemoteMedia(url, undefined)).filename ?? undefined;
+
+    expect(await name('https://8.8.8.8/files/Laporan%20Bulanan%20Sept.pdf')).toBe('Laporan Bulanan Sept.pdf');
+    // A malformed escape keeps the raw name instead of failing the send.
+    expect(await name('https://8.8.8.8/files/x%zz.pdf')).toBe('x%zz.pdf');
+    expect(await name('https://8.8.8.8/files/r%E0%A4.pdf')).toBe('r%E0%A4.pdf');
+    // A decoded separator cannot put a path into the label.
+    expect(await name('https://8.8.8.8/files/a%2Fb%5Cc.pdf')).toBe('a_b_c.pdf');
+    expect(await name('https://8.8.8.8/')).toBeUndefined();
+  });
+
   it('honors the SSRF_ALLOWED_HOSTS escape-hatch for trusted internal media stores', async () => {
     process.env.SSRF_ALLOWED_HOSTS = 'minio';
     (undiciFetch as jest.Mock).mockResolvedValue(fakeResponse([1], { 'content-type': 'image/png' }));
@@ -1036,10 +1051,13 @@ describe('WhatsAppWebJsAdapter.forwardMessage (returns the real sent id, not a s
     const forward = jest.fn().mockResolvedValue(undefined);
     const sourceChat = { fetchMessages: jest.fn().mockResolvedValue([{ id: { _serialized: 'SRC1' }, forward }]) };
     const destChat = {
-      fetchMessages: jest.fn().mockResolvedValue([
-        { id: { _serialized: 'OLD' }, timestamp: 100 },
-        { id: { _serialized: 'REAL_FWD' }, timestamp: 200 }, // most recent fromMe = the forwarded copy
-      ]),
+      fetchMessages: jest
+        .fn()
+        .mockResolvedValueOnce([{ id: { _serialized: 'OLD' }, timestamp: 100 }]) // read before the forward
+        .mockResolvedValueOnce([
+          { id: { _serialized: 'OLD' }, timestamp: 100 },
+          { id: { _serialized: 'REAL_FWD' }, timestamp: 200 }, // the one new fromMe = the forwarded copy
+        ]),
     };
     const client = {
       getChatById: jest.fn((id: string) => Promise.resolve(id === 'dest@c.us' ? destChat : sourceChat)),
@@ -1075,6 +1093,59 @@ describe('WhatsAppWebJsAdapter.forwardMessage (returns the real sent id, not a s
       getChatById: jest.fn((id: string) =>
         id === 'dest@c.us' ? Promise.reject(new Error('puppeteer detached')) : Promise.resolve(sourceChat),
       ),
+    };
+
+    const result = await readyAdapter(client).forwardMessage('src@c.us', 'dest@c.us', 'SRC1');
+
+    expect(forward).toHaveBeenCalledWith('dest@c.us');
+    expect(result.id).toBe('');
+  });
+
+  // Destination reads: the first call is the snapshot taken before the forward, the second the read
+  // after it. Timestamps are whole seconds, so a send just before the forward can share one.
+  const forwardWith = async (beforeRows: unknown[], afterRows: unknown[]): Promise<string> => {
+    const forward = jest.fn().mockResolvedValue(undefined);
+    const sourceChat = { fetchMessages: jest.fn().mockResolvedValue([{ id: { _serialized: 'SRC1' }, forward }]) };
+    const destChat = { fetchMessages: jest.fn().mockResolvedValueOnce(beforeRows).mockResolvedValueOnce(afterRows) };
+    const client = {
+      getChatById: jest.fn((id: string) => Promise.resolve(id === 'dest@c.us' ? destChat : sourceChat)),
+    };
+    const result = await readyAdapter(client).forwardMessage('src@c.us', 'dest@c.us', 'SRC1');
+    expect(forward).toHaveBeenCalledWith('dest@c.us');
+    return result.id;
+  };
+  const row = (id: string, isForwarded = false) => ({ id: { _serialized: id }, timestamp: 1000, isForwarded });
+
+  it('returns the new copy, not an earlier send that landed in the same second', async () => {
+    // Order matters: the earlier send comes first, where a strict latest-timestamp pick keeps the
+    // first of a tie.
+    expect(await forwardWith([row('TEXT')], [row('TEXT'), row('FWD')])).toBe('FWD');
+  });
+
+  it('returns the unknown id when nothing new appears in the destination chat', async () => {
+    expect(await forwardWith([row('TEXT')], [row('TEXT')])).toBe('');
+  });
+
+  it('returns the unknown id when several new messages appear and none, or more than one, is marked forwarded', async () => {
+    expect(await forwardWith([row('TEXT')], [row('TEXT'), row('A'), row('B')])).toBe('');
+    expect(await forwardWith([], [row('A', true), row('B', true)])).toBe('');
+  });
+
+  it('picks the one marked forwarded when a concurrent send also appeared', async () => {
+    expect(await forwardWith([row('TEXT')], [row('TEXT'), row('OTHER'), row('FWD', true)])).toBe('FWD');
+  });
+
+  it('still forwards, with the unknown id, when the destination cannot be read beforehand', async () => {
+    const forward = jest.fn().mockResolvedValue(undefined);
+    const sourceChat = { fetchMessages: jest.fn().mockResolvedValue([{ id: { _serialized: 'SRC1' }, forward }]) };
+    const destChat = {
+      fetchMessages: jest
+        .fn()
+        .mockRejectedValueOnce(new Error('Evaluation failed'))
+        .mockResolvedValueOnce([row('FWD', true)]),
+    };
+    const client = {
+      getChatById: jest.fn((id: string) => Promise.resolve(id === 'dest@c.us' ? destChat : sourceChat)),
     };
 
     const result = await readyAdapter(client).forwardMessage('src@c.us', 'dest@c.us', 'SRC1');
@@ -4737,12 +4808,18 @@ describe('LID resolution for individual sends (#573 — WhatsApp @c.us → @lid 
     const forward = jest.fn().mockResolvedValue(undefined);
     const srcMsg = { id: { _serialized: 'M1' }, forward };
     const srcChat = { fetchMessages: jest.fn().mockResolvedValue([srcMsg]) };
-    const destChat = { fetchMessages: jest.fn().mockResolvedValue([{ id: { _serialized: 'OUT1' }, timestamp: 123 }]) };
-    const getChatById = jest.fn().mockResolvedValueOnce(srcChat).mockResolvedValueOnce(destChat);
+    const destChat = {
+      fetchMessages: jest
+        .fn()
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: { _serialized: 'OUT1' }, timestamp: 123 }]),
+    };
+    const getChatById = jest.fn().mockResolvedValueOnce(srcChat).mockResolvedValue(destChat);
     const getNumberId = jest.fn().mockResolvedValue({ _serialized: '159442138038327@lid' });
     const res = await ready({ getChatById, getNumberId }).forwardMessage('src@c.us', '529934031058@c.us', 'M1');
     expect(forward).toHaveBeenCalledWith('159442138038327@lid');
     expect(getChatById).toHaveBeenNthCalledWith(2, '159442138038327@lid');
+    expect(getChatById).toHaveBeenNthCalledWith(3, '159442138038327@lid');
     expect(res.id).toBe('OUT1');
   });
 });
@@ -5091,14 +5168,16 @@ describe('WhatsAppWebJsAdapter inbound media concurrency (slot held until the re
       (adapter as unknown as { capInboundMediaFor: (msg: unknown) => Promise<unknown> }).capInboundMediaFor(m);
 
     const r1 = cap(makeMsg('m1')); // download1 starts synchronously (slot 1)
+    // r2 arrives later, so its own deadline (t=35) outlasts r1's (t=20) and the slot handover below.
+    await jest.advanceTimersByTimeAsync(15);
     const r2 = cap(makeMsg('m2')); // parks on the limiter; download2 must NOT start
     expect(downloads.length).toBe(1);
 
-    // Time out BOTH callers' wall-clock deadline while the real download is still pending. With the old
+    // Time out r1's wall-clock deadline while its real download is still pending. With the old
     // coupling this freed the slot and admitted download2 (inFlight 2); the fix holds the slot.
-    await jest.advanceTimersByTimeAsync(25);
+    await jest.advanceTimersByTimeAsync(10);
     expect(await r1).toEqual(expect.objectContaining({ mimetype: 'image/png', omitted: true, sizeBytes: 100 }));
-    expect(downloads.length).toBe(1); // download2 still not started — slot held by the pending real download1
+    expect(downloads.length).toBe(1); // download2 still not started: slot held by the pending real download1
     expect(maxInFlight).toBe(1);
 
     // The real download1 finally settles -> the slot transfers and download2 may now start.
@@ -5107,12 +5186,54 @@ describe('WhatsAppWebJsAdapter inbound media concurrency (slot held until the re
     expect(downloads.length).toBe(2);
     expect(maxInFlight).toBe(1);
 
-    // Settle the rest so nothing dangles.
-    await jest.advanceTimersByTimeAsync(25);
-    expect(await r2).toEqual(expect.objectContaining({ mimetype: 'image/png', omitted: true, sizeBytes: 100 }));
+    // r2 was still waiting, so it gets its media.
     downloads[1].resolve({ mimetype: 'image/png', data: Buffer.from('b').toString('base64') });
     await jest.advanceTimersByTimeAsync(0);
+    expect(await r2).toEqual(
+      expect.objectContaining({ mimetype: 'image/png', data: Buffer.from('b').toString('base64') }),
+    );
     expect(maxInFlight).toBe(1);
+  });
+
+  it('skips the download of a queued message whose caller already gave up, so a later message keeps its media', async () => {
+    process.env.INBOUND_MEDIA_CONCURRENCY = '1';
+    process.env.MEDIA_DOWNLOAD_TIMEOUT_MS = '100';
+    process.env.MEDIA_DOWNLOAD_MAX_BYTES = String(10 * 1024 * 1024);
+    process.env.MEDIA_DOWNLOAD_ENABLED = 'true';
+    jest.useFakeTimers();
+
+    const adapter = newAdapter();
+    const started: string[] = [];
+    const makeMsg = (id: string): unknown => ({
+      id: { _serialized: id },
+      _data: { size: 100, mimetype: 'image/png' },
+      downloadMedia: jest.fn(() => {
+        started.push(id);
+        // Every download takes 60 ms, inside the 100 ms deadline on its own.
+        return new Promise(resolve =>
+          setTimeout(() => resolve({ mimetype: 'image/png', data: Buffer.from(id).toString('base64') }), 60),
+        );
+      }),
+    });
+    const cap = (m: unknown): Promise<{ data?: string; omitted?: boolean }> =>
+      (
+        adapter as unknown as { capInboundMediaFor: (msg: unknown) => Promise<{ data?: string; omitted?: boolean }> }
+      ).capInboundMediaFor(m);
+
+    // A burst of six: m1 downloads at t=0, m2 is admitted at t=60, and m3..m6 time out at t=100
+    // while still queued. Their downloads must never start.
+    const burst = ['m1', 'm2', 'm3', 'm4', 'm5', 'm6'].map(id => cap(makeMsg(id)));
+    await jest.advanceTimersByTimeAsync(120);
+    const results = await Promise.all(burst);
+    expect(results[0].data).toBe(Buffer.from('m1').toString('base64'));
+    expect(results.slice(1).every(r => r.omitted === true)).toBe(true);
+    expect(started).toEqual(['m1', 'm2']);
+
+    // A message arriving right after the burst is not stuck behind downloads nobody reads.
+    const fresh = cap(makeMsg('m7'));
+    await jest.advanceTimersByTimeAsync(60);
+    expect((await fresh).data).toBe(Buffer.from('m7').toString('base64'));
+    expect(started).toEqual(['m1', 'm2', 'm7']);
   });
 
   it('returns the omitted marker for a rejecting download and releases the slot for the next one', async () => {
@@ -6069,9 +6190,85 @@ describe('WhatsAppWebJsAdapter page transport error detection (wedged page fast-
     const { adapter, onDisconnected } = readyAdapter({ pupPage: { evaluate } });
 
     await expect(adapter.getContacts()).rejects.toThrow(
-      'WhatsApp Web could not read any of 3 contact(s): x is not a function',
+      'WhatsApp Web could not read any unblocked contact (3 failed, 0 without an id, 0 blocked read): x is not a function',
     );
     expect(onDisconnected).not.toHaveBeenCalled();
+  });
+
+  // Models that failed plus rows that came back without a readable id leave nothing to list: the
+  // same page-wide failure, not an empty address book.
+  it('fails the read when the only rows left after a partial failure have no readable id', async () => {
+    const evaluate = jest.fn().mockResolvedValue({ rows: [{ id: {}, number: '1' }], failed: 2, firstError: 'boom' });
+    const { adapter } = readyAdapter({ pupPage: { evaluate } });
+
+    await expect(adapter.getContacts()).rejects.toThrow(
+      'WhatsApp Web could not read any unblocked contact (2 failed, 1 without an id, 0 blocked read): boom',
+    );
+  });
+
+  it('fails the read when no row at all has a readable id', async () => {
+    const evaluate = jest.fn().mockResolvedValue({ rows: [{ id: {} }, { id: {} }], failed: 0 });
+    const { adapter } = readyAdapter({ pupPage: { evaluate } });
+
+    await expect(adapter.getContacts()).rejects.toThrow(
+      'WhatsApp Web could not read any unblocked contact (0 failed, 2 without an id, 0 blocked read)',
+    );
+  });
+
+  // getContactModel calls getAlternateUserWid only for an unblocked contact, so a build that breaks
+  // that call still reads every blocked row. Blocked survivors alone say nothing about the rest.
+  it('fails the read when only blocked contacts survive a failure', async () => {
+    const blocked = { id: { _serialized: '9@c.us' }, number: '9', isBlocked: true };
+    const evaluate = jest.fn().mockResolvedValue({
+      rows: [blocked],
+      failed: 499,
+      firstError: 'getAlternateUserWid - Invalid get call using deviceWid',
+    });
+    const { adapter, onDisconnected } = readyAdapter({ pupPage: { evaluate } });
+
+    await expect(adapter.getContacts()).rejects.toThrow(
+      'WhatsApp Web could not read any unblocked contact (499 failed, 0 without an id, 1 blocked read): ' +
+        'getAlternateUserWid - Invalid get call using deviceWid',
+    );
+    expect(onDisconnected).not.toHaveBeenCalled();
+  });
+
+  it('keeps a blocked-only address book when nothing failed, and an empty one', async () => {
+    const blocked = { id: { _serialized: '9@c.us' }, number: '9', isBlocked: true };
+    const evaluate = jest
+      .fn()
+      .mockResolvedValueOnce({ rows: [blocked], failed: 0 })
+      .mockResolvedValueOnce({ rows: [], failed: 0 });
+    const { adapter } = readyAdapter({ pupPage: { evaluate } });
+
+    await expect(adapter.getContacts()).resolves.toEqual([expect.objectContaining({ id: '9@c.us', isBlocked: true })]);
+    await expect(adapter.getContacts()).resolves.toEqual([]);
+  });
+
+  // The #1720 shape at scale: a single device-scoped wid among ordinary contacts still answers.
+  it('keeps the readable unblocked contacts when one of many could not be read', async () => {
+    const rows = Array.from({ length: 499 }, (_, i) => ({ id: { _serialized: `${i}@c.us` }, number: String(i) }));
+    const evaluate = jest.fn().mockResolvedValue({ rows, failed: 1, firstError: 'x' });
+    const { adapter } = readyAdapter({ pupPage: { evaluate } });
+
+    await expect(adapter.getContacts()).resolves.toHaveLength(499);
+  });
+
+  // A walk over a large address book that outruns Puppeteer's per-command budget got no answer: a
+  // 503 the client retries, not a bare 500, and not a death.
+  it('answers a protocol timeout on the contact walk with a 503 and reports no death', async () => {
+    const evaluate = jest
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          "Runtime.callFunctionOn timed out. Increase the 'protocolTimeout' setting in launch/connect calls for a higher timeout if needed.",
+        ),
+      );
+    const { adapter, onDisconnected } = readyAdapter({ pupPage: { evaluate } });
+
+    await expect(adapter.getContacts()).rejects.toBeInstanceOf(EngineTransportError);
+    expect(onDisconnected).not.toHaveBeenCalled();
+    expect(adapter.getStatus()).toBe(EngineStatus.READY);
   });
 
   // A rejection that carries no transport-death signature is an ordinary failure, not a dead page —

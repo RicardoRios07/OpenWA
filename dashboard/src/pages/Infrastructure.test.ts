@@ -87,6 +87,8 @@ let overrides: {
   savedFails?: boolean;
   statusFails?: boolean;
   currentEngine?: { engineType: string };
+  restart?: () => Response;
+  readyFails?: boolean;
 } = {};
 
 // ENGINE_TYPE supplied by the container environment, so the dashboard cannot change it.
@@ -165,11 +167,13 @@ function installFetchStub(): void {
       );
     }
     if (method === 'POST' && path === '/api/infra/restart') {
+      if (overrides.restart) return Promise.resolve(overrides.restart());
       return Promise.resolve(
         jsonResponse({ message: 'restarting', restarting: true, profiles: [], profilesToRemove: [], estimatedTime: 5 }),
       );
     }
     if (method === 'GET' && path === '/api/health/ready') {
+      if (overrides.readyFails) return Promise.resolve(jsonResponse({ status: 'error', details: {} }, 503));
       return Promise.resolve(jsonResponse({ status: 'ok', details: {} }));
     }
     if (method === 'GET' && path === '/api/infra/export-data') {
@@ -679,3 +683,194 @@ test('unmounting mid-restart cancels the health poll and countdown timers', { ti
 
   assert.equal(findFetchCall('GET', '/api/health/ready'), undefined);
 });
+
+// ── Restart outcomes the server reports ──────────────────────────────────────
+
+test('a refused restart shows the server reason and never polls readiness', { timeout: 10_000 }, async () => {
+  const { screen, fireEvent, within } = rtl;
+  resetFetchCalls();
+  // The old process refused before scheduling a shutdown, so it is still up: a readiness poll would
+  // answer 200 and report a restart that never happened.
+  overrides = { restart: () => jsonResponse({ message: 'Too many restart requests' }, 429) };
+  renderInfrastructure();
+
+  await screen.findByText('Database Configuration');
+  fireEvent.click(screen.getByRole('button', { name: 'Save Configuration' }));
+  const dialog = await screen.findByRole('dialog');
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Restart Now' }));
+
+  await within(dialog).findByText('Restart failed');
+  assert.ok(within(dialog).getByText('Too many restart requests'), 'the server reason is not shown');
+  // Past the first readiness poll (3s), which a restart assumed to be under way would have sent.
+  await new Promise(resolve => setTimeout(resolve, 3500));
+  assert.equal(findFetchCall('GET', '/api/health/ready'), undefined);
+  assert.equal(within(dialog).queryByText('Server ready'), null);
+});
+
+test(
+  'a proxy timeout on the restart request reports an unknown outcome, not a failure',
+  { timeout: 12_000 },
+  async () => {
+    const { screen, fireEvent, within } = rtl;
+    resetFetchCalls();
+    // The proxy stopped waiting while the gateway was still pulling an image: the restart may yet happen,
+    // and the old process still answers readiness, so neither a failure nor a poll tells the truth.
+    overrides = {
+      restart: () =>
+        new Response('<html><body>504 Gateway Time-out</body></html>', {
+          status: 504,
+          headers: { 'Content-Type': 'text/html' },
+        }),
+    };
+    // jsdom cannot navigate, so a reload reports itself through console.error; count those.
+    const navigations: string[] = [];
+    const consoleError = console.error;
+    console.error = (...args: unknown[]) => {
+      const text = args.map(a => (a instanceof Error ? a.message : String(a))).join(' ');
+      if (text.includes('navigation')) navigations.push(text);
+      else consoleError(...args);
+    };
+    try {
+      renderInfrastructure();
+      await screen.findByText('Database Configuration');
+      fireEvent.click(screen.getByRole('button', { name: 'Save Configuration' }));
+      const dialog = await screen.findByRole('dialog');
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Restart Now' }));
+
+      await within(dialog).findByText(
+        'The proxy timed out before the server answered. The restart may still be in progress; reload in a minute to check.',
+      );
+      assert.equal(within(dialog).queryByText('Restart failed'), null);
+      assert.equal(within(dialog).queryByText('HTTP 504'), null);
+      assert.ok(within(dialog).getByText('Please wait…'), 'the unknown outcome has no neutral title');
+      assert.ok(within(dialog).getByRole('button', { name: 'Reload Page' }), 'no way to reload by hand');
+      // Past the first readiness poll (3s) and the reload a confirmed restart schedules 2s after it.
+      await new Promise(resolve => setTimeout(resolve, 5500));
+      assert.equal(findFetchCall('GET', '/api/health/ready'), undefined);
+      assert.deepEqual(navigations, [], 'the page reloaded on its own');
+    } finally {
+      console.error = consoleError;
+    }
+  },
+);
+
+async function clickRestartNow() {
+  const { screen, fireEvent, within } = rtl;
+  renderInfrastructure();
+  await screen.findByText('Database Configuration');
+  fireEvent.click(screen.getByRole('button', { name: 'Save Configuration' }));
+  const dialog = await screen.findByRole('dialog');
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Restart Now' }));
+  return dialog;
+}
+
+test('a proxy 502 without a gateway code on the restart request reports an unknown outcome', async () => {
+  const { within } = rtl;
+  resetFetchCalls();
+  overrides = {
+    restart: () =>
+      new Response('<html><body>502 Bad Gateway</body></html>', {
+        status: 502,
+        headers: { 'Content-Type': 'text/html' },
+      }),
+  };
+  const dialog = await clickRestartNow();
+
+  await within(dialog).findByText(
+    'The proxy timed out before the server answered. The restart may still be in progress; reload in a minute to check.',
+  );
+  assert.equal(within(dialog).queryByText('Restart failed'), null);
+});
+
+test('a 502 the gateway stamped with a code is a refusal, not an unknown outcome', async () => {
+  const { within } = rtl;
+  resetFetchCalls();
+  overrides = { restart: () => jsonResponse({ message: 'Compose rejected the profile', code: 'SOME_CODE' }, 502) };
+  const dialog = await clickRestartNow();
+
+  await within(dialog).findByText('Restart failed');
+  assert.ok(within(dialog).getByText('Compose rejected the profile'), 'the server reason is not shown');
+});
+
+test(
+  'services that failed to start are shown after the restart instead of reloading over them',
+  { timeout: 15_000 },
+  async () => {
+    const { screen, fireEvent, within } = rtl;
+    resetFetchCalls();
+    const failure = 'Failed to start minio: image pull failed';
+    overrides = {
+      restart: () =>
+        jsonResponse({
+          message: 'restarting',
+          restarting: true,
+          profiles: ['minio'],
+          profilesToRemove: [],
+          estimatedTime: 5,
+          orchestration: { success: false, message: 'Some services failed', errors: [failure] },
+        }),
+    };
+    // jsdom cannot navigate, so a reload reports itself through console.error; count those.
+    const navigations: string[] = [];
+    const consoleError = console.error;
+    console.error = (...args: unknown[]) => {
+      const text = args.map(a => (a instanceof Error ? a.message : String(a))).join(' ');
+      if (text.includes('navigation')) navigations.push(text);
+      else consoleError(...args);
+    };
+    try {
+      renderInfrastructure();
+      await screen.findByText('Database Configuration');
+      fireEvent.click(screen.getByRole('button', { name: 'Save Configuration' }));
+      const dialog = await screen.findByRole('dialog');
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Restart Now' }));
+
+      await within(dialog).findByText('Server ready', {}, { timeout: 5_000 });
+      assert.ok(within(dialog).getByText(failure), 'the orchestration error is not shown');
+      assert.ok(within(dialog).getByRole('button', { name: 'Reload Page' }), 'no way to reload after reading');
+      assert.equal(within(dialog).queryByText('Server is back online! The page will reload automatically.'), null);
+      // Past the 2s after which a clean restart reloads the page.
+      await new Promise(resolve => setTimeout(resolve, 2500));
+      assert.deepEqual(navigations, [], 'the page reloaded over the warning');
+    } finally {
+      console.error = consoleError;
+    }
+  },
+);
+
+test(
+  'services that failed to start stay on screen when the server never becomes ready',
+  { timeout: 15_000 },
+  async () => {
+    const { screen, fireEvent, within } = rtl;
+    const failure = 'Failed to start postgres: image pull failed';
+    overrides = {
+      readyFails: true,
+      restart: () =>
+        jsonResponse({
+          message: 'restarting',
+          restarting: true,
+          profiles: ['postgres'],
+          profilesToRemove: [],
+          estimatedTime: 5,
+          orchestration: { success: false, message: 'Some services failed', errors: [failure] },
+        }),
+    };
+    renderInfrastructure();
+    await screen.findByText('Database Configuration');
+    fireEvent.click(screen.getByRole('button', { name: 'Save Configuration' }));
+    const dialog = await screen.findByRole('dialog');
+    // The readiness poll gives up after a minute of 1s retries; shorten only those waits. Every
+    // lookup below passes its own timeout, since the default 1s one would be shortened too.
+    const realSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = ((fn: () => void, ms?: number, ...rest: unknown[]) =>
+      realSetTimeout(fn, ms === 1000 || ms === 3000 ? 1 : ms, ...rest)) as typeof setTimeout;
+    try {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Restart Now' }));
+      await within(dialog).findByText('Restart failed', {}, { timeout: 5_000 });
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+    }
+    assert.ok(within(dialog).getByText(failure), 'the failure that explains the restart is not shown');
+  },
+);

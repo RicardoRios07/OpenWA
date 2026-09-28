@@ -384,6 +384,10 @@ clears it, and so does a gateway restart.
 | `reconnectBaseDelay`   | `5000` ms | Base delay of the reconnect backoff, clamped to 1000-300000 ms. Same engine scope as `maxReconnectAttempts`                                                                                            |
 | `autoRejectCalls`      | `false`   | Auto-reject an incoming call as soon as it rings (Baileys only)                                                                                                                                        |
 
+The gateway's reconnect attempt count restarts only once the session has stayed READY for 5 minutes,
+so a session that keeps dropping sooner than that spends a finite `maxReconnectAttempts` and ends
+FAILED. The Baileys in-engine retry has no attempt cap and never ends FAILED on a transient drop.
+
 Set them at creation with `POST /api/sessions`, or on an existing session with
 `PATCH /api/sessions/{sessionId}/config` — no restart, and no re-scan of the QR. The patch merges, so a key
 it does not mention keeps its stored value, and an explicit `null` clears a key back to the default
@@ -489,7 +493,7 @@ CREATE TABLE messages (
     "waMessageId" VARCHAR,                -- nullable; transient outgoing rows have none yet
     "chatId" VARCHAR NOT NULL,
     "chatName" VARCHAR,                   -- nullable; inbound sender pushName (the member, in a group)
-    author VARCHAR,                       -- nullable; participant JID for a group message ("from" is the group)
+    author VARCHAR,                       -- nullable; sender JID for a group, status or broadcast-list message
     "from" VARCHAR NOT NULL,
     "to" VARCHAR NOT NULL,
     body TEXT,
@@ -594,7 +598,10 @@ CREATE INDEX "IDX_c69efb19bf127c97e6740ad530" ON audit_logs("createdAt");
 ```
 
 **Audit actions** are an enum (`AuditAction`) spanning API-key lifecycle (`api_key_created`,
-`api_key_updated`, `api_key_used`, `api_key_revoked`, `api_key_deleted`, `api_key_auth_failed`), session
+`api_key_updated`, `api_key_used`, `api_key_revoked`, `api_key_deleted`, `api_key_auth_failed`, capped
+at 10 rows per client IP per minute for a REST or queue-dashboard rejection that names no stored key,
+where a rejection of a stored key is recorded every time, and at 10 per client IP per minute for any
+rejection on `/api/health`), session
 lifecycle (`session_created`, `session_started`, `session_stopped`, `session_force_killed`,
 `session_logged_out`, `session_deleted`, `session_qr_generated`, `session_connected`,
 `session_disconnected`, `session_config_updated`), WhatsApp-imposed account restrictions (`session_restricted`,
@@ -608,6 +615,11 @@ plugin instances (`integration_instance_created`, `integration_instance_updated`
 `integration_instance_redriven`), and ADMIN-only infrastructure operations (`infra_config_saved`,
 `infra_restart_requested`, `infra_data_exported`, `infra_data_imported`, `infra_storage_exported`,
 `infra_storage_imported`).
+
+Eight of these are reserved and never emitted, so no row ever carries them: `api_key_used`,
+`session_connected`, `message_sent`, `message_failed`, `webhook_created`, `webhook_deleted`,
+`webhook_triggered` and `webhook_failed`. `src/modules/audit/intentionally-unemitted-actions.ts` is the
+authoritative list, with the reason for each.
 
 > [!NOTE]
 > Audit-log retention is automatic: see [§5.7 Data Retention](#57-data-retention). Other event types (session logs, API access logs) are surfaced via structured application logging, not dedicated database tables. The one exception is a webhook delivery that exhausts every retry — that lands in the `webhook_delivery_failures` table (§5.3.8), not just the log stream.

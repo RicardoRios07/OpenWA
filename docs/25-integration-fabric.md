@@ -211,6 +211,12 @@ PostgreSQL state. When the queue is disabled, ingress dispatches inline after pe
 serialize concurrent same-conversation deliveries. Providers already deliver over unordered,
 at-least-once HTTP, so plugin handlers must be idempotent and treat ingress as a reconciliation trigger.
 
+A job waiting on that lock still holds one of the `INGRESS_WORKER_CONCURRENCY` worker slots (default
+10). A burst on one lane larger than that fills every slot with same-lane waiters, and events for other
+conversations and instances queue behind the burst until it drains. Size `INGRESS_WORKER_CONCURRENCY`
+above the largest burst you expect on a single lane, and declare a `conversationId` pointer on the
+route so the lane is one conversation; without it the lane is the whole instance.
+
 Persist-before-acknowledge alone is not delivery: a crash between the persist and the enqueue, or a
 fire-and-forget enqueue on a `response` route whose outcome is never recorded, would strand the row
 with the provider already acknowledged. The **ingress reconciler** closes that window: every

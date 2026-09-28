@@ -312,7 +312,7 @@ export class LidMappingStoreService implements LidMappingStore, OnModuleInit {
   private index(lid: string, phone: string | null): void {
     const prev = this.lidToPhone.get(lid);
     if (prev && prev !== phone) {
-      this.phoneToLids.get(prev)?.delete(lid);
+      this.unindex(lid, prev);
     }
     // Re-insert (delete + set) so the entry moves to the most-recent end of the LRU order even on update.
     this.lidToPhone.delete(lid);
@@ -351,7 +351,13 @@ export class LidMappingStoreService implements LidMappingStore, OnModuleInit {
       if (oldest === undefined) break;
       const phone = this.lidToPhone.get(oldest);
       this.lidToPhone.delete(oldest);
-      if (phone) this.phoneToLids.get(phone)?.delete(oldest);
+      if (phone) this.unindex(oldest, phone);
     }
+  }
+
+  /** Drop a lid from its phone's reverse entry, and the entry itself once no lid is left under it. */
+  private unindex(lid: string, phone: string): void {
+    const set = this.phoneToLids.get(phone);
+    if (set?.delete(lid) && set.size === 0) this.phoneToLids.delete(phone);
   }
 }

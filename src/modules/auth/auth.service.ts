@@ -22,6 +22,19 @@ import { normalizeChatAllowList } from '../../common/security/chat-scope';
 import { EventsGateway, type ApiKeyEvictionReason } from '../events/events.gateway';
 
 /**
+ * A 401 that names no stored key: the credential was missing or matched no row. Producing one costs
+ * the caller nothing, so its audit row is bounded per client IP. Every other 401 (revoked, expired,
+ * IP or session refused) required a real key and is audited on every attempt. The name stays
+ * `UnauthorizedException` because MCP tool errors carry it on the wire.
+ */
+export class UnresolvedApiKeyException extends UnauthorizedException {
+  constructor(message: string) {
+    super(message);
+    this.name = UnauthorizedException.name;
+  }
+}
+
+/**
  * Resolves the API key to seed on first boot (when no keys exist yet).
  * Precedence: an explicit `API_MASTER_KEY` always wins; otherwise a
  * cryptographically random `owa_k1_` key is generated — the secure default,
@@ -449,7 +462,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     const apiKey = await this.apiKeyRepository.findOne({ where: { keyHash } });
 
     if (!apiKey) {
-      throw new UnauthorizedException('Invalid API key');
+      throw new UnresolvedApiKeyException('Invalid API key');
     }
 
     if (!apiKey.isActive) {

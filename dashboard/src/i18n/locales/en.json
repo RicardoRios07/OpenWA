@@ -922,6 +922,7 @@
       "dontClose": "Please do not close this window",
       "successMsg": "Server is back online! The page will reload automatically.",
       "errorMsg": "Server did not respond after 30 seconds. Please check the Docker logs and restart manually.",
+      "outcomeUnknown": "The proxy timed out before the server answered. The restart may still be in progress; reload in a minute to check.",
       "reload": "Reload Page"
     },
     "toasts": {

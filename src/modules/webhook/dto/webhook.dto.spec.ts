@@ -91,6 +91,29 @@ describe('webhook DTO custom-header validation', () => {
     const errs = await errorsFor(UpdateWebhookDto, { headers: { 'X-Evil': 'a\nb' } });
     expect(errs.some(e => e.property === 'headers')).toBe(true);
   });
+
+  // Header values go out as Latin-1 bytes; a wider code unit throws inside the HTTP client on every
+  // delivery, so it must be refused when the webhook is saved.
+  it.each(['Caf\u00e9 \u2192 Norte', '\u6771\u4eac', 'hi \u{1F600}'])(
+    'rejects a header value outside Latin-1 (%s) on create and update',
+    async value => {
+      const create = await errorsFor(CreateWebhookDto, {
+        url: 'https://example.com/hook',
+        headers: { 'X-Tenant': value },
+      });
+      expect(create.some(e => e.property === 'headers')).toBe(true);
+      const update = await errorsFor(UpdateWebhookDto, { headers: { 'X-Tenant': value } });
+      expect(update.some(e => e.property === 'headers')).toBe(true);
+    },
+  );
+
+  it('accepts a Latin-1 header value on create and update', async () => {
+    const headers = { 'X-Tenant': 'Caf\u00e9 Norte \u00ff' };
+    const create = await errorsFor(CreateWebhookDto, { url: 'https://example.com/hook', headers });
+    expect(create.some(e => e.property === 'headers')).toBe(false);
+    const update = await errorsFor(UpdateWebhookDto, { headers });
+    expect(update.some(e => e.property === 'headers')).toBe(false);
+  });
 });
 
 describe('webhook DTO filter validation', () => {

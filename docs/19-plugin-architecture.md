@@ -429,6 +429,11 @@ reads `input.chatId` on a single send reads it here too. A handler may rewrite t
 rewritten `chatId` is ignored: the item always goes to its own recipient. On a single send the rewritten
 `input` is what gets sent, `chatId` included.
 
+A product send (`POST /api/sessions/:sessionId/messages/send-product`) runs `message:sending` with type
+`product`, source `CatalogService` and `input` `{ chatId, productId, body }`. A handler may rewrite
+`productId` or `body`; a value that is not a string (or an empty `productId`) is refused with `400`. As
+with a bulk item, a rewritten `chatId` is ignored: the product goes to the chat the request named.
+
 > **`message:sending` does not see every attempted send.** With send pacing enabled
 > (`SEND_PACING_ENABLED`), the pacing governor runs _before_ this hook, so a send it refuses never
 > fires `message:sending` — plugins are not asked to moderate, and cannot rewrite, traffic that

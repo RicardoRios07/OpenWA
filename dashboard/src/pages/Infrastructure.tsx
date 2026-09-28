@@ -197,6 +197,19 @@ export function Infrastructure() {
     ) : null;
   };
 
+  // Built-in services the restart failed to start or stop. Shown whether or not the server came back:
+  // a service that failed to start is the likeliest reason it did not.
+  const restartWarningBox = restartFlow.restartWarnings.length > 0 && (
+    <div className="migration-warning" role="alert">
+      <AlertTriangle size={18} />
+      <div>
+        {restartFlow.restartWarnings.map((warning, index) => (
+          <p key={index}>{warning}</p>
+        ))}
+      </div>
+    </div>
+  );
+
   return (
     <div className="infrastructure-page">
       <PageHeader title={t('infrastructure.title')} subtitle={t('infrastructure.subtitle')} />
@@ -803,7 +816,8 @@ export function Infrastructure() {
             <>
               {restartFlow.restartStatus === 'idle' && t('infrastructure.restart.idleTitle')}
               {restartFlow.restartStatus === 'restarting' && t('infrastructure.restart.restartingTitle')}
-              {restartFlow.restartStatus === 'waiting' && t('infrastructure.restart.waitingTitle')}
+              {(restartFlow.restartStatus === 'waiting' || restartFlow.restartStatus === 'unknown') &&
+                t('infrastructure.restart.waitingTitle')}
               {restartFlow.restartStatus === 'success' && t('infrastructure.restart.successTitle')}
               {restartFlow.restartStatus === 'error' && t('infrastructure.restart.errorTitle')}
             </>
@@ -876,13 +890,32 @@ export function Infrastructure() {
           {restartFlow.restartStatus === 'success' && (
             <>
               <CheckCircle size={48} className="restart-status-icon" />
-              <p className="restart-success-msg">{t('infrastructure.restart.successMsg')}</p>
+              {restartFlow.restartWarnings.length === 0 ? (
+                <p className="restart-success-msg">{t('infrastructure.restart.successMsg')}</p>
+              ) : (
+                <>
+                  {restartWarningBox}
+                  <button className="btn-primary" onClick={() => window.location.reload()}>
+                    {t('infrastructure.restart.reload')}
+                  </button>
+                </>
+              )}
+            </>
+          )}
+
+          {restartFlow.restartStatus === 'unknown' && (
+            <>
+              <p className="restart-error-msg">{t('infrastructure.restart.outcomeUnknown')}</p>
+              <button className="btn-primary" onClick={() => window.location.reload()}>
+                {t('infrastructure.restart.reload')}
+              </button>
             </>
           )}
 
           {restartFlow.restartStatus === 'error' && (
             <>
-              <p className="restart-error-msg">{t('infrastructure.restart.errorMsg')}</p>
+              <p className="restart-error-msg">{restartFlow.restartError ?? t('infrastructure.restart.errorMsg')}</p>
+              {restartWarningBox}
               <button className="btn-primary" onClick={() => window.location.reload()}>
                 {t('infrastructure.restart.reload')}
               </button>

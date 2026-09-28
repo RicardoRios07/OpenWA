@@ -1037,25 +1037,46 @@ describe('BaileysAdapter reconnect policy — unlimited backoff (I4 hardening)',
     expect(onError).not.toHaveBeenCalled();
   });
 
-  it('successful connection resets the reconnect counter (next drop uses the attempt-1 delay)', async () => {
-    const adapter = await initWithRealTimers({});
+  it('a connection that drops right after opening keeps climbing the backoff (1 s, 2 s, 4 s)', async () => {
+    const onReconnecting = jest.fn();
+    const adapter = await initWithRealTimers({ onReconnecting });
     baileys().default.mockClear();
     jest.useFakeTimers();
     jest.spyOn(Math, 'random').mockReturnValue(0);
 
-    // Drop + reconnect — the counter is now 1 (no 'open' yet).
+    // Each cycle opens, then drops at once: the open alone must not restart the counter.
+    for (const delay of [1_000, 2_000, 4_000]) {
+      fireRecoverableClose();
+      await jest.advanceTimersByTimeAsync(delay);
+      fakeSock.fire('connection.update', { connection: 'open' });
+      expect(adapter.getStatus()).toBe(EngineStatus.READY);
+    }
+    expect(onReconnecting.mock.calls).toEqual([
+      [1, 1_000],
+      [2, 2_000],
+      [3, 4_000],
+    ]);
+    expect(baileys().default).toHaveBeenCalledTimes(3);
+  });
+
+  it('a drop more than 5 minutes after the previous drop restarts a climbed backoff at attempt 1', async () => {
+    const onReconnecting = jest.fn();
+    await initWithRealTimers({ onReconnecting });
+    jest.useFakeTimers();
+    jest.spyOn(Math, 'random').mockReturnValue(0);
+
     fireRecoverableClose();
     await jest.advanceTimersByTimeAsync(1_000);
-    expect(baileys().default).toHaveBeenCalledTimes(1);
-
-    // Simulate a successful open — should reset the reconnect counter to 0.
     fakeSock.fire('connection.update', { connection: 'open' });
-    expect(adapter.getStatus()).toBe(EngineStatus.READY);
-
-    // The next drop must schedule attempt 1 (1 s), not attempt 2 (2 s): 1.5 s settles it.
     fireRecoverableClose();
-    await jest.advanceTimersByTimeAsync(1_500);
-    expect(baileys().default).toHaveBeenCalledTimes(2);
+    await jest.advanceTimersByTimeAsync(2_000);
+    fakeSock.fire('connection.update', { connection: 'open' });
+
+    // The opens in between do not reset the counter, but a drop more than 5 minutes after the
+    // previous one is a fresh incident: attempt 1 (1 s), not attempt 3.
+    jest.setSystemTime(Date.now() + 5 * 60_000);
+    fireRecoverableClose();
+    expect(onReconnecting).toHaveBeenLastCalledWith(1, 1_000);
   });
 
   it('stability reset: a close >5 min after the previous close restarts the backoff at attempt 1', async () => {
@@ -1215,10 +1236,14 @@ describe('BaileysAdapter reconnect policy — unlimited backoff (I4 hardening)',
   const QR_REFS_ENDED = 'QR refs attempts ended';
 
   /**
-   * Deliver a QR on the current socket and wait for the lifecycle to publish it. The renderer's PNG
-   * encoder runs on nextTick and setImmediate, so a test using this must leave both unfaked.
+   * Deliver a QR on the current socket and wait for the lifecycle to publish it. The PNG encode is
+   * stubbed for this one render: these tests count reconnects, not pixels, and a real encode per QR
+   * made a many-window case slow enough to time out on a loaded machine.
    */
   const showQr = async (qr: string): Promise<void> => {
+    (qrcode.toDataURL as unknown as jest.Mock).mockImplementationOnce(() =>
+      Promise.resolve(`data:image/png;base64,${qr}`),
+    );
     fakeSock.fire('connection.update', { connection: 'connecting' });
     fakeSock.fire('connection.update', { qr });
     await (qrcode.toDataURL as unknown as jest.Mock).mock.results.at(-1)?.value;
@@ -2189,6 +2214,83 @@ describe('BaileysAdapter inbound fan-out', () => {
     });
   });
 
+  describe('messages with no content of their own are dropped on the live and history paths', () => {
+    // A poll vote rides with its messageContextInfo, which protobuf decodes first (field 35 before 50);
+    // it must not decide the type. A vote in a disappearing chat arrives wrapped.
+    const nonContent: Array<[string, Record<string, unknown>]> = [
+      [
+        'VOTE',
+        {
+          messageContextInfo: { messageSecret: 'cw==' },
+          pollUpdateMessage: { pollCreationMessageKey: { id: 'POLL1' }, vote: { encPayload: 'eA==', encIv: 'eA==' } },
+        },
+      ],
+      [
+        'VOTE_EPHEMERAL',
+        { ephemeralMessage: { message: { pollUpdateMessage: { pollCreationMessageKey: { id: 'POLL1' } } } } },
+      ],
+      ['PIN', { pinInChatMessage: { key: { id: 'M1' }, type: 1 } }],
+      ['KEEP', { keepInChatMessage: { key: { id: 'M1' }, keepType: 1 } }],
+      ['ALBUM', { albumMessage: { expectedImageCount: 2 } }],
+      ['ENC_REACTION', { encReactionMessage: { targetMessageKey: { id: 'M1' } } }],
+      ['EVENT_RSVP', { encEventResponseMessage: { eventCreationMessageKey: { id: 'EV1' } } }],
+    ];
+    const batch = (fromMe: boolean) => [
+      ...nonContent.map(([id, message]) => ({
+        key: { remoteJid: '628111@s.whatsapp.net', fromMe, id },
+        message,
+        messageTimestamp: 1700000060,
+      })),
+      {
+        key: { remoteJid: '628111@s.whatsapp.net', fromMe, id: 'TEXT' },
+        message: { conversation: 'a real message' },
+        messageTimestamp: 1700000061,
+      },
+    ];
+
+    beforeEach(() => {
+      baileys.getContentType.mockImplementation(realGetContentType);
+      baileys.normalizeMessageContent.mockImplementation(
+        (m?: { ephemeralMessage?: { message?: unknown } }) => m?.ephemeralMessage?.message ?? m,
+      );
+    });
+
+    it.each([
+      ['received', false, 'onMessage'],
+      ['sent from the phone', true, 'onMessageCreate'],
+    ] as const)('live, %s: emits and stores only the real message', async (_label, fromMe, callback) => {
+      const emitted = jest.fn();
+      const adapter = newAdapter();
+      const logger = (adapter as unknown as { logger: { debug: (m: string, meta?: unknown) => void } }).logger;
+      const debug = jest.spyOn(logger, 'debug').mockImplementation(() => undefined);
+      await adapter.initialize({ [callback]: emitted });
+      fakeSock.fire('messages.upsert', { type: 'notify', messages: batch(fromMe) });
+      await new Promise(r => setImmediate(r));
+      await new Promise(r => setImmediate(r));
+
+      expect(emitted).toHaveBeenCalledTimes(1);
+      expect(emitted).toHaveBeenCalledWith(expect.objectContaining({ id: 'TEXT', type: 'text' }));
+      const stored = fakeStore.put.mock.calls as Array<[string, { key: { id: string } }]>;
+      expect(stored.map(([, m]) => m.key.id)).toEqual(['TEXT']);
+      expect(debug).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ msgId: 'VOTE', contentType: 'pollUpdateMessage' }),
+      );
+    });
+
+    it('history sync: keeps only the real message', async () => {
+      const onHistoryMessages = jest.fn();
+      const adapter = newAdapter();
+      await adapter.initialize({ onHistoryMessages });
+      fakeSock.fire('messaging-history.set', { contacts: [], chats: [], messages: batch(false) });
+      await new Promise(r => setImmediate(r));
+      await new Promise(r => setImmediate(r));
+      expect(onHistoryMessages).toHaveBeenCalledTimes(1);
+      const mapped = (onHistoryMessages.mock.calls as Array<[IncomingMessage[]]>)[0][0];
+      expect(mapped.map(m => m.id)).toEqual(['TEXT']);
+    });
+  });
+
   it('surfaces inbound @mentions as neutral mentionedIds (contextInfo.mentionedJid)', async () => {
     const onMessage = jest.fn();
     const adapter = newAdapter();
@@ -2644,6 +2746,59 @@ describe('BaileysAdapter inbound fan-out', () => {
     expect(msg.type).toBe('image');
     expect(msg.body).toBe('look at this');
     expect(msg.media).toEqual({ mimetype: 'image/png', data: imgBuf.toString('base64') });
+  });
+
+  it.each([
+    ['downloads', 'true'],
+    ['marks as omitted', 'false'],
+  ])('inbound video note: types it as video, %s its media and keeps its quote', async (_label, enabled) => {
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
+    const baileys = jest.requireMock('@whiskeysockets/baileys') as {
+      getContentType: jest.Mock;
+      downloadMediaMessage: jest.Mock;
+    };
+    baileys.getContentType.mockImplementation(realGetContentType);
+    const clip = Buffer.from('MP4BYTES');
+    baileys.downloadMediaMessage.mockResolvedValue(streamOf(clip));
+    const prev = process.env.MEDIA_DOWNLOAD_ENABLED;
+    process.env.MEDIA_DOWNLOAD_ENABLED = enabled;
+    try {
+      const onMessage = jest.fn();
+      const adapter = newAdapter();
+      await adapter.initialize({ onMessage });
+      fakeSock.fire('messages.upsert', {
+        type: 'notify',
+        messages: [
+          {
+            key: { remoteJid: '628111@s.whatsapp.net', fromMe: false, id: 'PTV1' },
+            message: {
+              ptvMessage: {
+                mimetype: 'video/mp4',
+                fileLength: 8,
+                contextInfo: { stanzaId: 'ORIG1', quotedMessage: { conversation: 'the original' } },
+              },
+            },
+            messageTimestamp: 1700000020,
+          },
+        ],
+      });
+      await new Promise(r => setImmediate(r));
+      await new Promise(r => setImmediate(r));
+      expect(onMessage).toHaveBeenCalledTimes(1);
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      const msg = onMessage.mock.calls[0][0] as IncomingMessage;
+      expect(msg.type).toBe('video');
+      expect(msg.quotedMessage).toEqual({ id: 'ORIG1', body: 'the original' });
+      if (enabled === 'true') {
+        expect(msg.media).toEqual({ mimetype: 'video/mp4', data: clip.toString('base64') });
+      } else {
+        expect(msg.media).toEqual({ mimetype: 'video/mp4', omitted: true, sizeBytes: 8 });
+        expect(baileys.downloadMediaMessage).not.toHaveBeenCalled();
+      }
+    } finally {
+      if (prev === undefined) delete process.env.MEDIA_DOWNLOAD_ENABLED;
+      else process.env.MEDIA_DOWNLOAD_ENABLED = prev;
+    }
   });
 
   it('inbound media: skips the download entirely when the declared fileLength exceeds the cap', async () => {

@@ -508,8 +508,9 @@ export class SessionController {
   @ApiResponse({
     status: 503,
     description:
-      'The whatsapp-web.js page connection died mid-read, so nothing could be read. Deliberately not ' +
-      'reported as an empty list — a page that went away says nothing about the chats.',
+      'The whatsapp-web.js page connection died mid-read, or WhatsApp Web did not answer within the ' +
+      'protocol timeout, so nothing could be read. Deliberately not reported as an empty list: a page ' +
+      'that went away says nothing about the chats.',
   })
   @ApiQuery({ name: 'limit', required: false, description: 'Max chats to return (1–1000, default 1000)' })
   @ApiQuery({ name: 'offset', required: false, description: 'Number of chats to skip (for paging)' })

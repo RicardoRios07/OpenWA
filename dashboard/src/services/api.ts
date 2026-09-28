@@ -12,7 +12,7 @@ import { warnIfInsecureHttpUrl } from '../utils/urlSecurity';
 // same-origin '/api' and a split deployment failed with "Invalid API Key" (#91).
 // Exported so direct fetches (e.g. auth/validate in Login.tsx / App.tsx) honor VITE_API_URL
 // too — otherwise split-origin deployments break. Empty VITE_API_URL → '/api'.
-const API_ORIGIN = (import.meta.env.VITE_API_URL ?? '').replace(/\/+$/, '');
+export const API_ORIGIN = (import.meta.env.VITE_API_URL ?? '').replace(/\/+$/, '');
 export const API_BASE_URL = `${API_ORIGIN}/api`;
 // Warn (not refuse — would break dev + TLS-terminating-proxy) when the API origin is an
 // insecure http:// URL pointing at a non-localhost host (API keys sent in cleartext).
@@ -705,7 +705,7 @@ async function handleErrorResponse<T>(response: Response): Promise<T> {
     }
   }
 
-  // On a non-JSON body (e.g. a reverse-proxy 502/503 HTML page) fall through to `HTTP <status>`
+  // On a non-JSON body (e.g. a reverse-proxy 502/503/504 HTML page) fall through to `HTTP <status>`
   // rather than statusText: the status code is what the toast connection-lost de-dup matches on,
   // and statusText is empty over HTTP/2 anyway.
   const error = await response.json().catch(() => ({}));
@@ -1148,6 +1148,9 @@ export const infraApi = {
       profiles: string[];
       profilesToRemove: string[];
       estimatedTime: number;
+      // Present only when Docker started or stopped built-in services; `errors` lists what failed.
+      orchestration?: { errors?: string[] };
+      removal?: { errors?: string[] };
     }>('/infra/restart', {
       method: 'POST',
       body: JSON.stringify({ profiles: profiles || [], profilesToRemove: profilesToRemove || [] }),

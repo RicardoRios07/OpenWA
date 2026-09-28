@@ -922,6 +922,7 @@
       "dontClose": "Bitte schließe dieses Fenster nicht",
       "successMsg": "Der Server ist wieder online! Die Seite wird automatisch neu geladen.",
       "errorMsg": "Der Server hat nach 30 Sekunden nicht geantwortet. Prüfe die Docker-Protokolle und starte ihn manuell neu.",
+      "outcomeUnknown": "Der Proxy hat das Warten aufgegeben, bevor der Server geantwortet hat. Der Neustart läuft möglicherweise noch; lade die Seite in einer Minute neu, um es zu prüfen.",
       "reload": "Seite neu laden"
     },
     "toasts": {

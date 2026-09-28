@@ -454,7 +454,9 @@ export class EventsGateway implements OnGatewayInit, OnGatewayConnection, OnGate
   }
 
   @SubscribeMessage('message')
-  async handleMessage(@ConnectedSocket() client: Socket, @MessageBody() message: WSClientMessage) {
+  // A client may emit 'message' with no payload or with null, so the body is typed as possibly nil and
+  // every read is guarded: such a frame answers INVALID_MESSAGE instead of throwing in the handler.
+  async handleMessage(@ConnectedSocket() client: Socket, @MessageBody() message: WSClientMessage | null | undefined) {
     // Per-key token bucket on every inbound frame. Keyed by the validated key id; a socket
     // whose handshake validation is still in flight has no key yet and is metered by IP.
     // Over-budget frames get an error frame back and are NOT dispatched to a handler — in
@@ -463,7 +465,7 @@ export class EventsGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       (client.data as { apiKey?: Pick<ApiKey, 'id'> } | undefined)?.apiKey?.id ??
       limiterKeyForIp(this.resolveClientIp(client));
     if (!this.frameLimiter.allow(frameSubject)) {
-      const requestId = (message as { requestId?: string } | undefined)?.requestId;
+      const requestId = (message as { requestId?: string } | null | undefined)?.requestId;
       this.noteRateLimitViolation('frame', {
         apiKeyId: (client.data as { apiKey?: Pick<ApiKey, 'id'> } | undefined)?.apiKey?.id,
         ipAddress: this.resolveClientIp(client),
@@ -471,7 +473,7 @@ export class EventsGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       return this.reply(client, this.createError('RATE_LIMITED', 'Frame rate limit exceeded, slow down', requestId));
     }
 
-    switch (message.type) {
+    switch (message?.type) {
       case 'subscribe':
         return this.reply(client, await this.handleSubscribe(client, message));
       case 'unsubscribe':
@@ -481,7 +483,11 @@ export class EventsGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       default:
         return this.reply(
           client,
-          this.createError('INVALID_MESSAGE', `Unknown message type`, (message as { requestId?: string }).requestId),
+          this.createError(
+            'INVALID_MESSAGE',
+            `Unknown message type`,
+            (message as { requestId?: string } | null | undefined)?.requestId,
+          ),
         );
     }
   }

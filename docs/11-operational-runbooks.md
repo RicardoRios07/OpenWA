@@ -241,7 +241,7 @@ as a delivery failure rather than retaining payloads without limit.
 
 **Prerequisites:**
 
-- API Key
+- API key, and an ADMIN key for step 2
 - Access to webhook endpoint
 
 **Steps:**
@@ -255,9 +255,13 @@ curl -H "X-API-Key: $API_KEY" \
 #    most-recent-first: those that exhausted every retry, plus those never attempted at all
 #    (recorded with `attempts: 0` — payload over the cap or an unserializable payload
 #    (preflight), inline waiter-queue overflow, or rejection by the shutdown drain).
-#    A URL blocked by the SSRF guard never reaches delivery: it is rejected with a 400 when the
-#    webhook is registered, so it appears in no delivery-failure row.
-curl -H "X-API-Key: $API_KEY" \
+#    An overflow or shutdown row is replayed by the outbox sweep and removed once it delivers.
+#    The SSRF guard refuses a blocked URL with a 400 when the webhook is registered. A URL that
+#    passed then and is blocked at delivery (its host now resolves to a private address, or the
+#    guard was switched on later) is recorded as "Destination address is not allowed". With the
+#    guard on, the same text also stands for a host name that failed to resolve and for a
+#    redirect, which deliveries never follow. The server log for that delivery names the cause.
+curl -H "X-API-Key: $ADMIN_API_KEY" \
   "http://localhost:2785/api/webhooks/delivery-failures?sessionId={sessionId}&limit=20"
 
 # Attempts still in flight (not yet exhausted) only appear in the server logs:
@@ -319,7 +323,7 @@ curl -X POST -H "X-API-Key: $API_KEY" \
 # Expected: {"success": true, "statusCode": 200}
 
 # No new permanent delivery failures for this session
-curl -H "X-API-Key: $API_KEY" \
+curl -H "X-API-Key: $ADMIN_API_KEY" \
   "http://localhost:2785/api/webhooks/delivery-failures?sessionId={sessionId}&limit=5"
 ```
 

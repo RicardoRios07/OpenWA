@@ -908,6 +908,7 @@
       "dontClose": "Veuillez ne pas fermer cette fenêtre",
       "successMsg": "Le serveur est de nouveau en ligne ! La page va se recharger automatiquement.",
       "errorMsg": "Le serveur n'a pas répondu après 30 secondes. Veuillez vérifier les journaux Docker et redémarrer manuellement.",
+      "outcomeUnknown": "Le proxy a expiré avant que le serveur ne réponde. Le redémarrage est peut-être encore en cours ; rechargez la page dans une minute pour vérifier.",
       "reload": "Recharger la page"
     },
     "toasts": {

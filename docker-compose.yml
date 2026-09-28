@@ -72,7 +72,7 @@ services:
     cap_drop:
       - ALL
     cap_add:
-      - CHOWN # entrypoint: chown -R openwa /app/data on the named volume
+      - CHOWN # entrypoint: chown openwa /app/data on the named volume
       - DAC_OVERRIDE # entrypoint: chown across pre-existing files
       - FOWNER
       - SETGID # gosu: drop to the openwa group

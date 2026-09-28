@@ -75,6 +75,22 @@ class TestClientCore:
         make_client(backend2).messages.history("s", "a@c.us")
         assert "/messages/a@c.us/history" in backend2.last_call.url  # @ preserved
 
+    def test_empty_or_dot_ids_are_refused_before_sending(self):
+        # httpx resolves dot segments, so such an id would otherwise reach the
+        # parent resource.
+        backend = MockBackend()
+        client = make_client(backend)
+        with pytest.raises(ValueError):
+            client.webhooks.delete("s1", "..")
+        with pytest.raises(ValueError):
+            client.contacts.delete("s1", ".")
+        with pytest.raises(ValueError):
+            client.templates.delete("s1", "")
+        assert backend.calls == []
+        backend.on("DELETE", "/webhooks/", status=204)
+        client.webhooks.delete("s1", "628123@c.us")
+        assert backend.last_call.url == "http://localhost:2785/api/sessions/s1/webhooks/628123@c.us"
+
     def test_raw_request_escape_hatch(self):
         backend = MockBackend().on("GET", "/api/anything", body={"ok": True})
         result = make_client(backend).request("GET", "/api/anything", query={"a": 1})

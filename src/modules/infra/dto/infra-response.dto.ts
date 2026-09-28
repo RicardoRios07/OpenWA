@@ -550,6 +550,13 @@ export class StorageImportResponseDto {
   @ApiProperty({ description: 'Objects written.', example: 128 })
   count!: number;
 
+  @ApiProperty({
+    description:
+      'Archive entries the store refused to write. `imported` is false when entries failed and none was written.',
+    example: 0,
+  })
+  failed!: number;
+
   @ApiProperty({ enum: ['local', 's3'], example: 'local' })
   storageType!: string;
 }

@@ -8,7 +8,7 @@ import { Repository } from 'typeorm';
 import { UnauthorizedException, NotFoundException, ConflictException } from '@nestjs/common';
 import { createHash, createHmac } from 'crypto';
 import * as fs from 'fs';
-import { AuthService, resolveSeedApiKey, bannerKeyLine } from './auth.service';
+import { AuthService, resolveSeedApiKey, bannerKeyLine, UnresolvedApiKeyException } from './auth.service';
 import { ApiKeyUsageTracker } from './api-key-usage-tracker.service';
 import { ApiKey, ApiKeyRole } from './entities/api-key.entity';
 
@@ -751,6 +751,20 @@ describe('AuthService', () => {
       (repository.findOne as jest.Mock).mockResolvedValue(key);
 
       await expect(service.validateApiKey('revoked')).rejects.toThrow('API key is revoked');
+    });
+
+    // Only a key that matches no row is marked unresolved, so its audit row may be sampled per IP; a
+    // rejection of a stored key must stay a plain 401 so every attempt is audited.
+    it('marks only an unknown key as unresolved, keeping the UnauthorizedException name', async () => {
+      (repository.findOne as jest.Mock).mockResolvedValue(null);
+      const unknown = await service.validateApiKey('wrong-key').catch((err: unknown) => err);
+      expect(unknown).toBeInstanceOf(UnresolvedApiKeyException);
+      expect((unknown as Error).name).toBe('UnauthorizedException');
+
+      (repository.findOne as jest.Mock).mockResolvedValue(createMockApiKey({ isActive: false }));
+      const revoked = await service.validateApiKey('revoked').catch((err: unknown) => err);
+      expect(revoked).toBeInstanceOf(UnauthorizedException);
+      expect(revoked).not.toBeInstanceOf(UnresolvedApiKeyException);
     });
 
     it('should throw UnauthorizedException for expired key', async () => {

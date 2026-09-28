@@ -139,6 +139,20 @@ async function send<T>(
   options: RequestOptions,
   consume: (res: Response) => Promise<T>,
 ): Promise<T> {
+  // fetch resolves `.` and `..` segments before sending, so such a segment would reach the parent
+  // resource instead of the intended one. Mirror the URL parser: it drops tab and newline, trims
+  // trailing C0 controls and spaces, reads `\` as `/`, and treats %2e as a dot. An empty segment is
+  // refused too: it means a required id was blank.
+  const pathOnly = options.path
+    .split(/[?#]/, 1)[0]
+    .replace(/[\t\n\r]/g, '')
+    .replace(/[\x00-\x20]+$/, '');
+  for (const segment of pathOnly.split(/[/\\]/).slice(1)) {
+    const dots = segment.replace(/%2e/gi, '.');
+    if (dots === '' || dots === '.' || dots === '..') {
+      throw new TypeError(`OpenWA: empty or dot path segment in ${JSON.stringify(options.path)}`);
+    }
+  }
   const url = buildUrl(config.baseUrl, options.path, options.query);
   const timeoutMs = toTimeoutMs(options.timeoutMs ?? config.timeoutMs);
 

@@ -84,6 +84,27 @@ describe('OpenWAClient', () => {
     expect(t2.lastCall!.url).toContain('weird%2Fid%23x'); // path-breaking chars encoded
   });
 
+  it('refuses an empty or dot id instead of letting fetch collapse the path to the parent resource', async () => {
+    const t = new MockTransport().passthrough({ status: 204 });
+    const c = client(t);
+    await expect(c.webhooks.delete('s1', '..')).rejects.toThrow(TypeError);
+    await expect(c.contacts.delete('s1', '.')).rejects.toThrow(TypeError);
+    await expect(c.templates.delete('s1', '')).rejects.toThrow(TypeError);
+    await expect(c.request({ method: 'DELETE', path: '/api/sessions/s1/labels/%2E%2e' })).rejects.toThrow(TypeError);
+    // The URL parser also reads `\` as `/`, drops tab and newline, and trims trailing controls and spaces.
+    for (const tail of ['labels\\..', 'labels/\t..', 'labels/.\n.', 'labels/.. ']) {
+      const path = `/api/sessions/s1/${tail}`;
+      await expect(c.request({ method: 'DELETE', path })).rejects.toThrow(TypeError);
+    }
+    expect(t.calls).toHaveLength(0);
+
+    // Dots inside an id, and a dot-only query value, are not path segments and still go out.
+    await c.webhooks.delete('s1', '628123@c.us');
+    expect(t.lastCall!.url).toBe('http://localhost:2785/api/sessions/s1/webhooks/628123@c.us');
+    await c.request({ method: 'GET', path: '/api/sessions/s1/labels/a.b?x=/..' });
+    expect(t.calls).toHaveLength(2);
+  });
+
   it('serializes query params and skips null/undefined', async () => {
     const t = new MockTransport().on('GET', /\/messages/, { body: [] });
     await client(t).messages.list('s1', { chatId: 'a@c.us', from: undefined, limit: 10 });

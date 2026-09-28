@@ -78,6 +78,10 @@ plus `client.auth()`.
 Operator-only modules (`docker`, `metrics`, `infra`, `plugins`, `mcp`) are
 intentionally not exposed; all user-facing resources are.
 
+`UpdateWebhookRequest` omits null fields, so `filters(null)` leaves a
+webhook's filters unchanged. To remove every filter, pass
+`new WebhookFilters(List.of())` instead.
+
 ## Error handling
 
 Errors are a typed, unchecked hierarchy — branch with `instanceof` or on

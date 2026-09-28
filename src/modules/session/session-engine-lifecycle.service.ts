@@ -5,7 +5,7 @@ import { Repository, DataSource } from 'typeorm';
 import { Session, SessionStatus } from './entities/session.entity';
 import { EngineFactory } from '../../engine/engine.factory';
 import { EngineRegistry } from '../../engine/engine-registry.service';
-import { decideReconnect, clampNumber, type ReconnectAttemptState } from './reconnect-policy';
+import { decideReconnect, clampNumber, STABLE_READY_MS, type ReconnectAttemptState } from './reconnect-policy';
 import { SessionLivenessWatchdog } from './session-liveness-watchdog.service';
 import { MessageProjector } from './message-projector.service';
 import { SessionErrorStore } from './session-error-store.service';
@@ -56,6 +56,8 @@ export interface ReconnectState extends ReconnectAttemptState {
   initInFlight?: boolean;
   /** The failure parked during that window, applied or dropped by executeReconnect once init settles. */
   parkedFailure?: { run: () => void; terminal: boolean };
+  /** When the session last reached READY; consumed by the next scheduleReconnect (see STABLE_READY_MS). */
+  readyAt?: number;
 }
 
 // Reconnect-backoff bounds. An OPERATOR-supplied session.config feeds this math, so the values
@@ -521,9 +523,12 @@ export class SessionEngineLifecycle {
     // counted its attempt). The entry start() creates up
     // front — {attempts: 0, timer: null} — is dormant: a start that then failed leaves nothing
     // that will ever re-register an engine, and treating it as liveness would pin the claim to
-    // this node forever.
+    // this node forever. So is a state whose last event was READY: its streak survives for the
+    // stability window, but nothing is pending until the next drop arms a timer.
     const reconnect = this.reconnectStates.get(id);
-    return reconnect != null && (reconnect.timer !== null || reconnect.attempts > 0);
+    return (
+      reconnect != null && (reconnect.timer !== null || (reconnect.attempts > 0 && reconnect.readyAt === undefined))
+    );
   }
 
   // --- Leaf-event delegates (SessionEngineLeafEvents) ------------------------------------------
@@ -818,13 +823,19 @@ export class SessionEngineLifecycle {
       },
     );
 
-    // Reset reconnect attempts and clear any stale failure reason on success. READY also ends the
-    // episode: a reconnect still pending (the watchdog reported this engine, then it recovered on
-    // its own) would tear the recovered engine down. Only the timer goes; the state keeps the
-    // session's reconnect settings for its next drop.
+    // Clear any stale failure reason on success. READY also ends the pending attempt: a reconnect
+    // still armed (the watchdog reported this engine, then it recovered on its own) would tear the
+    // recovered engine down. Only the timer goes; the state keeps the session's reconnect settings
+    // for its next drop. This READY does not reset the attempt streak: the next scheduleReconnect resets it
+    // only if this READY held for STABLE_READY_MS, so a session that flaps keeps backing off.
+    // Baileys fires READY again on every internal socket reopen, with no drop reported in between:
+    // a previous READY that already held the window ends the streak here, before it is overwritten.
     const reconnectState = this.reconnectStates.get(id);
     if (reconnectState) {
-      reconnectState.attempts = 0;
+      if (reconnectState.readyAt !== undefined && Date.now() - reconnectState.readyAt >= STABLE_READY_MS) {
+        reconnectState.attempts = 0;
+      }
+      reconnectState.readyAt = Date.now();
       if (reconnectState.timer) {
         clearTimeout(reconnectState.timer);
         reconnectState.timer = null;
@@ -1047,6 +1058,14 @@ export class SessionEngineLifecycle {
     // pending one back: re-arming each time kept a long base delay from ever firing. Also keeps two
     // back-to-back disconnects from stacking two timers and double-initializing the engine.
     if (state.timer) return;
+
+    // Consume the last READY once. A READY that held for the stability window ended the episode, so
+    // this drop starts a fresh streak; a shorter one is the same flap and keeps the streak growing.
+    // Cleared either way, so a later re-init failure inside this episode never resets it.
+    if (state.readyAt !== undefined) {
+      if (Date.now() - state.readyAt >= STABLE_READY_MS) state.attempts = 0;
+      state.readyAt = undefined;
+    }
 
     // All the backoff rules (budget, exponential delay, loop cadence) live in the
     // pure policy; this method only applies the effects the decision calls for.

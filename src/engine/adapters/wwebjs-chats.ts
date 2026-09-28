@@ -36,6 +36,10 @@ export class WwebjsChats {
         this.host.reportIfPageTransportError(error, 'getChats');
         throw new EngineTransportError('Transport died while listing chats');
       }
+      // A read that outran the protocol budget got no answer: a 503, but no death.
+      if (isProtocolTimeout(error)) {
+        throw new EngineTransportError('WhatsApp Web did not answer the chat list read in time');
+      }
       throw error;
     }
     const summaries: ChatSummary[] = [];

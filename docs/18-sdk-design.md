@@ -404,6 +404,7 @@ try {
 - **Redirects are never followed.** The transport uses `redirect: 'manual'`, so a `3xx` surfaces to the caller as an error (via `OpenWAApiError`) rather than being followed — this guarantees the `X-API-Key` header is never re-sent to a redirect target (potentially a different origin).
 - **Auth and JSON headers take precedence.** Request headers are merged in the order `defaultHeaders` → per-call headers → `Content-Type: application/json` → `X-API-Key`. Both `Content-Type` and `X-API-Key` are applied last, so neither can be overridden by a caller-supplied header.
 - **Path segments are percent-encoded.** Ids (session, chat, message, etc.) are encoded so a value cannot break out of its path position, while keeping the WhatsApp-safe characters `@`, `:`, and `+` readable (e.g. `628123456789@c.us`).
+- **Empty and dot segments are refused.** An empty, `.` or `..` segment rejects with a `TypeError` and nothing is sent, because `fetch` would otherwise resolve it to the parent resource.
 - **Base-URL path prefix is preserved.** A `baseUrl` such as `https://gateway.example.com/v1` keeps its `/v1` prefix on every request; only a trailing slash is trimmed.
 - **No automatic retries.** A failed request rejects immediately — the SDK does not retry, even on `429`. Wrap calls in your own backoff if you need retries.
 - **Injectable transport.** Supply a custom `fetch` to wrap outbound calls with retry, logging, or observability middleware, or to run on a runtime without a global `fetch`. This is also the recommended way to unit-test without monkey-patching globals.
@@ -772,6 +773,7 @@ except OpenWAApiError as e:
 - **Redirects are never followed.** `follow_redirects` is forced off so the `X-API-Key` header is never re-sent to a redirect target. An unfollowed `3xx` therefore surfaces as an `OpenWAApiError` rather than a success.
 - **Auth/JSON headers always win.** `default_headers` are applied first; the SDK then sets `Content-Type: application/json` and `X-API-Key`, so caller headers can never clobber them.
 - **Path segments are percent-encoded.** Each path value (session/chat/message id, etc.) is encoded so a `/`, `#`, or `?` can't break out of its position; already-safe id characters `@`, `:`, `+` are left readable. Boolean query params are serialized lowercase (`true`/`false`); `None` query values are dropped.
+- **Empty and dot segments are refused.** An empty, `.` or `..` id raises `ValueError` before anything is sent, because httpx would otherwise resolve it to the parent resource.
 - **Base-URL path prefix is preserved.** A trailing `/` is stripped from `base_url`, but any path prefix (e.g. when running behind a reverse proxy) is kept on every request.
 - **No automatic retries.** Each call issues exactly one request; retry/backoff is the caller's responsibility. Wrap or inject a custom `transport` for retry or observability middleware.
 - **Testable transport injection.** Pass `transport=httpx.MockTransport(handler)` to intercept requests in tests — no global monkey-patching.
@@ -1119,6 +1121,7 @@ try {
 - **Redirects are never followed.** Guzzle is configured with `allow_redirects => false`, so a `3xx` surfaces as an `OpenWAApiException` rather than being followed — the `X-API-Key` header is never re-sent to a redirect target.
 - **Auth/JSON headers take precedence.** `defaultHeaders` are merged in first, then `X-API-Key`, `Content-Type: application/json`, and `Accept: application/json` are applied on top, so they can't be clobbered.
 - **Path segments are percent-encoded.** Ids (session/chat/message/group ids) pass through `encodeSegment()`, which `rawurlencode`s the value but keeps the WhatsApp-id-safe characters `@`, `:`, and `+` readable — so a value containing `/`, `#`, or `?` cannot break out of its path position.
+- **Empty and dot segments are refused.** An empty, `.` or `..` id throws `InvalidArgumentException` before anything is sent, because the HTTP stack would otherwise resolve it to the parent resource.
 - **Base-URL path prefix is preserved.** The base URL has its trailing `/` trimmed and requests are issued against an absolute `baseUrl . $path`; Guzzle's `base_uri` is intentionally unset, so a prefix like `/v1` behind a reverse proxy is retained.
 - **Null query values are dropped.** Absent optional query parameters (`null`) are filtered out before the request, so they are never sent.
 - **No automatic retries.** A failed request throws immediately; wrap calls in your own backoff if you need retries (notably for `429`). The injectable `httpClient` is the extension point for retry/observability middleware.

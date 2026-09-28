@@ -18,7 +18,7 @@ import { EngineNotSupportedError } from '../../common/errors/engine-not-supporte
 import { ConfigService } from '@nestjs/config';
 import { SessionService, AUTOSTART_THROTTLE_MS } from './session.service';
 import { SessionOwnershipService } from './session-ownership.service';
-import { decideReconnect } from './reconnect-policy';
+import { decideReconnect, STABLE_READY_MS } from './reconnect-policy';
 import { ACK_RECONCILE_DELAY_MS } from './message-projector.service';
 import { SessionEngineLifecycle, type ReconnectState } from './session-engine-lifecycle.service';
 import {
@@ -1396,6 +1396,39 @@ describe('SessionService', () => {
       expect(ownership.release).toHaveBeenCalledWith('sess-uuid-1');
     });
 
+    // The incomplete stop evicted the engine and wrote DISCONNECTED. A claim left to lapse still names
+    // this node, and a peer's takeover sweep adopts exactly such a row: it would restart the session
+    // the operator just stopped. A released claim is not adopted.
+    it('stop() releases on the 502 SESSION_STOP_INCOMPLETE path when nothing stays alive here', async () => {
+      const ownership = withOwnership();
+      jest.spyOn(lifecycle, 'stop').mockRejectedValue(new BadGatewayException({ code: 'SESSION_STOP_INCOMPLETE' }));
+      jest.spyOn(lifecycle, 'isEngineActive').mockReturnValue(false);
+
+      await expect(service.stop('sess-uuid-1')).rejects.toThrow(BadGatewayException);
+
+      expect(ownership.release).toHaveBeenCalledWith('sess-uuid-1');
+    });
+
+    it('stop() keeps the claim on the 502 path when a concurrent start still holds the session here', async () => {
+      const ownership = withOwnership();
+      jest.spyOn(lifecycle, 'stop').mockRejectedValue(new BadGatewayException({ code: 'SESSION_STOP_INCOMPLETE' }));
+      jest.spyOn(lifecycle, 'isEngineActive').mockReturnValue(true);
+
+      await expect(service.stop('sess-uuid-1')).rejects.toThrow(BadGatewayException);
+
+      expect(ownership.release).not.toHaveBeenCalled();
+    });
+
+    it('stop() keeps the claim when it fails for any other reason', async () => {
+      const ownership = withOwnership();
+      jest.spyOn(lifecycle, 'stop').mockRejectedValue(new NotFoundException('Session not found'));
+      jest.spyOn(lifecycle, 'isEngineActive').mockReturnValue(false);
+
+      await expect(service.stop('sess-uuid-1')).rejects.toThrow(NotFoundException);
+
+      expect(ownership.release).not.toHaveBeenCalled();
+    });
+
     it('forceKill() hands the claim back after the kill', async () => {
       const ownership = withOwnership();
       jest.spyOn(lifecycle, 'forceKill').mockResolvedValue(createMockSession());
@@ -1746,7 +1779,11 @@ describe('SessionService', () => {
       intern.reconnectStates.set('x', { attempts: 1, timer: null });
       expect(lifecycle.isEngineActive('x')).toBe(true);
 
-      // An armed timer, attempts reset by a successful READY.
+      // A streak whose last event was READY: kept for the stability window, but nothing is pending.
+      intern.reconnectStates.set('x', { attempts: 3, timer: null, readyAt: Date.now() });
+      expect(lifecycle.isEngineActive('x')).toBe(false);
+
+      // An armed timer on a fresh streak.
       intern.reconnectStates.set('x', { attempts: 0, timer: setTimeout(() => undefined, 60_000) });
       expect(lifecycle.isEngineActive('x')).toBe(true);
       clearTimeout((intern.reconnectStates.get('x') as { timer: NodeJS.Timeout }).timer);
@@ -2094,7 +2131,7 @@ describe('SessionService', () => {
       }
     });
 
-    it('resets the attempt budget only on READY, never because time passed between attempts', () => {
+    it('resets the attempt budget only after a stable READY, never because time passed between attempts', () => {
       jest.useFakeTimers();
       try {
         const i = internals();
@@ -2111,14 +2148,16 @@ describe('SessionService', () => {
         for (let k = 0; k < 6; k++) failedAttempt();
         expect(state.attempts).toBe(6);
 
-        // READY is the only reset, so the next drop restarts at the base delay (~5s).
+        // A READY that held for the stability window is the only reset, so the next drop restarts
+        // at the base delay (~5s).
         const engine = {
           getStatus: jest.fn().mockReturnValue(EngineStatus.READY),
           forceDestroy: jest.fn().mockResolvedValue(undefined),
         };
         i.engines.set('sess-uuid-1', engine);
         i.handleEngineReady('sess-uuid-1', engine, '628123', 'Tester');
-        expect(state.attempts).toBe(0);
+        expect(state.attempts).toBe(6);
+        jest.advanceTimersByTime(STABLE_READY_MS);
         i.scheduleReconnect('sess-uuid-1', createMockSession());
         expect(state.attempts).toBe(1);
         const callsBefore = exec.mock.calls.length;
@@ -2134,6 +2173,63 @@ describe('SessionService', () => {
         expect(i.sessionErrors.get('sess-uuid-1')).toBeUndefined();
         i.scheduleReconnect('sess-uuid-1', createMockSession());
         expect(i.sessionErrors.get('sess-uuid-1')).toMatch(/Reconnection failed after 7 attempts/);
+      } finally {
+        jest.clearAllTimers();
+        jest.useRealTimers();
+      }
+    });
+
+    it('ends the streak on a READY that held the stability window, even if another READY follows it', () => {
+      // Baileys fires READY on every internal socket reopen with no gateway-level drop in between, so
+      // a later READY must not restart the window and carry a long-finished streak forward.
+      jest.useFakeTimers();
+      try {
+        const i = internals();
+        (repository.update as jest.Mock).mockResolvedValue({ affected: 1 });
+        const state = { attempts: 0, timer: null, maxAttempts: 7, baseDelay: 5000 };
+        i.reconnectStates.set('sess-uuid-1', state);
+        jest.spyOn(i, 'executeReconnect').mockResolvedValue(undefined);
+        const engine = {
+          getStatus: jest.fn().mockReturnValue(EngineStatus.READY),
+          forceDestroy: jest.fn().mockResolvedValue(undefined),
+        };
+        i.engines.set('sess-uuid-1', engine);
+
+        i.scheduleReconnect('sess-uuid-1', createMockSession());
+        expect(state.attempts).toBe(1);
+        i.handleEngineReady('sess-uuid-1', engine, '628123', 'Tester');
+        jest.advanceTimersByTime(STABLE_READY_MS);
+        i.handleEngineReady('sess-uuid-1', engine, '628123', 'Tester');
+        jest.advanceTimersByTime(60_000);
+        i.scheduleReconnect('sess-uuid-1', createMockSession());
+        expect(state.attempts).toBe(1);
+      } finally {
+        jest.clearAllTimers();
+        jest.useRealTimers();
+      }
+    });
+
+    it('keeps the streak when a second READY follows one that did not hold the stability window', () => {
+      jest.useFakeTimers();
+      try {
+        const i = internals();
+        (repository.update as jest.Mock).mockResolvedValue({ affected: 1 });
+        const state = { attempts: 0, timer: null, maxAttempts: 7, baseDelay: 5000 };
+        i.reconnectStates.set('sess-uuid-1', state);
+        jest.spyOn(i, 'executeReconnect').mockResolvedValue(undefined);
+        const engine = {
+          getStatus: jest.fn().mockReturnValue(EngineStatus.READY),
+          forceDestroy: jest.fn().mockResolvedValue(undefined),
+        };
+        i.engines.set('sess-uuid-1', engine);
+
+        i.scheduleReconnect('sess-uuid-1', createMockSession());
+        i.handleEngineReady('sess-uuid-1', engine, '628123', 'Tester');
+        jest.advanceTimersByTime(STABLE_READY_MS - 1);
+        i.handleEngineReady('sess-uuid-1', engine, '628123', 'Tester');
+        jest.advanceTimersByTime(60_000);
+        i.scheduleReconnect('sess-uuid-1', createMockSession());
+        expect(state.attempts).toBe(2);
       } finally {
         jest.clearAllTimers();
         jest.useRealTimers();
@@ -2271,11 +2367,11 @@ describe('SessionService', () => {
       }
     });
 
-    it('re-arms the alert after READY: the next alert waits 5 fresh attempts', () => {
+    it('re-arms the alert after a stable READY: the next alert waits 5 fresh attempts', () => {
       jest.useFakeTimers();
       try {
         const i = internals();
-        // Four attempts already consumed, then the session reached READY, which resets the budget.
+        // Four attempts already consumed, then the session held READY long enough to reset the budget.
         const state = { attempts: 4, timer: null, maxAttempts: Number.POSITIVE_INFINITY, baseDelay: 5000 };
         i.reconnectStates.set('sess-uuid-1', state);
         (repository.update as jest.Mock).mockResolvedValue({ affected: 1 });
@@ -2286,6 +2382,8 @@ describe('SessionService', () => {
         const alertsBefore = getSessionReconnectLoopAlertsTotal();
 
         i.handleEngineReady('sess-uuid-1', engine, '628123', 'Tester');
+        jest.advanceTimersByTime(STABLE_READY_MS);
+        // The first drop consumes the READY; the three re-init failures after it must not reset again.
         for (let k = 0; k < 4; k++) failedAttempt(i);
         // Without the reset the very first of these would have been attempt 5 and alerted; instead the
         // streak restarted at 0, so 4 fresh schedules reach only attempt 4 — still no alert.
@@ -2298,6 +2396,44 @@ describe('SessionService', () => {
         const calls = loopDispatches();
         expect(calls).toHaveLength(1);
         expect(calls[0][2]).toMatchObject({ sessionId: 'sess-uuid-1', attempts: 5 });
+        expect(getSessionReconnectLoopAlertsTotal()).toBe(alertsBefore + 1);
+      } finally {
+        jest.clearAllTimers();
+        jest.useRealTimers();
+      }
+    });
+
+    it('keeps the streak across a READY that drops within the stability window, so a flap still alerts', () => {
+      jest.useFakeTimers();
+      try {
+        const i = internals();
+        const state = { attempts: 0, timer: null, maxAttempts: Number.POSITIVE_INFINITY, baseDelay: 5000 };
+        i.reconnectStates.set('sess-uuid-1', state);
+        (repository.update as jest.Mock).mockResolvedValue({ affected: 1 });
+        const engine = { getStatus: jest.fn().mockReturnValue(EngineStatus.READY) };
+        i.engines.set('sess-uuid-1', engine);
+        jest.spyOn(i, 'executeReconnect').mockResolvedValue(undefined);
+        const alertsBefore = getSessionReconnectLoopAlertsTotal();
+
+        // Each cycle: the pending attempt fires, the new engine reaches READY, and it drops again before
+        // the window ends (the first one just short of it).
+        const holds = [STABLE_READY_MS - 1, 2_000, 2_000, 2_000];
+        i.scheduleReconnect('sess-uuid-1', createMockSession());
+        for (const hold of holds) {
+          jest.runOnlyPendingTimers();
+          i.handleEngineReady('sess-uuid-1', engine, '628123', 'Tester');
+          jest.advanceTimersByTime(hold);
+          i.scheduleReconnect('sess-uuid-1', createMockSession());
+        }
+
+        expect(state.attempts).toBe(5);
+        const calls = loopDispatches();
+        expect(calls).toHaveLength(1);
+        // Attempt 5 backs off at 5000 * 2^4 (plus under 1s of jitter), not at the base delay.
+        const payload = calls[0][2] as { attempts: number; nextDelayMs: number };
+        expect(payload.attempts).toBe(5);
+        expect(payload.nextDelayMs).toBeGreaterThanOrEqual(80_000);
+        expect(payload.nextDelayMs).toBeLessThan(81_000);
         expect(getSessionReconnectLoopAlertsTotal()).toBe(alertsBefore + 1);
       } finally {
         jest.clearAllTimers();
@@ -2567,7 +2703,8 @@ describe('SessionService', () => {
       expect(i.engines.has(ID)).toBe(false);
       expect(i.sessionErrors.get(ID)).toBe('net::ERR_NAME_NOT_RESOLVED');
 
-      // The next attempt succeeds, and READY resets the streak.
+      // The next attempt succeeds. READY records when it happened; the streak itself resets only if
+      // the session then holds READY for the stability window before its next drop.
       clearTimeout(state.timer!);
       let callbacks: EngineEventCallbacks = {};
       mockEngine.initialize.mockImplementationOnce((cb: EngineEventCallbacks) => {
@@ -2578,7 +2715,8 @@ describe('SessionService', () => {
       callbacks.onReady?.('628123', 'Tester');
 
       expect(i.engines.get(ID)).toBe(mockEngine);
-      expect(state.attempts).toBe(0);
+      expect(state.attempts).toBe(2);
+      expect(state.readyAt).toEqual(expect.any(Number));
       expect(failedWrites()).toBe(0);
 
       // Init has settled, so a later failure on the READY session is applied, not parked.
@@ -3701,6 +3839,33 @@ describe('SessionService', () => {
 
       expect(sessionErrors.get('sess-uuid-1')).toBe(
         'Reconnecting after a dropped connection (attempt 5, down for 80s).',
+      );
+    });
+
+    // Baileys keeps its attempt counter across a READY that lasted under five minutes, so the next
+    // drop can arrive as attempt 5. The time the session spent READY is not downtime.
+    it('measures the downtime from the first drop after the last READY when the attempt count carries across it', async () => {
+      const callbacks = await startAndCapture();
+      const sessionErrors = (service as unknown as { sessionErrors: SessionErrorStore }).sessionErrors;
+      const start = Date.now();
+      const now = jest.spyOn(Date, 'now');
+      try {
+        for (let attempt = 1; attempt <= 4; attempt++) {
+          now.mockReturnValue(start + (attempt - 1) * 5_000);
+          callbacks.onReconnecting?.(attempt, 8_000);
+        }
+        now.mockReturnValue(start + 20_000);
+        callbacks.onReady?.('628123', 'Tester');
+        now.mockReturnValue(start + 4 * 60_000);
+        callbacks.onReconnecting?.(5, 16_000);
+        now.mockReturnValue(start + 4 * 60_000 + 16_000);
+        callbacks.onReconnecting?.(6, 32_000);
+      } finally {
+        now.mockRestore();
+      }
+
+      expect(sessionErrors.get('sess-uuid-1')).toBe(
+        'Reconnecting after a dropped connection (attempt 6, down for 16s).',
       );
     });
   });
@@ -5687,6 +5852,26 @@ describe('SessionService', () => {
 
       expect(mockEngine.setOnlinePresence).toHaveBeenCalledTimes(2);
       expect(mockEngine.setOnlinePresence).toHaveBeenNthCalledWith(2, false);
+    });
+
+    it('drops the own-presence preference and chat presence when the engine is replaced', async () => {
+      const first = await startAndCaptureCallbacks();
+      await service.setOnlinePresence('sess-uuid-1', false);
+      first.onPresenceUpdate!({ chatId: 'c@c.us', participants: [{ id: 'c@c.us', state: 'composing' }] });
+      expect(await service.getPresence('sess-uuid-1', 'c@c.us')).not.toBeNull();
+
+      await service.stop('sess-uuid-1');
+      await service.start('sess-uuid-1');
+      const calls = mockEngine.initialize.mock.calls as [EngineEventCallbacks][];
+      expect(calls).toHaveLength(2);
+      mockEngine.setOnlinePresence.mockClear();
+
+      // The replacement engine's first open must not re-publish the previous engine's choice.
+      calls[1][0].onReady!('628123', 'Alice');
+      await flush();
+
+      expect(mockEngine.setOnlinePresence).not.toHaveBeenCalled();
+      expect(await service.getPresence('sess-uuid-1', 'c@c.us')).toBeNull();
     });
 
     it('does not publish own presence on ready when the caller never set one', async () => {

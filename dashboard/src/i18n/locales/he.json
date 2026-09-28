@@ -93,7 +93,6 @@
     "unreadBadge": "{{count}} הודעה שלא נקראה",
     "unreadBadge_other": "{{count}} הודעות שלא נקראו",
     "unreadBadge_two": "שתי הודעות שלא נקראו",
-    "unreadBadge_many": "{{count}} הודעות שלא נקראו",
     "loadingMessages": "טוען הודעות...",
     "loadingOlderMessages": "טוען הודעות ישנות יותר...",
     "loadOlderMessagesError": "טעינת ההודעות הישנות נכשלה. גלול למעלה כדי לנסות שוב.",
@@ -159,7 +158,6 @@
       "itemCount": "עדכון {{count}}",
       "itemCount_one": "עדכון {{count}}",
       "itemCount_two": "{{count}} עדכונים",
-      "itemCount_many": "{{count}} עדכונים",
       "itemCount_other": "{{count}} עדכונים",
       "empty": "לאף איש קשר אין סטטוס פעיל.",
       "loadError": "טעינת הסטטוסים נכשלה.",
@@ -186,8 +184,7 @@
       "notReady": "הסשן עדיין אינו מוכן.",
       "subscribers": "{{count}} מנוי",
       "subscribers_other": "{{count}} מנויים",
-      "subscribers_two": "שני מנויים",
-      "subscribers_many": "{{count}} מנויים"
+      "subscribers_two": "שני מנויים"
     },
     "errors": {
       "loadSessions": "טעינת הסשנים נכשלה",
@@ -460,7 +457,6 @@
     "filters": {
       "badge": "{{count}} מסנן",
       "badge_other": "{{count}} מסננים",
-      "badge_many": "{{count}} מסננים",
       "badge_two": "שני מסננים",
       "title": "מסננים (אופציונלי)",
       "hint": "הפעלה רק כאשר כל התנאים מתקיימים. חל על אירועי הודעות.",
@@ -913,6 +909,7 @@
       "dontClose": "אין לסגור חלון זה",
       "successMsg": "השרת חזר לפעולה! הדף ייטען מחדש אוטומטית.",
       "errorMsg": "השרת לא הגיב לאחר 30 שניות. יש לבדוק את לוגי Docker ולאתחל ידנית.",
+      "outcomeUnknown": "ה-proxy הגיע לזמן הקצוב לפני שהשרת הגיב. ייתכן שהאתחול עדיין מתבצע; יש לטעון את הדף מחדש בעוד דקה כדי לבדוק.",
       "reload": "טעינת הדף מחדש"
     },
     "toasts": {

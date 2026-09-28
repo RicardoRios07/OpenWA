@@ -2,6 +2,21 @@ import { DeliveryStatus, IncomingMessage, MessageType } from '../interfaces/what
 import { chatKind } from '../identity/wa-id';
 
 /**
+ * Content types that change or annotate another message and carry nothing of their own: a poll vote,
+ * an in-chat pin, a keep-in-chat toggle, an album header (its photos arrive as their own messages), an
+ * encrypted reaction and an event RSVP. Mapped, they would surface as a bodyless `unknown` message, so
+ * the live and history paths drop them instead.
+ */
+export const BAILEYS_NON_CONTENT_TYPES: ReadonlySet<string> = new Set([
+  'pollUpdateMessage',
+  'pinInChatMessage',
+  'keepInChatMessage',
+  'albumMessage',
+  'encReactionMessage',
+  'encEventResponseMessage',
+]);
+
+/**
  * Map a Baileys message content-type token (from `getContentType`) to the engine-neutral
  * {@link MessageType}. `audioMessage` splits on the `ptt` flag into `voice` vs `audio`,
  * mirroring the wwjs `ptt -> voice` mapping. Anything unmapped becomes `unknown`.
@@ -23,6 +38,8 @@ export function mapBaileysMessageType(
     case 'imageMessage':
       return 'image';
     case 'videoMessage':
+    case 'ptvMessage':
+      // A round video note is a VideoMessage under its own content key.
       return 'video';
     case 'audioMessage':
       return isPtt ? 'voice' : 'audio';
@@ -791,6 +808,7 @@ export interface BaileysContextContent {
   extendedTextMessage?: (BaileysContextCarrier & { backgroundArgb?: number | null; font?: number | null }) | null;
   imageMessage?: BaileysContextCarrier | null;
   videoMessage?: BaileysContextCarrier | null;
+  ptvMessage?: BaileysContextCarrier | null;
   audioMessage?: BaileysContextCarrier | null;
   documentMessage?: BaileysContextCarrier | null;
   stickerMessage?: BaileysContextCarrier | null;
@@ -829,6 +847,7 @@ export function extractBaileysContext(content: BaileysContextContent): BaileysMe
     content.extendedTextMessage ??
     content.imageMessage ??
     content.videoMessage ??
+    content.ptvMessage ??
     content.audioMessage ??
     content.documentMessage ??
     content.stickerMessage ??
@@ -891,10 +910,10 @@ export function mapBaileysStatus(status: number | null | undefined): DeliverySta
  */
 export interface BaileysIncomingFields {
   id: string;
-  /** The chat JID (`key.remoteJid`): a contact, a `@g.us` group, or `status@broadcast`. */
+  /** The chat JID (`key.remoteJid`): a contact, a `@g.us` group, `status@broadcast`, or a broadcast list. */
   remoteJid: string;
   fromMe: boolean;
-  /** Group sender (`key.participant`); `remoteJid` is the group JID for group messages. */
+  /** Sender in a group, status or broadcast list (`key.participant`); `remoteJid` names the chat. */
   participant?: string;
   body: string;
   /** Result of `getContentType(msg.message)`. */
@@ -933,8 +952,9 @@ export interface BaileysIncomingFields {
 /**
  * Build a neutral {@link IncomingMessage} from extracted Baileys fields. The chat is always
  * `remoteJid` (Baileys reports the conversation directly); `fromMe` only flips from/to. The group
- * sender — and likewise the poster of a status broadcast — lives in `participant` (exposed as
- * `author`), matching the wwjs convention where `from` is the group JID / broadcast channel.
+ * sender, the poster of a status broadcast and the sender of a broadcast-list message all live in
+ * `participant` (exposed as `author`), matching the wwjs convention where `from` is the group JID or
+ * the broadcast id.
  */
 export function buildIncomingMessageFromBaileys(
   fields: BaileysIncomingFields,
@@ -965,11 +985,12 @@ export function buildIncomingMessageFromBaileys(
     isStatusBroadcast,
   };
 
-  // The sender behind a group message — or the poster behind a status broadcast — lives in
-  // `participant` (exposed as `author`), matching the wwjs convention where `from` is the group JID
-  // (or the shared status@broadcast channel). Without the status arm, buildIncomingStatus can only
-  // resolve the poster to the pseudo-JID itself and drops every Baileys status.
-  if ((isGroup || isStatusBroadcast) && fields.participant) {
+  // The sender behind a group message, the poster behind a status broadcast and the sender behind a
+  // broadcast-list message all live in `participant` (exposed as `author`), matching the wwjs
+  // convention where `from` is the group JID or the `@broadcast` id. Without the status arm,
+  // buildIncomingStatus can only resolve the poster to the pseudo-JID itself and drops every Baileys
+  // status; without the list arm, a list message names only the list and loses its sender.
+  if ((isGroup || rawChatId.endsWith('@broadcast')) && fields.participant) {
     incoming.author = normalizeJid(fields.participant);
   }
 

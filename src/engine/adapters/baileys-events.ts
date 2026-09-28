@@ -13,6 +13,7 @@ import {
   RevokedMessage,
 } from '../interfaces/whatsapp-engine.interface';
 import {
+  BAILEYS_NON_CONTENT_TYPES,
   buildIncomingMessageFromBaileys,
   extractBaileysBody,
   extractBaileysButtonReply,
@@ -477,6 +478,19 @@ export class BaileysEvents {
           ),
         };
         this.host.getOnMessageReaction()?.(event);
+        return;
+      }
+
+      // --- a vote, a pin, an album header and the like: don't emit onMessage ---
+      // They only point at another message, so mapped they would reach consumers, in either
+      // direction, as a bodyless `unknown` message (see BAILEYS_NON_CONTENT_TYPES).
+      if (contentType && BAILEYS_NON_CONTENT_TYPES.has(contentType)) {
+        this.host.logger.debug('Dropping a message that carries no content of its own', {
+          action: 'baileys_drop_non_content',
+          msgId: msg.key.id,
+          remoteJid,
+          contentType,
+        });
         return;
       }
 
@@ -1215,6 +1229,7 @@ export class BaileysEvents {
     const isMediaType =
       contentType === 'imageMessage' ||
       contentType === 'videoMessage' ||
+      contentType === 'ptvMessage' ||
       contentType === 'audioMessage' ||
       contentType === 'documentMessage' ||
       contentType === 'documentWithCaptionMessage' ||
@@ -1234,6 +1249,7 @@ export class BaileysEvents {
       const subMessage =
         normalizedContent.imageMessage ??
         normalizedContent.videoMessage ??
+        normalizedContent.ptvMessage ??
         normalizedContent.audioMessage ??
         normalizedContent.documentMessage ??
         normalizedContent.stickerMessage;
@@ -1251,6 +1267,7 @@ export class BaileysEvents {
     const subMessage =
       normalizedContent.imageMessage ??
       normalizedContent.videoMessage ??
+      normalizedContent.ptvMessage ??
       normalizedContent.audioMessage ??
       normalizedContent.documentMessage ??
       normalizedContent.stickerMessage;

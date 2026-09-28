@@ -908,6 +908,7 @@
       "dontClose": "Por favor, no cierres esta ventana",
       "successMsg": "¡El servidor volvió a estar en línea! La página se recargará automáticamente.",
       "errorMsg": "El servidor no respondió tras 30 segundos. Revisa los logs de Docker y reinicia manualmente.",
+      "outcomeUnknown": "El proxy agotó el tiempo de espera antes de que el servidor respondiera. Es posible que el reinicio siga en curso; recarga la página en un minuto para comprobarlo.",
       "reload": "Recargar página"
     },
     "toasts": {
