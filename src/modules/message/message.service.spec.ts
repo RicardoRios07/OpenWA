@@ -999,6 +999,21 @@ describe('MessageService', () => {
       expect(served).toBe('application/octet-stream');
     });
 
+    // A sender declares the mimetype, and the value becomes the Content-Type header. Parameters are
+    // dropped: a comma inside them makes a browser read a second type, and a character above U+00FF
+    // makes Node refuse the header, which failed the route with a 500 on every call.
+    it.each([
+      ['image/png;x=1,text/html', 'image/png'],
+      ['image/png;,image/svg+xml', 'image/png'],
+      ['image/jpeg;\u0101', 'image/jpeg'],
+      ['audio/ogg; codecs=opus', 'audio/ogg'],
+      ['IMAGE/PNG', 'image/png'],
+    ])('serves %p as its essence %p', async (declared, expected) => {
+      const svc = build(archived(declared), storage());
+      const { mimetype: served } = await svc.getChatMedia('sess-1', 'c@c.us', 'wa-1');
+      expect(served).toBe(expected);
+    });
+
     it('404s when nothing is archived for the message', async () => {
       const svc = build({ getMedia: jest.fn().mockResolvedValue(null) }, storage());
       await expect(svc.getChatMedia('sess-1', 'c@c.us', 'wa-1')).rejects.toThrow(NotFoundException);

@@ -17,7 +17,9 @@ export class AddBaileysStoredMessagesSessionCreatedIdIndex1786800000000 implemen
   name = 'AddBaileysStoredMessagesSessionCreatedIdIndex1786800000000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
-    // Lift the runtime statement_timeout for this transaction only, as AddMessageMediaPathIndex does.
+    // Boot and CLI migrations run on a pool without the runtime statement_timeout (pg-boot-migrations.ts);
+    // this guards against a role- or database-level default cancelling a long build, as
+    // AddMessageMediaPathIndex does.
     if (queryRunner.dataSource.options.type === 'postgres') {
       await queryRunner.query('SET LOCAL statement_timeout = 0');
     }

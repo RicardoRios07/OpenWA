@@ -366,9 +366,12 @@ export function MessageTester() {
       (delayMs === undefined || (!Number.isNaN(delayMs) && delayMs >= 1000 && delayMs <= 60000));
   }
 
+  // A new send replaces the batch on screen, so it waits for an in-flight cancel: the cancel's answer
+  // would otherwise be merged into the newer batch and stop its progress polling.
   const isSendDisabled =
     !canWrite ||
     isLoading ||
+    batchCancelling ||
     !session ||
     !formValid ||
     (messageType !== 'bulk' && (recipientType === 'group' ? selectedGroups.length === 0 : !recipient));

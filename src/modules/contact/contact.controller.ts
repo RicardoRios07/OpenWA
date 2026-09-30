@@ -143,7 +143,6 @@ export class ContactController {
       'would be a claim about the number rather than about the query, and this route exists to be ' +
       'trusted before a send.',
   })
-  @ApiResponse({ status: 403, description: 'API key role below OPERATOR' })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   async checkNumber(@Param('sessionId') sessionId: string, @Param('number') number: string) {
     // The engine returns the canonical chat id in its native format; we don't build the JID here

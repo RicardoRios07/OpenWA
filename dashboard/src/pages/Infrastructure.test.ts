@@ -8,6 +8,7 @@
 // RoleProvider (harmless here, kept for parity with App.tsx) → ToastProvider (useToast throws
 // without it). No Router — the page uses no router hooks.
 import '../test-helpers/register-hooks.ts';
+import { readFileSync } from 'node:fs';
 import { test, before, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { createElement } from 'react';
@@ -283,6 +284,18 @@ test('Infrastructure renders and the config form hydrates from /status and /conf
     assert.equal(fieldInput(container, 'Session Data Path').value, '/data/custom-sessions');
     assert.equal(fieldInput(container, 'Browser Arguments').value, '--headless=new --custom-flag');
   });
+});
+
+// An empty field saves the gateway's DEFAULT_PUPPETEER_ARGS, so the placeholder must name that list: an
+// operator who copies a shorter one drops flags such as the /dev/shm crash guard.
+test('the Browser Arguments placeholder is the default an empty field saves', async () => {
+  const source = readFileSync(new URL('../../../src/config/configuration.ts', import.meta.url), 'utf8');
+  const list = /DEFAULT_PUPPETEER_ARGS[^=]*=\s*\[([^\]]*)\]/.exec(source)?.[1];
+  assert.ok(list, 'DEFAULT_PUPPETEER_ARGS not found');
+  const defaults = [...list.matchAll(/'([^']+)'/g)].map(m => m[1]).join(' ');
+  const { container } = renderInfrastructure();
+  await rtl.screen.findByText('Database Configuration');
+  assert.equal(fieldInput(container, 'Browser Arguments').placeholder, defaults);
 });
 
 // The detail fields (username, database, schema, bucket, engine options) come only from /config.
@@ -832,6 +845,23 @@ test('a 502 the gateway stamped with a code is a refusal, not an unknown outcome
 
   await within(dialog).findByText('Restart failed');
   assert.ok(within(dialog).getByText('Compose rejected the profile'), 'the server reason is not shown');
+});
+
+test('the restart progress bar measures the server estimate, not a fixed 30 s', async () => {
+  const { within } = rtl;
+  resetFetchCalls();
+  overrides = {
+    readyFails: true,
+    restart: () =>
+      jsonResponse({ message: 'restarting', restarting: true, profiles: [], profilesToRemove: [], estimatedTime: 35 }),
+  };
+  const dialog = await clickRestartNow();
+
+  // One second into a 35 s estimate. Against a fixed 30 s total the width would be negative, which
+  // the style drops, leaving the bar empty until the countdown fell under 30.
+  await within(dialog).findByText('Server restarting... 34s', undefined, { timeout: 2_000 });
+  const fill = dialog.querySelector<HTMLElement>('.restart-progress-fill');
+  assert.equal(fill?.style.width, `${(1 / 35) * 100}%`);
 });
 
 test(

@@ -273,8 +273,9 @@ export class WwebjsLifecycle {
         ? [...this.host.config.puppeteer.args]
         : withPinnedBrowserLocale(DEFAULT_PUPPETEER_ARGS);
 
-      // Add proxy configuration if provided — but only when the URL parses to a supported scheme, so
-      // a malformed/stored proxy value can't break the Chromium launch or smuggle a non-proxy scheme.
+      // Add proxy configuration if provided. A stored proxy that does not parse to a supported scheme
+      // fails the session, as on Baileys (#859): launching without it would send the session's traffic
+      // out of the host's own address instead of the egress the operator chose.
       let proxyAuthentication: { username: string; password: string } | undefined;
       if (this.host.config.proxy) {
         if (isSupportedProxyUrl(this.host.config.proxy.url)) {
@@ -291,7 +292,10 @@ export class WwebjsLifecycle {
           }
           this.host.logger.log(`Using proxy: ${proxyLaunch.serverArg}`);
         } else {
-          this.host.logger.warn(`Ignoring invalid proxy URL for session ${this.host.config.sessionId}`);
+          throw new Error(
+            `The session proxy URL is not a supported http(s)/socks4/socks5 URL; fix or clear it with ` +
+              `PATCH /api/sessions/${this.host.config.sessionId}/proxy`,
+          );
         }
       }
 

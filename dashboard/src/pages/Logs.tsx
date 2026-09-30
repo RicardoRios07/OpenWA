@@ -127,17 +127,6 @@ export function Logs() {
     }
   };
 
-  if (loading && logs.length === 0) {
-    return (
-      <div
-        className="logs-page"
-        style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '400px' }}
-      >
-        <Loader2 className="animate-spin" size={32} />
-      </div>
-    );
-  }
-
   return (
     <div className="logs-page">
       <PageHeader
@@ -201,17 +190,24 @@ export function Logs() {
             <span>{t('logs.columns.ip')}</span>
             <span>{t('logs.columns.severity')}</span>
           </div>
-          {filteredLogs.length === 0 ? (
+          {/* The spinner stays inside the table: a search or severity change switches to a page that
+              may not be cached, and replacing the whole page would unmount the search box mid-typing. */}
+          {loading && logs.length === 0 ? (
+            <div className="empty-table-state">
+              <Loader2 className="animate-spin" size={32} />
+            </div>
+          ) : filteredLogs.length === 0 ? (
             <div className="empty-table-state">
               <FileText size={48} strokeWidth={1} />
-              {hasSeverityFilter || hasSearch ? (
+              {hasSeverityFilter && !hasSearch ? (
+                <>
+                  <h3>{t('logs.empty.title')}</h3>
+                  <p>{t('logs.empty.filteredServerDescription')}</p>
+                </>
+              ) : hasSearch ? (
                 <>
                   <h3>{t('logs.empty.filteredTitle')}</h3>
-                  <p>
-                    {hasSeverityFilter && !hasSearch
-                      ? t('logs.empty.filteredServerDescription')
-                      : t('logs.empty.filteredDescription')}
-                  </p>
+                  <p>{t('logs.empty.filteredDescription')}</p>
                 </>
               ) : (
                 <>
@@ -229,7 +225,7 @@ export function Logs() {
                 <span className="api-key">{log.apiKeyName || '—'}</span>
                 <span className="ip">{log.ipAddress || '—'}</span>
                 <span>
-                  <span className={`severity-badge ${log.severity}`}>{log.severity.toUpperCase()}</span>
+                  <span className={`severity-badge ${log.severity}`}>{t(`logs.severity.${log.severity}`)}</span>
                 </span>
               </div>
             ))

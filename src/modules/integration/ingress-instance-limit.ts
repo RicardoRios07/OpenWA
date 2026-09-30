@@ -9,8 +9,9 @@ export interface IngressAdmission {
 /**
  * The per-instance ingress rate bucket, charged by IngressService only once a delivery has passed
  * signature verification. Providers deliver every tenant's webhooks from one egress IP, so this is
- * what keeps a noisy (pluginId, instanceId) from starving its neighbours. Traffic that fails earlier
- * is bounded by the per-client-IP tier in InstanceThrottlerGuard alone.
+ * what keeps a noisy (pluginId, instanceId) from starving its neighbours, up to INGRESS_IP_LIMIT:
+ * every request also spends the per-client-IP tier first. Traffic that fails earlier is bounded by
+ * the per-client-IP tier in InstanceThrottlerGuard alone.
  *
  * Header names and values match what the throttler guard emitted for this tier. Every value is a
  * string, because safeAckHeaders drops anything else on the way to the wire.

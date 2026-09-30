@@ -148,11 +148,16 @@ export const DEFAULT_PIN_DURATION_SECONDS = 86400;
  * octet-stream so the media endpoint cannot host active content on the API origin.
  */
 const INERT_MEDIA_MIMETYPE =
-  /^(image\/(jpeg|png|gif|webp|bmp)|video\/(mp4|webm|quicktime|3gpp)|audio\/(mpeg|mp4|ogg|aac|wav|webm))(;|$)/;
+  /^(image\/(jpeg|png|gif|webp|bmp)|video\/(mp4|webm|quicktime|3gpp)|audio\/(mpeg|mp4|ogg|aac|wav|webm))$/;
 
-/** The declared mimetype when it is safe to echo back, else inert octet-stream. */
+/**
+ * The declared mimetype's normalized essence when it is safe to echo back, else inert octet-stream.
+ * Parameters are dropped rather than echoed: the sender wrote them, a comma among them makes a
+ * browser read a second type, and a character above U+00FF is refused as a header value.
+ */
 function inertMimetype(mimetype: string): string {
-  return INERT_MEDIA_MIMETYPE.test(mimetype) ? mimetype : 'application/octet-stream';
+  const essence = mimetype.split(';')[0].trim().toLowerCase();
+  return INERT_MEDIA_MIMETYPE.test(essence) ? essence : 'application/octet-stream';
 }
 
 @Injectable()
@@ -519,8 +524,8 @@ export class MessageService implements PluginMessagePort {
    * the REST-persisted copy covers) — #1165. It also serves an inbound message whose archived file
    * was purged by retention while the inline copy lives on.
    *
-   * Unlike status media (only ever an image or video), chat media includes documents a sender chose
-   * the type of — so the declared mimetype is echoed back only when it is inert, and the caller
+   * Unlike status media (only ever an image, a video or a voice note), chat media includes documents
+   * a sender chose the type of — so the declared mimetype is echoed back only when it is inert, and the caller
    * serves the result as an attachment regardless. Both matter: an allow-list alone would still let
    * `image/svg+xml` through as active content on the API origin.
    */

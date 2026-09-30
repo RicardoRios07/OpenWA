@@ -181,16 +181,18 @@ OpenWA serves plain HTTP on its port; terminate **TLS at your reverse proxy / lo
 
 ### At Rest
 
-> **There is currently no application-level encryption at rest.** API keys are stored **hashed** (one-way), but other sensitive values are stored as plaintext in the database / on disk and are protected by filesystem and database permissions, not by encryption. Encryption at rest for these fields is a roadmap item, not a shipped feature — do not assume it.
+> **There is currently no application-level encryption at rest.** API keys are stored **hashed** (one-way) in the database, but the first-boot key file and other sensitive values are stored as plaintext in the database / on disk and are protected by filesystem and database permissions, not by encryption. Encryption at rest for these fields is a roadmap item, not a shipped feature — do not assume it.
 
-| Data                                      | At rest                                                                       | How it is protected                                                                                                                                                                                                                                                                                                                   |
-| ----------------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| API keys                                  | **Hashed** — SHA-256 with an optional `API_KEY_PEPPER` HMAC; never reversible | A database leak alone cannot recover the keys; with a pepper set, hashes can't be precomputed offline. See §4.2.                                                                                                                                                                                                                      |
-| Session auth state (WhatsApp credentials) | Plaintext on disk (the engine's auth store under the data volume)             | Filesystem permissions on the data volume — keep it private.                                                                                                                                                                                                                                                                          |
-| Webhook secrets                           | Plaintext — `webhooks.secret` (`varchar`)                                     | Database access control; never returned by the webhook read DTOs (write-only) and omitted from `GET /api/infra/export-data` webhook rows.                                                                                                                                                                                             |
-| Proxy credentials                         | Plaintext — `sessions.proxyUrl` may embed `user:pass`                         | Database access control; never returned by the session read DTOs — only masked `proxyHost`, `proxyType` (derived from the URL scheme), and `hasCredentials` on `GET/PATCH /proxy`. The userinfo is also stripped from `GET /api/infra/export-data` session rows; scheme and host survive so a restore cannot silently connect direct. |
-| Generated config (`data/.env.generated`)  | Plaintext file, written `0600`                                                | Owner-only file permissions.                                                                                                                                                                                                                                                                                                          |
-| Message content                           | Plaintext in the `messages` table                                             | Database access control.                                                                                                                                                                                                                                                                                                              |
+| Data                                                                | At rest                                                                       | How it is protected                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| API keys                                                            | **Hashed** — SHA-256 with an optional `API_KEY_PEPPER` HMAC; never reversible | A database leak alone cannot recover the keys; with a pepper set, hashes can't be precomputed offline. See §4.2.                                                                                                                                                                                                                      |
+| Session auth state (WhatsApp credentials)                           | Plaintext on disk (the engine's auth store under the data volume)             | Filesystem permissions on the data volume — keep it private.                                                                                                                                                                                                                                                                          |
+| Webhook secrets                                                     | Plaintext — `webhooks.secret` (`varchar`)                                     | Database access control; never returned by the webhook read DTOs (write-only) and omitted from `GET /api/infra/export-data` webhook rows.                                                                                                                                                                                             |
+| Proxy credentials                                                   | Plaintext — `sessions.proxyUrl` may embed `user:pass`                         | Database access control; never returned by the session read DTOs — only masked `proxyHost`, `proxyType` (derived from the URL scheme), and `hasCredentials` on `GET/PATCH /proxy`. The userinfo is also stripped from `GET /api/infra/export-data` session rows; scheme and host survive so a restore cannot silently connect direct. |
+| Bootstrap admin key file (`data/.api-key`, or `BOOTSTRAP_KEY_FILE`) | Plaintext raw ADMIN key, written `0600` on first boot                         | Owner-only file permissions; removed when the key it holds is revoked or deleted. Delete it once the key is stored elsewhere.                                                                                                                                                                                                         |
+| Plugin instance secrets                                             | Plaintext: `plugin_instances.secret`, `verifyToken`, `config`                 | Database access control; `secret`, `verifyToken` and the config fields a plugin marks secret are masked on API reads, but `GET /api/infra/export-data` includes all three verbatim, so treat an export file as a secret.                                                                                                              |
+| Generated config (`data/.env.generated`)                            | Plaintext file, written `0600`                                                | Owner-only file permissions.                                                                                                                                                                                                                                                                                                          |
+| Message content                                                     | Plaintext in the `messages` table                                             | Database access control.                                                                                                                                                                                                                                                                                                              |
 
 **Hardening you can apply today:** set `API_KEY_PEPPER`; restrict the data volume and database to the app's user; and encrypt at the infrastructure layer (LUKS / cloud-provider encrypted volumes / an encrypted managed Postgres) rather than relying on application-level field encryption, which is not implemented.
 
@@ -245,8 +247,8 @@ export class CreateWebhookDto {
   @IsOptional()
   @IsArray()
   @ArrayMinSize(1)
-  // The full WEBHOOK_EVENTS catalog (message.*, status.received, session.*, group.*,
-  // call.received) plus '*' for subscribe-all.
+  // The full WEBHOOK_EVENTS catalog (message.*, status.received, session.*, presence.update,
+  // group.*, call.*) plus '*' for subscribe-all.
   @IsIn([...WEBHOOK_EVENTS, '*'], { each: true })
   events?: string[];
 }
@@ -292,8 +294,8 @@ Exceeding a window returns `429 Too Many Requests`. Because the windows are **na
 
 The ingress route (`ALL /api/ingress/:pluginId/:instanceId/*path`) is exempt from the global per-IP tiers (their 100/min medium window sits below the per-instance limit, so a provider fanning every tenant's webhooks through one egress IP was shed before the per-instance bound could fire). It carries its own two windows instead, both on `INGRESS_INSTANCE_TTL` (default 60000 ms):
 
-- `instance`, keyed on `(pluginId, instanceId)`, env `INGRESS_INSTANCE_LIMIT`, default 120. Sheds one noisy tenant without touching its neighbours. Charged only once a delivery passes signature verification, so unknown-instance, failed-challenge and oversized requests never touch it. A route declaring signature scheme `none` (allowed only with `ALLOW_UNSIGNED_INGRESS=true`) passes every request, so there any caller can spend this bucket.
-- `ingress-ip`, keyed on the client (proxy-aware, see `TRUSTED_PROXIES`), env `INGRESS_IP_LIMIT`, default 1200. It is checked before anything else and is the only bound on traffic that fails verification. It is sized 10x the per-instance default so it never binds first for legitimate traffic.
+- `instance`, keyed on `(pluginId, instanceId)`, env `INGRESS_INSTANCE_LIMIT`, default 120. Sheds one noisy tenant on this bucket without spending its neighbours'. Charged only once a delivery passes signature verification, so unknown-instance, failed-challenge and oversized requests never touch it. A route declaring signature scheme `none` (allowed only with `ALLOW_UNSIGNED_INGRESS=true`) passes every request, so there any caller can spend this bucket.
+- `ingress-ip`, keyed on the client (proxy-aware, see `TRUSTED_PROXIES`), env `INGRESS_IP_LIMIT`, default 1200. It is checked before anything else and is the only bound on traffic that fails verification. Every ingress request counts against it, including one the `instance` window then sheds, so a tenant that pushes a shared provider IP past it sheds its neighbours on that IP too. It is sized 10x the per-instance default; raise it for a high-volume provider that delivers many tenants from one egress IP.
 
 Every response the per-IP window admits carries `X-RateLimit-*-ingress-ip`, an acknowledged delivery also carries `X-RateLimit-*-instance`, and a `429` carries the `Retry-After-*` of whichever window shed the request, mirrored into a plain `Retry-After`.
 
@@ -301,7 +303,7 @@ The API exposes the rate-limit headers via CORS (`exposedHeaders`) so browser cl
 
 ### In-flight request bodies
 
-The windows above run at the routing layer, after a request body has been buffered, so they cannot bound memory held by slow uploads. A pre-routing middleware does: it caps the request-body bytes in flight across all connections at `INFLIGHT_BODY_BUDGET_BYTES` (default 4 x `BODY_SIZE_LIMIT`) and answers a request that would cross it with `503` and `Retry-After`, before reading its body.
+The windows above run at the routing layer, after a request body has been buffered, so they cannot bound memory held by slow uploads. A pre-routing middleware does: it caps the request-body bytes in flight across all connections at `INFLIGHT_BODY_BUDGET_BYTES` (default 4 x `BODY_SIZE_LIMIT`) and answers a request that would cross it with `503` and `Retry-After`, before reading its body. A request whose declared `Content-Length` could not fit even on an idle server (above the whole budget, its caller's share or the unkeyed pool) gets `413` instead, without `Retry-After`, since retrying it cannot succeed.
 
 - Requests without an active API key (public ingress webhooks, unauthenticated callers) share a pool of a quarter of the budget, never less than twice `BODY_SIZE_LIMIT` (so half of the default budget), and are charged at most `BODY_SIZE_LIMIT` each. The rest is kept for requests that carry an active key. With `INFLIGHT_BODY_BUDGET_BYTES` below three times `BODY_SIZE_LIMIT` that reserve is smaller than one full-size body, and at twice `BODY_SIZE_LIMIT` or less there is none.
 - A request with an active key may hold at most half of the budget per key, wherever it connects from. An unkeyed client (IPv6 on its /64) may hold at most half of the unkeyed pool, or one `BODY_SIZE_LIMIT` if that is larger, so one full-size body from one address leaves room for other unkeyed senders once `INFLIGHT_BODY_BUDGET_BYTES` is at least twice `BODY_SIZE_LIMIT`; below that the room left is the budget minus one `BODY_SIZE_LIMIT`, and at a budget equal to `BODY_SIZE_LIMIT` a single full-size unkeyed body refuses every other body-carrying request, ingress deliveries included, with `503` until it finishes. Behind a reverse proxy without `TRUSTED_PROXIES`, every unkeyed request, ingress included, keys on the proxy address and draws on that one share, so at the defaults a single full-size unkeyed upload refuses ingress deliveries with `503` until it finishes.
@@ -468,11 +470,13 @@ app.use(helmet({
 ### What Gets Logged
 
 > **Reality check:** persisted audit coverage currently includes API-key create/update/revoke/delete
-> (updates carry before/after authorization state), rejected authentication, session lifecycle,
-> integration-instance creation, secret rotation, deletion, and scope-binding bridge failures, the
+> (updates carry before/after authorization state), rejected authentication, session lifecycle
+> (including disconnects caused by WhatsApp unlinking the device, account restrictions and their
+> lifting, and refused rebinds), integration-instance creation, update, secret rotation, deletion,
+> redrive, and scope-binding bridge failures, send-pacing refusals (sampled) and breaker trips, the
 > infra operations (config save, restart request, data export/import, storage export/import),
 > WebSocket rate-limit violations (sampled — see §4.6), and Bull Board queue mutations. Enum
-> members for API-key use, connection transitions, message sends, and webhook lifecycle are explicitly
+> members for API-key use, session connected, message sends, and webhook lifecycle are explicitly
 > registered as intentionally unemitted; application logs cover those operational events until dedicated
 > audit callsites are added. There is no global audit interceptor.
 
@@ -558,14 +562,16 @@ flowchart TB
 
 ### Secrets Inventory
 
-| Secret                            | Storage                                                                                                            | Rotation guidance                               |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------- |
-| Database credentials              | Environment variable                                                                                               | 90 days                                         |
-| Redis password                    | Environment variable                                                                                               | 90 days                                         |
-| API master key (`API_MASTER_KEY`) | Environment variable (first-boot seed only)                                                                        | Not via the env var; see the note below         |
-| API key pepper (`API_KEY_PEPPER`) | Environment variable                                                                                               | Rotating it invalidates all existing key hashes |
-| Webhook secrets                   | Database — **plaintext**; not in the webhook read DTOs, and omitted from `GET /api/infra/export-data` webhook rows | Per webhook                                     |
-| Session auth state                | File system (data volume) — **not encrypted**                                                                      | Never (tied to the WA session)                  |
+| Secret                                                                       | Storage                                                                                                                                                    | Rotation guidance                               |
+| ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| Database credentials                                                         | Environment variable                                                                                                                                       | 90 days                                         |
+| Redis password                                                               | Environment variable                                                                                                                                       | 90 days                                         |
+| API master key (`API_MASTER_KEY`)                                            | Environment variable (first-boot seed only)                                                                                                                | Not via the env var; see the note below         |
+| API key pepper (`API_KEY_PEPPER`)                                            | Environment variable                                                                                                                                       | Rotating it invalidates all existing key hashes |
+| Webhook secrets                                                              | Database — **plaintext**; not in the webhook read DTOs, and omitted from `GET /api/infra/export-data` webhook rows                                         | Per webhook                                     |
+| Bootstrap admin key file (`data/.api-key`, or `BOOTSTRAP_KEY_FILE`)          | File system: raw ADMIN key in **plaintext**, `0600`; removed when that key is revoked or deleted                                                           | Delete it once the key is stored elsewhere      |
+| Plugin instance secrets (`plugin_instances.secret`, `verifyToken`, `config`) | Database: **plaintext**; `secret`, `verifyToken` and secret-marked config are masked on API reads, but `GET /api/infra/export-data` includes them verbatim | Per instance (regenerate-secret)                |
+| Session auth state                                                           | File system (data volume) — **not encrypted**                                                                                                              | Never (tied to the WA session)                  |
 
 > `API_MASTER_KEY` only seeds the first ADMIN key, and is read only while the key table is empty. Changing it later has no effect: the new value never authenticates and the seeded key stays valid. Rotate by minting a new ADMIN key with `POST /api/auth/api-keys` and revoking the seeded `Default Admin Key`.
 
@@ -776,18 +782,7 @@ jobs:
 
 ### Allowed/Blocked Packages
 
-```json
-// package.json
-{
-  "overrides": {
-    // Force specific version for security fix
-    "lodash": "^4.17.21"
-  },
-  "scripts": {
-    "preinstall": "npx npm-force-resolutions"
-  }
-}
-```
+Security pins for transitive dependencies live in the `overrides` field of `package.json` (for example `"multer": "2.4.0"` and `"tar": "^7.5.21"`), and the `audit` CI job gates regressions through `npm run check:audit` (see above). No install hook fetches an unpinned package: `postinstall` runs `npm ci` against the dashboard lockfile and the repository's own patch scripts.
 
 ### Vulnerability Response Matrix
 

@@ -44,8 +44,10 @@ public final class SessionsResource {
     }
 
     /**
-     * Update a RUNNING session's configuration. Takes effect without re-linking the account — all
-     * three fields were fixed at creation before this route existed.
+     * Update a session's configuration, in any state, without a restart or re-linking the account
+     * (all three fields were fixed at creation before this route existed). {@code autoRejectCalls}
+     * applies immediately; {@code maxReconnectAttempts} and {@code reconnectBaseDelay} apply on the
+     * next start.
      */
     public SessionConfig updateConfig(String id, UpdateSessionConfigRequest body) {
         return client.request(

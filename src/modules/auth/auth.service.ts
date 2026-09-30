@@ -241,11 +241,12 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
 
     // Scoping the last unscoped admin (non-empty allowedSessions) strips key-management just as
     // surely as demoting or expiring it: @RequireUnscopedKey would then 403 every lifecycle route.
-    const removesOrSchedulesLastAdmin =
+    const stripsAdmin =
       (dto.role !== undefined && dto.role !== ApiKeyRole.ADMIN) ||
-      (dto.expiresAt !== undefined && dto.expiresAt !== null) ||
       (normalizeScopeList(dto.allowedSessions)?.length ?? 0) > 0 ||
       (normalizeChatAllowList(dto.allowedChats)?.length ?? 0) > 0;
+    const setsExpiry = dto.expiresAt !== undefined && dto.expiresAt !== null;
+    const removesOrSchedulesLastAdmin = stripsAdmin || setsExpiry;
 
     // Capture the authorization-relevant fields BEFORE applying the change. Only a change to role,
     // allowedIps, allowedSessions, allowedChats, or expiry can widen or restrict what an already-connected WebSocket
@@ -273,9 +274,12 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
       // The guard's predicate is the target's ROLE, not its usability snapshot: usability also
       // depends on isActive/expiry/scope, which the guarded statement itself evaluates against live
       // row state. A non-admin target genuinely cannot strand the system, so it stays lock-free.
+      // An expiry pushed later on a key that already expires cannot bring a lockout closer, so the
+      // guard lets it through on its own; alongside a demotion or scoping it is guarded as usual.
       const result = await this.withLastAdminGuard(
         this.apiKeyRepository.createQueryBuilder().update(ApiKey).set(patch),
         id,
+        setsExpiry && !stripsAdmin ? new Date(dto.expiresAt as string) : undefined,
       ).execute();
       await this.assertMutationApplied(id, result.affected);
       // The row's post-write state, for the eviction comparison below.
@@ -369,31 +373,53 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * The instant bound as :guardNow, formatted exactly as the SQLite driver persists datetime
+   * The instant bound as :guardNow (and :extendsTo), formatted exactly as the SQLite driver persists datetime
    * columns (UTC "YYYY-MM-DD HH:mm:ss.SSS" — what AbstractSqliteDriver writes for a Date), so the
    * guard's comparison against stored expiresAt values is chronological.
    */
-  private static guardNowParam(): string {
-    return new Date().toISOString().slice(0, 23).replace('T', ' ');
+  private static guardNowParam(at = new Date()): string {
+    return at.toISOString().slice(0, 23).replace('T', ' ');
   }
 
   /**
+   * The surviving admin must last at least as long as the target: never expiring, or expiring no
+   * earlier than a target that expires itself. A survivor due to expire first only postpones the
+   * lockout, so removing (or scheduling the expiry of) a non-expiring admin next to an expiring one
+   * is refused, while rotating to a key that outlives the old one still goes through. The target is
+   * the statement's own row, referenced by table name because the subquery aliases its row `other`.
+   */
+  private static readonly OUTLASTS_TARGET =
+    `("other"."expiresAt" IS NULL OR ` +
+    `("api_keys"."expiresAt" IS NOT NULL AND "other"."expiresAt" >= "api_keys"."expiresAt"))`;
+
+  /**
    * Bind the last-admin guard onto a single-row UPDATE/DELETE: the statement touches its target row
-   * ONLY when that row is not a usable admin, or another usable admin survives it. The guard runs
-   * inside the same statement as the write, so the database serializes concurrent last-admin
+   * ONLY when that row is not a usable admin, or another usable admin that outlasts it survives it
+   * (see OUTLASTS_TARGET), or, given `extendsTo`, that row already expires no later than it. The
+   * guard runs inside the same statement as the write, so the database serializes concurrent last-admin
    * mutations — including across processes sharing this database. The disjunct is parenthesized
    * explicitly: without the outer parens, `id = :id AND NOT (…) OR EXISTS (…)` would parse as
    * `(id = :id AND NOT …) OR EXISTS (…)` and the EXISTS branch would escape the row scope.
    */
-  private withLastAdminGuard<T extends UpdateQueryBuilder<ApiKey> | DeleteQueryBuilder<ApiKey>>(qb: T, id: string): T {
+  private withLastAdminGuard<T extends UpdateQueryBuilder<ApiKey> | DeleteQueryBuilder<ApiKey>>(
+    qb: T,
+    id: string,
+    extendsTo?: Date,
+  ): T {
+    const extension = extendsTo ? `("expiresAt" IS NOT NULL AND "expiresAt" <= :extendsTo) OR ` : '';
     // Cast: the chained this-types collapse to the union across a generic receiver.
     return qb
       .where('"id" = :id', { id })
       .andWhere(
-        `(NOT (${AuthService.usableAdminCondition('')}) OR EXISTS (` +
-          `SELECT 1 FROM "api_keys" "other" WHERE "other"."id" <> :id AND ${AuthService.usableAdminCondition('other')}))`,
+        `(NOT (${AuthService.usableAdminCondition('')}) OR ${extension}EXISTS (` +
+          `SELECT 1 FROM "api_keys" "other" WHERE "other"."id" <> :id AND ${AuthService.usableAdminCondition('other')} AND ` +
+          `${AuthService.OUTLASTS_TARGET}))`,
       )
-      .setParameters({ adminRole: ApiKeyRole.ADMIN, guardNow: AuthService.guardNowParam() }) as T;
+      .setParameters({
+        adminRole: ApiKeyRole.ADMIN,
+        guardNow: AuthService.guardNowParam(),
+        ...(extendsTo && { extendsTo: AuthService.guardNowParam(extendsTo) }),
+      }) as T;
   }
 
   /**
@@ -405,7 +431,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
   private async assertMutationApplied(id: string, affected: number | null | undefined): Promise<void> {
     if (affected) return;
     await this.findOne(id);
-    throw new ConflictException('Cannot remove the last active admin key');
+    throw new ConflictException('Cannot remove the last active admin key: no other admin key lasts as long');
   }
 
   /**

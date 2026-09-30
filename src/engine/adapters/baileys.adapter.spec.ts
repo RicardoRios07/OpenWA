@@ -651,6 +651,18 @@ describe('BaileysAdapter lifecycle & status', () => {
     }
   });
 
+  // A send that passed ensureReady() reads the socket again after its awaits (media fetch, quote lookup,
+  // lid resolution); a stop or logout in between must surface as a 409, not a TypeError that feeds the
+  // send breaker as an account failure.
+  it('a socket torn down after the readiness check reads as not ready, not as a null socket', async () => {
+    const adapter = newAdapter();
+    await adapter.initialize(noopCallbacks({}));
+    const host = (adapter as unknown as { messaging: { host: { getSocket(): unknown } } }).messaging.host;
+    expect(host.getSocket()).toBe(fakeSock);
+    (adapter as unknown as { sock: unknown }).sock = null;
+    expect(() => host.getSocket()).toThrow(EngineNotReadyError);
+  });
+
   it('on a recoverable close: reconnects (re-creates the socket) and does NOT fire onDisconnected', async () => {
     const onDisconnected = jest.fn();
     const adapter = newAdapter();
@@ -2245,6 +2257,8 @@ describe('BaileysAdapter inbound fan-out', () => {
       ['ALBUM', { albumMessage: { expectedImageCount: 2 } }],
       ['ENC_REACTION', { encReactionMessage: { targetMessageKey: { id: 'M1' } } }],
       ['EVENT_RSVP', { encEventResponseMessage: { eventCreationMessageKey: { id: 'EV1' } } }],
+      ['EVENT_EDIT', { secretEncryptedMessage: { targetMessageKey: { id: 'EV1' }, secretEncType: 1 } }],
+      ['ENC_COMMENT', { encCommentMessage: { targetMessageKey: { id: 'M1' } } }],
     ];
     const batch = (fromMe: boolean) => [
       ...nonContent.map(([id, message]) => ({

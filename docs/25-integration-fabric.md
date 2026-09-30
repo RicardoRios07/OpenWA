@@ -39,7 +39,7 @@ Rather than invent new machinery that would have to re-earn those properties, th
 
 | Concern                                                   | Cloned from                         |
 | --------------------------------------------------------- | ----------------------------------- |
-| Host→worker dispatch with fail-open timeout + crash-drain | the existing hook bridge            |
+| Host→worker dispatch with a bounded timeout + crash-drain | the existing hook bridge            |
 | Worker→host capability calls                              | the existing capability router      |
 | Durable delivery with retry + dead-letter                 | the outbound webhook queue and DLQ  |
 | Identity mapping table (no foreign key, last-write-wins)  | the LID↔phone mapping table         |
@@ -49,9 +49,9 @@ Rather than invent new machinery that would have to re-earn those properties, th
 
 Exactly **one** genuinely new primitive exists: a host→worker RPC that returns an **HTTP status + body**
 from a sandboxed worker — inbound webhook ingress. It is modelled line-for-line on the hook bridge so its
-correctness properties (its own pending map, a fail-open timeout, and a drain in the worker-exit handler)
-come for free. If a worker crashes mid-request, the pending ingress call resolves to a `502` instead of
-hanging the HTTP request forever.
+correctness properties (its own pending map, a bounded timeout, and a drain in the worker-exit handler)
+come for free. A timeout resolves `504` and a mid-dispatch crash resolves `502`; the ingress job treats
+either as a failed delivery and retries or dead-letters it.
 
 ## 25.3 Architecture
 
@@ -94,9 +94,11 @@ Alongside this async pipeline, a route may additionally declare a `response` con
 
 - **Ingress RPC** — the one new primitive. Delivers a verified inbound request into the worker and returns
   its HTTP result. The worker claims routes with `ctx.registerWebhook(route, handler)`.
-- **Ingress controller** — a `@Public` endpoint (`POST|GET /api/ingress/:pluginId/:instanceId/:route`).
-  It is public to the API-key guard because an external provider cannot present the gateway's API key, so
-  it self-validates (see §25.6). It never runs the plugin inline — providers enforce short acknowledgement
+- **Ingress controller** — a `@Public` endpoint accepting any HTTP method on
+  `/api/ingress/:pluginId/:instanceId/:route` (a `GET` on a route that declares `challenge` is answered
+  host-side as the verification handshake; every other request is a delivery). It is public to the
+  API-key guard because an external provider cannot present the gateway's API key, so it self-validates
+  (see §25.6). It never runs the plugin inline — providers enforce short acknowledgement
   deadlines, so the controller fast-acks and defers the work to the queue. A route may additionally
   declare a host-side `response` contract that shapes that synchronous reply without making the plugin
   inline. Its `preflight` checks (today: `session-alive`) run **after** signature verification and
@@ -204,7 +206,8 @@ Four tables live on the data connection, each created by a hand-authored dual-di
   `ERROR`. When the operator has opted in, the loader still logs its boot warning for every such route.
 - **Raw-body content types.** Signature verification observes exact bytes for `application/json` and
   `application/x-www-form-urlencoded`. Plain text, XML, octet streams, and non-UTF JSON charsets are not
-  supported ingress body formats and fail verification/content handling rather than being re-serialized.
+  supported ingress body formats and are refused with `415` on every signature scheme, before
+  verification or persistence, rather than being re-serialized.
 - **Egress.** The only sanctioned outbound path remains the SSRF-guarded `ctx.net.fetch`, scoped to the
   manifest's allowed hosts; a direct Node socket opened by the worker is not covered (see [30 - Plugin
   Sandboxing](./30-plugin-sandboxing.md)).
@@ -244,7 +247,8 @@ bounded redrive path instead of an infinite replay loop; a successful replay lik
 row's payload with the `dispatched` mark and retires any live-path dead-letter row for the same
 delivery so a later redrive never double-delivers. A `pending` row found without a payload (only
 possible for imported/corrupt history — payloads are retired only with a recorded outcome) is
-skipped loudly, never replayed empty.
+excluded from the sweep and never replayed empty; nothing logs it, and it stays `pending` until
+`INGRESS_DEDUP_RETENTION_DAYS` prunes it.
 
 Table growth is bounded by construction rather than by operator hygiene: the per-instance ingress
 throttle caps the row-creation rate, dispatched rows slim to a marker + hash, and the two retention

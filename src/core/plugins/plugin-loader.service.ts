@@ -221,8 +221,13 @@ export class PluginLoaderService implements OnModuleInit, OnApplicationBootstrap
       this.lastSandboxHookError,
       this.pluginsDir,
     );
-    this.uninstaller = new PluginUninstaller(this.logger, this.plugins, this.pluginStorage, this.pluginsDir, pluginId =>
-      this.lifecycle.unloadPlugin(pluginId),
+    this.uninstaller = new PluginUninstaller(
+      this.logger,
+      this.plugins,
+      this.pluginStorage,
+      this.pluginsDir,
+      pluginId => this.lifecycle.unloadPlugin(pluginId),
+      this.legacyPluginsDir,
     );
   }
 

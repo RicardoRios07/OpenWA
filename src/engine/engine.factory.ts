@@ -122,14 +122,19 @@ export class EngineFactory implements OnModuleInit {
     const enginePlugin = this.pluginLoader.getPlugin(this.engineType);
 
     if (enginePlugin?.instance && this.isEnginePlugin(enginePlugin.instance)) {
-      // Engine-neutral per-call config only. Engine-specific config (e.g. Puppeteer for
-      // whatsapp-web.js) is supplied to the plugin as an opaque blob via context.config at
-      // registration, so the factory never assembles browser-shaped fields.
+      // Engine-neutral per-call config, plus the two auth-dir bases. Engine-specific config (e.g.
+      // Puppeteer for whatsapp-web.js) is supplied to the plugin as an opaque blob via context.config
+      // at registration, so the factory never assembles browser-shaped fields. The bases are the
+      // exception: this factory hardens and purges the credential dirs under them, and the boot
+      // migration renames into them, so the engine must write there too. context.config can carry a
+      // persisted plugin-config override that none of those would follow.
       return enginePlugin.instance.createEngine({
         sessionId: options.sessionId,
         dbSessionId: options.dbSessionId,
         proxyUrl: options.proxyUrl,
         proxyType: options.proxyType,
+        sessionDataPath: this.sessionDataPath(),
+        authDir: this.baileysAuthBase(),
       }) as IWhatsAppEngine;
     }
 
@@ -201,14 +206,24 @@ export class EngineFactory implements OnModuleInit {
     }
   }
 
+  /** The whatsapp-web.js sessionDataPath from config. */
+  private sessionDataPath(): string {
+    return this.configService.get<string>('engine.sessionDataPath') ?? './data/sessions';
+  }
+
+  /** The baileys authDir from config. */
+  private baileysAuthBase(): string {
+    return this.configService.get<string>('engine.baileys.authDir') ?? './data/baileys';
+  }
+
   /** The whatsapp-web.js LocalAuth profile dir for `sessionId`, with sessionDataPath from config. */
   private wwjsAuthDir(sessionId: string): string {
-    return wwjsAuthDir(this.configService.get<string>('engine.sessionDataPath') ?? './data/sessions', sessionId);
+    return wwjsAuthDir(this.sessionDataPath(), sessionId);
   }
 
   /** The baileys multi-file auth dir for `sessionId`, with authDir from config. */
   private baileysAuthDir(sessionId: string): string {
-    return baileysAuthDir(this.configService.get<string>('engine.baileys.authDir') ?? './data/baileys', sessionId);
+    return baileysAuthDir(this.baileysAuthBase(), sessionId);
   }
 
   /** True when `dir`'s base directory holds an entry with exactly that name (see readAuthDirEntries). */

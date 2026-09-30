@@ -4,7 +4,7 @@
   overflow-x: hidden;
 }
 
-.templates-page .templates-loading,
+.templates-page.templates-loading,
 .templates-page .templates-loading-inline,
 .templates-page .templates-empty-page,
 .templates-page .templates-empty-list {
@@ -13,7 +13,7 @@
   justify-content: center;
 }
 
-.templates-page .templates-loading {
+.templates-page.templates-loading {
   min-height: 400px;
 }
 

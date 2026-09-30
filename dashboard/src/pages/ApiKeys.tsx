@@ -47,6 +47,7 @@ import {
   parseScopeList,
   sameSessionScope,
   sessionScopeNames,
+  toDateTimeLocal,
   type ApiKeyDraft,
 } from '../utils/sessionScope';
 import './ApiKeys.css';
@@ -78,6 +79,14 @@ function limitErrors(
     ip: unchanged(ipList, stored?.allowedIps) ? null : invalidIpEntry(ipList),
     chat: !canScopeSessions(role) || unchanged(chatList, stored?.allowedChats) ? null : invalidChatEntry(chatList),
   };
+}
+
+// The latest expiry the gateway takes: a UTC year past 9999 serializes with a six-digit year that it
+// refuses. West of UTC that is earlier than 9999-12-31T23:59 local. East of it the UTC cap falls in the
+// local year 10000, which new Date() cannot parse, so the local cap (still in 9999 UTC) is kept.
+function expiryMax(): string {
+  const utcCap = toDateTimeLocal('9999-12-31T23:59:00.000Z');
+  return utcCap.startsWith('9999-') ? utcCap : '9999-12-31T23:59';
 }
 
 // IP, chat and expiry limits shared by the create and edit modals. Chats are offered only where
@@ -149,7 +158,7 @@ function KeyLimitFields({
           id={`${idPrefix}-expires`}
           ref={expiresRef}
           type="datetime-local"
-          max="9999-12-31T23:59"
+          max={expiryMax()}
           value={expires}
           disabled={disabled}
           onChange={e => {
@@ -220,7 +229,7 @@ export function ApiKeys() {
   );
 
   const windowWidth = useWindowSize();
-  const isMobile = windowWidth < 768;
+  const isMobile = windowWidth <= 768;
   const isSmall = windowWidth < 640;
   const [columnVisibility, setColumnVisibility] = useState<ColumnVisibilityState>({});
 
@@ -278,7 +287,10 @@ export function ApiKeys() {
 
   const handleSave = async () => {
     if (!editingKey || !editDraft || !canSave) return;
-    if (editExpiresRef.current && !editExpiresRef.current.validity.valid) {
+    // A stored expiry left as it is is not sent (see apiKeyPatch), so one past this browser's max (set
+    // from another time zone or through the API) does not block an unrelated change.
+    const expiryUntouched = editDraft.expires !== '' && editDraft.expires === toDateTimeLocal(editingKey.expiresAt);
+    if (!expiryUntouched && editExpiresRef.current && !editExpiresRef.current.validity.valid) {
       toast.error(t('apiKeys.edit.title'), t('apiKeys.expiry.invalid'));
       return;
     }
@@ -300,7 +312,7 @@ export function ApiKeys() {
   const newErrors = limitErrors(newKey.role, newKey.ips, newKey.chats);
   const editErrors =
     editDraft && editingKey ? limitErrors(editDraft.role, editDraft.ips, editDraft.chats, editingKey) : null;
-  // The gateway requires a name of at least 3 characters.
+  // The gateway requires a name of at least 3 characters; the input stops at its 100-character limit.
   const canCreate =
     !createMutation.isPending && newKey.name.trim().length >= 3 && newErrors.ip === null && newErrors.chat === null;
   const canSave = !updateMutation.isPending && editErrors?.ip === null && editErrors.chat === null;
@@ -552,6 +564,7 @@ export function ApiKeys() {
               <input
                 id="ak-1"
                 type="text"
+                maxLength={100}
                 placeholder={t('apiKeys.namePlaceholder')}
                 value={newKey.name}
                 onChange={e => setNewKey({ ...newKey, name: e.target.value })}

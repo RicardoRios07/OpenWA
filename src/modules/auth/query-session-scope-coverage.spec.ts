@@ -37,9 +37,9 @@ export function handlersMissingSessionScope(source: string, sessionDtos: Readonl
   const methodRe = methodPattern();
   for (let m = methodRe.exec(source); m !== null; m = methodRe.exec(source)) {
     const [, name, params] = m;
-    const takesSessionIdQuery = /@Query\(\s*['"]sessionId['"]\s*\)/.test(params);
-    const takesSessionDto = [...params.matchAll(/@(?:Query|Body)\(\s*\)\s*\w+\??\s*:\s*(\w+)/g)].some(p =>
-      sessionDtos.has(p[1]),
+    const takesSessionIdQuery = /@Query\(\s*['"]sessionId['"]\s*[,)]/.test(params);
+    const takesSessionDto = [...params.matchAll(/@(?:Query|Body)\((?:[^()]|\([^()]*\))*\)\s*\w+\??\s*:\s*(\w+)/g)].some(
+      p => sessionDtos.has(p[1]),
     );
     const injectsCurrentApiKey = /@CurrentApiKey\(/.test(params);
     if ((takesSessionIdQuery || takesSessionDto) && !injectsCurrentApiKey) offenders.push(name);
@@ -55,11 +55,11 @@ export function sessionScopedDtos(sources: readonly string[]): Set<string> {
   const own = new Set<string>();
   const parents = new Map<string, string[]>();
   for (const source of sources) {
-    for (const chunk of source.split(/export\s+class\s+/).slice(1)) {
+    for (const chunk of source.split(/\b(?:export\s+)?(?:abstract\s+)?class\s+/).slice(1)) {
       const name = /^(\w+)/.exec(chunk)?.[1];
       if (!name) continue;
-      if (/^\s+sessionIds?[?!]?\s*:/m.test(chunk)) own.add(name);
-      const heritage = /^\w+\s+extends\s+([^{]*)\{/.exec(chunk)?.[1] ?? '';
+      if (/^[ \t]+(?:@\w+\([^\n]*?\)\s+)*(?:(?:public|readonly)\s+)*sessionIds?[?!]?\s*:/m.test(chunk)) own.add(name);
+      const heritage = /^\w+(?:<[^>]*>)?\s+extends\s+([^{]*)\{/.exec(chunk)?.[1] ?? '';
       parents.set(
         name,
         [...heritage.matchAll(/\b([A-Z]\w*Dto|[A-Z]\w*)\b/g)].map(p => p[1]),
@@ -138,9 +138,35 @@ export class UpdateFilterDto extends PartialType(FilterDto) {}
 export class PlainDto {
   name?: string;
 }
+class LocalDto {
+  sessionId?: string;
+}
+export class OneLineDto {
+  @ApiProperty({ example: 'a' }) sessionId!: string;
+}
+export class ReadonlyDto {
+  @IsString() readonly sessionIds?: string[];
+}
+export abstract class BaseQueryDto {
+  public sessionId?: string;
+}
+export class ChildQueryDto extends BaseQueryDto {}
+export class GenericDto<T> extends BaseQueryDto {
+  item?: T;
+}
 `,
     ]);
-    expect([...dtos].sort()).toEqual(['FanOutDto', 'FilterDto', 'UpdateFilterDto']);
+    expect([...dtos].sort()).toEqual([
+      'BaseQueryDto',
+      'ChildQueryDto',
+      'FanOutDto',
+      'FilterDto',
+      'GenericDto',
+      'LocalDto',
+      'OneLineDto',
+      'ReadonlyDto',
+      'UpdateFilterDto',
+    ]);
 
     const handlers = `
   async list(@Query() dto: FilterDto) {
@@ -162,8 +188,16 @@ export class PlainDto {
   async scoped(@Query() dto: FilterDto, @CurrentApiKey() apiKey?: ApiKey) {
     return this.svc.list(dto, apiKey?.allowedSessions);
   }
+
+  async piped(@Query(new ValidationPipe({ transform: true })) dto: LocalDto) {
+    return this.svc.list(dto);
+  }
+
+  async pipedId(@Query('sessionId', new ParseUUIDPipe()) sessionId: string) {
+    return this.svc.list(sessionId);
+  }
 `;
-    expect(handlersMissingSessionScope(handlers, dtos)).toEqual(['list', 'fanOut', 'update']);
+    expect(handlersMissingSessionScope(handlers, dtos)).toEqual(['list', 'fanOut', 'update', 'piped', 'pipedId']);
   });
 
   it('clears a handler that injects @CurrentApiKey alongside the query param', () => {

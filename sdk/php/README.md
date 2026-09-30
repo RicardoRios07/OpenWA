@@ -12,6 +12,12 @@ composer require rmyndharis/openwa
 
 Requires PHP 8.1+ and Guzzle 7. The namespace is `OpenWA\`.
 
+This README describes `main`. The 0.5.0 release lacks `sessions->getProxy`,
+`sessions->updateProxy`, `messages->clickButton`, `WebhookSignature::verify`, the
+`getErrorCode()`, `getRetryAfterSeconds()` and `getHeaders()` exception methods, the refusal of an
+empty, `.` or `..` id and the `sessions->create()` fix that sends an empty `config` as `{}`; they
+ship with the next SDK release. See [the SDK overview](../README.md#coverage).
+
 ## Usage
 
 ```php
@@ -63,9 +69,11 @@ so bound any retry. A 429 from the global rate limiter lifts when its window exp
 the per-second tier, up to an hour for the hourly tier by default), and `getRetryAfterSeconds()`
 carries its `Retry-After` header. A 429 whose `getErrorCode()` is `"SEND_PACING_LIMITED"` is not
 transient: do not retry it before `getRetryAfterSeconds()`, which then comes from the body and can
-be hours. `getHeaders()` returns the response headers. In a routed deployment only 503 proves the
-request was never carried out: a forward that fails after the request reached the owner node answers
-502 or 504.
+be hours. `getHeaders()` returns the response headers. A 503 does not prove a write was never
+carried out: the engine answers it when WhatsApp did not confirm in time, and the change may still
+have been applied, so re-read the state before repeating it. In a routed deployment a forward that
+fails before reaching the owner node answers 503, one that fails after the request reached it answers
+502 or 504, and a 503 from the owner itself is relayed unchanged.
 
 ```php
 use OpenWA\Exceptions\OpenWANotFoundException;
@@ -75,6 +83,25 @@ try {
 } catch (OpenWANotFoundException $e) {
     echo $e->getStatus();  // 404
 }
+```
+
+## Receiving webhooks
+
+A webhook configured with a secret signs each delivery in its `X-OpenWA-Signature` header. Check it
+with `WebhookSignature::verify` against the raw request body, exactly as received, and decode the
+JSON only after the check passes: a re-encoded body can differ byte for byte and will not verify.
+The helper returns `false` for a missing, malformed or non-matching signature.
+
+```php
+use OpenWA\WebhookSignature;
+
+$raw = file_get_contents('php://input');
+if (!WebhookSignature::verify($raw, $_SERVER['HTTP_X_OPENWA_SIGNATURE'] ?? null, $secret)) {
+    http_response_code(401);
+    exit;
+}
+$delivery = json_decode($raw, true);
+// Process $delivery['event'] and $delivery['data'] here.
 ```
 
 ## Notes

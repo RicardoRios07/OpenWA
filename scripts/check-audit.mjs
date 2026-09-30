@@ -22,7 +22,7 @@
  * Run locally: `npm run check:audit`.
  */
 import { execFileSync } from 'node:child_process';
-import { resolve } from 'node:path';
+import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 /**
@@ -109,11 +109,12 @@ export function collectAdvisories(report) {
 }
 
 /**
- * What to do when npm audit could not answer at all. PR and push CI skip, so an npm outage does not
- * block every merge, but the skip is raised as a warning annotation on GitHub Actions rather than a
- * log line inside a green job. A path that sets CHECK_AUDIT_REQUIRED=1 (the release gate and the
- * weekly scan) fails instead: publishing, or reporting a week clean, with no advisory checked is not
- * a skip those paths may take. A re-run clears a transient outage.
+ * What to do when npm audit could not answer at all. On PR and push CI only this root-tree check
+ * skips, and the skip is raised as a warning annotation on GitHub Actions rather than a log line
+ * inside a green step. It does not keep the audit job green: the dashboard's plain `npm audit` step
+ * in ci.yml fails closed on the same outage. A path that sets CHECK_AUDIT_REQUIRED=1 (the release
+ * gate and the weekly scan) fails instead: publishing, or reporting a week clean, with no advisory
+ * checked is not a skip those paths may take. A re-run clears a transient outage.
  */
 export function unavailableOutcome(summary, env = process.env) {
   const required = env.CHECK_AUDIT_REQUIRED === '1';
@@ -167,19 +168,19 @@ export function evaluate(report, allowlist = ALLOWLIST) {
 
 // Guarded so the spec can import the two functions above without running a real audit.
 //
-// Compare RESOLVED PATHS, not a hand-built file URL. `import.meta.url` is percent-encoded, so any
+// Compare REAL PATHS, not a hand-built file URL. `import.meta.url` is percent-encoded, so any
 // checkout path needing escaping (a space, a `#`, non-ASCII) made `file://${process.argv[1]}`
 // differ and the gate exited 0 having run no audit at all. On Windows it never matched: argv[1] is
 // a native path with backslashes and a drive letter. `fileURLToPath` decodes the URL to a native
-// path and `resolve` normalises argv[1], which is the comparison check-sdk-docs.mjs and
-// check-upstream-surface.mjs already use.
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// path and `realpathSync` resolves argv[1], symlinks included (Node realpaths the main module URL,
+// so an unresolved path through a symlink never matched).
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const report = runAudit();
 
   // A registry that cannot answer the audit request must not be read as a clean tree. On a merge
-  // path, blocking every merge while npm's audit endpoint is down (or being retired) is worse than
-  // the risk of a missed advisory for the duration, so it skips loudly; a required path fails. See
-  // unavailableOutcome.
+  // path this step skips loudly rather than failing while npm's audit endpoint is down (or being
+  // retired). That keeps the root step from failing, not the audit job green: the dashboard audit
+  // step fails closed on the same outage. A required path fails. See unavailableOutcome.
   if (auditUnavailable(report)) {
     const outcome = unavailableOutcome(report?.error?.summary ?? 'no report');
     for (const line of outcome.lines) console.log(line);

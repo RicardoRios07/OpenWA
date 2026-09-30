@@ -707,8 +707,9 @@ export interface PluginInstance {
   // Ignored for a global (sessionScoped:false) plugin. Persisted on the registry entry.
   activeSessions?: string[];
   // Per-session config overrides, keyed by sessionId. The config a hook sees for session S is the
-  // override shallow-merged over `config` (the '*' base) — see resolvePluginConfig. Absent = no
-  // overrides (every session gets the base). Persisted on the registry entry.
+  // override deep-merged over `config`, the '*' base (nested objects merge key by key; arrays and
+  // scalars replace) — see resolvePluginConfig. Absent = no overrides (every session gets the base).
+  // Persisted on the registry entry.
   sessionConfig?: Record<string, Record<string, unknown>>;
   // First-party built-ins (engines, bundled extensions) run in-process; plugins loaded from the
   // plugins directory are untrusted and run sandboxed in a worker. `false` => sandboxed.

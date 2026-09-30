@@ -114,9 +114,9 @@ export function validateEnv(config: EnvConfig): EnvConfig {
   //
   // Unset stays legal because it is the standard Node default for a plain `node dist/main` outside
   // any packaged runtime — refusing it would break local runs. The packaged runtimes all set it (the
-  // runtime image carries `ENV NODE_ENV=production`, the chart sets it, and both compose files set it
-  // via `${NODE_ENV:-production}` and a hardcoded `development`); only a hand-rolled deployment that
-  // strips it still takes the permissive branch of every hardening listed above.
+  // runtime image carries `ENV NODE_ENV=production`, the chart sets it, and both compose files forward
+  // it with a default, `${NODE_ENV:-production}` and `${NODE_ENV:-development}`); only a hand-rolled
+  // deployment that strips it still takes the permissive branch of every hardening listed above.
   //
   // Checked RAW rather than through `str()`: the readers compare `process.env.NODE_ENV` verbatim, so
   // a padded ' production ' that only matches after trimming would validate clean here and still take
@@ -211,9 +211,6 @@ export function validateEnv(config: EnvConfig): EnvConfig {
     }
   };
   for (const key of [
-    'RATE_LIMIT_SHORT_TTL',
-    'RATE_LIMIT_MEDIUM_TTL',
-    'RATE_LIMIT_LONG_TTL',
     'WEBHOOK_RETRY_DELAY',
     'DATABASE_POOL_SIZE',
     'DATABASE_STATEMENT_TIMEOUT_MS',
@@ -221,7 +218,6 @@ export function validateEnv(config: EnvConfig): EnvConfig {
     'DATABASE_CONNECTION_TIMEOUT_MS',
     'REDIS_CONNECT_TIMEOUT_MS',
     'MAX_CONCURRENT_SESSIONS', // 0 = unlimited
-    'INGRESS_INSTANCE_TTL',
     'WEBHOOK_DISPATCH_MAX_QUEUED',
     'STATS_CACHE_TTL_MS', // 0 = memo disabled
     'WEBHOOK_MAX_PER_SESSION', // 0 = unlimited
@@ -233,6 +229,7 @@ export function validateEnv(config: EnvConfig): EnvConfig {
     'INGRESS_RETRY_DELAY_MS', // 0 = retry without backoff
     'REDIS_CACHE_DB',
     'INBOUND_MEDIA_GLOBAL_CONCURRENCY', // 0 = no process-wide ceiling, only the per-session one
+    'SHUTDOWN_DELAY_MS', // 0 = no drain; parseInt read `3s` as a 3 ms drain
   ]) {
     checkNonNegativeInt(key);
   }
@@ -257,14 +254,32 @@ export function validateEnv(config: EnvConfig): EnvConfig {
   for (const key of [
     'AUDIT_RETENTION_DAYS', // <= 0 disables retention
     'MESSAGE_RETENTION_DAYS', // unset or <= 0 keeps messages forever
+    'WEBHOOK_FAILURE_RETENTION_DAYS', // <= 0 disables retention
+    'INGRESS_RETENTION_DAYS', // <= 0 disables retention
+    // <= 0 cannot disable these two: the read site warns and keeps its default.
+    'WEBHOOK_OUTBOX_RETENTION_DAYS',
+    'INGRESS_DEDUP_RETENTION_DAYS',
   ]) {
     checkInt(key);
   }
-  // A window past about a century gives a cutoff SQLite compares as a later date, deleting every
-  // message. Keep in step with MAX_MESSAGE_RETENTION_DAYS in message-retention.service.ts.
-  const messageRetentionDays = str('MESSAGE_RETENTION_DAYS');
-  if (messageRetentionDays !== undefined && Number(messageRetentionDays) > 36500) {
-    errors.push(`MESSAGE_RETENTION_DAYS must be at most 36500 (got "${messageRetentionDays}")`);
+  // TypeORM binds a Date on SQLite with its year cut to the last 4 digits, so a cutoff before about
+  // year -2000 (roughly 1.48M days back) can bind as a year that sorts after today and the prune
+  // deletes every row. A "keep forever" row of nines is such a value. 36500 is a conservative cap
+  // well inside the safe range. Keep in step with MAX_MESSAGE_RETENTION_DAYS in
+  // message-retention.service.ts.
+  for (const key of [
+    'MESSAGE_RETENTION_DAYS',
+    'AUDIT_RETENTION_DAYS',
+    'CHAT_MEDIA_ARCHIVE_TTL_DAYS',
+    'WEBHOOK_FAILURE_RETENTION_DAYS',
+    'WEBHOOK_OUTBOX_RETENTION_DAYS',
+    'INGRESS_RETENTION_DAYS',
+    'INGRESS_DEDUP_RETENTION_DAYS',
+  ]) {
+    const days = str(key);
+    if (days !== undefined && Number(days) > 36500) {
+      errors.push(`${key} must be at most 36500 (got "${days}")`);
+    }
   }
 
   // BAILEYS_WA_VERSION: optional version pin for the Baileys engine (e.g. 2.3000.1045340097 or 2,3000,1045340097)
@@ -304,6 +319,11 @@ export function validateEnv(config: EnvConfig): EnvConfig {
     'RATE_LIMIT_SHORT_LIMIT',
     'RATE_LIMIT_MEDIUM_LIMIT',
     'RATE_LIMIT_LONG_LIMIT',
+    // A 0 window expires each hit as it lands, so the tier never blocks: the same self-DoS as a 0 limit.
+    'RATE_LIMIT_SHORT_TTL',
+    'RATE_LIMIT_MEDIUM_TTL',
+    'RATE_LIMIT_LONG_TTL',
+    'INGRESS_INSTANCE_TTL',
     // WebSocket (/events) limits: 0 would disable a tier entirely (a self-DoS on the WS surface).
     'WS_RATE_LIMIT_FRAME_PER_SECOND',
     'WS_RATE_LIMIT_FRAME_BURST',
@@ -358,6 +378,16 @@ export function validateEnv(config: EnvConfig): EnvConfig {
     // the boot sweep delete every archive older than 24 ms, breaking export, restart, import.
     'STORAGE_EXPORT_TTL_MS',
     'STORAGE_EXPORT_SWEEP_MAX_AGE_MS',
+    // Same parseInt read: `5mb` became a 5-byte plugin download cap, `30s` a 30 ms capability timeout
+    // and `64k` a 64-character template render cap.
+    'PLUGIN_DOWNLOAD_MAX_BYTES',
+    'PLUGIN_STORAGE_MAX_BYTES',
+    'PLUGIN_CAP_TIMEOUT_MS',
+    'TEMPLATE_RENDER_MAX_CHARS',
+    'STORAGE_IMPORT_MAX_BYTES',
+    'STORAGE_IMPORT_MAX_ENTRIES',
+    'STORAGE_LIST_MAX_FILES',
+    'BAILEYS_MESSAGE_STORE_LIMIT',
     // Each read fell back to its default on 0 or garbage, or passed a negative or fractional value on
     // (SEARCH_LIMIT_MAX reached plugin search providers as-is).
     'SEARCH_LIMIT_MAX',
@@ -379,6 +409,15 @@ export function validateEnv(config: EnvConfig): EnvConfig {
     ['STATUS_ORPHAN_SWEEP_INTERVAL_MS', 'the orphan sweep reruns every millisecond'],
     ['S3_REPROBE_INTERVAL_MS', 'S3 is re-probed every millisecond while it is down'],
     ['STORAGE_EXPORT_TTL_MS', 'the export archive is deleted about 1 ms after it is written'],
+    ['SESSION_TAKEOVER_SWEEP_MS', 'the takeover sweep reruns every millisecond'],
+    ['SESSION_LEASE_HEARTBEAT_MS', 'the lease heartbeat renews every millisecond'],
+    ['SESSION_PROXY_TIMEOUT_MS', 'every proxied request times out after 1 ms'],
+    ['MEDIA_DOWNLOAD_TIMEOUT_MS', 'every media download fails'],
+    ['WEBHOOK_TIMEOUT', 'every webhook delivery fails'],
+    ['RATE_LIMIT_SHORT_TTL', 'each hit expires after 1 ms and that rate-limit tier never blocks'],
+    ['RATE_LIMIT_MEDIUM_TTL', 'each hit expires after 1 ms and that rate-limit tier never blocks'],
+    ['RATE_LIMIT_LONG_TTL', 'each hit expires after 1 ms and that rate-limit tier never blocks'],
+    ['INGRESS_INSTANCE_TTL', 'each hit expires after 1 ms and the ingress rate limits never block'],
     // 0 still disables these three, so they carry only the ceiling, not the positive-only check.
     ['MESSAGE_REAPER_INTERVAL_MS', 'the pending message reaper reruns every millisecond'],
     ['WEBHOOK_RECONCILE_INTERVAL_MS', 'the webhook reconciler reruns every millisecond'],
@@ -390,6 +429,28 @@ export function validateEnv(config: EnvConfig): EnvConfig {
       errors.push(
         `${key} must not exceed ${MAX_TIMER_MS} ms (got "${raw}"): Node's ` +
           `timers overflow above that and fire after 1 ms, so ${consequence}`,
+      );
+    }
+  }
+  // Knobs armed at a multiple of their value get that fraction of the timer's ceiling. Send verbs arm
+  // four times PLUGIN_CAP_TIMEOUT_MS (SEND_CAP_TIMEOUT_FACTOR in plugin-worker-host.ts); a direct
+  // (queue-off) webhook delivery doubles WEBHOOK_RETRY_DELAY on each retry, up to 2^3 for the maximum
+  // retryCount of 5.
+  for (const [key, factor, multiple, consequence] of [
+    ['PLUGIN_CAP_TIMEOUT_MS', 4, 'send verbs wait four times this long', 'every plugin send times out'],
+    [
+      'WEBHOOK_RETRY_DELAY',
+      8,
+      'the last direct-delivery retry waits eight times this long',
+      'webhook retries fire back to back',
+    ],
+  ] as const) {
+    const raw = str(key);
+    const max = Math.floor(MAX_TIMER_MS / factor);
+    if (raw !== undefined && DECIMAL_INTEGER.test(raw) && Number(raw) > max) {
+      errors.push(
+        `${key} must not exceed ${max} ms (got "${raw}"): ${multiple}, ` +
+          `and Node's timers overflow above that and fire after 1 ms, so ${consequence}`,
       );
     }
   }
@@ -516,6 +577,15 @@ export function validateEnv(config: EnvConfig): EnvConfig {
     // Perf/observability only, but same silent-typo class.
     'CACHE_ENABLED',
     'DATABASE_LOGGING',
+    // Exact 'true'/'false' overrides; any other spelling silently falls back to the NODE_ENV default,
+    // so `CSP_UPGRADE_INSECURE_REQUESTS=False` kept the blank-dashboard upgrade on in production and a
+    // `PLUGIN_INSTALL_REQUIRE_PIN=True` outside production left the integrity pin unenforced.
+    'CSP_UPGRADE_INSECURE_REQUESTS',
+    'ENABLE_SWAGGER',
+    'VALIDATION_ERROR_DETAIL',
+    'PLUGIN_INSTALL_REQUIRE_PIN',
+    // `=== 'true'` in the SSRF guard: a typo keeps redirects refused when the operator allowed them.
+    'WEBHOOK_SSRF_REDIRECTS',
     // DELIBERATELY NOT LISTED. `MCP_READONLY` is read `!== 'false'` and mcp.server.spec.ts asserts
     // that `yes` keeps it read-only — a tolerance the repo tests on purpose. `PUPPETEER_HEADLESS` is
     // read `!== 'false'` and `new` is a real Puppeteer value that works today. Both fail toward the

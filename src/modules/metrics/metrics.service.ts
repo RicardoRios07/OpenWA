@@ -1,4 +1,4 @@
-import { monitorEventLoopDelay } from 'node:perf_hooks';
+import { createHistogram, performance } from 'node:perf_hooks';
 import {
   HttpException,
   HttpStatus,
@@ -69,8 +69,19 @@ export class MetricsService implements OnModuleDestroy {
    */
   private readonly failedScrapeLimiter = new SlidingWindowLimiter(10, 60_000);
 
-  /** Event-loop delay sampled between uncached renders (reset after each one). */
-  private readonly loopDelay = monitorEventLoopDelay({ resolution: LOOP_DELAY_RESOLUTION_MS });
+  /**
+   * Event-loop delay sampled between uncached renders (reset after each one). Sampled by a timer of
+   * our own rather than monitorEventLoopDelay: resetting that histogram also drops its previous-tick
+   * timestamp, so the first gap after every render, and any stall that began in it, went unrecorded.
+   * Here reset() clears only the counts; `lastTick` carries across it.
+   */
+  private readonly loopDelay = createHistogram();
+  private lastTick = performance.now();
+  private readonly loopSampler = setInterval(() => {
+    const now = performance.now();
+    this.loopDelay.record(Math.max(1, Math.round((now - this.lastTick) * 1e6)));
+    this.lastTick = now;
+  }, LOOP_DELAY_RESOLUTION_MS).unref();
 
   constructor(
     private readonly config: ConfigService,
@@ -78,12 +89,10 @@ export class MetricsService implements OnModuleDestroy {
     // Registered only with QUEUE_ENABLED=true (see metrics.module.ts); absent otherwise.
     @Optional() @InjectQueue(QUEUE_NAMES.WEBHOOK) private readonly webhookQueue?: Queue,
     @Optional() @InjectQueue(QUEUE_NAMES.INGRESS) private readonly ingressQueue?: Queue,
-  ) {
-    this.loopDelay.enable();
-  }
+  ) {}
 
   onModuleDestroy(): void {
-    this.loopDelay.disable();
+    clearInterval(this.loopSampler);
   }
 
   private get token(): string {

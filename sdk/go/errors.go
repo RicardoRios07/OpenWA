@@ -24,7 +24,8 @@ var (
 	// ErrUnauthorized is returned for a 401 (missing or invalid API key).
 	ErrUnauthorized = errors.New("openwa: unauthorized")
 	// ErrForbidden is returned for a 403: the API key's role or scope (session,
-	// IP or chat allow-list) refuses the call.
+	// IP or chat allow-list) refuses the call, or WhatsApp itself refused the
+	// operation (for example, missing group admin rights).
 	ErrForbidden = errors.New("openwa: forbidden")
 	// ErrNotFound is returned for a 404.
 	ErrNotFound = errors.New("openwa: not found")
@@ -46,10 +47,12 @@ var (
 	// because WhatsApp may never answer that query, so bound any retry. The
 	// non-idempotent sends are deliberately left unbounded by the gateway so a
 	// slow WhatsApp reply never answers one, and in a multi-node deployment a
-	// forwarded request answers 503 only when the owner node was never reached.
-	// A forward that fails after the request was sent answers 502 or 504
-	// instead: the owner may already have carried it out, so do not repeat a
-	// non-idempotent send on those unchecked.
+	// forward that fails before reaching the owner node answers 503. A 503 from
+	// the owner itself is relayed unchanged and means the engine did not
+	// confirm in time, so a bounded write may still have been applied; re-read
+	// the state before repeating it. A forward that fails after the request was
+	// sent answers 502 or 504 instead: the owner may already have carried it
+	// out, so do not repeat a non-idempotent send on those unchecked.
 	ErrServiceUnavailable = errors.New("openwa: service unavailable")
 )
 
@@ -110,8 +113,10 @@ func (e *APIError) Is(target error) bool {
 }
 
 // TimeoutError is returned when a request exceeds the configured timeout (or the
-// caller's context deadline).
+// caller's context deadline), whether waiting for the response or reading its body.
 type TimeoutError struct {
+	// Timeout is the client timeout that ran out, or zero when the caller's
+	// context deadline fired first.
 	Timeout time.Duration
 	// Err is the underlying cause (context.DeadlineExceeded or a net timeout).
 	Err error

@@ -31,6 +31,7 @@ before(async () => {
   const { installJsdomGlobals } = await import('./test-helpers/jsdom.ts');
   await installJsdomGlobals('http://localhost/logs');
   (globalThis as Record<string, unknown>).__APP_VERSION__ = '0.0.0-test';
+  (globalThis as Record<string, unknown>).__BUILD_TIME__ = new Date(0).toISOString();
   // jsdom has no matchMedia; the theme hook reads it for the system preference.
   window.matchMedia = ((query: string) => ({
     matches: false,
@@ -83,4 +84,53 @@ test('an admin keeps the Logs entry and the route', async () => {
   // Give the router a chance to redirect before asserting that it did not.
   await new Promise(resolve => setTimeout(resolve, 50));
   assert.equal(window.location.pathname, '/logs');
+});
+
+// The startup /auth/validate for a saved key is not cancelled by a logout. If it lands after the user
+// has signed back in with another key, its answer is about a key no longer in use and must not touch
+// the new session's role.
+test('a startup validation that lands after a sign-in with another key is ignored', async () => {
+  const previous = globalThis.fetch;
+  let answerStale: ((res: Response) => void) | undefined;
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    if (url.endsWith('/api/auth/validate')) {
+      if (new Headers(init?.headers).get('X-API-Key') === 'old-admin-key')
+        return new Promise<Response>(resolve => (answerStale = resolve));
+      return Promise.resolve(jsonResponse({ valid: true, role: 'viewer' }));
+    }
+    return previous(input, init);
+  }) as typeof fetch;
+  try {
+    window.history.replaceState(null, '', '/');
+    window.sessionStorage.setItem('openwa_api_key', 'old-admin-key');
+    window.sessionStorage.setItem('openwa_user_role', 'admin');
+    rtl.render(createElement(App));
+
+    const logout = await rtl.waitFor(() => {
+      const button = document.querySelector('.logout-btn');
+      assert.ok(button);
+      return button;
+    });
+    rtl.fireEvent.click(logout);
+    const input = await rtl.waitFor(() => {
+      const field = document.getElementById('apiKey');
+      assert.ok(field);
+      return field;
+    });
+    rtl.fireEvent.change(input, { target: { value: 'new-viewer-key' } });
+    rtl.fireEvent.submit(input.closest('form')!);
+    await rtl.waitFor(() => assert.ok(document.querySelector('a[href="/sessions"]')));
+    assert.equal(logsLink() === null, true, 'the Logs nav entry is shown to a viewer');
+
+    assert.ok(answerStale, 'the startup validation was never sent');
+    await rtl.act(async () => {
+      answerStale!(jsonResponse({ valid: true, role: 'admin' }));
+      await new Promise(resolve => setTimeout(resolve, 50));
+    });
+    assert.equal(logsLink() === null, true, "the old key's admin role was applied to the new viewer session");
+    assert.equal(window.sessionStorage.getItem('openwa_api_key'), 'new-viewer-key');
+  } finally {
+    globalThis.fetch = previous;
+  }
 });

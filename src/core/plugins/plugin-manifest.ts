@@ -30,8 +30,9 @@ const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
  * logged + the directory skipped).
  *
  * Checks: plain-object shape; required fields present as non-empty strings; id format + reserved
- * ids; installable (extension) type; that `main` is a relative path that cannot escape the
- * plugin directory; and that an optional `minOpenWAVersion` is a MAJOR.MINOR.PATCH version no newer
+ * ids; installable (extension) type; that `permissions`, `sessions`, `hooks` and `net.allow` /
+ * `net.allowConfigHosts` are string arrays when present; that `main` is a relative path that
+ * cannot escape the plugin directory; and that an optional `minOpenWAVersion` is a MAJOR.MINOR.PATCH version no newer
  * than `hostVersion` (pre-release suffixes are ignored, so 0.24.0-rc.1 satisfies 0.24.0). The
  * `main` check here is lexical (forward-slash semantics); the loader additionally anchors it
  * against the real on-disk directory, which also catches platform-separator tricks, and requires
@@ -68,6 +69,19 @@ export function validatePluginManifest(
     );
   }
   assertMainContained(m.main);
+  // The consumers match these with `.includes`, which also works on a string: `sessions: 'sales-team'`
+  // would admit session 'sales'. Require real string arrays (null reads as absent, like the consumers).
+  assertStringArray(m.permissions, 'permissions');
+  assertStringArray(m.sessions, 'sessions');
+  assertStringArray(m.hooks, 'hooks');
+  const net: unknown = m.net;
+  if (net !== undefined && net !== null) {
+    if (typeof net !== 'object' || Array.isArray(net)) {
+      throw new Error('manifest.json net must be an object');
+    }
+    assertStringArray(m.net?.allow, 'net.allow');
+    assertStringArray(m.net?.allowConfigHosts, 'net.allowConfigHosts');
+  }
   const min: unknown = m.minOpenWAVersion;
   if (min !== undefined && min !== null) {
     if (typeof min !== 'string' || !SEMVER.test(min)) {
@@ -76,6 +90,12 @@ export function validatePluginManifest(
     if (compareSemver(hostVersion, min) < 0) {
       throw new Error(`Plugin ${m.id} requires OpenWA >= ${min} (running ${hostVersion})`);
     }
+  }
+}
+
+function assertStringArray(value: unknown, field: string): void {
+  if (value !== undefined && value !== null && !(Array.isArray(value) && value.every(v => typeof v === 'string'))) {
+    throw new Error(`manifest.json ${field} must be an array of strings`);
   }
 }
 

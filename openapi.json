@@ -174,6 +174,16 @@
               }
             }
           },
+          "400": {
+            "description": "Validation failed, or the body carries a field the DTO does not declare.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "401": {
             "description": "The API key is missing, unknown, revoked, or expired",
             "content": {
@@ -287,6 +297,16 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "No API key with this id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         },
         "summary": "Get API key details (admin only)",
@@ -327,6 +347,16 @@
               }
             }
           },
+          "400": {
+            "description": "Validation failed, or the body carries a field the DTO does not declare.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "401": {
             "description": "The API key is missing, unknown, revoked, or expired",
             "content": {
@@ -347,8 +377,18 @@
               }
             }
           },
+          "404": {
+            "description": "No API key with this id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "409": {
-            "description": "The change would remove the last usable admin key.",
+            "description": "The change would remove the last usable admin key: no other usable admin key lasts at least as long.",
             "content": {
               "application/json": {
                 "schema": {
@@ -399,8 +439,18 @@
               }
             }
           },
+          "404": {
+            "description": "No API key with this id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "409": {
-            "description": "The key is the last usable admin key.",
+            "description": "The key is the last usable admin key: no other usable admin key lasts at least as long.",
             "content": {
               "application/json": {
                 "schema": {
@@ -460,8 +510,18 @@
               }
             }
           },
+          "404": {
+            "description": "No API key with this id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "409": {
-            "description": "The key is the last usable admin key.",
+            "description": "The key is the last usable admin key: no other usable admin key lasts at least as long.",
             "content": {
               "application/json": {
                 "schema": {
@@ -512,7 +572,7 @@
             }
           },
           "403": {
-            "description": "The key is valid but refused here: its allowedIps exclude this client, or it is restricted to selected chats",
+            "description": "The key is valid but refused here: its allowedIps exclude this client, or it is restricted to selected chats. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -553,6 +613,16 @@
               }
             }
           },
+          "400": {
+            "description": "Validation failed, or the body carries a field the DTO does not declare.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "401": {
             "description": "The API key is missing, unknown, revoked, or expired",
             "content": {
@@ -564,7 +634,7 @@
             }
           },
           "403": {
-            "description": "Key lacks the OPERATOR role, is restricted to specific sessions, or set proxyUrl without the ADMIN role",
+            "description": "Key lacks the OPERATOR role, is restricted to specific sessions, or set proxyUrl without the ADMIN role. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -630,6 +700,16 @@
                   "items": {
                     "$ref": "#/components/schemas/SessionResponseDto"
                   }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`name` is empty or repeated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -1046,7 +1126,7 @@
             }
           },
           "403": {
-            "description": "Key lacks the ADMIN role, or is restricted to specific sessions",
+            "description": "Key lacks the ADMIN role, or is restricted to specific sessions. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1139,6 +1219,16 @@
           },
           "409": {
             "description": "A credential teardown for the same session name is still in flight (e.g. a prior logout that owns destructive cleanup). Retryable — the body carries `code: SESSION_NAME_TEARDOWN_PENDING`; wait for it to settle and retry. No destructive side effect runs before this refusal. Also returned when another node currently holds this session's engine: only the owner may start it, and the claim is refused before any engine is launched, so no second connection to the account is opened. Also returned, with no `code`, when a stop or force-kill of this session finished while the start was waiting: the stop stands, and a new POST /start clears it and starts the session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The engine did not finish starting within its timeout (WhatsApp Web or the network unreachable, a stalled browser or resource limit, an unreachable proxyUrl, or the whatsapp-web.js auth timeout); the engine is torn down and the start can be retried.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1390,6 +1480,16 @@
           },
           "404": {
             "description": "Session not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Session was stopped locally, but the engine force-kill did not complete (the force-destroy threw or timed out, so the engine process may still be running). The body carries `code: 'SESSION_FORCE_KILL_INCOMPLETE'`; the status is settled to `disconnected` and no success audit is written. Restart the node to reap a leaked process.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1746,7 +1846,7 @@
             }
           },
           "403": {
-            "description": "WhatsApp refused the operation. The request was well formed — the refusal happened WhatsApp-side, most often because the account lacks the admin rights the operation requires.",
+            "description": "WhatsApp refused the operation. The request was well formed — the refusal happened WhatsApp-side, most often because the account lacks the admin rights the operation requires. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3037,6 +3137,16 @@
               }
             }
           },
+          "400": {
+            "description": "Invalid body, the URL embeds credentials or is blocked by the SSRF policy, or the per-session webhook limit is reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "401": {
             "description": "The API key is missing, unknown, revoked, or expired",
             "content": {
@@ -3236,6 +3346,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/WebhookResponseDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body, or a changed URL embeds credentials or is blocked by the SSRF policy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -3444,7 +3564,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Permanently-failed webhook deliveries, most recent first",
+            "description": "Deliveries that exhausted their retries (attempts > 0) and deliveries not sent (attempts 0: shed, refused at shutdown, oversize or a preflight failure; the outbox replays them). A later successful delivery removes the row. Most recent first.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3477,7 +3597,7 @@
             }
           }
         },
-        "summary": "List recently-failed webhook deliveries (all retries exhausted)",
+        "summary": "List failed or unsent webhook deliveries, most recent first",
         "tags": [
           "webhooks"
         ]
@@ -3994,7 +4114,7 @@
             }
           },
           "403": {
-            "description": "The API key is restricted to selected chats and either sent no `chatId` or named a chat outside its allowlist.",
+            "description": "The API key is restricted to selected chats and either sent no `chatId` or named a chat outside its allowlist. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5575,7 +5695,7 @@
             }
           },
           "403": {
-            "description": "The calling key is restricted with `allowedChats`. A batch row has no key owner, so the status cannot be checked against the key's allowlist and a chat-restricted key is refused; use the single-send routes instead.",
+            "description": "The calling key is restricted with `allowedChats`. A batch row has no key owner, so the status cannot be checked against the key's allowlist and a chat-restricted key is refused; use the single-send routes instead. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5656,7 +5776,7 @@
             }
           },
           "403": {
-            "description": "The calling key is restricted with `allowedChats`. A batch row has no key owner, so the cancel cannot be checked against the key's allowlist and a chat-restricted key is refused.",
+            "description": "The calling key is restricted with `allowedChats`. A batch row has no key owner, so the cancel cannot be checked against the key's allowlist and a chat-restricted key is refused. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6268,7 +6388,7 @@
             }
           },
           "403": {
-            "description": "The whatsapp-web.js engine refused the pin (in a group only admins may pin). The Baileys engine has no acceptance signal and answers 200.",
+            "description": "The whatsapp-web.js engine refused the pin (in a group only admins may pin). The Baileys engine has no acceptance signal and answers 200. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6370,7 +6490,7 @@
             }
           },
           "403": {
-            "description": "The whatsapp-web.js engine refused the unpin (in a group only admins may unpin). The Baileys engine has no acceptance signal and answers 200.",
+            "description": "The whatsapp-web.js engine refused the unpin (in a group only admins may unpin). The Baileys engine has no acceptance signal and answers 200. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6574,7 +6694,7 @@
             }
           },
           "403": {
-            "description": "The engine refused the edit. The Baileys adapter refuses a message the account did not send; whatsapp-web.js reads the refusal from the page, which also covers a message that is not text. Past its own guard the Baileys engine has no acceptance signal and answers 200.",
+            "description": "The engine refused the edit. The Baileys adapter refuses a message the account did not send; whatsapp-web.js reads the refusal from the page, which also covers a message that is not text. Past its own guard the Baileys engine has no acceptance signal and answers 200. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6687,6 +6807,16 @@
           },
           "413": {
             "description": "An item's decoded base64 media exceeds the media byte cap (`MEDIA_DOWNLOAD_MAX_BYTES`, 50 MiB by default). A `url` item is fetched after the `202`; one over the cap fails that item in the batch results (`GET /messages/batch/{batchId}`) instead. The whole request is separately bounded by `BODY_SIZE_LIMIT` (25 mb by default).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many bulk batches in progress on this node (BULK_MAX_CONCURRENT_BATCHES); retry shortly",
             "content": {
               "application/json": {
                 "schema": {
@@ -7547,6 +7677,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Refused with code IMPORT_ALREADY_RUNNING: a data import is running; export after it finishes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         },
         "summary": "Export all data from Data DB for migration",
@@ -7612,7 +7752,7 @@
             }
           },
           "409": {
-            "description": "Refused, with the reason in `code`. IMPORT_ALREADY_RUNNING: another import is running — wait for it. IMPORT_NESTED_TRANSACTION: another database transaction holds this connection, so a restore could not be made durable — retry with nothing else in flight. IMPORT_WOULD_ORPHAN_ENGINES: live engines exist for sessions the backup would remove — retry with stopOrphans=true to stop them in-request, or force=true to proceed and restart after. Only the last of these is retryable with stopOrphans; the others leave nothing to decide",
+            "description": "Refused, with the reason in `code`. IMPORT_ALREADY_RUNNING: another import is running — wait for it. EXPORT_IN_PROGRESS: a data export is running; wait for it. IMPORT_NESTED_TRANSACTION: another database transaction holds this connection, so a restore could not be made durable — retry with nothing else in flight. IMPORT_WOULD_ORPHAN_ENGINES: live engines exist for sessions the backup would remove — retry with stopOrphans=true to stop them in-request, or force=true to proceed and restart after. Only the last of these is retryable with stopOrphans; the others leave nothing to decide",
             "content": {
               "application/json": {
                 "schema": {
@@ -7754,6 +7894,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/StorageImportResponseDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`filePath` is outside the data directory or does not exist, or the archive could not be read or broke a resource cap. Entries written before an abort are kept.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -8371,7 +8521,7 @@
             }
           },
           "403": {
-            "description": "API key role below OPERATOR",
+            "description": "The API key's role, session or chat scope, or IP allow-list does not allow this operation",
             "content": {
               "application/json": {
                 "schema": {
@@ -9158,7 +9308,7 @@
             }
           },
           "403": {
-            "description": "The engine refused the change (the account is not a group admin)",
+            "description": "The engine refused the change (the account is not a group admin). Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9279,7 +9429,7 @@
             }
           },
           "403": {
-            "description": "WhatsApp refused the operation. The request was well formed — the refusal happened WhatsApp-side, most often because the account lacks the admin rights the operation requires.",
+            "description": "WhatsApp refused the operation. The request was well formed — the refusal happened WhatsApp-side, most often because the account lacks the admin rights the operation requires. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9388,7 +9538,7 @@
             }
           },
           "403": {
-            "description": "WhatsApp refused the operation. The request was well formed — the refusal happened WhatsApp-side, most often because the account lacks the admin rights the operation requires.",
+            "description": "WhatsApp refused the operation. The request was well formed — the refusal happened WhatsApp-side, most often because the account lacks the admin rights the operation requires. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9499,7 +9649,7 @@
             }
           },
           "403": {
-            "description": "WhatsApp refused the operation. The request was well formed — the refusal happened WhatsApp-side, most often because the account lacks the admin rights the operation requires.",
+            "description": "WhatsApp refused the operation. The request was well formed — the refusal happened WhatsApp-side, most often because the account lacks the admin rights the operation requires. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9610,7 +9760,7 @@
             }
           },
           "403": {
-            "description": "WhatsApp refused the operation. The request was well formed — the refusal happened WhatsApp-side, most often because the account lacks the admin rights the operation requires.",
+            "description": "WhatsApp refused the operation. The request was well formed — the refusal happened WhatsApp-side, most often because the account lacks the admin rights the operation requires. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9705,7 +9855,7 @@
             }
           },
           "403": {
-            "description": "WhatsApp refused the operation. The request was well formed — the refusal happened WhatsApp-side, most often because the account lacks the admin rights the operation requires.",
+            "description": "WhatsApp refused the operation. The request was well formed — the refusal happened WhatsApp-side, most often because the account lacks the admin rights the operation requires. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9807,7 +9957,7 @@
             }
           },
           "403": {
-            "description": "WhatsApp refused the operation. The request was well formed — the refusal happened WhatsApp-side, most often because the account lacks the admin rights the operation requires.",
+            "description": "WhatsApp refused the operation. The request was well formed — the refusal happened WhatsApp-side, most often because the account lacks the admin rights the operation requires. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9909,7 +10059,7 @@
             }
           },
           "403": {
-            "description": "WhatsApp refused the operation. The request was well formed — the refusal happened WhatsApp-side, most often because the account lacks the admin rights the operation requires.",
+            "description": "WhatsApp refused the operation. The request was well formed — the refusal happened WhatsApp-side, most often because the account lacks the admin rights the operation requires. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10010,7 +10160,7 @@
             }
           },
           "403": {
-            "description": "The engine refused the change — admin rights are required",
+            "description": "The engine refused the change — admin rights are required. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10111,7 +10261,7 @@
             }
           },
           "403": {
-            "description": "The engine refused the change — admin rights are required",
+            "description": "The engine refused the change — admin rights are required. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10402,7 +10552,7 @@
             }
           },
           "403": {
-            "description": "The engine refused the change — admin rights required",
+            "description": "The engine refused the change — admin rights required. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10511,7 +10661,7 @@
             }
           },
           "403": {
-            "description": "The engine refused the change — admin rights required",
+            "description": "The engine refused the change — admin rights required. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10602,7 +10752,7 @@
             }
           },
           "403": {
-            "description": "The engine refused the request — admin rights required for this group",
+            "description": "The engine refused the request — admin rights required for this group. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10693,7 +10843,7 @@
             }
           },
           "403": {
-            "description": "The engine refused the request — admin rights required for this group",
+            "description": "The engine refused the request — admin rights required for this group. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10795,7 +10945,7 @@
             }
           },
           "403": {
-            "description": "The whatsapp-web.js engine refused the name change. The Baileys engine has no acceptance signal and answers 200 for a rename WhatsApp declined.",
+            "description": "The whatsapp-web.js engine refused the name change. The Baileys engine has no acceptance signal and answers 200 for a rename WhatsApp declined. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10979,7 +11129,7 @@
             }
           },
           "403": {
-            "description": "The whatsapp-web.js engine refused the picture change. The Baileys engine has no acceptance signal and answers 200 for an upload WhatsApp declined.",
+            "description": "The whatsapp-web.js engine refused the picture change. The Baileys engine has no acceptance signal and answers 200 for an upload WhatsApp declined. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11069,7 +11219,7 @@
             }
           },
           "403": {
-            "description": "The whatsapp-web.js engine refused the picture removal. The Baileys engine has no acceptance signal and answers 200 for a removal WhatsApp declined.",
+            "description": "The whatsapp-web.js engine refused the picture removal. The Baileys engine has no acceptance signal and answers 200 for a removal WhatsApp declined. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11161,7 +11311,7 @@
             }
           },
           "403": {
-            "description": "WhatsApp generated no link for this request",
+            "description": "WhatsApp generated no link for this request. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12281,7 +12431,7 @@
             }
           },
           "403": {
-            "description": "The engine refused — channel creation may be disabled for this account",
+            "description": "The engine refused — channel creation may be disabled for this account. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12441,7 +12591,7 @@
             }
           },
           "403": {
-            "description": "WhatsApp refused the operation. The request was well formed — the refusal happened WhatsApp-side, most often because the account lacks the admin rights the operation requires.",
+            "description": "WhatsApp refused the operation. The request was well formed — the refusal happened WhatsApp-side, most often because the account lacks the admin rights the operation requires. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12636,7 +12786,7 @@
             }
           },
           "403": {
-            "description": "The engine refused — not found, or this account does not own it",
+            "description": "The engine refused — not found, or this account does not own it. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12738,7 +12888,7 @@
             }
           },
           "403": {
-            "description": "The engine refused",
+            "description": "The engine refused. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12850,7 +13000,7 @@
             }
           },
           "403": {
-            "description": "The engine refused — not the owner, or the user is not an admin",
+            "description": "The engine refused — not the owner, or the user is not an admin. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12962,7 +13112,7 @@
             }
           },
           "403": {
-            "description": "The engine did not transfer the channel. On whatsapp-web.js this is the only outcome a failure can produce: the page swallows every error into a plain false, so the cause is not reported.",
+            "description": "The engine did not transfer the channel. On whatsapp-web.js this is the only outcome a failure can produce: the page swallows every error into a plain false, so the cause is not reported. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13064,7 +13214,7 @@
             }
           },
           "403": {
-            "description": "WhatsApp refused the operation. The request was well formed — the refusal happened WhatsApp-side, most often because the account lacks the admin rights the operation requires.",
+            "description": "WhatsApp refused the operation. The request was well formed — the refusal happened WhatsApp-side, most often because the account lacks the admin rights the operation requires. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13263,6 +13413,16 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "Session not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         },
         "summary": "Get statistics for a specific session",
@@ -13322,7 +13482,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Status updates visible to the session, grouped by contact.",
+            "description": "Status updates visible to the session, newest first.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13460,7 +13620,7 @@
             }
           },
           "403": {
-            "description": "Key lacks OPERATOR role; on whatsapp-web.js, the id is not one of the account's own statuses; on Baileys, the status was not posted by this session in the last 24 hours (it was posted from the phone or from another node, or before the session's engine was last created by a restart, a stop and start, or a reconnect the gateway runs itself), so its recipients are unknown and the revoke cannot be addressed to them.",
+            "description": "Key lacks OPERATOR role; on whatsapp-web.js, the id is not one of the account's own statuses; on Baileys, the status was not posted by this session in the last 24 hours (it was posted from the phone or from another node, or before the session's engine was last created by a restart, a stop and start, or a reconnect the gateway runs itself), so its recipients are unknown and the revoke cannot be addressed to them. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13529,7 +13689,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The status image/video bytes.",
+            "description": "The status image, video or voice note (audio) bytes.",
             "content": {
               "application/octet-stream": {
                 "schema": {
@@ -15077,6 +15237,16 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "Plugin not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         },
         "summary": "Enable a plugin",
@@ -15121,6 +15291,16 @@
           },
           "403": {
             "description": "The API key's role, session or chat scope, or IP allow-list does not allow this operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Plugin not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -15182,6 +15362,16 @@
           },
           "403": {
             "description": "The API key's role, session or chat scope, or IP allow-list does not allow this operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Plugin not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -15402,7 +15592,7 @@
             }
           },
           "403": {
-            "description": "A session-restricted key may not replace the full active set — full activation replacement requires an unrestricted key",
+            "description": "A session-restricted key may not replace the full active set — full activation replacement requires an unrestricted key. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15552,6 +15742,16 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "Plugin not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         },
         "summary": "Check plugin health",
@@ -15609,6 +15809,9 @@
           },
           "413": {
             "description": "Request body exceeds the route maxBodyBytes limit."
+          },
+          "415": {
+            "description": "Request body is not `application/json` or `application/x-www-form-urlencoded`."
           },
           "429": {
             "description": "Rate limit exceeded: the per-instance bucket (INGRESS_INSTANCE_LIMIT) or the per-client-IP bucket (INGRESS_IP_LIMIT). The `Retry-After-instance` / `Retry-After-ingress-ip` header names which one shed the request, and a plain `Retry-After` carries the same delay for a client that reads only the standard name."
@@ -15671,6 +15874,9 @@
           "413": {
             "description": "Request body exceeds the route maxBodyBytes limit."
           },
+          "415": {
+            "description": "Request body is not `application/json` or `application/x-www-form-urlencoded`."
+          },
           "429": {
             "description": "Rate limit exceeded: the per-instance bucket (INGRESS_INSTANCE_LIMIT) or the per-client-IP bucket (INGRESS_IP_LIMIT). The `Retry-After-instance` / `Retry-After-ingress-ip` header names which one shed the request, and a plain `Retry-After` carries the same delay for a client that reads only the standard name."
           },
@@ -15731,6 +15937,9 @@
           },
           "413": {
             "description": "Request body exceeds the route maxBodyBytes limit."
+          },
+          "415": {
+            "description": "Request body is not `application/json` or `application/x-www-form-urlencoded`."
           },
           "429": {
             "description": "Rate limit exceeded: the per-instance bucket (INGRESS_INSTANCE_LIMIT) or the per-client-IP bucket (INGRESS_IP_LIMIT). The `Retry-After-instance` / `Retry-After-ingress-ip` header names which one shed the request, and a plain `Retry-After` carries the same delay for a client that reads only the standard name."
@@ -15793,6 +16002,9 @@
           "413": {
             "description": "Request body exceeds the route maxBodyBytes limit."
           },
+          "415": {
+            "description": "Request body is not `application/json` or `application/x-www-form-urlencoded`."
+          },
           "429": {
             "description": "Rate limit exceeded: the per-instance bucket (INGRESS_INSTANCE_LIMIT) or the per-client-IP bucket (INGRESS_IP_LIMIT). The `Retry-After-instance` / `Retry-After-ingress-ip` header names which one shed the request, and a plain `Retry-After` carries the same delay for a client that reads only the standard name."
           },
@@ -15853,6 +16065,9 @@
           },
           "413": {
             "description": "Request body exceeds the route maxBodyBytes limit."
+          },
+          "415": {
+            "description": "Request body is not `application/json` or `application/x-www-form-urlencoded`."
           },
           "429": {
             "description": "Rate limit exceeded: the per-instance bucket (INGRESS_INSTANCE_LIMIT) or the per-client-IP bucket (INGRESS_IP_LIMIT). The `Retry-After-instance` / `Retry-After-ingress-ip` header names which one shed the request, and a plain `Retry-After` carries the same delay for a client that reads only the standard name."
@@ -15915,6 +16130,9 @@
           "413": {
             "description": "Request body exceeds the route maxBodyBytes limit."
           },
+          "415": {
+            "description": "Request body is not `application/json` or `application/x-www-form-urlencoded`."
+          },
           "429": {
             "description": "Rate limit exceeded: the per-instance bucket (INGRESS_INSTANCE_LIMIT) or the per-client-IP bucket (INGRESS_IP_LIMIT). The `Retry-After-instance` / `Retry-After-ingress-ip` header names which one shed the request, and a plain `Retry-After` carries the same delay for a client that reads only the standard name."
           },
@@ -15975,6 +16193,9 @@
           },
           "413": {
             "description": "Request body exceeds the route maxBodyBytes limit."
+          },
+          "415": {
+            "description": "Request body is not `application/json` or `application/x-www-form-urlencoded`."
           },
           "429": {
             "description": "Rate limit exceeded: the per-instance bucket (INGRESS_INSTANCE_LIMIT) or the per-client-IP bucket (INGRESS_IP_LIMIT). The `Retry-After-instance` / `Retry-After-ingress-ip` header names which one shed the request, and a plain `Retry-After` carries the same delay for a client that reads only the standard name."
@@ -16041,6 +16262,16 @@
               }
             }
           },
+          "404": {
+            "description": "Session-restricted key: the instance does not exist or is bound outside the key's allowedSessions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "409": {
             "description": "The instance is disabled or deleted; its dead-lettered deliveries cannot be re-dispatched.",
             "content": {
@@ -16091,6 +16322,16 @@
               }
             }
           },
+          "400": {
+            "description": "Validation failed, or the plugin is not ingress-capable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "401": {
             "description": "The API key is missing, unknown, revoked, or expired",
             "content": {
@@ -16102,7 +16343,17 @@
             }
           },
           "403": {
-            "description": "The API key's role, session or chat scope, or IP allow-list does not allow this operation",
+            "description": "sessionScope is outside the key's allowedSessions. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Plugin not found.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16229,6 +16480,16 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "Unknown instance, or one outside the key's allowedSessions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         },
         "tags": [
@@ -16276,6 +16537,16 @@
               }
             }
           },
+          "400": {
+            "description": "Validation failed, or the masked config could not be restored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "401": {
             "description": "The API key is missing, unknown, revoked, or expired",
             "content": {
@@ -16287,7 +16558,17 @@
             }
           },
           "403": {
-            "description": "The API key's role, session or chat scope, or IP allow-list does not allow this operation",
+            "description": "The new sessionScope is outside the key's allowedSessions. Also returned when the API key's role, session or chat scope, or IP allow-list does not allow this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown instance, or one outside the key's allowedSessions.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16337,6 +16618,16 @@
           },
           "403": {
             "description": "The API key's role, session or chat scope, or IP allow-list does not allow this operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown instance, or one outside the key's allowedSessions.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16395,6 +16686,16 @@
           },
           "403": {
             "description": "The API key's role, session or chat scope, or IP allow-list does not allow this operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown instance, or one outside the key's allowedSessions.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16589,7 +16890,7 @@
   },
   "info": {
     "title": "OpenWA API",
-    "description": "Open Source WhatsApp API Gateway - Free, Self-Hosted HTTP API\n\n**Gateway-wide responses.** Two statuses are returned by middleware before routing, so any operation can emit them:\n\n- `415 Unsupported Media Type` — the request body carries a `Content-Encoding` other than `identity`. The aggregate in-flight body cap counts wire bytes, so a compressed body would be admitted on its compressed size and then inflated past the memory it is meant to bound. Send the body uncompressed.\n- `503 Service Unavailable` with `Retry-After` — the gateway already has too much request body data in flight. The body is not read; retry after the given delay.\n\nEvery operation that takes an API key can also answer `429 Too Many Requests` (the per-IP rate-limit windows; with send pacing on, a send can also be refused with `code: SEND_PACING_LIMITED` and `retryAfterSeconds`) and `500 Internal Server Error` (an unexpected failure, or `code: ENGINE_PAGE_ERROR` when WhatsApp Web threw inside the page during a whatsapp-web.js send or status post). Error bodies follow the `ErrorResponse` schema.",
+    "description": "Open Source WhatsApp API Gateway - Free, Self-Hosted HTTP API\n\n**Gateway-wide responses.** Three statuses are returned by middleware before routing, so any operation can emit them:\n\n- `415 Unsupported Media Type` — the request body carries a `Content-Encoding` other than `identity`. The aggregate in-flight body cap counts wire bytes, so a compressed body would be admitted on its compressed size and then inflated past the memory it is meant to bound. Send the body uncompressed.\n- `413 Payload Too Large`: the declared `Content-Length` is more than the gateway could hold in flight for this caller even when idle. The body is not read; retrying it unchanged cannot succeed.\n- `503 Service Unavailable` with `Retry-After` — the gateway already has too much request body data in flight. The body is not read; retry after the given delay.\n\nEvery operation that takes an API key can also answer `429 Too Many Requests` (the per-IP rate-limit windows; with send pacing on, a send can also be refused with `code: SEND_PACING_LIMITED` and `retryAfterSeconds`) and `500 Internal Server Error` (an unexpected failure, or `code: ENGINE_PAGE_ERROR` when WhatsApp Web threw inside the page during a whatsapp-web.js send or status post). Error bodies follow the `ErrorResponse` schema.",
     "version": "0.24.0",
     "contact": {
       "name": "OpenWA",
@@ -16910,7 +17211,7 @@
           },
           "keyPrefix": {
             "type": "string",
-            "description": "First 8 characters of the key (for identification)"
+            "description": "First 12 characters of the key (for identification)"
           },
           "role": {
             "type": "string",
@@ -16984,7 +17285,7 @@
           },
           "keyPrefix": {
             "type": "string",
-            "description": "First 8 characters of the key (for identification)"
+            "description": "First 12 characters of the key (for identification)"
           },
           "role": {
             "type": "string",
@@ -17074,7 +17375,9 @@
             }
           },
           "expiresAt": {
-            "type": "string"
+            "type": "string",
+            "nullable": true,
+            "description": "Expiration date (ISO 8601); null clears it (an empty string is rejected)"
           }
         }
       },
@@ -17130,14 +17433,14 @@
           },
           "proxyType": {
             "type": "string",
-            "description": "Proxy type",
+            "description": "Deprecated and ignored: the proxyUrl scheme selects the proxy protocol. Accepted for compatibility.",
             "enum": [
               "http",
               "https",
               "socks4",
               "socks5"
             ],
-            "example": "http"
+            "deprecated": true
           }
         },
         "required": [
@@ -17907,7 +18210,8 @@
           "url": {
             "type": "string",
             "description": "Webhook URL to receive events",
-            "example": "https://your-server.com/webhook"
+            "example": "https://your-server.com/webhook",
+            "maxLength": 2048
           },
           "events": {
             "type": "array",
@@ -18105,7 +18409,8 @@
         "properties": {
           "url": {
             "type": "string",
-            "description": "Webhook URL"
+            "description": "Webhook URL",
+            "maxLength": 2048
           },
           "events": {
             "type": "array",
@@ -18249,7 +18554,7 @@
           },
           "attempts": {
             "type": "number",
-            "description": "Total attempts made before giving up.",
+            "description": "Attempts recorded for the delivery; 0 when it was shed, refused or failed before sending.",
             "example": 5
           },
           "lastStatusCode": {
@@ -18265,7 +18570,7 @@
           "createdAt": {
             "type": "string",
             "format": "date-time",
-            "description": "When the delivery was finally abandoned."
+            "description": "When the failure was first recorded."
           }
         },
         "required": [
@@ -18415,7 +18720,7 @@
           "chatName": {
             "type": "string",
             "nullable": true,
-            "description": "Human-readable chat name when known (contact pushName, group subject).",
+            "description": "Push name of the message sender as the engine reported it; in a group this is the member who posted, not the group subject. Null when no contact name was known.",
             "example": "Alice"
           },
           "author": {
@@ -19467,7 +19772,7 @@
           "senderPhone": {
             "type": "string",
             "nullable": true,
-            "description": "Best-effort phone digits of a privacy-id sender, when resolved.",
+            "description": "Never set on this route: live history does no privacy-id resolution. Resolve an @lid sender with GET /api/sessions/{sessionId}/contacts/{contactId}/phone.",
             "example": null
           },
           "contact": {
@@ -20283,8 +20588,8 @@
           },
           "path": {
             "type": "string",
-            "description": "Local storage root. Present only for `local`.",
-            "example": "./data/storage"
+            "description": "Local storage root. Also reported for `s3`, where it is the fallback directory used while the bucket is unreachable.",
+            "example": "./data/media"
           },
           "bucket": {
             "type": "string",
@@ -21376,7 +21681,7 @@
             ]
           },
           "warnings": {
-            "description": "Problems that did not stop the import.",
+            "description": "Why the restore was rolled back (per-row failures, or a backup with no rows). Non-empty only when `imported` is false; non-fatal messages are in `notices`.",
             "example": [],
             "type": "array",
             "items": {
@@ -21393,8 +21698,8 @@
           },
           "restartRequired": {
             "type": "boolean",
-            "description": "Whether the process must restart before the imported state is live.",
-            "example": true
+            "description": "True when an engine may still be writing into the restored tables (orphans left running by `force`, a failed `stopOrphans` teardown, sessions held by another node, or plugin bindings not re-applied). Restart to reconcile. Can be true even when `imported` is false.",
+            "example": false
           },
           "orphanedEngines": {
             "description": "Sessions running here that the imported set does not contain — they were about to be deleted.",
@@ -21809,7 +22114,7 @@
           },
           "isReadOnly": {
             "type": "boolean",
-            "description": "Whether this account can no longer post (left or removed).",
+            "description": "Whether this account cannot post: the group is announce-only and this account is not an admin.",
             "example": false
           },
           "isAnnounce": {
@@ -22431,7 +22736,7 @@
           },
           "picture": {
             "type": "string",
-            "description": "Channel picture URL, when set."
+            "description": "Channel picture URL. Not currently filled by either engine: WhatsApp reports only a media path."
           },
           "verified": {
             "type": "boolean",
@@ -22657,8 +22962,8 @@
         "properties": {
           "timestamp": {
             "type": "string",
-            "description": "Bucket start, ISO-8601.",
-            "example": "2026-08-07T12:00:00.000Z"
+            "description": "Bucket start in UTC as zone-less text: YYYY-MM-DD HH:00:00 for period=24h, YYYY-MM-DD for 7d/30d.",
+            "example": "2026-08-07 12:00:00"
           },
           "sent": {
             "type": "number",
@@ -22833,8 +23138,8 @@
           },
           "lastActive": {
             "type": "string",
-            "description": "ISO-8601 timestamp of the last message.",
-            "example": "2026-08-07T12:00:00.000Z"
+            "description": "Time of the last message in UTC as zone-less text, YYYY-MM-DD HH:MM:SS.",
+            "example": "2026-08-07 12:00:00"
           }
         },
         "required": [
@@ -22849,7 +23154,7 @@
         "properties": {
           "hour": {
             "type": "number",
-            "description": "Hour of day, 0-23.",
+            "description": "Hour of day in UTC, 0-23.",
             "example": 9
           },
           "sent": {
@@ -22947,7 +23252,7 @@
           },
           "caption": {
             "type": "string",
-            "description": "Caption, for an image or video status."
+            "description": "Text of a text status, or the caption of an image or video status."
           },
           "mediaUrl": {
             "type": "string",
@@ -23003,8 +23308,9 @@
         "properties": {
           "text": {
             "type": "string",
-            "description": "Status text body.",
+            "description": "Status text body. Must contain a non-whitespace character.",
             "example": "Out for delivery 📦",
+            "minLength": 1,
             "maxLength": 4096
           },
           "backgroundColor": {
@@ -24025,7 +24331,7 @@
           },
           "code": {
             "type": "string",
-            "description": "A stable machine-readable reason, on some errors only: SESSION_NAME_TEARDOWN_PENDING (409), SESSION_STOP_INCOMPLETE and SESSION_LOGOUT_INCOMPLETE (502), SEND_PACING_LIMITED (429), ENGINE_PAGE_ERROR (500, whatsapp-web.js: WhatsApp Web threw inside the page during a send or status post), IMPORT_ALREADY_RUNNING, IMPORT_WOULD_ORPHAN_ENGINES and IMPORT_NESTED_TRANSACTION (409)."
+            "description": "A stable machine-readable reason, on some errors only: SESSION_NAME_TEARDOWN_PENDING (409), SESSION_STOP_INCOMPLETE, SESSION_LOGOUT_INCOMPLETE and SESSION_FORCE_KILL_INCOMPLETE (502), SEND_PACING_LIMITED (429), ENGINE_PAGE_ERROR (500, whatsapp-web.js: WhatsApp Web threw inside the page during a send or status post), IMPORT_ALREADY_RUNNING, EXPORT_IN_PROGRESS, IMPORT_WOULD_ORPHAN_ENGINES and IMPORT_NESTED_TRANSACTION (409)."
           },
           "retryAfterSeconds": {
             "type": "integer",

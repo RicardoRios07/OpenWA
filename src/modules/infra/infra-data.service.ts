@@ -291,6 +291,13 @@ export class InfraDataService {
    */
   private importInFlight = false;
 
+  /**
+   * Exports running in this process. On better-sqlite3 an export's reads share the import's connection,
+   * so an export and an import that overlap would archive the import's uncommitted (possibly rolled-back)
+   * tables. Each refuses while the other runs.
+   */
+  private exportsInFlight = 0;
+
   constructor(
     private readonly configService: ConfigService,
     @InjectDataSource('data')
@@ -355,7 +362,24 @@ export class InfraDataService {
 
   async exportData(): Promise<InfraExportDataResult> {
     this.assertExportRegistryMatchesMetadata();
+    if (this.importInFlight) {
+      throw new ConflictException({
+        statusCode: 409,
+        error: 'Conflict',
+        message: 'A data import is running; export after it finishes.',
+        code: 'IMPORT_ALREADY_RUNNING',
+      });
+    }
+    this.exportsInFlight++;
+    try {
+      return await this.runExport();
+    } finally {
+      this.exportsInFlight--;
+    }
+  }
 
+  /** The table reads behind exportData, entered only through its import guard. */
+  private async runExport(): Promise<InfraExportDataResult> {
     // The tables below may legitimately not exist yet (created by migrations an older DB has not run).
     // Only a GENUINE missing-table error (isMissingTableError) may be tolerated — anything else (lock,
     // I/O, timeout, aborted connection) must FAIL the export. The old blind `catch { debug-log }`
@@ -399,6 +423,17 @@ export class InfraDataService {
       }
       tables[entry.key] = rows as never;
       counts[entry.key] = rows.length;
+    }
+
+    // See ExportTable.sessionFk: a child row of a session missing from the archive cannot be restored.
+    const exportedSessions = new Set(tables.sessions.map(session => session.id));
+    for (const entry of EXPORT_TABLES) {
+      if (!entry.sessionFk) continue;
+      const kept = (tables[entry.key] as Array<{ sessionId: string }>).filter(row =>
+        exportedSessions.has(row.sessionId),
+      );
+      tables[entry.key] = kept as never;
+      counts[entry.key] = kept.length;
     }
 
     // Audit the full-DB export: this payload carries plugin-instance secrets, so WHO pulled
@@ -489,6 +524,14 @@ export class InfraDataService {
         error: 'Conflict',
         message: 'A data import is already running; wait for it to finish before starting another.',
         code: 'IMPORT_ALREADY_RUNNING',
+      });
+    }
+    if (this.exportsInFlight > 0) {
+      throw new ConflictException({
+        statusCode: 409,
+        error: 'Conflict',
+        message: 'A data export is running; import after it finishes.',
+        code: 'EXPORT_IN_PROGRESS',
       });
     }
     this.importInFlight = true;
@@ -956,7 +999,9 @@ export class InfraDataService {
 
         // restartRequired was computed in the pre-flight, from three independent causes: orphans left
         // running (force=true legacy path), a stopOrphans teardown that failed for at least one
-        // engine, and sessions held by another node, which this request cannot reach to stop.
+        // engine, and sessions held by another node, which this request cannot reach to stop. It is
+        // also set above when the post-commit plugin binding re-sync fails; a restart does not repair
+        // that one, so its notice names the manual check instead.
         return {
           imported: true,
           counts,

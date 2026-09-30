@@ -149,6 +149,16 @@ describe('IngressService.handle', () => {
     expect(res.status).toBe(202);
   });
 
+  // A body no parser read would be handled as the empty body: it passes a header-only scheme, and every
+  // such delivery hashes to the same dedup key, so all but the first are acked and dropped.
+  it('refuses a body in a content type no parser read (415), before anything is persisted', async () => {
+    const d = deps();
+    const res = await new IngressService(d).handle({ ...req, rawBody: '', unparsedBody: true });
+    expect(res).toMatchObject({ status: 415 });
+    expect(d.events.recordOrSkip).not.toHaveBeenCalled();
+    expect(d.enqueue).not.toHaveBeenCalled();
+  });
+
   it('uses the signed webhook-id as the default Standard Webhooks dedup key', async () => {
     const rawKey = Buffer.from('0123456789abcdef0123456789abcdef', 'hex');
     const secret = `v1,whsec_${rawKey.toString('base64')}`;

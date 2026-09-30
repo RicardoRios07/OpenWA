@@ -478,6 +478,17 @@ describe('PluginLoaderService — sandbox log relay bounds', () => {
     expect(warnSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('relays an unknown worker log level as log instead of throwing', async () => {
+    // Plugin code can post to parentPort directly, so the level is untrusted: `logger.info` does not exist.
+    const loader = makeLoader();
+    seed(loader, { builtIn: false, instance: null });
+    await loader.enablePlugin('p1');
+    const logSpy = jest.spyOn(loggerOf(loader), 'log').mockImplementation(() => undefined);
+
+    expect(() => loader.capturedOnLog!('info' as PluginLogLevel, 'hello')).not.toThrow();
+    expect(logSpy).toHaveBeenCalledWith('[p1] hello', { pluginId: 'p1' });
+  });
+
   it('truncates an oversized worker log line before relaying it', async () => {
     const loader = makeLoader();
     seed(loader, { builtIn: false, instance: null });

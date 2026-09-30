@@ -8,6 +8,18 @@ import { SetGroupPictureDto } from './dto/group.dto';
 import { paginate, ListOptions } from '../../common/utils/paginate';
 import { SendPacingService } from '../message/send-pacing.service';
 import { createLogger } from '../../common/services/logger.service';
+import { EngineNotSupportedError } from '../../common/errors/engine-not-supported.error';
+
+/**
+ * Whether a failed paced write provably contacted nobody, so its reserved budget can go back: a
+ * client or refusal status (400 bad input, 403 refused, 404 no such group, 409 not ready) or a 501
+ * for an operation the engine lacks. Anything else (a 503 deadline that abandoned an IQ still in
+ * flight, a dropped socket, a dead page) leaves the outcome unknown, and WhatsApp may already have
+ * added the participants, so the batch stays charged.
+ */
+function contactedNobody(error: unknown): boolean {
+  return error instanceof HttpException && (error.getStatus() < 500 || error instanceof EngineNotSupportedError);
+}
 
 /**
  * Owns engine access for group operations. Controllers depend on this service instead of
@@ -74,8 +86,9 @@ export class GroupService {
     try {
       return await this.getEngine(sessionId).createGroup(name, participants);
     } catch (error) {
-      // Nobody was invited, so the reserved budget goes back (whatsapp-web.js always 501s here).
-      this.pacing.refundGroupReachouts(sessionId, reservation);
+      // A refusal invited nobody, so the reserved budget goes back (whatsapp-web.js always 501s here).
+      // An outcome-unknown failure stays charged.
+      if (contactedNobody(error)) this.pacing.refundGroupReachouts(sessionId, reservation);
       throw error;
     }
   }
@@ -92,8 +105,8 @@ export class GroupService {
       return await this.getEngine(sessionId).addParticipants(groupId, participants);
     } catch (error) {
       // A refused add contacted nobody. Per-participant failures an engine reports without throwing
-      // stay charged: the batch was attempted.
-      this.pacing.refundGroupReachouts(sessionId, reservation);
+      // stay charged: the batch was attempted. So does an outcome-unknown failure.
+      if (contactedNobody(error)) this.pacing.refundGroupReachouts(sessionId, reservation);
       throw error;
     }
   }

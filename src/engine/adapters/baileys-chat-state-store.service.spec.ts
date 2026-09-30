@@ -379,6 +379,49 @@ describe('ChatStateStoreService', () => {
       expect(svc.get('s', 'late')).toEqual(expect.objectContaining({ pinned: true }));
     });
 
+    it('is not complete when a write in flight as the read began settled before the read did', async () => {
+      const repo = seeded();
+      let releaseUpsert!: () => void;
+      repo.upsert.mockImplementationOnce(
+        (v: ChatState) =>
+          new Promise(resolve => {
+            releaseUpsert = () => {
+              repo.rows.set(KEY(v.sessionId, v.chatId), { ...v });
+              resolve(undefined);
+            };
+          }),
+      );
+      const svc = svcWith(repo);
+      const pending = svc.remember('s', 'late', { pinned: true });
+      await tick(); // the write is indexed and waiting on its upsert
+      // The read's snapshot predates the upsert, but the read resolves after it (pooled connections).
+      let releaseFind!: () => void;
+      repo.find.mockImplementationOnce(() => {
+        const snapshot = [...repo.rows.values()].filter(r => r.sessionId === 's');
+        return new Promise(resolve => (releaseFind = () => resolve(snapshot)));
+      });
+      const refresh = svc.refreshSession('s');
+      releaseUpsert();
+      await pending;
+      await tick();
+      releaseFind();
+      await refresh;
+      expect(svc.get('s', 'late')).toBeUndefined();
+      await tick();
+      expect(svc.get('s', 'late')).toEqual(expect.objectContaining({ pinned: true }));
+    });
+
+    it("is complete when only another session's write overlapped the refresh read", async () => {
+      const repo = seeded();
+      repo.upsert.mockImplementationOnce(() => new Promise(() => undefined)); // never settles
+      const svc = svcWith(repo);
+      void svc.remember('other', 'x', { pinned: true });
+      await tick();
+      await svc.refreshSession('s');
+      svc.get('s', 'unknown');
+      expect(repo.findOne).not.toHaveBeenCalledWith({ where: { sessionId: 's', chatId: 'unknown' } });
+    });
+
     it('a write whose read-through failed leaves the session incomplete, so the row is read back', async () => {
       const repo = seeded();
       const svc = svcWith(repo);
@@ -424,6 +467,43 @@ describe('ChatStateStoreService', () => {
     expect(svc.get('s', 'c')).toBeUndefined();
     expect(svc.get('s', 'd')).toBeUndefined();
     expect(svc.get('t', 'c')).toEqual(expect.objectContaining({ pinned: true }));
+  });
+
+  it('drops a forgotten chat from the listing before its row delete settles', async () => {
+    const repo = makeRepo([{ sessionId: 's', chatId: 'c', pinned: true }]);
+    const svc = svcWith(repo);
+    svc.get('s', 'c');
+    await tick();
+    expect(svc.chatIds('s')).toEqual(['c']);
+    let release!: () => void;
+    repo.delete.mockImplementationOnce(() => new Promise(resolve => (release = () => resolve(undefined))));
+    const done = svc.forget('s', ['c']);
+    expect(svc.chatIds('s')).toEqual([]);
+    expect(svc.get('s', 'c')).toBeUndefined();
+    await tick(); // a read in the window must not warm the row back from the table
+    expect(svc.chatIds('s')).toEqual([]);
+    release();
+    await done;
+    expect(svc.chatIds('s')).toEqual([]);
+  });
+
+  it('clearSession fences a write in flight, so the unlinked account leaves no row behind', async () => {
+    const repo = makeRepo();
+    let release!: () => void;
+    repo.findOne.mockImplementationOnce(() => new Promise(resolve => (release = () => resolve(undefined))));
+    const svc = svcWith(repo);
+    const inFlight = svc.remember('s', 'old', { pinned: true });
+    const queued = svc.remember('s', 'old', { archived: true }); // queued behind it, not started
+    await tick();
+    const cleared = svc.clearSession('s');
+    release();
+    await Promise.all([inFlight, queued, cleared]);
+    expect(repo.rows.size).toBe(0);
+    expect(svc.chatIds('s')).toEqual([]);
+    // The next account's writes are kept.
+    await svc.remember('s', 'new', { pinned: true });
+    expect([...repo.rows.keys()]).toEqual([KEY('s', 'new')]);
+    expect(svc.chatIds('s')).toEqual(['new']);
   });
 
   it('forget swallows a repo error', async () => {
@@ -601,6 +681,23 @@ describe('ChatStateStoreService', () => {
       await svc.fold('s', PHONE, [LID], { archived: true });
       expect([...repo.rows.keys()]).toEqual([KEY('s', PHONE)]);
       expect(repo.rows.get(KEY('s', PHONE))).toMatchObject({ pinned: true, muteEndTime: -1, archived: true });
+    });
+
+    it('queries a twin with no row once, not on every fold', async () => {
+      const repo = makeRepo();
+      const svc = svcWith(repo);
+      for (let i = 0; i < 3; i++) await svc.fold('s', PHONE, [LID], { archived: false }, false);
+      expect(repo.findOne).toHaveBeenCalledWith({ where: { sessionId: 's', chatId: LID } });
+      expect(repo.findOne.mock.calls.filter(([o]) => o.where.chatId === LID)).toHaveLength(1);
+    });
+
+    it('does not query a twin again once its row was folded away', async () => {
+      const repo = makeRepo([{ sessionId: 's', chatId: LID, pinned: true, updatedAt: new Date(1000) }]);
+      const svc = svcWith(repo);
+      await svc.fold('s', PHONE, [LID], { archived: false }, false);
+      expect([...repo.rows.keys()]).toEqual([KEY('s', PHONE)]);
+      await svc.fold('s', PHONE, [LID], { archived: false }, false);
+      expect(repo.findOne.mock.calls.filter(([o]) => o.where.chatId === LID)).toHaveLength(1);
     });
 
     it('applies only the patch and keeps the twin when a row cannot be read', async () => {

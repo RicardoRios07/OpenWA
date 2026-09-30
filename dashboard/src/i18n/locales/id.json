@@ -90,6 +90,7 @@
     "noMessageYet": "Belum ada pesan",
     "unreadBadge": "{{count}} pesan belum dibaca",
     "unreadBadge_other": "{{count}} pesan belum dibaca",
+    "markedUnread": "Ditandai belum dibaca",
     "loadingMessages": "Memuat pesan...",
     "loadingOlderMessages": "Memuat pesan lama...",
     "loadOlderMessagesError": "Gagal memuat pesan lama. Gulir ke atas untuk mencoba lagi.",
@@ -452,6 +453,7 @@
     "filters": {
       "title": "Filter (opsional)",
       "hint": "Hanya terpicu jika semua kondisi cocok. Berlaku untuk kejadian pesan.",
+      "incomplete": "Beri nilai pada setiap kondisi filter, dan gunakan paling banyak 20 kondisi, 100 nilai per kondisi, dan 1000 karakter teks.",
       "badge": "{{count}} filter",
       "badge_other": "{{count}} filter",
       "addCondition": "Tambah kondisi",
@@ -599,6 +601,7 @@
     },
     "empty": {
       "title": "Belum ada templat tersimpan",
+      "noMatch": "Tidak ada templat yang cocok dengan pencarian Anda.",
       "description": "Buat templat yang dapat digunakan kembali untuk mempercepat balasan dan notifikasi umum.",
       "noSessionsTitle": "Tidak ada sesi tersedia",
       "noSessionsDesc": "Buat sesi WhatsApp sebelum menambahkan templat.",
@@ -978,7 +981,7 @@
       "checking": "Memeriksa status server...",
       "dontClose": "Mohon jangan tutup jendela ini",
       "successMsg": "Server kembali online! Halaman akan dimuat ulang otomatis.",
-      "errorMsg": "Server tidak merespons setelah 30 detik. Periksa log Docker dan restart secara manual.",
+      "errorMsg": "Server tidak merespons. Periksa log Docker dan restart secara manual.",
       "outcomeUnknown": "Proxy mengembalikan kesalahan sebelum server menjawab, sehingga tidak diketahui apakah restart sedang berlangsung. Muat ulang dalam satu menit untuk memeriksa.",
       "reload": "Muat Ulang Halaman"
     },
@@ -1021,7 +1024,7 @@
     "config": {
       "title": "Konfigurasi {{name}}",
       "noOptions": "Tidak ada opsi konfigurasi untuk plugin ini",
-      "uiHandshakeError": "UI konfigurasi plugin tidak terinisialisasi. Gunakan formulir skema di bawah jika tersedia.",
+      "uiHandshakeError": "UI konfigurasi plugin tidak terinisialisasi.",
       "save": "Simpan Konfigurasi",
       "addItem": "Tambah",
       "tabConfig": "Konfigurasi",
@@ -1157,7 +1160,7 @@
   },
   "search": {
     "placeholder": "Cari pesan…",
-    "results": "{{count}} hasil",
+    "loadMore": "Tampilkan lebih banyak ({{shown}} dari {{total}})",
     "empty": "Tidak ada pesan ditemukan.",
     "error": "Pencarian gagal. Coba lagi.",
     "unavailable": "Pencarian tidak dikonfigurasi.",

@@ -47,7 +47,7 @@ WhatsApp can change its Web and multi-device protocols at any time, which can st
 
 ```mermaid
 flowchart TB
-    R[Risk: Protocol Change] --> M1[Monitor whatsapp-web.js repo]
+    R[Risk: Protocol Change] --> M1[Monitor both engine libraries]
     R --> M2[Implement abstraction layer]
     R --> M3[Prepare alternative engines]
     R --> M4[Quick response plan]
@@ -130,7 +130,8 @@ session's age (`SEND_PACING_WARMUP_SCHEDULE`), a separate cap on new conversatio
 (`SEND_PACING_COLD_DAILY_CAP`) and a consecutive-failure breaker — see
 [06 §Send pacing](./06-api-specification.md). It is **off by default**, and it counts only sends that
 write a `messages` row, so status posts and message edits are checked against the cap without
-counting into it.
+counting into it. Clearing or deleting a chat removes its stored rows, so that chat's sends today
+stop counting toward either cap, and the next send to it counts as a new conversation.
 
 Still not implemented: there are no per-minute or per-hour caps and no media-specific delay. With
 pacing off — the default — the guidelines below are operator discipline, not something the gateway
@@ -168,7 +169,7 @@ enforces.
 | **Category**    | Security  |
 | **Probability** | Low (30%) |
 | **Impact**      | Critical  |
-| **Risk Level**  | High      |
+| **Risk Level**  | Medium    |
 
 **Description:**  
 Security vulnerabilities may lead to unauthorized access to sessions, data, or infrastructure.
@@ -533,7 +534,7 @@ WhatsApp has undocumented internal rate limits. Sending too many messages can tr
 **Built-in Safeguards:**
 
 The gateway enforces HTTP request throttling (`@nestjs/throttler`, registered globally as
-`ProxyAwareThrottlerGuard` and tracked per client IP) plus the bulk-send pacing described in R002:
+`ProxyAwareThrottlerGuard` and tracked per route handler and client IP) plus the bulk-send pacing described in R002:
 
 | Control                                               | Default                    | Scope                                                         |
 | ----------------------------------------------------- | -------------------------- | ------------------------------------------------------------- |
@@ -612,6 +613,10 @@ flowchart TB
 ---
 
 ## 16.6 Escalation Procedures
+
+Optional template: the project does not run this process. OpenWA has one maintainer and no on-call
+rotation, paging, chat channel or status page; incidents are handled through GitHub Issues, and security
+reports through GitHub Security Advisories (see [SECURITY.md](../SECURITY.md)).
 
 ### Severity Levels
 

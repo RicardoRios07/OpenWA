@@ -6,8 +6,8 @@
  * out: the worker is a thread in the host process and can use Node built-ins directly, so this is
  * fault containment, not a security boundary (see worker-bootstrap.ts and docs/30).
  *
- * Phase B1 scope: lifecycle only (load + onLoad/onEnable/onDisable/onUnload). The capability bridge
- * (B2) and hook bridge (B3) add more message kinds later.
+ * Covers the lifecycle, capability calls, hooks, ingress webhooks, search, health checks and the
+ * liveness ping.
  */
 
 import type { SearchQuery, SearchResults } from '../../../modules/search/search.types';
@@ -98,8 +98,8 @@ export type WorkerToHostMessage =
   | { kind: 'health-result'; id: number; healthy: boolean; message?: string }
   // The worker claims an ingress route declared in its manifest (registered a webhook handler for it).
   | { kind: 'webhook-subscribe'; route: string }
-  // The worker's response to a dispatched webhook — the host relays this to the caller (sync-reply
-  // mode) or discards it (async mode). `error` set = the handler threw.
+  // The worker's result for a dispatched webhook; `error` set = the handler threw. The ingress job treats
+  // a non-ok result as a failed delivery and retries it.
   | {
       kind: 'webhook-result';
       id: number;

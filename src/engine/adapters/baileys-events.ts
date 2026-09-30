@@ -805,7 +805,7 @@ export class BaileysEvents {
   /**
    * Baileys `group.join-request`: someone asked to join a group the account admins (join-approval
    * on). Only action 'created' maps to the neutral join_request kind — the wwebjs event has no
-   * revoke/reject counterpart, so only the shared signal is surfaced. Upstream scope caveat: rc13
+   * revoke/reject counterpart, so only the shared signal is surfaced. Upstream scope caveat: rc14
    * emits this event only from the NON_ADMIN_ADD stub (172); the direct self-request stub (144) is
    * unhandled with an upstream TODO (Utils/process-message.js:569), so an invite-link self-request
    * may produce no event on this engine — the REST list endpoint still sees it. The pn twins are

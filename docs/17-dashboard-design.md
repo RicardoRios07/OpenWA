@@ -57,11 +57,13 @@ backed by `localStorage` — there is no Zustand store.
    and `--warning-text` are darkened twins for anything rendered as text or an icon. As foregrounds
    the originals measure 1.98:1, 3.76:1, 2.28:1 and 2.15:1 on white. Each twin is set from the
    darkest surface it actually lands on, which is the 10 to 20 percent tint of its own hue that the
-   badges and callouts paint behind it, not white. Dark restates them as the originals, which are
-   already 6:1 or better on the dark surfaces.
-   Known gap: the exclusive button groups report `aria-pressed` without arrow-key roving focus. Four
-   pages have a render harness, so the rest are checked structurally. Treat the claim as directional,
-   not certified.
+   badges and callouts paint behind it, not white. Dark restates primary, success and warning as the
+   originals, which are 6:1 or better on the dark surfaces, and lightens error to `#f15e5e` because
+   the original measures 4.06:1 there.
+   Known gap: the exclusive button groups report `aria-pressed` without arrow-key roving focus. Every
+   page has a render test, but only Infrastructure's resolves the caption references
+   against a real DOM; elsewhere they are checked structurally. Treat the claim as directional, not
+   certified.
 5. **Dark mode** - Support for light/dark themes
 
 ## 17.2 Information Architecture
@@ -79,13 +81,13 @@ flowchart TB
         WEBHOOKS[Webhooks /webhooks]
         TEMPLATES[Templates /templates]
         TESTER[Message Tester /message-tester]
-        LOGS[Logs /logs]
     end
 
     subgraph "Admin-only"
         APIKEYS[API Keys /api-keys]
         INFRA[Infrastructure /infrastructure]
         PLUGINS[Plugins /plugins]
+        LOGS[Logs /logs]
     end
 
     HOME --> SESSIONS
@@ -108,7 +110,7 @@ a non-admin hitting the path falls through to the `*` redirect.
 /webhooks          → Webhooks (per-session webhook endpoints)
 /templates         → Message Templates
 /message-tester    → Message Tester (ad-hoc send-* + check-number)
-/logs              → Activity / Audit Logs
+/logs              → Activity / Audit Logs            [admin only]
 /api-keys          → API Keys Management              [admin only]
 /infrastructure    → Infrastructure status & config   [admin only]
 /plugins           → Plugins (install / enable / configure) [admin only]
@@ -388,22 +390,22 @@ no DOM. Nothing under `chats/` ships its own stylesheet either: those components
 from `pages/Chats.css`, and `MediaLightbox` adds the `yet-another-react-lightbox` vendor CSS. There
 is no design-system package to pull from.
 
-| Component                    | File                                | Responsibility                                                                                                        |
-| ---------------------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `Layout`                     | `components/Layout.tsx`             | App shell: collapsible sidebar nav, mobile drawer, language menu, light/dark theme toggle, logout, live version badge |
-| `ToastProvider` / `useToast` | `components/Toast.tsx`              | Context-based toast notifications (success/error/warning/info) with de-dup keys                                       |
-| `PageHeader`                 | `components/PageHeader.tsx`         | Shared page title / subtitle / badge / actions header                                                                 |
-| `Modal`                      | `components/Modal.tsx`              | Accessible dialog (`role="dialog"`, Escape/overlay close, focus trap + restore); uses the global `.modal-*` styles    |
-| `CustomSelect`               | `components/CustomSelect.tsx`       | Keyboard-navigable select replacement (type-ahead, arrow keys) used by Sessions / Logs / Login                        |
-| `DashboardCharts`            | `components/DashboardCharts.tsx`    | `recharts`-based message-volume / activity charts on the Dashboard                                                    |
-| `FilterBuilder`              | `components/FilterBuilder.tsx`      | Visual condition builder for webhook event filters                                                                    |
-| `GlobalSearch`               | `components/GlobalSearch.tsx`       | Debounced message-search box in the Chats header, with all-sessions / current-session scope                           |
-| `PluginInstances`            | `components/PluginInstances.tsx`    | Per-plugin instance list: create / edit / delete and secret regeneration                                              |
-| `ErrorBoundary`              | `components/ErrorBoundary.tsx`      | Top-level React error boundary wrapping the whole app                                                                 |
-| `GithubIcon`                 | `components/GithubIcon.tsx`         | Inline brand SVG                                                                                                      |
-| `GroupPicker`                | `components/GroupPicker.tsx`        | Searchable multi-select of a session's groups, used by the Message Tester's multi-group send                          |
-| `SessionScopePicker`         | `components/SessionScopePicker.tsx` | Per-key session scope checklist on the API Keys page                                                                  |
-| `RoleProvider`               | `components/RoleProvider.tsx`       | Context holding the logged-in key's role, read with `useRole` (`canWrite` gates write actions)                        |
+| Component                    | File                                | Responsibility                                                                                                               |
+| ---------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `Layout`                     | `components/Layout.tsx`             | App shell: collapsible sidebar nav, mobile drawer, language menu, light/dark/system theme toggle, logout, live version badge |
+| `ToastProvider` / `useToast` | `components/Toast.tsx`              | Context-based toast notifications (success/error/warning/info) with de-dup keys                                              |
+| `PageHeader`                 | `components/PageHeader.tsx`         | Shared page title / subtitle / badge / actions header                                                                        |
+| `Modal`                      | `components/Modal.tsx`              | Accessible dialog (`role="dialog"`, Escape/overlay close, focus trap + restore); uses the global `.modal-*` styles           |
+| `CustomSelect`               | `components/CustomSelect.tsx`       | Keyboard-navigable select replacement (type-ahead, arrow keys) used by Sessions / Logs / Login                               |
+| `DashboardCharts`            | `components/DashboardCharts.tsx`    | `recharts`-based message-volume / activity charts on the Dashboard                                                           |
+| `FilterBuilder`              | `components/FilterBuilder.tsx`      | Visual condition builder for webhook event filters                                                                           |
+| `GlobalSearch`               | `components/GlobalSearch.tsx`       | Debounced message-search box in the Chats header, with all-sessions / current-session scope                                  |
+| `PluginInstances`            | `components/PluginInstances.tsx`    | Per-plugin instance list: create / edit / delete and secret regeneration                                                     |
+| `ErrorBoundary`              | `components/ErrorBoundary.tsx`      | Top-level React error boundary wrapping the whole app                                                                        |
+| `GithubIcon`                 | `components/GithubIcon.tsx`         | Inline brand SVG                                                                                                             |
+| `GroupPicker`                | `components/GroupPicker.tsx`        | Searchable multi-select of a session's groups, used by the Message Tester's multi-group send                                 |
+| `SessionScopePicker`         | `components/SessionScopePicker.tsx` | Per-key session scope checklist on the API Keys page                                                                         |
+| `RoleProvider`               | `components/RoleProvider.tsx`       | Context holding the logged-in key's role, read with `useRole` (`canWrite` gates write actions)                               |
 
 Chat-specific pieces live one level down in `components/chats/`: `MessageBody` (WhatsApp text
 formatting + link detection), `ChatThread` (bubble list, including inbound Baileys prompt buttons
@@ -477,7 +479,7 @@ Three pages keep a server list in local state instead of the query cache:
   and marking a chat read update.
 - **Plugins** (`Plugins.tsx`) keeps the catalog in local state. It prefetches it silently on mount
   so installed cards can show an update chip, fetches it again when the Catalog tab opens with an
-  empty list, and reloads it after an install or update.
+  empty list, and reloads it after any install, update or uninstall.
 
 ### API client — raw payloads, no `{ data }` envelope
 
@@ -659,7 +661,8 @@ that toggles one attribute on `<html>` and lets the CSS do the rest. The value i
 - **Mode** — `light | dark | system`. `system` removes `data-theme` so a `prefers-color-scheme`
   media query in the global CSS takes over; otherwise `data-theme="light|dark"` is set explicitly.
 
-The sidebar footer button toggles light ↔ dark directly (resolving `system` first); there is no
+The sidebar footer button cycles light → dark → system, its label naming the mode a click
+selects; there is no
 picker popover and no `ThemeProvider` context wrapper — it's a hook consumed directly where needed.
 An earlier accent-palette picker (seven palettes via `data-palette`) was removed for
 maintainability; the legacy `openwa_palette` storage key and the attribute are cleaned up on load.
@@ -682,8 +685,8 @@ export function useTheme() {
 }
 ```
 
-The actual colors live in the global CSS as variables keyed off `[data-theme]` —
-e.g. `:root { --color-accent: #25d366; } [data-theme='dark'] { --color-accent: #25d366; }` — so
+The actual colors live in `src/App.css` as variables keyed off `[data-theme]` —
+e.g. `:root { --bg-light: #f8fafc; } [data-theme='dark'] { --bg-light: #0f172a; }` — so
 switching mode is a single attribute write with no re-render of the tree.
 
 ## 17.8 Build & Deployment

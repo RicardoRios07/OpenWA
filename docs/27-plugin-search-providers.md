@@ -136,7 +136,9 @@ not from the core `messages` table, and returns at most the 100 most recent mess
 `getChatHistory` exists only on the whatsapp-web.js engine. On Baileys it rejects with
 `EngineNotSupportedError` (see [29 - Engine Capability Matrix](./29-engine-capability-matrix.md)), so a
 Baileys deployment has no backfill path and a provider there indexes live `message:persisted` traffic
-only. Catch that error once and skip the backfill rather than retrying it chat after chat.
+only. A sandboxed plugin receives that rejection as a plain `Error` (its class and name do not cross the
+worker boundary) whose message starts with `Operation not supported by the active engine`. Match on that
+prefix on the first chat and skip the backfill rather than retrying it chat after chat.
 
 There is no capability that reads the `messages` table. Reading the database directly bypasses the
 capability model and is unsupported; see [30 - Plugin Sandboxing](./30-plugin-sandboxing.md) for what a
@@ -147,9 +149,9 @@ Keep a `waMessageId` lookup too, and when a later `message:persisted` arrives fo
 backfilled, upsert onto that document instead of adding a second one.
 
 Start the backfill from `onEnable` without awaiting it: a sandboxed lifecycle call is cut off after 30 s,
-and walking every chat's history takes longer on a real deployment. Record a marker in `ctx.storage` when
-it finishes so a restart does not repeat it. The built-in DB-FTS provider is unaffected (its index is
-DB-synced via triggers on every insert, including backfill).
+and walking every chat's history takes longer on a real deployment. Record a marker in `ctx.storage` (which
+needs the `storage:use` permission) when it finishes so a restart does not repeat it. The built-in DB-FTS
+provider is unaffected (its index is DB-synced via triggers on every insert, including backfill).
 
 ## 27.4 Host-side guarantees (the plugin author doesn't handle these)
 
@@ -163,10 +165,13 @@ The host enforces these before/after the RPC, so the plugin doesn't have to:
   key never sees an out-of-scope hit even if the plugin leaks one.
 - **Timeout.** The plugin's `search()` handler must answer within **10 seconds** (`SANDBOX_SEARCH_TIMEOUT_MS`).
   A slow/wedged handler resolves `ok:false` → the caller sees `503 Service Unavailable`. Fail fast.
-- **Health.** The host reuses the plugin's general `healthCheck()` (the `health` lifecycle method) for
-  the `/search` health check. Implement `healthCheck()` to report your backend's reachability.
+- **Health.** The search provider's health reuses the plugin's general `healthCheck()` (the `health`
+  lifecycle method), but search-provider health is not yet exposed on any route. `healthCheck()` still
+  feeds the plugin health check (`GET /api/plugins/:id/health`); implement it to report your backend's
+  reachability.
 - **Selection.** When `SEARCH_PROVIDER=auto` (the default), the plugin supersedes the built-in
-  `builtin-fts` on enable. Set `SEARCH_PROVIDER=builtin-fts` to keep the built-in active.
+  `builtin-fts` on enable. Set `SEARCH_PROVIDER=builtin-fts` to keep the built-in active. Selection is
+  not health-gated: the plugin stays active while its `healthCheck()` reports unhealthy.
 
 ## 27.5 A minimal full example
 
@@ -184,7 +189,8 @@ plugins/my-search/
   "name": "My Search Backend",
   "version": "1.0.0",
   "type": "extension",
-  "main": "index.js"
+  "main": "index.js",
+  "permissions": ["search:provide"]
 }
 ```
 
@@ -232,10 +238,15 @@ module.exports = class MySearchPlugin {
     /* run your backend's query, honoring query.q + filters + limit/offset */ return { rows: [], total: 0 };
   }
   _highlight(body, term) {
-    return body.replace(new RegExp(term, 'gi'), '<mark>$&</mark>');
+    // Escape the query so `c++` or `(` matches literally instead of throwing a SyntaxError.
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return body.replace(new RegExp(escaped, 'gi'), '<mark>$&</mark>');
+  }
+  async _pingBackend() {
+    /* ping your backend */ return true;
   }
 
-  // Optional: report backend health to the /search health check.
+  // Optional: report backend health to the plugin health check.
   async healthCheck() {
     const ok = await this._pingBackend();
     return { healthy: ok, message: ok ? undefined : 'backend unreachable' };

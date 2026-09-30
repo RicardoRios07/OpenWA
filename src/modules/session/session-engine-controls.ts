@@ -533,8 +533,21 @@ export class SessionEngineControls {
       // Await THIS engine's in-flight INITIALIZING write before teardown / the final DISCONNECTED
       // write so a delayed pre-initialize status update can never settle after the retirement.
       await this.fences.awaitInitialStatus(id, engine);
-      await this.fences.teardownEngineSafely(id, engine, e => e.forceDestroy(), 'force-destroy');
+      const tornDown = await this.fences.teardownEngineSafely(id, engine, e => e.forceDestroy(), 'force-destroy');
       this.engines.deleteIfLive(id, engine);
+      if (!tornDown) {
+        // As in stop(): local state is settled, but a kill that may have left the process alive is
+        // reported as incomplete, not claimed clean (the controller audits only after a resolve).
+        await this.host.updateStatus(id, SessionStatus.DISCONNECTED);
+        throw new BadGatewayException({
+          statusCode: HttpStatus.BAD_GATEWAY,
+          message:
+            'Session was stopped locally, but the engine force-kill did not complete: the engine ' +
+            'process may still be running. Restart the node to reap a leaked process.',
+          error: 'Bad Gateway',
+          code: 'SESSION_FORCE_KILL_INCOMPLETE',
+        });
+      }
 
       this.logger.warn(`Session force-killed: ${session.name}`, {
         sessionId: id,

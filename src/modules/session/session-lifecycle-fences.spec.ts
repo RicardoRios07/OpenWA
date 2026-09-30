@@ -152,6 +152,23 @@ describe('SessionLifecycleFences', () => {
       await waiting;
       expect(settled).toBe(true);
     });
+
+    it('proceeds when the write rejects, without leaving its deadline timer armed', async () => {
+      // A rejected write has settled, which is all the fence waits for; start() reports the failure.
+      jest.useFakeTimers();
+      try {
+        const { fences, pendingInitialStatuses } = makeFences();
+        const engineA = engine();
+        const failed = Promise.reject(new Error('db down'));
+        failed.catch(() => undefined);
+        pendingInitialStatuses.set('s1', { engine: engineA, promise: failed });
+
+        await expect(fences.awaitInitialStatus('s1', engineA)).resolves.toBeUndefined();
+        expect(jest.getTimerCount()).toBe(0);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
   });
 
   describe('evictAndForceDestroy', () => {

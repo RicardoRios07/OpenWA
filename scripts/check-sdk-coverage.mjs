@@ -4,8 +4,8 @@
  *
  * `check-sdk-routes` asks: does every route an SDK builds exist in the contract? That catches a
  * renamed route. It cannot catch a route the gateway publishes that no client ever got, because
- * nothing is there to scan. Ten routes reached `main` that way — five found by an audit, five more
- * found by writing this file, all of them added in the release that announced them.
+ * nothing is there to scan. Ten routes reached `main` that way, all of them added in the release
+ * that announced them.
  *
  * So this asks the other question: does every route the contract publishes, minus the resources
  * `sdk/README.md` declares unexposed, have a method in EVERY SDK?
@@ -15,8 +15,11 @@
  * client, not just the route.
  *
  * SCOPE, stated so the guarantee is not read wider than it is:
- *   - Asserts a route is REACHABLE from each client with the verbs the contract declares on it,
- *     not that its body or response match.
+ *   - Asserts a route is REACHABLE from each client, that each verb of a multi-verb route is built,
+ *     and that no verb/path pair the verb scan harvests uses a verb the contract does not declare;
+ *     not that its body or response match. A call the scan cannot pair with its path (the messages
+ *     send-<type> helpers, binary downloads, Go's service helpers and `path :=` variables) is not
+ *     verb-checked, so a wrong verb on a single-verb route built that way passes.
  *   - The exclusion list is PARSED from sdk/README.md, so the gate and the promise cannot drift.
  *
  * The harvester is deliberately GENEROUS: it over-approximates what each client builds. That is the
@@ -26,8 +29,8 @@
  *
  * Run locally: `npm run check:sdk-coverage`.
  */
-import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // fileURLToPath, not URL.pathname: the latter stays percent-encoded, so a checkout under a path
@@ -251,7 +254,9 @@ if (!errors.length) {
 // question in both directions. For every contract path published with MORE THAN ONE verb, each
 // client must build that path with every verb the contract declares on it. And every verb a client
 // builds on a contract path must be one the contract declares there, which is what covers the
-// single-verb paths: the path layer only proves the path is reached, never with which verb.
+// single-verb paths: the path layer only proves the path is reached, never with which verb. That
+// second check sees only the pairs harvested below; a call the scan cannot pair with its path (see
+// the SCOPE note at the top) is not checked.
 const VERBS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
 
 /** Join a concatenated path expression: literals verbatim, code between them becomes a `*`. */
@@ -351,8 +356,9 @@ const verbPairsOf = (sdk) => {
   return pairs;
 };
 
-// A spec imports the helpers above; only a direct run reports and exits.
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// A spec imports the helpers above; only a direct run reports and exits. argv[1] is realpathed because
+// Node realpaths the main module's URL: through a symlinked path the two never matched and nothing ran.
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const spec = JSON.parse(readFileSync(join(root, 'openapi.json'), 'utf8')).paths;
   // Same scope as the path layer: resources the README declares unexposed are not the SDKs' to build.
   const specByPath = new Map(Object.entries(spec).map(([k, v]) => [normalize(k), v]));

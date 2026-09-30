@@ -11,7 +11,8 @@
  * This middleware closes the gap. It tracks the aggregate body bytes currently in flight across
  * ALL connections — the declared Content-Length where present, one budget slot otherwise — and
  * refuses NEW requests with 503 + Retry-After once the budget is exhausted, without reading a
- * single byte of the rejected body.
+ * single byte of the rejected body. A declared body too large to fit even on an idle server gets
+ * 413 instead, since retrying it cannot help.
  *
  * The bound is on WIRE bytes, and it holds as heap only while a body is stored as it arrives.
  * A compressed body would break that — admitted at its compressed length, then inflated by the
@@ -121,7 +122,8 @@ export interface InflightBodyBudgetOptions {
   /**
    * Per-client share of the aggregate budget as a fraction in (0, 1]. Default 0.5: no single
    * client can pin more than half the budget, so two independent heavy uploaders still coexist;
-   * a legitimate bulk uploader above the share gets 503 + Retry-After, not a hang.
+   * a legitimate bulk uploader above the share gets 503 + Retry-After, not a hang (a single declared
+   * body larger than the share gets 413).
    */
   perClientShare?: number;
   /**
@@ -188,9 +190,9 @@ export function createInflightBodyBudget(budgetBytes: number, options?: Inflight
   // probes) never touch the map, so a full map cannot refuse them.
   const clientInFlight = new Map<string, number>();
   const MAX_TRACKED_CLIENTS = 10_000;
-  // Opening reservation for a body with no declared length (chunked). It is only a placeholder:
-  // the poller below reconciles it against the bytes that actually arrive, so a small chunked
-  // request ends up costing what it really weighs. Reserving a whole per-request cap up front
+  // Opening reservation for a body with no declared length (chunked). It is only a floor: the
+  // poller below raises it to the bytes that actually arrive, so a small chunked request costs this
+  // placeholder rather than a whole per-request slot. Reserving a whole per-request cap up front
   // instead would make the budget a concurrency limit of DEFAULT_BUDGET_MULTIPLIER for chunked
   // senders — four 6-byte uploads would refuse every further body-carrying request.
   const undeclaredReservation = Math.max(1, Math.min(UNDECLARED_OPENING_RESERVATION_BYTES, budgetBytes));
@@ -223,6 +225,19 @@ export function createInflightBodyBudget(budgetBytes: number, options?: Inflight
       statusCode: 415,
       message: 'Compressed request bodies are not supported',
       error: 'Unsupported Media Type',
+    });
+  };
+
+  /** Same disposal again, for a body that could not be admitted even with nothing else in flight. */
+  const rejectTooLarge = (req: Request, res: Response): void => {
+    if (res.headersSent || res.writableEnded) {
+      req.destroy();
+      return;
+    }
+    res.status(413).set('Connection', 'close').json({
+      statusCode: 413,
+      message: 'Request body exceeds what this server can accept',
+      error: 'Payload Too Large',
     });
   };
 
@@ -282,6 +297,13 @@ export function createInflightBodyBudget(budgetBytes: number, options?: Inflight
       keyId === undefined && clientInFlight.size >= MAX_TRACKED_CLIENTS && !clientInFlight.has(clientKey);
     // The aggregate check uses the full declared size; the tier and share checks the charged size.
     const charge = Math.min(reserved, ceiling);
+    // A declared body that would be refused on an idle server can never be admitted, so a retryable
+    // 503 would only invite the client (and the SDKs, which retry a 503) to send it again. A chunked
+    // body is refused on its placeholder, not its size, so it keeps the 503.
+    if (declared !== undefined && (declared > budgetBytes || charge > shareCap || (anonymous && charge > anonPool))) {
+      rejectTooLarge(req, res);
+      return;
+    }
     if (
       inFlightBytes + reserved > budgetBytes ||
       clientBusy + charge > shareCap ||
@@ -336,16 +358,17 @@ export function createInflightBodyBudget(budgetBytes: number, options?: Inflight
     let lastProgress = admittedAt;
 
     // A declared body keeps its declared size until it is released. A chunked body is re-priced at
-    // the bytes that have arrived, never below its opening placeholder until it is complete: budget
-    // handed back mid-stream would be taken back, unchecked, by a body that then completes between
-    // polls. Growth that crosses the aggregate, the client share or the anonymous pool aborts the
-    // request mid-stream, the same bound a declared length gets at admission. A complete body is
-    // re-priced at its real size but never aborted: it is already buffered. reserved is updated
-    // BEFORE release() so the exactly-once decrement subtracts the reconciled size.
+    // the bytes that have arrived, never below its opening placeholder: budget handed back mid-stream
+    // would be taken back, unchecked, by a body that then completes between polls. The floor holds
+    // after completion too, because bytes that arrived in the same read as the headers were already
+    // counted in startBytes, so a small body sent with its headers measures as 0 while the handler
+    // still holds it. Growth that crosses the aggregate, the client share or the anonymous pool
+    // aborts the request mid-stream, the same bound a declared length gets at admission. A complete
+    // body is never aborted: it is already buffered. reserved is updated BEFORE release() so the
+    // exactly-once decrement subtracts the reconciled size.
     const reconcile = (complete: boolean): void => {
       if (released || declared !== undefined) return;
-      const floor = complete ? 0 : undeclaredReservation;
-      const actual = Math.min(Math.max(floor, socket.bytesRead - startBytes), ceiling);
+      const actual = Math.min(Math.max(undeclaredReservation, socket.bytesRead - startBytes), ceiling);
       const delta = actual - reserved;
       if (delta === 0) return;
       inFlightBytes += delta;

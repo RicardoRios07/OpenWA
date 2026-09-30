@@ -426,14 +426,15 @@ export class BaileysSessionStore {
 
   /**
    * Refresh the chat preview when (and only when) the edited message is still the latest message in
-   * that chat. Editing an older message must not replace the preview or reorder the conversation.
+   * that chat. Editing an older message must not replace the preview or reorder the conversation. The
+   * preview may sit on any twin of the chat, the one the listing reads included, so each is checked.
    */
   recordMessageEdit(chatId: string, messageId: string, text: string): void {
     if (!messageId) return;
-    const key = this.chatKey(chatId);
-    const existing = this.lastMessages.get(key);
-    if (!existing || existing.key.id !== messageId) return;
-    this.lastMessages.set(key, { ...existing, text });
+    for (const key of new Set([this.chatKey(chatId), ...this.chatTwins(chatId)])) {
+      const existing = this.lastMessages.get(key);
+      if (existing?.key.id === messageId) this.lastMessages.set(key, { ...existing, text });
+    }
   }
 
   /**

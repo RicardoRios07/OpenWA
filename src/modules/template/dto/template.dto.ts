@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsString, IsNotEmpty, IsOptional, MaxLength, ValidateIf } from 'class-validator';
+import { MaxCodePoints } from '../../../common/validation/max-code-points';
 
 const NAME_MAX_LENGTH = 100;
 const BODY_MAX_LENGTH = 4096;
@@ -13,7 +14,7 @@ export class CreateTemplateDto {
   })
   @IsString()
   @IsNotEmpty()
-  @MaxLength(NAME_MAX_LENGTH)
+  @MaxCodePoints(NAME_MAX_LENGTH)
   name!: string;
 
   @ApiProperty({
@@ -53,7 +54,7 @@ export class UpdateTemplateDto {
   @ValidateIf((o: UpdateTemplateDto) => o.name !== undefined)
   @IsString()
   @IsNotEmpty()
-  @MaxLength(NAME_MAX_LENGTH)
+  @MaxCodePoints(NAME_MAX_LENGTH)
   name?: string;
 
   @ApiPropertyOptional({ description: 'Template body with {{variable}} placeholders', maxLength: BODY_MAX_LENGTH })

@@ -565,10 +565,12 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
       await this.findOne(id);
       throw new ConflictException(`Session ${id} is running on another node`);
     }
+    const stopRequestsBefore = this.stopRequests.get(id);
     let session: Session;
     try {
-      session = await this.startWithTransientRetry(id, explicit);
+      session = await this.startWithTransientRetry(id, explicit, stopRequestsBefore);
     } catch (error) {
+      await this.keepDownIfStoppedDuringStart(id, explicit, stopRequestsBefore);
       // A failed or refused start must not leave the claim pinned here — the heartbeat would renew
       // it and the session could never be started anywhere else. Released only when nothing is
       // actually alive locally: an "already starting/started" refusal means this node genuinely
@@ -576,6 +578,7 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
       await this.releaseUnlessEngineActive(id);
       throw error;
     }
+    await this.keepDownIfStoppedDuringStart(id, explicit, stopRequestsBefore);
     // A start retired by a concurrent stop() resolves normally but leaves no engine, and that stop
     // skipped its release while this start still held the session. Hand the claim back here, or the
     // row keeps naming this node until the lease lapses and a peer adopts the stopped session.
@@ -595,8 +598,11 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
    * unbounded loop here would hold the concurrency slot hostage. HTTP-shaped refusals (409
    * not-ready, 4xx) are NOT transient - they propagate immediately.
    */
-  private async startWithTransientRetry(id: string, explicit: boolean): Promise<Session> {
-    const stopRequestsBefore = this.stopRequests.get(id);
+  private async startWithTransientRetry(
+    id: string,
+    explicit: boolean,
+    stopRequestsBefore: number | undefined,
+  ): Promise<Session> {
     try {
       return await this.engineLifecycle.start(id, { explicit });
     } catch (error) {
@@ -687,6 +693,30 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
   /** Persist the operator's stop so boot auto-start and the takeover sweep leave the session down. */
   private async keepDown(id: string): Promise<void> {
     await this.sessionRepository.update(id, { desiredState: 'stopped' });
+  }
+
+  /**
+   * Re-record a stop an explicit start may have erased. The start clears the stop record with a
+   * write conditional on the row still reading 'stopped', and a stop's own write leaves that value
+   * unchanged, so a stop landing just before the clear was wiped from the row while its in-memory
+   * mark retired the start. The session was down, but the next boot would relaunch it. Any stop
+   * counted while the start ran and leaving no engine behind is the operator's last word. A failed
+   * write is logged rather than thrown: the start's own outcome still stands.
+   */
+  private async keepDownIfStoppedDuringStart(
+    id: string,
+    explicit: boolean,
+    stopRequestsBefore: number | undefined,
+  ): Promise<void> {
+    const stoppedMeanwhile = this.stopRequests.get(id) !== stopRequestsBefore;
+    if (!explicit || !stoppedMeanwhile || this.engineLifecycle.isEngineActive(id)) return;
+    await this.keepDown(id).catch((error: unknown) =>
+      this.logger.error(
+        'Failed to record a stop that landed during a start',
+        error instanceof Error ? error.message : String(error),
+        { sessionId: id, action: 'start_keep_down_failed' },
+      ),
+    );
   }
 
   private markStopping(id: string): void {

@@ -90,6 +90,7 @@
     "noMessageYet": "Noch keine Nachrichten",
     "unreadBadge": "{{count}} ungelesene Nachricht",
     "unreadBadge_other": "{{count}} ungelesene Nachrichten",
+    "markedUnread": "Als ungelesen markiert",
     "loadingMessages": "Nachrichten werden geladen...",
     "loadingOlderMessages": "Ältere Nachrichten werden geladen...",
     "loadOlderMessagesError": "Ältere Nachrichten konnten nicht geladen werden. Zum erneuten Versuch nach oben scrollen.",
@@ -452,6 +453,7 @@
     "filters": {
       "title": "Filter (optional)",
       "hint": "Wird nur ausgelöst, wenn alle Bedingungen erfüllt sind. Gilt für Nachrichtenereignisse.",
+      "incomplete": "Gib jeder Filterbedingung einen Wert und verwende höchstens 20 Bedingungen, 100 Werte pro Bedingung und 1000 Zeichen Text.",
       "badge": "{{count}} Filter",
       "badge_other": "{{count}} Filter",
       "addCondition": "Bedingung hinzufügen",
@@ -599,6 +601,7 @@
     },
     "empty": {
       "title": "Keine Vorlagen gespeichert",
+      "noMatch": "Keine Vorlagen entsprechen deiner Suche.",
       "description": "Erstelle eine wiederverwendbare Vorlage, um häufige Antworten und Benachrichtigungen schneller zu versenden.",
       "noSessionsTitle": "Keine Sitzungen verfügbar",
       "noSessionsDesc": "Erstelle eine WhatsApp-Sitzung, bevor du Vorlagen hinzufügst.",
@@ -978,7 +981,7 @@
       "checking": "Serverstatus wird geprüft...",
       "dontClose": "Bitte schließe dieses Fenster nicht",
       "successMsg": "Der Server ist wieder online! Die Seite wird automatisch neu geladen.",
-      "errorMsg": "Der Server hat nach 30 Sekunden nicht geantwortet. Prüfe die Docker-Protokolle und starte ihn manuell neu.",
+      "errorMsg": "Der Server hat nicht geantwortet. Prüfe die Docker-Protokolle und starte ihn manuell neu.",
       "outcomeUnknown": "Der Proxy hat einen Fehler zurückgegeben, bevor der Server geantwortet hat. Ob der Neustart läuft, ist daher unklar; lade die Seite in einer Minute neu, um es zu prüfen.",
       "reload": "Seite neu laden"
     },
@@ -1021,7 +1024,7 @@
     "config": {
       "title": "{{name}} konfigurieren",
       "noOptions": "Für dieses Plugin sind keine Konfigurationsoptionen verfügbar",
-      "uiHandshakeError": "Die Benutzeroberfläche zur Plugin-Konfiguration konnte nicht initialisiert werden. Verwende, sofern verfügbar, das Schemaformular unten.",
+      "uiHandshakeError": "Die Benutzeroberfläche zur Plugin-Konfiguration konnte nicht initialisiert werden.",
       "save": "Konfiguration speichern",
       "addItem": "Hinzufügen",
       "tabConfig": "Konfiguration",
@@ -1157,7 +1160,7 @@
   },
   "search": {
     "placeholder": "Nachrichten durchsuchen…",
-    "results": "{{count}} Ergebnisse",
+    "loadMore": "Mehr anzeigen ({{shown}} von {{total}})",
     "empty": "Keine Nachrichten gefunden.",
     "error": "Suche fehlgeschlagen. Versuche es erneut.",
     "unavailable": "Die Suche ist nicht konfiguriert.",

@@ -65,7 +65,11 @@ export interface SessionResponse {
   lastActive?: string | null;
   createdAt: string;
   updatedAt: string;
-  /** Only present when `status === 'failed'` (terminal failure) or `status === 'action_required'` (operator must intervene). */
+  /**
+   * Human-readable reason while `status` is `'failed'` or `'action_required'`, or `'initializing'` during
+   * a prolonged automatic reconnect (fifth attempt onward, or while a failed relaunch waits to retry);
+   * `null` otherwise.
+   */
   lastError?: string | null;
   /**
    * A limit WhatsApp itself has placed on the account, or `null` when there is none. Distinct from
@@ -528,10 +532,6 @@ export interface MessageRecord {
 }
 
 /**
- * A message read live from WhatsApp by `messages.history()`. This is the engine
- * payload (richer and differently shaped than the persisted {@link MessageRecord}).
- */
-/**
  * The engine-normalized message kinds — persisted rows, `message.received`/`message.sent`
  * payloads and the websocket all use these values (raw engine tokens are normalized at the
  * adapter boundary).
@@ -554,6 +554,10 @@ export type MessageType =
   | 'masked'
   | 'unknown';
 
+/**
+ * A message read live from WhatsApp by `messages.history()`. This is the engine
+ * payload (richer and differently shaped than the persisted {@link MessageRecord}).
+ */
 export interface ChatHistoryMessage {
   id: string;
   from: Jid;
@@ -987,7 +991,7 @@ export interface WebhookTestResult {
   error?: string;
 }
 
-/** A webhook delivery abandoned after every retry, as listed by the delivery-failure log. */
+/** A webhook delivery the gateway gave up on or could not dispatch, as listed by the delivery-failure log. */
 export interface WebhookDeliveryFailure {
   id: string;
   webhookId: string;
@@ -997,12 +1001,12 @@ export interface WebhookDeliveryFailure {
   /** The idempotency key the receiver would have deduped on. */
   idempotencyKey?: string | null;
   deliveryId?: string | null;
-  /** Total attempts made before giving up. */
+  /** Attempts made before giving up; 0 when the delivery was not given up after retries (see `deliveryFailures`). */
   attempts: number;
   /** Last HTTP status when the failure was a non-2xx response; null for a network or timeout error. */
   lastStatusCode?: number | null;
   lastError: string;
-  /** ISO timestamp of when the delivery was finally abandoned. */
+  /** ISO timestamp of when the row was recorded. */
   createdAt: string;
 }
 
@@ -1191,14 +1195,18 @@ export interface HealthResponse {
   version?: string;
 }
 
+export interface HealthDependencyStatus {
+  status: 'up' | 'down';
+}
+
 export interface HealthReadyDetails {
-  mainDatabase?: string;
-  dataDatabase?: string;
+  mainDatabase?: HealthDependencyStatus;
+  dataDatabase?: HealthDependencyStatus;
 }
 
 export interface HealthReadyResponse {
   status: string;
-  details?: HealthReadyDetails;
+  details: HealthReadyDetails;
 }
 
 // ── Auth ──────────────────────────────────────────────────────────

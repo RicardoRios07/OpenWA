@@ -75,7 +75,10 @@ export class MessagesResource {
     return this.client.sendMedia(sessionId, 'send-audio', body);
   }
 
-  /** Send a document (url or base64; `filename` required). */
+  /**
+   * Send a document (url or base64). `filename` is optional and is the name the recipient sees;
+   * without it the gateway uses `"file"`, or the URL basename for a URL send on whatsapp-web.js.
+   */
   sendDocument(sessionId: string, body: SendMediaRequest): Promise<MessageResponse> {
     return this.client.sendMedia(sessionId, 'send-document', body);
   }

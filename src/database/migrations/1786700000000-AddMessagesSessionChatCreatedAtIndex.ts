@@ -19,8 +19,9 @@ export class AddMessagesSessionChatCreatedAtIndex1786700000000 implements Migrat
   name = 'AddMessagesSessionChatCreatedAtIndex1786700000000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
-    // The data pool boots with a runtime statement_timeout (default 30s), which a build over a large
-    // messages table can outlast. Lift it for this transaction only, like AddMessageMediaPathIndex.
+    // Boot and CLI migrations run on a pool without the runtime statement_timeout (pg-boot-migrations.ts);
+    // this guards against a role- or database-level default cancelling a long build. Lifted for this
+    // transaction only, like AddMessageMediaPathIndex.
     if (queryRunner.dataSource.options.type === 'postgres') {
       await queryRunner.query('SET LOCAL statement_timeout = 0');
     }

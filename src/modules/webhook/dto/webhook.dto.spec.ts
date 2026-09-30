@@ -188,3 +188,32 @@ describe('webhook DTO filter validation', () => {
     expect(errs.some(e => e.property === 'filters')).toBe(true);
   });
 });
+
+describe('webhook DTO url validation', () => {
+  // The column is varchar(2048); PostgreSQL refuses a longer value on insert with a 500.
+  const longUrl = (length: number) => 'https://x.example/' + 'a'.repeat(length - 'https://x.example/'.length);
+
+  const dtos: [string, new () => object][] = [
+    ['CreateWebhookDto', CreateWebhookDto],
+    ['UpdateWebhookDto', UpdateWebhookDto],
+  ];
+
+  it.each(dtos)('%s accepts http(s) URLs, dotless hosts included', async (_name, cls) => {
+    for (const url of ['https://x.example/hook', 'http://localhost:3000/hook', longUrl(2048)]) {
+      expect(await errorsFor(cls, { url })).toHaveLength(0);
+    }
+  });
+
+  it.each(dtos)('%s rejects scheme-less, non-http(s) and over-length URLs', async (_name, cls) => {
+    for (const url of [
+      'example.com/hook',
+      'localhost:3000/hook',
+      'user:pass@host/x',
+      'ftp://x.example/y',
+      longUrl(2049),
+    ]) {
+      const errs = await errorsFor(cls, { url });
+      expect(errs.some(e => e.property === 'url')).toBe(true);
+    }
+  });
+});

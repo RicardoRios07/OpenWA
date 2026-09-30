@@ -19,6 +19,7 @@ import { availableEventNames } from '../utils/webhookEvents';
 import { filterValueLabel } from '../utils/enumLabels';
 import { buildHeaderMap, generateSecret, secretError, type HeaderRow } from '../utils/webhookAuth';
 import { copyToClipboard } from '../utils/clipboard';
+import { filtersIncomplete } from '../utils/webhookFilters';
 import { useRole } from '../hooks/useRole';
 import { useToast } from '../hooks/useToast';
 import {
@@ -36,6 +37,11 @@ import './Webhooks.css';
 
 // Filters only apply to message.* events (the wildcard subscribes to them too).
 const supportsFilters = (events: string[]) => events.some(e => e === '*' || e.startsWith('message.'));
+
+// The gateway refuses filters past its limits and an id or enum condition with no values, and a new
+// condition starts as "sender is" with none, so an untouched one would come back as a raw error.
+const filtersInvalid = (events: string[], filters: WebhookFilters | null | undefined) =>
+  supportsFilters(events) && filtersIncomplete(filters);
 
 type TFn = ReturnType<typeof useTranslation>['t'];
 
@@ -211,7 +217,9 @@ export function Webhooks() {
   }>({ url: '', events: ['message.received'], sessionId: '', filters: null });
   const [newAuth, setNewAuth] = useState(emptyNewAuth);
   const [editAuth, setEditAuth] = useState(emptyEditAuth);
-  const [testingId, setTestingId] = useState<string | null>(null);
+  // Webhooks whose test delivery is in flight. One id per webhook, so testing another neither ends this
+  // one's spinner nor lets a second click send a duplicate delivery.
+  const [testingIds, setTestingIds] = useState<ReadonlySet<string>>(new Set());
   const toast = useToast();
 
   // Single source for the contact/group autocomplete in whichever modal is open.
@@ -223,8 +231,8 @@ export function Webhooks() {
     return t(`webhooks.eventDescriptions.${name}`, { defaultValue: name });
   };
 
-  // The gateway requires a URL and at least one event, so the buttons stay disabled until both are set
-  // instead of surfacing the raw validation message in a toast.
+  // The gateway requires a URL, at least one event and complete filters, so the buttons stay disabled
+  // until all are set instead of surfacing the raw validation message in a toast.
   const newHeaders = buildHeaderMap(newAuth.headers);
   const newAuthError = secretError(newAuth.secret) ?? (newHeaders.ok ? null : newHeaders.error);
   const editHeaders = buildHeaderMap(editAuth.headers);
@@ -236,12 +244,14 @@ export function Webhooks() {
     !!newWebhook.url.trim() &&
     !!newWebhook.sessionId &&
     newWebhook.events.length > 0 &&
+    !filtersInvalid(newWebhook.events, newWebhook.filters) &&
     !newAuthError;
   const canSave =
     !!editWebhook &&
     !updateMutation.isPending &&
     !!editWebhook.url.trim() &&
     editWebhook.events.length > 0 &&
+    !filtersInvalid(editWebhook.events, editWebhook.filters) &&
     !editAuthError;
 
   const handleCreate = async () => {
@@ -277,7 +287,8 @@ export function Webhooks() {
   };
 
   const handleDelete = async () => {
-    if (!deleteTarget) return;
+    // A second click would send a second DELETE, which finds the row gone and reports a failure.
+    if (!deleteTarget || deleteMutation.isPending) return;
     try {
       await deleteMutation.mutateAsync({ sessionId: deleteTarget.sessionId, id: deleteTarget.id });
       setShowDeleteModal(false);
@@ -293,7 +304,7 @@ export function Webhooks() {
   };
 
   const handleTest = async (sessionId: string, id: string) => {
-    setTestingId(id);
+    setTestingIds(current => new Set(current).add(id));
     try {
       const result = await webhookApi.test(sessionId, id);
       if (result.success) {
@@ -308,7 +319,11 @@ export function Webhooks() {
         }),
       );
     } finally {
-      setTestingId(null);
+      setTestingIds(current => {
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
     }
   };
 
@@ -468,6 +483,14 @@ export function Webhooks() {
               chats={chats}
             />
           )}
+          {filtersInvalid(newWebhook.events, newWebhook.filters) && (
+            <span className="hint error" role="status">
+              {t(
+                'webhooks.filters.incomplete',
+                'Give every filter condition a value, and use at most 20 conditions, 100 values per condition and 1000 characters of text.',
+              )}
+            </span>
+          )}
           <div className="filter-builder webhook-auth">
             <div className="filter-builder-head">
               <span className="filter-builder-title">{t('webhooks.auth.title')}</span>
@@ -543,6 +566,14 @@ export function Webhooks() {
               onChange={filters => setEditWebhook(prev => (prev ? { ...prev, filters } : prev))}
               chats={chats}
             />
+          )}
+          {filtersInvalid(editWebhook.events, editWebhook.filters) && (
+            <span className="hint error" role="status">
+              {t(
+                'webhooks.filters.incomplete',
+                'Give every filter condition a value, and use at most 20 conditions, 100 values per condition and 1000 characters of text.',
+              )}
+            </span>
           )}
           <div className="filter-builder webhook-auth">
             <div className="filter-builder-head">
@@ -620,7 +651,7 @@ export function Webhooks() {
               <button className="btn-secondary" onClick={() => setShowDeleteModal(false)}>
                 {t('common.cancel')}
               </button>
-              <button className="btn-danger" onClick={handleDelete}>
+              <button className="btn-danger" onClick={handleDelete} disabled={deleteMutation.isPending}>
                 {t('common.delete')}
               </button>
             </>
@@ -685,9 +716,9 @@ export function Webhooks() {
                           className="icon-btn"
                           title={t('webhooks.actions.test')}
                           onClick={() => handleTest(webhook.sessionId, webhook.id)}
-                          disabled={testingId === webhook.id}
+                          disabled={testingIds.has(webhook.id)}
                         >
-                          {testingId === webhook.id ? (
+                          {testingIds.has(webhook.id) ? (
                             <Loader2 size={16} className="animate-spin" />
                           ) : (
                             <Play size={16} />

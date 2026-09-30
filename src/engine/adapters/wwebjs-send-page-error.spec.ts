@@ -145,6 +145,21 @@ describe('the reason a captured page failure gives the caller', () => {
     expect(client.sendMessage).toHaveBeenCalledTimes(2);
   });
 
+  // The first attempt reports a dead page before any remap; the LID retry must too, or a page that
+  // dies during the retry leaves the session READY until the watchdog notices.
+  it('reports a page that dies during the LID retry', async () => {
+    const { messaging, client, host } = makeMessaging();
+    (host.getNumberId as jest.Mock).mockResolvedValueOnce(undefined).mockResolvedValueOnce('999@lid');
+    const dead = new Error('Protocol error (Runtime.callFunctionOn): Target closed');
+    client.sendMessage
+      .mockRejectedValueOnce(new Error('Evaluation failed: Error: No LID for user'))
+      .mockRejectedValueOnce(dead);
+
+    await expect(messaging.sendTextMessage('628111@c.us', 'hi')).rejects.toBe(dead);
+    const report = (host as unknown as { reportIfPageTransportError: jest.Mock }).reportIfPageTransportError;
+    expect(report).toHaveBeenCalledWith(dead, 'sendMessage');
+  });
+
   it('does not take over the recipient remap of a plain No LID failure', async () => {
     const { messaging, client, host } = makeMessaging();
     (host.getNumberId as jest.Mock).mockResolvedValue(undefined);

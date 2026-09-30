@@ -280,6 +280,17 @@ describe('computeSendPacingConfig', () => {
     expect(parsed).toEqual(computeSendPacingConfig({}).warmupSchedule);
   });
 
+  // A container env cannot carry the empty value: the blank-clearing at boot deletes it, and the
+  // default schedule applies instead. `0` and `off` survive that, so they are the portable off switch.
+  it.each(['', '0', 'off', ' OFF '])('disables the cold-reachout rule for %p', raw => {
+    expect(computeSendPacingConfig({ SEND_PACING_COLD_DAILY_CAP: raw }).coldSchedule).toEqual([]);
+  });
+
+  it.each(['0', 'off'])('keeps the warm-up schedule on its default for %p', raw => {
+    const parsed = computeSendPacingConfig({ SEND_PACING_WARMUP_SCHEDULE: raw }).warmupSchedule;
+    expect(parsed).toEqual(computeSendPacingConfig({}).warmupSchedule);
+  });
+
   it.each([
     ['SEND_PACING_BREAKER_THRESHOLD', 'breakerThreshold'],
     ['SEND_PACING_BREAKER_COOLDOWN_MS', 'breakerCooldownMs'],

@@ -63,7 +63,6 @@ const DEFAULT_WEBHOOK_MAX_PAYLOAD_BYTES = 1024 * 1024;
  */
 const DEFAULT_WEBHOOK_SHUTDOWN_DRAIN_MS = 5000;
 
-/** Per-event-occurrence context threaded through the dispatch pipeline stages (was closure state). */
 /**
  * The result of one delivery attempt. Reported, not thrown: every delivery failure below is already
  * handled in place, so a try/catch cannot tell a delivered event from a dead-lettered one. The one
@@ -75,6 +74,7 @@ const DEFAULT_WEBHOOK_SHUTDOWN_DRAIN_MS = 5000;
  */
 export type WebhookDeliveryOutcome = 'delivered' | 'enqueued' | 'cancelled' | 'failed';
 
+/** Per-event-occurrence context threaded through the dispatch pipeline stages (was closure state). */
 interface DispatchEventContext {
   sessionId: string;
   event: string;
@@ -87,6 +87,8 @@ interface DispatchEventContext {
 const isLimiterClosed = (error: unknown): boolean =>
   error instanceof Error && error.message === 'ConcurrencyLimiter closed';
 
+const isPlainObject = (value: unknown): boolean => typeof value === 'object' && value !== null && !Array.isArray(value);
+
 /**
  * The webhook delivery engine: given an event occurrence, fan it out to the session's matching
  * webhooks — bounded by the dispatch limiter — through the BullMQ queue when enabled (with a
@@ -94,8 +96,6 @@ const isLimiterClosed = (error: unknown): boolean =>
  * Records failed and unsent deliveries in webhook_delivery_failures. Webhook registration/CRUD
  * lives on WebhookService, which delegates dispatch here.
  */
-const isPlainObject = (value: unknown): boolean => typeof value === 'object' && value !== null && !Array.isArray(value);
-
 @Injectable()
 export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = createLogger('WebhookDelivery');

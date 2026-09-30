@@ -39,6 +39,24 @@ class FakeChannel implements PluginWorkerChannel {
 const lastLifecycle = (ch: FakeChannel) => ch.last() as Extract<HostToWorkerMessage, { kind: 'lifecycle' }>;
 
 describe('PluginWorkerHost', () => {
+  it('drops a malformed worker message instead of throwing out of the channel listener', async () => {
+    // Plugin code can post to parentPort directly; a throw here would be an uncaught exception in the host.
+    const ch = new FakeChannel();
+    const onLog = jest.fn(() => {
+      throw new TypeError('logger[level] is not a function');
+    });
+    const host = new PluginWorkerHost(ch, undefined, undefined, undefined, onLog);
+    const p = host.load('/p/index.js');
+
+    expect(() => ch.reply(null as unknown as WorkerToHostMessage)).not.toThrow();
+    expect(() => ch.reply({ kind: 'log', level: 'log', message: 'x' })).not.toThrow();
+    expect(onLog).toHaveBeenCalledTimes(1);
+
+    // The host keeps serving the worker afterwards.
+    ch.reply({ kind: 'ready' });
+    await expect(p).resolves.toBeUndefined();
+  });
+
   it('posts a load message and resolves load() when the worker reports ready', async () => {
     const ch = new FakeChannel();
     const host = new PluginWorkerHost(ch);

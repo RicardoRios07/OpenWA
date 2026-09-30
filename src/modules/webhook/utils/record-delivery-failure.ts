@@ -53,10 +53,11 @@ export async function clearDeliveryFailureRows(
 }
 
 /**
- * Append a durable record of a webhook delivery that exhausted all retries. Called from BOTH terminal
- * paths — the BullMQ processor's final attempt and the direct-fallback's last attempt. Wrapped in its
- * own try/catch: persisting the failure is best-effort bookkeeping and must never throw back into (and
- * re-poison) the delivery result or the fire-and-forget dispatch loop.
+ * Record a webhook delivery that exhausted its retries (the BullMQ processor's final attempt, the direct
+ * path's last attempt) or was not sent (attempts 0, from recordUndelivered: shed, refused at shutdown,
+ * oversize or a preflight failure). Wrapped in its own try/catch: persisting the failure is best-effort
+ * bookkeeping and must never throw back into (and re-poison) the delivery result or the fire-and-forget
+ * dispatch loop.
  */
 export async function recordWebhookDeliveryFailure(
   repo: Repository<WebhookDeliveryFailure>,

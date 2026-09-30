@@ -362,6 +362,19 @@ describe('ScopeBindingService.applyScopeBinding retires an instance without leak
     expect(setPluginSessions).toHaveBeenCalledWith('chatwoot', []);
   });
 
+  // Activating a wildcard overwrote activeSessions with ['*'], so the concrete scopes still-enabled
+  // siblings bind are gone from it; retiring the wildcard must put them back, not leave the plugin on [].
+  it('restores the scopes of enabled concrete siblings when the last wildcard is retired', async () => {
+    const { svc, setPluginSessions } = build(['*']);
+    await svc([row('a', true, 'sess-1'), row('b', false, null), row('c', false, 'sess-3')]).applyScopeBinding(
+      'chatwoot',
+      null,
+      {},
+      false,
+    );
+    expect(setPluginSessions).toHaveBeenCalledWith('chatwoot', ['sess-1']);
+  });
+
   // Activation is untouched: it must still write the instance's config, not an empty slice.
   it('leaves the activation path writing the instance config', async () => {
     const { svc, setPluginSessionConfig } = build([]);

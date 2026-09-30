@@ -12,6 +12,12 @@ pip install rmyndharis-openwa
 
 Requires Python 3.9+. The importable module is `openwa`.
 
+This README describes `main`. The 0.5.0 release lacks `sessions.get_proxy`,
+`sessions.update_proxy`, `messages.click_button`, `verify_webhook_signature`, the `WebhookDelivery`
+type, the `.code`, `.retry_after_seconds` and `.headers` error attributes, the `name` key of
+`ListSessionsQuery` and the refusal of an empty, `.` or `..` id; they ship with the next SDK
+release. See [the SDK overview](../README.md#coverage).
+
 ## Usage
 
 ```python
@@ -78,8 +84,11 @@ lifts when its window expires (seconds for the per-second tier, up to an hour fo
 tier by default), and `.retry_after_seconds` carries its `Retry-After` header. A 429 whose
 `.code` is `"SEND_PACING_LIMITED"` is not transient: do not retry it before
 `.retry_after_seconds`, which then comes from the body and can be hours. Every API error also
-exposes the response `.headers`. In a routed deployment only 503 proves the request was never
-carried out: a forward that fails after the request reached the owner node answers 502 or 504.
+exposes the response `.headers`. A 503 does not prove a write was never carried out: the engine
+answers it when WhatsApp did not confirm in time, and the change may still have been applied, so
+re-read the state before repeating it. In a routed deployment a forward that fails before reaching
+the owner node answers 503, one that fails after the request reached it answers 502 or 504, and a
+503 from the owner itself is relayed unchanged.
 
 ```python
 from openwa import OpenWANotFoundError
@@ -98,6 +107,34 @@ except OpenWANotFoundError as e:
   reverse proxy) is preserved.
 - Escape hatch for endpoints the SDK does not wrap:
   `client.request(method, path, query=…, body=…)`.
+
+## Receiving webhooks
+
+A webhook configured with a secret signs each delivery in its `X-OpenWA-Signature` header. Check it
+with `verify_webhook_signature` against the raw, unparsed request body (`bytes` or `str`), exactly
+as received, and parse the JSON only after the check passes: a re-serialized body can differ byte
+for byte and will not verify. The helper returns `False` (never raises) for a missing, malformed or
+non-matching signature. `WebhookDelivery` (in `openwa.types`) types the parsed body.
+
+```python
+import json
+
+from flask import Flask, request
+from openwa import verify_webhook_signature
+from openwa.types import WebhookDelivery
+
+app = Flask(__name__)
+
+
+@app.post("/openwa/webhook")
+def openwa_webhook():
+    raw_body = request.get_data()
+    if not verify_webhook_signature(raw_body, request.headers.get("X-OpenWA-Signature"), secret):
+        return "Invalid signature", 401
+    delivery: WebhookDelivery = json.loads(raw_body)
+    # Process delivery["event"] and delivery["data"] here.
+    return "OK", 200
+```
 
 ## Releasing
 

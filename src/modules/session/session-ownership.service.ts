@@ -41,8 +41,12 @@ export class SessionOwnershipService {
   private heartbeat?: ReturnType<typeof setInterval>;
   /** Sessions this process believes it owns, so the heartbeat knows what to renew. */
   private readonly owned = new Set<string>();
+  /** Bumped on every claim and release, so renew() can tell a claim it read from one replaced since. */
+  private readonly claimGen = new Map<string, number>();
   /** Notified when a renewal proves this process no longer holds sessions it thought it did. */
   private onLeaseLost?: (sessionIds: string[]) => Promise<void> | void;
+  /** Notified when this process takes a session over from a node whose lease lapsed. See onAdoption. */
+  private onAdopted?: (sessionId: string) => Promise<unknown>;
 
   /**
    * How many callers are currently telling renew() that an empty/blank result is NOT evidence of
@@ -125,6 +129,14 @@ export class SessionOwnershipService {
   async claim(sessionId: string): Promise<boolean> {
     const now = new Date();
     const leaseExpiresAt = new Date(now.getTime() + this.leaseTtlMs);
+    // Who held it, read only when an adoption handler is registered. The UPDATE below still decides
+    // the claim; this read only tells whether it took a lapsed lease over from another node.
+    const previous = this.onAdopted
+      ? await this.sessions.findOne({
+          where: { id: sessionId },
+          select: { id: true, nodeId: true, leaseExpiresAt: true },
+        })
+      : null;
     const result = await this.sessions
       .createQueryBuilder()
       .update(Session)
@@ -146,7 +158,16 @@ export class SessionOwnershipService {
     const claimed = (result.affected ?? 0) > 0;
     if (claimed) {
       this.owned.add(sessionId);
+      this.bumpClaimGen(sessionId);
       this.lastSeenLease.set(sessionId, leaseExpiresAt.getTime());
+      // A released row (nodeId NULL) is not an adoption: its holder may still be finishing its own
+      // batches, and failing them under it would leave two writers on one batch row.
+      const adopted =
+        previous?.nodeId != null &&
+        previous.nodeId !== this.nodeId &&
+        previous.leaseExpiresAt != null &&
+        previous.leaseExpiresAt < now;
+      if (adopted) this.followAdoption(sessionId);
     } else this.logger.warn('Session is held by another node', { sessionId, nodeId: this.nodeId });
     return claimed;
   }
@@ -163,13 +184,34 @@ export class SessionOwnershipService {
   async release(sessionId: string): Promise<void> {
     const now = new Date();
     this.owned.delete(sessionId);
-    await this.sessions
+    this.bumpClaimGen(sessionId);
+    const cleared = { nodeId: null, claimedAt: null, leaseExpiresAt: null, nodeUrl: null };
+    // Its own claim first, in one statement as before. Only when that matched nothing is a lapsed
+    // claim of another node cleared, and that is a takeover like a claim: the dead holder's
+    // unfinished work is failed too (see onAdoption).
+    const own = await this.sessions
       .createQueryBuilder()
       .update(Session)
-      .set({ nodeId: null, claimedAt: null, leaseExpiresAt: null, nodeUrl: null })
+      .set(cleared)
       .where('id = :id', { id: sessionId })
-      .andWhere('("nodeId" = :me OR "leaseExpiresAt" < :now)', { me: this.nodeId, now: leaseParam(now) })
+      .andWhere('"nodeId" = :me', { me: this.nodeId })
       .execute();
+    if ((own.affected ?? 0) > 0) return;
+    const lapsed = await this.sessions
+      .createQueryBuilder()
+      .update(Session)
+      .set(cleared)
+      .where('id = :id', { id: sessionId })
+      .andWhere('"nodeId" IS NOT NULL AND "nodeId" <> :me AND "leaseExpiresAt" < :now', {
+        me: this.nodeId,
+        now: leaseParam(now),
+      })
+      .execute();
+    if ((lapsed.affected ?? 0) > 0) this.followAdoption(sessionId);
+  }
+
+  private bumpClaimGen(sessionId: string): void {
+    this.claimGen.set(sessionId, (this.claimGen.get(sessionId) ?? 0) + 1);
   }
 
   /** Release everything this process holds, on the way down. */
@@ -214,6 +256,36 @@ export class SessionOwnershipService {
   }
 
   /**
+   * Register what to do when this process takes a session over from a node whose lease lapsed, by
+   * claiming it (an explicit start, boot auto-start, the takeover sweep) or by releasing that node's
+   * claim (a stop of such a session). Whatever that node left unfinished for the
+   * session can no longer finish there. A session its holder released is not taken over: that holder
+   * may still be finishing its own work.
+   */
+  onAdoption(handler: (sessionId: string) => Promise<unknown>): void {
+    this.onAdopted = handler;
+  }
+
+  /**
+   * Run the adoption handler off the caller's path. Awaiting it inside claim() would hold the start
+   * between its claim and the moment it counts as starting, and a stop landing in that window would
+   * release the claim and let the engine launch on a row nobody holds. A failure is logged; the claim
+   * or release stands either way.
+   */
+  private followAdoption(sessionId: string): void {
+    const handler = this.onAdopted;
+    if (!handler) return;
+    void Promise.resolve()
+      .then(() => handler(sessionId))
+      .catch((error: unknown) =>
+        this.logger.warn('Session adoption follow-up failed', {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+  }
+
+  /**
    * Tell renew() that "this node no longer holds the row" is currently uninformative, and get back
    * the release. Held by a replace-all data import across its whole transaction.
    *
@@ -253,6 +325,7 @@ export class SessionOwnershipService {
    */
   async renew(): Promise<void> {
     const held = [...this.owned];
+    const heldGen = new Map(held.map(id => [id, this.claimGen.get(id)]));
 
     // Only claims that still cover something alive on this process are pushed out. A claim whose
     // engine is gone (a failed start, an exhausted reconnect) must be allowed to lapse — renewing
@@ -301,7 +374,10 @@ export class SessionOwnershipService {
     // entry-only check would let it through. Renewing was harmless; concluding loss is not.
     if (this.lossDetectionSuspended > 0) return;
 
-    const lost = held.filter(id => !kept.has(id));
+    // Only a claim this tick actually read can be lost. One released during the queries (a stop) is
+    // gone on purpose, and one released and claimed again (a stop, then a start) may have been read
+    // in between: neither was taken by a peer.
+    const lost = held.filter(id => !kept.has(id) && this.owned.has(id) && this.claimGen.get(id) === heldGen.get(id));
     if (lost.length === 0) return;
     for (const id of lost) this.owned.delete(id);
     this.logger.warn(`Lost the claim on ${lost.length} session(s); another node now holds them`, {
@@ -385,12 +461,6 @@ export class SessionOwnershipService {
   }
 
   /**
-   * Session ids another node currently holds on a live lease.
-   *
-   * For operations that can only act on this process's own engines and would otherwise report
-   * success over work they never touched.
-   */
-  /**
    * Whether ONE session is held by another node on a live lease.
    *
    * The scoped counterpart of {@link heldByOtherNodes}, for the lifecycle verbs that act on a single
@@ -418,6 +488,12 @@ export class SessionOwnershipService {
     );
   }
 
+  /**
+   * Session ids another node currently holds on a live lease.
+   *
+   * For operations that can only act on this process's own engines and would otherwise report
+   * success over work they never touched.
+   */
   async heldByOtherNodes(now = new Date()): Promise<string[]> {
     const rows = await this.sessions
       .createQueryBuilder('session')

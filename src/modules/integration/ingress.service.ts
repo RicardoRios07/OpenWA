@@ -19,6 +19,11 @@ export interface IngressRequest {
   headers: Record<string, string>; // lower-cased keys
   query: Record<string, string>;
   rawBody: string;
+  /**
+   * A body arrived in a content type no parser captured (only JSON and form bodies are), so `rawBody`
+   * is empty rather than the bytes that were sent.
+   */
+  unparsedBody?: boolean;
 }
 
 export interface ResolvedInstance {
@@ -113,6 +118,11 @@ export class IngressService {
       }
       return { status: 403, body: 'challenge failed' };
     }
+
+    // Handled as the empty body, it would pass a scheme that signs only a header, and every such delivery
+    // would hash to one dedup key: the first stored without its body, the rest acked and dropped. It
+    // would also slip past the size cap below.
+    if (req.unparsedBody) return { status: 415, body: 'unsupported ingress content type' };
 
     // `n > undefined` is always false, so a manifest that omits maxBodyBytes — or carries a
     // non-numeric or non-positive value — left this check inert: the 413 the published contract

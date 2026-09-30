@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsString, IsUrl, MaxLength, Validate } from 'class-validator';
+import { IsOptional, IsString, IsUrl, Validate } from 'class-validator';
+import { MaxCodePoints } from '../../../common/validation/max-code-points';
 import { HasDecodableProxyCredentialsConstraint } from './has-decodable-proxy-credentials.validator';
 import type { Session } from '../entities/session.entity';
 
@@ -61,7 +62,7 @@ export class UpdateSessionProxyDto {
   })
   @IsOptional()
   @IsString()
-  @MaxLength(255)
+  @MaxCodePoints(255)
   @IsUrl(
     {
       protocols: ['http', 'https', 'socks4', 'socks5'],

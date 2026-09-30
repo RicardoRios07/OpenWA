@@ -83,13 +83,52 @@ describe('EngineFactory', () => {
     factory.create({ sessionId: 'sess-1', dbSessionId: 'db-1', proxyUrl: 'http://p', proxyType: 'http' });
 
     // Plain-object (not objectContaining) assertion: any browser key (headless/puppeteerArgs/
-    // executablePath/sessionDataPath) leaking into the per-call config would fail this exact match.
+    // executablePath) leaking into the per-call config would fail this exact match. The auth-dir
+    // bases are the deliberate exception, pinned below.
     expect(createEngine).toHaveBeenCalledWith({
       sessionId: 'sess-1',
       dbSessionId: 'db-1',
       proxyUrl: 'http://p',
       proxyType: 'http',
+      sessionDataPath: '/var/data/sessions',
+      authDir: './data/baileys',
     });
+  });
+
+  // The adapters used to read these bases from the plugin config, which a PUT /api/plugins/:id/config
+  // override can move, while this factory hardens and purges the dirs under the env-derived bases.
+  // Credentials then landed in a directory never made owner-only and never removed on delete.
+  it('hands the engine the same auth-dir bases it hardens and purges', () => {
+    const createEngine = jest.fn().mockReturnValue({});
+    const pluginLoader = {
+      getPlugin: jest.fn().mockReturnValue({
+        instance: { type: PluginType.ENGINE, createEngine },
+        config: { sessionDataPath: '/data/other', baileys: { authDir: '/data/other' } },
+      }),
+    } as unknown as PluginLoaderService;
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'openwa-factory-bases-'));
+    try {
+      const factory = new EngineFactory(
+        buildConfigService({
+          'engine.sessionDataPath': path.join(tmp, 'sessions'),
+          'engine.baileys.authDir': path.join(tmp, 'baileys'),
+        }),
+        pluginLoader,
+        buildMessageStore(),
+        buildLidStore(),
+        buildChatStateStore(),
+      );
+
+      factory.create({ sessionId: SESSION_ID, dbSessionId: SESSION_ID });
+
+      const passed = (createEngine.mock.calls[0] as [{ sessionDataPath: string; authDir: string }])[0];
+      expect(wwjsAuthDir(passed.sessionDataPath, SESSION_ID)).toBe(wwjsAuthDir(path.join(tmp, 'sessions'), SESSION_ID));
+      expect(baileysAuthDir(passed.authDir, SESSION_ID)).toBe(baileysAuthDir(path.join(tmp, 'baileys'), SESSION_ID));
+      expect(fs.existsSync(wwjsAuthDir(passed.sessionDataPath, SESSION_ID))).toBe(true);
+      expect(fs.existsSync(baileysAuthDir(passed.authDir, SESSION_ID))).toBe(true);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   it('registers the built-in engine with the opaque engine config blob (#219 guarantee moves to context.config)', async () => {

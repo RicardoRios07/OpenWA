@@ -112,6 +112,7 @@ export class PluginsController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Enable a plugin' })
   @ApiResponse({ status: 200, description: 'Plugin enabled successfully', type: PluginActionResponseDto })
+  @ApiResponse({ status: 404, description: 'Plugin not found' })
   async enable(@Param('id') id: string): Promise<{ success: boolean; message: string }> {
     return await this.pluginsService.enable(id);
   }
@@ -122,6 +123,7 @@ export class PluginsController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Disable a plugin' })
   @ApiResponse({ status: 200, description: 'Plugin disabled successfully', type: PluginActionResponseDto })
+  @ApiResponse({ status: 404, description: 'Plugin not found' })
   async disable(@Param('id') id: string): Promise<{ success: boolean; message: string }> {
     return await this.pluginsService.disable(id);
   }
@@ -131,6 +133,7 @@ export class PluginsController {
   @RequireUnscopedKey()
   @ApiOperation({ summary: 'Update plugin configuration' })
   @ApiResponse({ status: 200, description: 'Plugin configuration updated', type: PluginActionResponseDto })
+  @ApiResponse({ status: 404, description: 'Plugin not found' })
   updateConfig(@Param('id') id: string, @Body() configDto: PluginConfigDto): { success: boolean; message: string } {
     return this.pluginsService.updateConfig(id, configDto.config);
   }
@@ -217,6 +220,7 @@ export class PluginsController {
   @RequireUnscopedKey()
   @ApiOperation({ summary: 'Check plugin health' })
   @ApiResponse({ status: 200, description: 'Plugin health status', type: PluginHealthResponseDto })
+  @ApiResponse({ status: 404, description: 'Plugin not found' })
   async healthCheck(@Param('id') id: string): Promise<{ healthy: boolean; message?: string }> {
     return await this.pluginsService.healthCheck(id);
   }

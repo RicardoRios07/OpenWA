@@ -1,5 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { joinPythonLiterals, undeclaredVerbPairs } from './check-sdk-coverage.mjs';
 
 const specByPath = new Map([
@@ -28,4 +33,19 @@ test('undeclaredVerbPairs ignores a pair that is not a contract path', () => {
 test('joinPythonLiterals joins a path split across adjacent literals', () => {
   const expr = 'f"/api/sessions/{a}/groups/{b}"\n            "/membership-requests/approve"';
   assert.equal(joinPythonLiterals(expr), '/api/sessions/{a}/groups/{b}/membership-requests/approve');
+});
+
+test('a run through a symlinked path still reports', () => {
+  // Node realpaths the main module's URL but not argv[1], so a guard comparing the unresolved path
+  // skipped every check and exited 0 whenever the invocation crossed a symlink (/tmp on macOS).
+  const dir = mkdtempSync(join(tmpdir(), 'sdk-coverage-'));
+  try {
+    symlinkSync(fileURLToPath(new URL('..', import.meta.url)), join(dir, 'repo'));
+    const run = spawnSync(process.execPath, [join(dir, 'repo', 'scripts', 'check-sdk-coverage.mjs')], {
+      encoding: 'utf8',
+    });
+    assert.match(run.stdout + run.stderr, /SDK contract coverage/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

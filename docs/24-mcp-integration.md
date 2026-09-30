@@ -39,8 +39,10 @@ group management — so an agent can drive WhatsApp through the same business lo
 REST API uses.
 
 Set `MCP_ENABLED=true` to mount a stateless Streamable-HTTP transport at **`POST /mcp`**
-on the existing server (same port, no extra process). The transport offers no SSE stream
-and no sessions, so `GET /mcp` and `DELETE /mcp` answer `405` with `Allow: POST`. When
+on the existing server (same port, no extra process). The transport opens no standalone SSE
+stream and keeps no sessions, so `GET /mcp` and `DELETE /mcp` answer `405` with `Allow: POST`.
+The reply to a `POST` is SSE-framed (`text/event-stream`), so a client must send
+`Accept: application/json, text/event-stream` or the transport answers `406`. When
 `MCP_ENABLED` is unset, the MCP module and the `@modelcontextprotocol/sdk` package are
 never loaded.
 
@@ -240,7 +242,10 @@ MCP_IP_RATE_LIMIT_WINDOW_MS=60000     # per-IP window in ms (default 60000 = 1 m
 ```
 
 Point an MCP client at `POST /mcp`. For Claude Code, a `.mcp.json` at your project root
-(gitignored — replace the key with a real one from `data/.api-key`):
+(gitignored; replace `YOUR_API_KEY` with a dedicated key scoped to the sessions the agent
+needs, `VIEWER` for a read-only agent and `OPERATOR` at most, as
+[24.5](#245-authentication--security) describes, never the bootstrap admin key in
+`data/.api-key`):
 
 ```json
 {
@@ -264,14 +269,15 @@ tier, and a `handler` that calls a service. To add one, append to the relevant t
 `src/core/agent-tools/tools/<domain>.tools.ts`:
 
 ```ts
-{
+defineTool({
   name: 'SessionFindOne',
   description: 'Get one session by its UUID, including connection status.',
   tier: 'read',
   sessionScoped: true,
   inputSchema: z.object({ sessionId: z.string().min(1).describe('Session UUID') }),
-  handler: (input, _apiKey) => session.findOne(input.sessionId).then(SessionResponseDto.fromEntity),
-}
+  handler: input =>
+    session.findOne(input.sessionId).then(s => SessionResponseDto.fromEntity(s, session.engineLoaded(s))),
+}),
 ```
 
 Guidelines:

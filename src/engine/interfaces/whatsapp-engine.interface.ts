@@ -657,7 +657,7 @@ export interface ReactionEvent {
  *    surfaced), `groups.update` (subject/desc/announce/restrict), `groups.upsert` (this
  *    session added to or joining a group; participantIds is the session's own id) and `group.join-request`
  *    (action 'created' only — the wwebjs event has no revoke/reject counterpart, so only
- *    the shared signal is surfaced; rc13 itself emits the event only for non-admin-add
+ *    the shared signal is surfaced; rc14 itself emits the event only for non-admin-add
  *    requests — the direct self-request stub 144 is unhandled upstream, marked TODO at
  *    Utils/process-message.js:569 — so an invite-link self-request may not fire on Baileys).
  * All ids are in the neutral dialect (`@g.us` / `@c.us`; a lid stays `<id>@lid` when the

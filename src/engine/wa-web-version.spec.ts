@@ -397,6 +397,21 @@ describe('resolveWebVersionPin with a cache directory', () => {
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
+  // An auto pin moves to a newer build roughly daily, so keeping every build's page in memory grew
+  // without bound over a long uptime. Only the current build is kept; an older one is fetched again.
+  it('keeps only the latest build in memory', async () => {
+    const fetcher = jest.fn(() => Promise.resolve(page(HTML)));
+
+    await resolveWebVersionPin(fetcher as never, dir);
+    process.env.WWEBJS_WEB_VERSION = '2.3000.5678';
+    await resolveWebVersionPin(fetcher as never, dir);
+    await resolveWebVersionPin(fetcher as never, dir);
+    process.env.WWEBJS_WEB_VERSION = VERSION;
+    await resolveWebVersionPin(fetcher as never, dir);
+
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
   it('refuses a version that is not a build number, without fetching or writing', async () => {
     process.env.WWEBJS_WEB_VERSION = '../../etc/x';
     const fetcher = jest.fn(() => Promise.resolve(page(HTML)));

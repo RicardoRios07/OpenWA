@@ -703,3 +703,47 @@ test('a failed groups read is reported, not shown as "no groups found"', async (
   rtl.within(alert).getByText(/Failed to load data/);
   assert.equal(rtl.screen.queryByText('No groups found'), null);
 });
+
+test('Send stays disabled while a batch cancel is in flight, so its answer cannot land on a newer batch', async () => {
+  const progress = { total: 1, sent: 0, failed: 0, pending: 1, cancelled: 0 };
+  let answerCancel: (response: Response) => void = () => {};
+  globalThis.fetch = ((input: RequestInfo | URL): Promise<Response> => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    if (url.endsWith('/sessions')) {
+      return Promise.resolve(jsonResponse([{ id: 's1', name: 'Main', status: 'ready', phone: '15550000000' }]));
+    }
+    if (url.endsWith('/messages/send-bulk')) {
+      return Promise.resolve(jsonResponse({ batchId: 'b1', status: 'pending', totalMessages: 1 }, 202));
+    }
+    if (url.endsWith('/messages/batch/b1/cancel')) {
+      return new Promise<Response>(resolve => {
+        answerCancel = resolve;
+      });
+    }
+    if (url.endsWith('/messages/batch/b1')) {
+      return Promise.resolve(jsonResponse({ batchId: 'b1', status: 'processing', progress, results: [] }));
+    }
+    return Promise.resolve(jsonResponse([]));
+  }) as typeof fetch;
+  const container = await renderBulkAsWriter();
+  type(container, '#mt-11', '15550000001');
+  rtl.fireEvent.change(rtl.screen.getByPlaceholderText('Enter your message here...'), { target: { value: 'hi' } });
+  await rtl.waitFor(() => assert.equal(sendButton().disabled, false));
+  rtl.fireEvent.click(sendButton());
+  rtl.fireEvent.click(await rtl.screen.findByRole('button', { name: 'Cancel Batch' }));
+  await rtl.screen.findByRole('button', { name: 'Cancelling...' });
+
+  assert.equal(sendButton().disabled, true, 'a new batch could start while the cancel was unanswered');
+  await rtl.act(async () => {
+    answerCancel(
+      jsonResponse({
+        batchId: 'b1',
+        status: 'cancelled',
+        progress: { ...progress, pending: 0, cancelled: 1 },
+        results: [],
+      }),
+    );
+    await new Promise(resolve => setTimeout(resolve, 20));
+  });
+  assert.equal(sendButton().disabled, false);
+});

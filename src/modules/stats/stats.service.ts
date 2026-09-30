@@ -4,7 +4,6 @@ import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
 import { Session, SessionStatus } from '../session/entities/session.entity';
 import { Message, MessageDirection, MessageStatus } from '../message/entities/message.entity';
-import { CacheService } from '../../common/cache';
 
 /**
  * SQL for the time-series timestamp bucket, per DB dialect. SQLite has strftime(); Postgres has
@@ -105,7 +104,6 @@ export class StatsService {
     private readonly sessionRepo: Repository<Session>,
     @InjectRepository(Message, 'data')
     private readonly messageRepo: Repository<Message>,
-    private readonly cacheService: CacheService,
     private readonly configService: ConfigService,
   ) {}
 
@@ -191,13 +189,6 @@ export class StatsService {
     // Count failed messages
     const failed = await this.messageRepo.count({
       where: { status: MessageStatus.FAILED },
-    });
-
-    // Cache session stats
-    await this.cacheService.setSessionsStats({
-      active,
-      total: sessions.length,
-      byStatus,
     });
 
     return {

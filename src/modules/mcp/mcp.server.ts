@@ -150,7 +150,6 @@ function buildServer(
     );
   }
 
-  logger.log(`MCP server built with ${tools.length} tools (readOnly=${readOnly})`);
   return server;
 }
 
@@ -259,7 +258,7 @@ export function mountMcpServer(
   // and to emit the log line once. The actual McpServer is re-created per request to
   // avoid the SDK's single-transport-at-a-time constraint under concurrent load.
   const tools = registry.list({ readOnly });
-  logger.log(`MCP server mounted at POST ${basePath} (${tools.length} tools)`);
+  logger.log(`MCP server mounted at POST ${basePath} (${tools.length} tools, readOnly=${readOnly})`);
 
   const handler: RequestHandler = async (req: Request, res: Response) => {
     const server = buildServer(

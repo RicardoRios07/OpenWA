@@ -1,4 +1,13 @@
-import { Injectable, BadRequestException, NotFoundException, Optional, OnApplicationBootstrap } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  HttpException,
+  HttpStatus,
+  NotFoundException,
+  Optional,
+  OnApplicationBootstrap,
+  OnModuleInit,
+} from '@nestjs/common';
 import { createLogger } from '../../common/services/logger.service';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -93,10 +102,18 @@ interface BatchExecutionState {
   results: BatchMessageResult[];
   stoppedOnError: boolean;
   cancelledByDb: boolean;
+  /**
+   * Another writer ended the row (a reap after the session was taken over): keep its status and
+   * record only what this run sent.
+   */
+  endedElsewhere: boolean;
 }
 
+/** A terminal status only another writer can have put on a row this run still holds as PROCESSING. */
+const ENDED_ELSEWHERE = new Set<BatchStatus>([BatchStatus.FAILED, BatchStatus.COMPLETED]);
+
 @Injectable()
-export class BulkMessageService implements OnApplicationBootstrap {
+export class BulkMessageService implements OnModuleInit, OnApplicationBootstrap {
   private readonly logger = createLogger(BulkMessageService.name);
   private readonly processingBatches = new Map<string, boolean>(); // Track active batches for cancellation
   private inFlightBatches = 0; // count of batches currently in processBatch (memory bound, see cap above)
@@ -120,9 +137,18 @@ export class BulkMessageService implements OnApplicationBootstrap {
   ) {}
 
   /**
-   * Transition orphaned batches on startup. A batch still in PROCESSING belongs to a
+   * A session this process takes over from a node whose lease lapsed leaves that node's unfinished
+   * batches behind, whichever path took it: an explicit start or stop as much as the takeover sweep.
+   * Registered here, before any bootstrap hook can start a session.
+   */
+  onModuleInit(): void {
+    this.ownership?.onAdoption(sessionId => this.reapProcessingBatches(sessionId, 'session taken from a lapsed node'));
+  }
+
+  /**
+   * Transition orphaned batches on startup. A batch still in PENDING or PROCESSING belongs to a
    * previous (crashed/restarted) process — this fresh process is not driving it, so it would
-   * otherwise be stuck in PROCESSING forever. Mark it FAILED. Auto-resume is intentionally NOT
+   * otherwise be stuck there forever. Mark it FAILED. Auto-resume is intentionally NOT
    * done here: resuming risks re-sending messages already delivered before the crash.
    *
    * "A previous process" is not the same as "any process". A batch is only ever driven by whichever
@@ -133,55 +159,66 @@ export class BulkMessageService implements OnApplicationBootstrap {
    * because the two cannot diverge: only the engine holder can send.
    */
   async onApplicationBootstrap(): Promise<void> {
-    const processing = await this.batchRepository.find({ where: { status: BatchStatus.PROCESSING } });
-    const orphaned = await this.ownedByThisNode(processing);
+    const unfinished = await this.batchRepository.find({
+      where: { status: In([BatchStatus.PENDING, BatchStatus.PROCESSING]) },
+    });
+    const orphaned = await this.ownedByThisNode(unfinished);
     let failed = 0;
     for (const batch of orphaned) {
       if (await this.failOrphanedBatch(batch)) failed++;
     }
     if (failed > 0) {
-      this.logger.warn(`Marked ${failed} orphaned PROCESSING batch(es) FAILED on startup (interrupted by a restart)`);
+      this.logger.warn(`Marked ${failed} orphaned unfinished batch(es) FAILED on startup (interrupted by a restart)`);
     }
-    const skipped = processing.length - orphaned.length;
+    const skipped = unfinished.length - orphaned.length;
     if (skipped > 0) {
-      this.logger.log(`Left ${skipped} PROCESSING batch(es) alone: their sessions are held by another node`);
+      this.logger.log(`Left ${skipped} unfinished batch(es) alone: their sessions are held by another node`);
     }
   }
 
   /**
-   * Guarded on PROCESSING in the UPDATE itself: the row was read before this write, and a batch that
-   * finalized in between must keep its real status, progress and results. Returns whether the row
-   * was still PROCESSING and is now FAILED.
+   * Guarded on the unfinished statuses in the UPDATE itself: the row was read before this write, and
+   * a batch that finalized in between must keep its real status, progress and results. Returns
+   * whether the row was still unfinished and is now FAILED. Without `messages` (the run failed
+   * before it could read the row) the stored payloads are left as they are.
    */
-  private async failOrphanedBatch(batch: MessageBatch): Promise<boolean> {
-    this.stripBatchMediaPayloads(batch.messages);
-    const failed = await this.batchRepository.update({ id: batch.id, status: BatchStatus.PROCESSING }, {
-      status: BatchStatus.FAILED,
-      messages: batch.messages,
-    } as QueryDeepPartialEntity<MessageBatch>);
+  private async failOrphanedBatch(batch: Pick<MessageBatch, 'id'> & Partial<MessageBatch>): Promise<boolean> {
+    const set: QueryDeepPartialEntity<MessageBatch> = { status: BatchStatus.FAILED, completedAt: new Date() };
+    if (batch.messages) {
+      this.stripBatchMediaPayloads(batch.messages);
+      set.messages = batch.messages as QueryDeepPartialEntity<MessageBatch>['messages'];
+    }
+    const failed = await this.batchRepository.update(
+      { id: batch.id, status: In([BatchStatus.PENDING, BatchStatus.PROCESSING]) },
+      set,
+    );
     return Boolean(failed.affected);
   }
 
   /**
-   * Fail a session's stuck PROCESSING batches after the session was adopted from a lapsed node.
-   * Same policy as the boot reaper and for the same reason: the dead node's already-sent messages
-   * are unknowable, so resuming risks double-sends — FAILED with the payloads stripped is the
+   * Fail a session's unfinished (PENDING or PROCESSING) batches after the session was taken over from a
+   * node whose lease lapsed: a batch that node saved but never picked up is as orphaned as one it was
+   * running. Same policy as the boot reaper and for the same reason: the dead node's already-sent
+   * messages are unknowable, so resuming risks double-sends: FAILED with the payloads stripped is the
    * honest terminal state, and the caller can re-issue the batch knowingly.
    *
-   * A batch this process is running itself is not orphaned: the adoption claims the session before
-   * its engine finishes initializing, so a bulk request routed here in that window starts a batch
-   * that is already PROCESSING by the time the caller reaps. Only the dead holder's batches go.
+   * Runs after this process claims the session from, or releases the claim of, such a node (see
+   * onModuleInit). A batch this process created or is still running is not orphaned, as when it held
+   * the session before or still runs a stale engine for it: createBatch registers every batch before
+   * its row is written, so only the lapsed node's batches go.
    */
   async reapProcessingBatches(sessionId: string, reason: string): Promise<number> {
-    const processing = (
-      await this.batchRepository.find({ where: { status: BatchStatus.PROCESSING, sessionId } })
+    const unfinished = (
+      await this.batchRepository.find({
+        where: { status: In([BatchStatus.PENDING, BatchStatus.PROCESSING]), sessionId },
+      })
     ).filter(batch => !this.processingBatches.has(batch.id));
     let failed = 0;
-    for (const batch of processing) {
+    for (const batch of unfinished) {
       if (await this.failOrphanedBatch(batch)) failed++;
     }
     if (failed > 0) {
-      this.logger.warn(`Marked ${failed} PROCESSING batch(es) FAILED for session ${sessionId} (${reason})`);
+      this.logger.warn(`Marked ${failed} unfinished batch(es) FAILED for session ${sessionId} (${reason})`);
     }
     return failed;
   }
@@ -246,7 +283,10 @@ export class BulkMessageService implements OnApplicationBootstrap {
     // hold an unbounded number of full message sets (base64 media included) in memory at once.
     const maxConcurrentBatches = resolveMaxConcurrentBatches();
     if (maxConcurrentBatches > 0 && this.inFlightBatches >= maxConcurrentBatches) {
-      throw new BadRequestException(`Too many bulk batches in progress (max ${maxConcurrentBatches}); retry shortly`);
+      throw new HttpException(
+        `Too many bulk batches in progress (max ${maxConcurrentBatches}); retry shortly`,
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
     }
     const options = {
       delayBetweenMessages: dto.options?.delayBetweenMessages ?? 3000,
@@ -263,6 +303,9 @@ export class BulkMessageService implements OnApplicationBootstrap {
     };
 
     const batch = this.batchRepository.create({
+      // Assigned here rather than by the database, so the batch is registered below before its row
+      // exists anywhere.
+      id: randomUUID(),
       batchId,
       sessionId,
       status: BatchStatus.PENDING,
@@ -273,6 +316,10 @@ export class BulkMessageService implements OnApplicationBootstrap {
       currentIndex: 0,
     });
 
+    // Registered before the row exists, so a reap for this session (a claim that took the session
+    // from another holder) can never read this process's own batch unregistered. A cancel can only
+    // find the row once it is committed, and the false it sets then stands for the pickup check.
+    this.processingBatches.set(batch.id, true);
     // Reserve synchronously in the same turn as the cap check. There is deliberately no await between
     // them, so a burst cannot all observe the same stale count and overshoot the ceiling.
     this.inFlightBatches++;
@@ -280,6 +327,7 @@ export class BulkMessageService implements OnApplicationBootstrap {
       await this.batchRepository.save(batch);
     } catch (error) {
       this.inFlightBatches--;
+      this.processingBatches.delete(batch.id);
       // Two concurrent creates with the same caller-supplied batchId both pass the read above; the
       // unique index decides, and the loser gets the same 400 as the sequential case.
       if (isUniqueViolation(error)) {
@@ -380,9 +428,18 @@ export class BulkMessageService implements OnApplicationBootstrap {
       }
       this.processingBatches.set(batch.id, true);
       await this.executeBatch(batch);
+    } catch (error) {
+      // A throw here (a DB error on the pickup read, the start transition or a progress write) would
+      // leave the row PENDING or PROCESSING, and nothing else moves it on while this process lives:
+      // the reapers run only at boot and on a session takeover. Best effort, since the database that
+      // just failed may fail again.
+      await this.failOrphanedBatch(batch ?? { id: batchDbId }).catch((failError: unknown) => {
+        this.logger.error(`Could not mark batch ${batchDbId} FAILED after its run threw: ${String(failError)}`);
+      });
+      throw error;
     } finally {
       if (reserved) this.inFlightBatches--;
-      if (batch) this.processingBatches.delete(batch.id);
+      this.processingBatches.delete(batchDbId);
     }
   }
 
@@ -395,24 +452,25 @@ export class BulkMessageService implements OnApplicationBootstrap {
     }
 
     const results: BatchMessageResult[] = batch.results || [];
-    const state: BatchExecutionState = { results, stoppedOnError: false, cancelledByDb: false };
+    const state: BatchExecutionState = { results, stoppedOnError: false, cancelledByDb: false, endedElsewhere: false };
     await this.processBatchMessages(batch, state);
     await this.finalizeBatch(batch, state);
   }
 
-  /** Returns false when a committed cancel won the guarded start UPDATE — send nothing. */
+  /** Returns false when the batch left PENDING before this start UPDATE, so nothing is sent. */
   private async markBatchProcessing(batch: MessageBatch): Promise<boolean> {
-    // Transition to PROCESSING with the guard IN the UPDATE: it only lands while the stored status
-    // is not CANCELLED, so a cancel that already committed (any process) can never be overwritten
-    // back to PROCESSING. Zero affected rows = cancel-before-start won; send nothing.
+    // Transition to PROCESSING with the guard IN the UPDATE: it only lands while the stored status is
+    // still PENDING, the one status a run starts from. A cancel that already committed (any process)
+    // or a reap that failed the batch after another node adopted its session can never be overwritten
+    // back to PROCESSING. Zero affected rows means send nothing.
     batch.status = BatchStatus.PROCESSING;
     batch.startedAt = new Date();
     const started = await this.batchRepository.update(
-      { id: batch.id, status: Not(BatchStatus.CANCELLED) },
+      { id: batch.id, status: BatchStatus.PENDING },
       { status: BatchStatus.PROCESSING, startedAt: batch.startedAt },
     );
     if (!started.affected) {
-      this.logger.log(`Batch ${batch.batchId} was cancelled before processing started; nothing was sent`);
+      this.logger.log(`Batch ${batch.batchId} was cancelled or failed before processing started; nothing was sent`);
       return false;
     }
     return true;
@@ -595,17 +653,16 @@ export class BulkMessageService implements OnApplicationBootstrap {
 
     // Save progress periodically (every 10 messages or last message)
     if (i % 10 === 0 || i === batch.messages.length - 1) {
-      // Honor a cancellation issued by ANY process — the in-memory Map only sees same-process
-      // cancels. The guard lives IN the UPDATE (not a read-then-write), so a CANCELLED that
-      // committed first can never be clobbered back to PROCESSING: zero affected rows means the
-      // cancel won and the loop stops.
+      // Honor a cancellation issued by ANY process (the in-memory Map only sees same-process
+      // cancels), and a reap that failed the batch after another node took the session over. The
+      // guard lives IN the UPDATE (not a read-then-write), so neither can be written over: zero
+      // affected rows stops the loop, and the row says which of the two it was.
       const progressSaved = await this.batchRepository.update(
-        { id: batch.id, status: Not(BatchStatus.CANCELLED) },
+        { id: batch.id, status: BatchStatus.PROCESSING },
         { progress: batch.progress, results, currentIndex: batch.currentIndex },
       );
       if (!progressSaved.affected) {
-        state.cancelledByDb = true;
-        this.logger.log(`Batch ${batch.batchId} cancelled (DB) at index ${i}`);
+        await this.noteRowLeftProcessing(batch, state, `at index ${i}`);
         return false;
       }
     }
@@ -618,8 +675,44 @@ export class BulkMessageService implements OnApplicationBootstrap {
     return true;
   }
 
+  /**
+   * The row stopped being PROCESSING under this run. CANCELLED, or a row deleted with its session, is
+   * a cancel, reconciled by finalizeBatch. FAILED was written by another node's reap after it took the
+   * session over (COMPLETED is matched too, though only this run writes it); that status is the
+   * batch's outcome now, and this run only records what it sent.
+   */
+  private async noteRowLeftProcessing(batch: MessageBatch, state: BatchExecutionState, where: string): Promise<void> {
+    const fresh = await this.batchRepository.findOne({ where: { id: batch.id }, select: { status: true } });
+    if (fresh && ENDED_ELSEWHERE.has(fresh.status)) {
+      state.endedElsewhere = true;
+      this.logger.warn(`Batch ${batch.batchId} was ended elsewhere (${fresh.status}) ${where}; keeping that status`);
+      return;
+    }
+    state.cancelledByDb = true;
+    this.logger.log(`Batch ${batch.batchId} cancelled (DB) ${where}`);
+  }
+
+  /**
+   * Another writer set this row's status (a reap's FAILED, or a cancel that won the final write), but
+   * only this run knows which items it sent: record them, so the batch status reports the delivered
+   * items and a re-issue can leave them out. Guarded on that status; status, completedAt and the
+   * stripped payloads stay as the other writer left them.
+   */
+  private async keepResultsOnEndedRow(
+    batch: MessageBatch,
+    results: BatchMessageResult[],
+    status: BatchStatus = BatchStatus.FAILED,
+    progress: BatchProgress = batch.progress,
+  ): Promise<void> {
+    await this.batchRepository.update(
+      { id: batch.id, status },
+      { progress, results, currentIndex: batch.currentIndex },
+    );
+  }
+
   private async finalizeBatch(batch: MessageBatch, state: BatchExecutionState): Promise<void> {
     const { results } = state;
+    if (state.endedElsewhere) return this.keepResultsOnEndedRow(batch, results);
     // Final update. `batch` still holds the in-memory PROCESSING status from the start, so the
     // terminal status is re-derived from the cancellation signals (DB + in-memory flag) rather than
     // saved blindly. The re-read below narrows the race window so the reconciled counters stay
@@ -628,40 +721,56 @@ export class BulkMessageService implements OnApplicationBootstrap {
       const fresh = await this.batchRepository.findOne({ where: { id: batch.id }, select: { status: true } });
       if (fresh?.status === BatchStatus.CANCELLED) {
         state.cancelledByDb = true;
+      } else if (fresh && ENDED_ELSEWHERE.has(fresh.status)) {
+        this.logger.warn(`Batch ${batch.batchId} was ended elsewhere (${fresh.status}); keeping that status`);
+        return this.keepResultsOnEndedRow(batch, results);
       }
     }
     const cancelled = state.cancelledByDb || !this.processingBatches.get(batch.id);
     batch.status = resolveFinalBatchStatus(cancelled, state.stoppedOnError, batch.progress);
-    if (cancelled) {
-      // Reconcile the counters the same way cancelBatch does, so the persisted state is consistent.
-      batch.progress.cancelled = batch.progress.pending;
-      batch.progress.pending = 0;
-    }
+    // Counters reconciled the same way cancelBatch does, for a CANCELLED row only. A copy: a write that
+    // loses to a reap records the unreconciled counters, since that cancel never took effect.
+    const cancelledProgress: BatchProgress = { ...batch.progress, cancelled: batch.progress.pending, pending: 0 };
     batch.completedAt = new Date();
     batch.results = results;
     // The batch is terminal now (never resumed), so drop the base64 media payloads before persisting —
     // otherwise the message_batches row retains multi-MB media forever. Intermediate (cadence) saves
     // above keep the payload so a batch interrupted mid-run can still resume from currentIndex.
     this.stripBatchMediaPayloads(batch.messages);
+    const terminal = {
+      status: batch.status,
+      progress: cancelled ? cancelledProgress : batch.progress,
+      results,
+      currentIndex: batch.currentIndex,
+      completedAt: batch.completedAt,
+      messages: batch.messages,
+    } as QueryDeepPartialEntity<MessageBatch>;
     if (batch.status === BatchStatus.CANCELLED) {
-      // Persisting CANCELLED can never resurrect a finished batch — save the reconciled counters
-      // over cancelBatch's own (possibly earlier, staler) write.
-      await this.batchRepository.save(batch);
+      // Write the reconciled counters over cancelBatch's own (possibly earlier, staler) write, but
+      // never over a batch another node's reap failed meanwhile. An UPDATE, not a save: a row deleted
+      // with its session also reads as a cancel, and save() would INSERT it back.
+      const reconciled = await this.batchRepository.update(
+        { id: batch.id, status: In([BatchStatus.PROCESSING, BatchStatus.CANCELLED]) },
+        terminal,
+      );
+      // A reap that failed the batch after the re-read above keeps its status; the items this run sent
+      // still go on the row (a no-op for a row deleted with its session).
+      if (!reconciled.affected) await this.keepResultsOnEndedRow(batch, results);
     } else {
-      // A cancel may have committed after the re-read above; the guard IN the UPDATE makes this
-      // terminal write unable to flip a CANCELLED batch back to COMPLETED/FAILED. Zero affected
-      // rows means the cancel won the final race — the batch stays exactly as cancelBatch left it.
-      const finalized = await this.batchRepository.update({ id: batch.id, status: Not(BatchStatus.CANCELLED) }, {
-        status: batch.status,
-        progress: batch.progress,
-        results,
-        currentIndex: batch.currentIndex,
-        completedAt: batch.completedAt,
-        messages: batch.messages,
-      } as QueryDeepPartialEntity<MessageBatch>);
+      // A cancel or a reap may have committed after the re-read above; the guard IN the UPDATE makes
+      // this terminal write unable to replace either. Zero affected rows means one of them won the
+      // final race: its status stands, and this run still records what it sent, with the counters
+      // reconciled for a cancel.
+      const finalized = await this.batchRepository.update({ id: batch.id, status: BatchStatus.PROCESSING }, terminal);
       if (!finalized.affected) {
-        batch.status = BatchStatus.CANCELLED;
-        this.logger.log(`Batch ${batch.batchId} was cancelled just before completion; keeping CANCELLED`);
+        const stored = await this.batchRepository.findOne({ where: { id: batch.id }, select: { status: true } });
+        batch.status = stored?.status ?? BatchStatus.CANCELLED;
+        if (batch.status === BatchStatus.FAILED) {
+          await this.keepResultsOnEndedRow(batch, results);
+        } else if (batch.status === BatchStatus.CANCELLED && stored) {
+          await this.keepResultsOnEndedRow(batch, results, BatchStatus.CANCELLED, cancelledProgress);
+        }
+        this.logger.log(`Batch ${batch.batchId} left PROCESSING just before completion; keeping ${batch.status}`);
       }
     }
 

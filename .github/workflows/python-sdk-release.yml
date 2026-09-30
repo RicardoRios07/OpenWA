@@ -83,6 +83,7 @@ jobs:
         working-directory: sdk/python
         run: |
           pip install -e '.[dev]'
+          mypy
           pytest
 
       - name: Build sdist + wheel

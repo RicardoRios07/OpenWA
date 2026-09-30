@@ -22,13 +22,14 @@
 # key is looked up by name, so a stray entry in an operator's .env can never reach the script's own
 # environment.
 
-# openwa_env_file_value <file> <key> — print the value from one env-file layer, or nothing.
+# openwa_env_file_value <file> <key> - print the value from one env-file layer. Fails when the layer
+# does not set the key (or sets it in a form reported below); a blank value succeeds and prints nothing.
 openwa_env_file_value() {
   local file="$1" key="$2" line value
-  [ -f "$file" ] || return 0
+  [ -f "$file" ] || return 1
   # The last line naming the key wins, as in dotenv. `KEY: value` is matched only to be reported.
   line="$(grep -E "^[[:space:]]*(export[[:space:]]+)?${key}[[:space:]]*[=:]" "$file" 2>/dev/null | tail -n 1)" || true
-  [ -n "$line" ] || return 0
+  [ -n "$line" ] || return 1
   value="${line#*"$key"}"
   value="${value#"${value%%[![:space:]]*}"}"
   case "$value" in
@@ -45,7 +46,7 @@ openwa_env_file_value() {
     *\"* | *\'* | *'#'*)
       echo "[config] WARN: $file sets $key in a form these scripts do not parse (quotes, a trailing" >&2
       echo "[config]       comment or KEY: value); ignoring it. Pass $key in the environment if it matters here." >&2
-      return 0
+      return 1
       ;;
   esac
   printf '%s' "$value"
@@ -97,10 +98,11 @@ openwa_resolve() {
     printf '%s' "$current"
     return 0
   fi
+  # The first layer that sets the key ends the lookup, even with a blank value: dotenv sets a blank
+  # line to '' and never overwrites a key already set, so the app reads its built-in default.
   for layer in "./.env" "$OPENWA_GENERATED_ENV"; do
-    value="$(openwa_env_file_value "$layer" "$key")"
-    if [ -n "$value" ]; then
-      printf '%s' "$value"
+    if value="$(openwa_env_file_value "$layer" "$key")"; then
+      printf '%s' "${value:-$fallback}"
       return 0
     fi
   done

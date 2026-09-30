@@ -374,7 +374,14 @@ function ChatThread({
               default:
                 return (
                   <div className="message-media-document">
-                    <a href={mediaSrc} download={mediaInfo.filename || 'document'} className="chat-document-media">
+                    {/* A document sent by URL links off-site, where browsers ignore `download`, so a plain
+                        click would navigate the dashboard away; open it in a new tab instead. */}
+                    <a
+                      href={mediaSrc}
+                      download={mediaInfo.filename || 'document'}
+                      className="chat-document-media"
+                      {...(/^https?:\/\//i.test(mediaSrc) ? { target: '_blank', rel: 'noopener noreferrer' } : {})}
+                    >
                       📎 {mediaInfo.filename || t('chats.downloadDocument')}
                     </a>
                   </div>

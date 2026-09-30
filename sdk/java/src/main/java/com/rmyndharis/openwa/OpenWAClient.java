@@ -58,7 +58,7 @@ public final class OpenWAClient {
             .registerTypeAdapterFactory(new LenientEnumTypeAdapterFactory())
             .create();
 
-    // Used for the two body types listed in bodySerializer(), never the shared default. Emitting an
+    // Used for the body types listed in bodySerializer(), never the shared default. Emitting an
     // explicit null needs two things that pull in opposite directions: a serializer that decides
     // WHICH keys appear, and serializeNulls() so the ones it chose survive the writer — Gson drops
     // JsonNull members otherwise, even from a JsonObject the serializer already built. Applying
@@ -191,11 +191,12 @@ public final class OpenWAClient {
     /**
      * The bodies that must be able to emit an explicit null.
      *
-     * Gson drops null members by default, so for these two a null field would leave the request
+     * Gson drops null members by default, so for these a null field would leave the request
      * without the key at all — which is not a weaker version of the request, it is a different one.
      * {@link MuteChatRequest} is safe to route here despite the warning on {@code nullEmittingGson}
      * because both of its fields are required: it has no optional field that an explicit null could
-     * turn into an unintended "reset to default".
+     * turn into an unintended "reset to default". {@link UpdateSessionProxyRequest} is routed here so
+     * that a null {@code proxyUrl} is sent as an explicit null, which clears the session proxy.
      */
     private Gson bodySerializer(Object body) {
         return body instanceof UpdateSessionConfigRequest

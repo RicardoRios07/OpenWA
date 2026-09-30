@@ -93,8 +93,9 @@ export async function generateSafeLinkPreview(
         };
       },
       // The fetched URL comes from the message text, so it is caller-supplied the same way a media
-      // URL is: on a proxied session it leaves through the session proxy (#1626).
-      { proxyUrl: urlFetchProxy(opts.sessionProxyUrl) },
+      // URL is: on a proxied session it leaves through the session proxy (#1626). A bare domain, an
+      // http link and a short link all answer with a redirect; the guard vets every hop it follows.
+      { proxyUrl: urlFetchProxy(opts.sessionProxyUrl), followRedirects: true },
     );
   } catch {
     // Blocked destination, DNS failure, timeout, malformed response — all the same to a caller who
@@ -152,9 +153,13 @@ async function readCapped(response: Response, maxBytes: number): Promise<string>
   return out;
 }
 
-/** A quoted attribute's trimmed value from one tag's attribute text. */
+/**
+ * A quoted attribute's trimmed value from one tag's attribute text. The value ends at the quote that
+ * opened it, so an apostrophe inside a double-quoted title stays part of it.
+ */
 function attribute(attrs: string, name: 'property' | 'name' | 'content'): string | undefined {
-  return new RegExp(`\\b${name}=["']([^"']*)["']`, 'i').exec(attrs)?.[1]?.trim();
+  const m = new RegExp(`\\b${name}=(?:"([^"]*)"|'([^']*)')`, 'i').exec(attrs);
+  return (m?.[1] ?? m?.[2])?.trim();
 }
 
 /** The handful of entities that actually show up in title/description text. */

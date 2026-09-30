@@ -17,6 +17,7 @@ const HOOK_ERROR_FIXTURE = path.resolve(ROOT, 'test/fixtures/sandbox/hook-error-
 const CTX_LIFECYCLE_FIXTURE = path.resolve(ROOT, 'test/fixtures/sandbox/ctx-lifecycle-plugin.cjs');
 const SEARCH_FIXTURE = path.resolve(ROOT, 'test/fixtures/sandbox/search-plugin.cjs');
 const UNLOAD_FIXTURE = path.resolve(ROOT, 'test/fixtures/sandbox/unload-plugin.cjs');
+const UNCLONEABLE_LOG_FIXTURE = path.resolve(ROOT, 'test/fixtures/sandbox/uncloneable-log-plugin.cjs');
 const flushAsync = (): Promise<void> => new Promise(resolve => setImmediate(resolve));
 
 // Run the TS bootstrap inside the worker via ts-node. The base tsconfig is nodenext; we pin the
@@ -323,6 +324,21 @@ describe('plugin worker — real worker_threads round-trip (B1)', () => {
 
     // The plugin read ctx.pluginId + ctx.config and logged via ctx.logger; all of it crossed the bridge.
     expect(logs).toContainEqual({ level: 'log', message: 'hello from ctx-demo', meta: { greeting: 'hi' } });
+    await host.terminate();
+  });
+
+  it('keeps the worker alive when a timer logs a meta the structured clone cannot copy', async () => {
+    const logs: Array<{ level: string; message: string; meta?: Record<string, unknown> }> = [];
+    const host = new PluginWorkerHost(makeChannel(), undefined, undefined, undefined, (level, message, meta) =>
+      logs.push({ level, message, meta }),
+    );
+
+    await host.load(UNCLONEABLE_LOG_FIXTURE, { pluginId: 'uncloneable-log', config: {} });
+    await host.runLifecycle('onEnable');
+
+    // A DataCloneError thrown from the timer used to be uncaught in the worker, so the worker exited.
+    await expect(host.healthCheck(3000)).resolves.toEqual({ healthy: true, message: 'alive' });
+    expect(logs).toContainEqual({ level: 'warn', message: 'timer log', meta: undefined });
     await host.terminate();
   });
 

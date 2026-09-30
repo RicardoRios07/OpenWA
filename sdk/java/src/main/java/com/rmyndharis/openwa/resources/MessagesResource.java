@@ -81,7 +81,11 @@ public final class MessagesResource {
         return sendMedia(sessionId, "send-audio", body);
     }
 
-    /** Send a document (url or base64; {@code filename} required). */
+    /**
+     * Send a document (url or base64). {@code filename} is optional and is the name the recipient
+     * sees; without it the gateway uses {@code "file"}, or the URL basename for a URL send on
+     * whatsapp-web.js.
+     */
     public MessageResponse sendDocument(String sessionId, SendMediaRequest body) {
         return sendMedia(sessionId, "send-document", body);
     }

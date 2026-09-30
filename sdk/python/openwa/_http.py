@@ -52,9 +52,8 @@ def build_url(base_url: str, path: str, query: Mapping[str, Any] | None = None) 
     params = {k: _serialize(v) for k, v in query.items() if v is not None}
     if not params:
         return url
-    req = httpx.Request("GET", url, params=params)
-    # httpx.Request already encoded params into the URL string.
-    return str(req.url)
+    # Merge rather than pass params= to httpx.Request, which replaces a query already in the path.
+    return str(httpx.URL(url).copy_merge_params(params))
 
 
 class HttpExecutor:
@@ -118,8 +117,9 @@ class HttpExecutor:
         self, method: HttpMethod, path: str, *, query: Mapping[str, Any] | None = None
     ) -> tuple[bytes, str | None]:
         """Perform one request for a non-JSON (binary) 2xx body — e.g. stored
-        status media — and return ``(body bytes, content type)``. A 204/empty
-        body yields empty bytes and ``None``."""
+        status media — and return ``(body bytes, content type)``. A 204 yields
+        empty bytes and ``None``; any other empty 2xx body yields empty bytes
+        and the served content type."""
         res = self._send(method, path, query=query, body=None)
         if res.status_code == 204:
             return b"", None

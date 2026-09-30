@@ -26,7 +26,9 @@ export class ChannelDto {
   @ApiPropertyOptional({ description: 'Subscriber count, when the engine reports it.', example: 1024 })
   subscriberCount?: number;
 
-  @ApiPropertyOptional({ description: 'Channel picture URL, when set.' })
+  @ApiPropertyOptional({
+    description: 'Channel picture URL. Not currently filled by either engine: WhatsApp reports only a media path.',
+  })
   picture?: string;
 
   @ApiPropertyOptional({ description: 'Whether WhatsApp marks the channel verified.', example: false })

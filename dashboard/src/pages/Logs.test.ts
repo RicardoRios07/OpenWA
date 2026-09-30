@@ -7,6 +7,8 @@
 import '../test-helpers/register-hooks.ts';
 import { test, before, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { createElement } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { AuditLog } from '../services/api';
@@ -59,6 +61,10 @@ let exportTotal: number | null = null;
 let exportThrottledFrom: number | null = null;
 // When set, the export walks a 300-row table that gains a newest row after its first page is read.
 let exportGrowsMidWalk = false;
+// When set, the on-screen list reports this many rows in total, so the page has a pager.
+let listTotal: number | null = null;
+// When set, a request for the first on-screen page waits for it before answering.
+let firstPageGate: Promise<void> | null = null;
 
 /** Row `i` of a table walked newest first; every row has its own id, as the gateway's rows do. */
 function exportRow(i: number): AuditLog {
@@ -86,7 +92,12 @@ function installFetchStub(): void {
       const shifted = [exportRow(-1), ...[...Array(300).keys()].map(exportRow)];
       return Promise.resolve(jsonResponse({ data: shifted.slice(offset), total: 301 }));
     }
-    return Promise.resolve(jsonResponse({ data: LOGS, total: LOGS.length }));
+    // The gateway holds no error rows, so the server-side severity filter matches nothing.
+    if (new URL(url, 'http://localhost').searchParams.get('severity') === 'error') {
+      return Promise.resolve(jsonResponse({ data: [], total: 0 }));
+    }
+    const reply = jsonResponse({ data: LOGS, total: listTotal ?? LOGS.length });
+    return firstPageGate && offset === 0 ? firstPageGate.then(() => reply) : Promise.resolve(reply);
   }) as typeof fetch;
 }
 
@@ -126,8 +137,8 @@ before(async () => {
 
 afterEach(() => rtl.cleanup());
 
-function renderLogs(): HTMLElement {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function renderLogs(gcTime?: number): HTMLElement {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime } } });
   return rtl.render(
     createElement(QueryClientProvider, { client }, createElement(ToastProvider, null, createElement(Logs))),
   ).container;
@@ -255,4 +266,58 @@ test('a row written while the export walks the pages is not exported twice', asy
     exportGrowsMidWalk = false;
     restore();
   }
+});
+
+test('the table grid declares one column track per rendered cell', async () => {
+  const container = renderLogs();
+  await rtl.screen.findByText('infra.restart');
+  const css = readFileSync(fileURLToPath(new URL('./Logs.css', import.meta.url)), 'utf8');
+  const template = css.match(/\.logs-table \.table-row \{[^}]*grid-template-columns: ([^;]+);/)?.[1];
+  assert.ok(template, 'the row grid template was not found');
+  for (const row of container.querySelectorAll('.logs-table .table-row')) {
+    assert.equal(template.split(/\s+/).length, row.children.length, template);
+  }
+});
+
+test('typing a search on a later page keeps the search box mounted while page one loads', async () => {
+  const { screen, fireEvent, waitFor } = rtl;
+  listTotal = 60;
+  let release!: () => void;
+  try {
+    // A zero gcTime drops page one from the cache as soon as page two replaces it, as the default
+    // five minutes does for an operator who stays on a later page.
+    renderLogs(0);
+    await screen.findByText('infra.restart');
+    fireEvent.click(screen.getByRole('button', { name: '2' }));
+    await waitFor(() => assert.equal(screen.getByRole('button', { name: '2' }).className, 'active'));
+    await screen.findByText('infra.restart');
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    firstPageGate = new Promise(resolve => (release = resolve));
+    const search = screen.getByPlaceholderText('Search logs...');
+    fireEvent.change(search, { target: { value: 'sess' } });
+    assert.ok(search.isConnected, 'the search box was replaced by the page spinner mid-typing');
+    release();
+    await screen.findByText('session.stop');
+  } finally {
+    listTotal = null;
+    firstPageGate = null;
+  }
+});
+
+test('a severity filter that matches nothing says no logs exist, not that this page has none', async () => {
+  const { screen, fireEvent } = rtl;
+  renderLogs();
+  await screen.findByText('infra.restart');
+  fireEvent.click(screen.getByRole('button', { name: 'All Severities' }));
+  fireEvent.click(screen.getByRole('option', { name: 'Error' }));
+  await screen.findByText('No logs match these filters. Adjust the severity filter to widen the search.');
+  assert.ok(screen.getByRole('heading', { name: 'No logs found' }));
+});
+
+test('the severity badge shows the translated severity', async () => {
+  const container = renderLogs();
+  await rtl.screen.findByText('infra.restart');
+  const badges = [...container.querySelectorAll('.severity-badge')].map(badge => badge.textContent);
+  assert.deepEqual(badges, ['Info', 'Error']);
 });

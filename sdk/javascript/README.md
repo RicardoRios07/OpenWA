@@ -12,6 +12,13 @@ npm install @rmyndharis/openwa
 
 Requires Node.js >= 18 (relies on the global `fetch`).
 
+This README describes `main`. The 0.5.0 release lacks `sessions.getProxy`,
+`sessions.updateProxy`, `messages.clickButton`, the `name` filter on
+`sessions.list`, `verifyWebhookSignature`, the `WebhookDelivery` types, the
+`code`, `retryAfterSeconds` and `headers` error fields and the refusal of an
+empty, `.` or `..` id or path segment; they ship with the next SDK release. See
+[the SDK overview](../README.md#coverage).
+
 ## Usage
 
 ```typescript
@@ -54,9 +61,37 @@ any retry. A 429 from the global rate limiter lifts when its window expires
 default), and `.retryAfterSeconds` carries its `Retry-After` header. A 429 whose
 `.code` is `"SEND_PACING_LIMITED"` is not transient: do not retry it before
 `.retryAfterSeconds`, which then comes from the body and can be hours. Every API
-error also exposes the response `.headers`. In a routed deployment only 503
-proves the request was never carried out: a forward that fails after the request
-reached the owner node answers 502 or 504.
+error also exposes the response `.headers`. A 503 does not prove a write was
+never carried out: the engine answers it when WhatsApp did not confirm in time,
+and the change may still have been applied, so re-read the state before
+repeating it. In a routed deployment a forward that fails before reaching the
+owner node answers 503, one that fails after the request reached it answers 502
+or 504, and a 503 from the owner itself is relayed unchanged.
+
+## Receiving webhooks
+
+A webhook configured with a secret signs each delivery in its
+`X-OpenWA-Signature` header. Check it with `verifyWebhookSignature` against the
+raw request body, exactly as received, and parse the JSON only after the check
+passes: a re-serialized body can differ byte for byte and will not verify. The
+helper resolves `false` (never throws) for a missing, malformed or non-matching
+signature. `WebhookDelivery` types the parsed body.
+
+```typescript
+import express from 'express';
+import { verifyWebhookSignature, type WebhookDelivery } from '@rmyndharis/openwa';
+
+const app = express();
+
+app.post('/openwa/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  if (!(await verifyWebhookSignature(req.body, req.get('X-OpenWA-Signature'), secret))) {
+    return res.status(401).send('Invalid signature');
+  }
+  const delivery = JSON.parse(req.body.toString('utf8')) as WebhookDelivery;
+  // Process delivery.event and delivery.data here.
+  return res.status(200).send('OK');
+});
+```
 
 ## Releasing
 

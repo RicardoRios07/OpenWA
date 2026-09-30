@@ -90,6 +90,7 @@
     "noMessageYet": "暂无消息",
     "unreadBadge": "{{count}} 条未读消息",
     "unreadBadge_other": "{{count}} 条未读消息",
+    "markedUnread": "已标记为未读",
     "loadingMessages": "正在加载消息...",
     "loadingOlderMessages": "正在加载更早的消息...",
     "loadOlderMessagesError": "无法加载更早的消息。向上滚动重试。",
@@ -452,6 +453,7 @@
     "filters": {
       "title": "筛选条件（可选）",
       "hint": "仅当所有条件都匹配时才触发。适用于消息事件。",
+      "incomplete": "请为每个筛选条件填写值，且条件最多 20 个、每个条件最多 100 个值、文本最多 1000 个字符。",
       "badge": "{{count}} 个筛选条件",
       "badge_other": "{{count}} 个筛选条件",
       "addCondition": "添加条件",
@@ -599,6 +601,7 @@
     },
     "empty": {
       "title": "暂无已保存的模板",
+      "noMatch": "没有与搜索匹配的模板。",
       "description": "创建可复用的模板，加快处理常见回复和通知。",
       "noSessionsTitle": "暂无可用会话",
       "noSessionsDesc": "添加模板前请先创建 WhatsApp 会话。",
@@ -958,7 +961,7 @@
       "checking": "正在检查服务器状态...",
       "dontClose": "请不要关闭此窗口",
       "successMsg": "服务器已恢复在线！页面将自动重新加载。",
-      "errorMsg": "服务器在 30 秒后仍无响应。请检查 Docker 日志并手动重启。",
+      "errorMsg": "服务器无响应。请检查 Docker 日志并手动重启。",
       "outcomeUnknown": "服务器响应前代理返回了错误，因此无法确定重启是否正在进行。请在一分钟后重新加载页面查看。",
       "reload": "重新加载页面"
     },
@@ -1021,7 +1024,7 @@
     "config": {
       "title": "配置 {{name}}",
       "noOptions": "此插件没有可用配置项",
-      "uiHandshakeError": "插件配置界面未初始化。如有可用的架构表单，请使用下方表单。",
+      "uiHandshakeError": "插件配置界面未初始化。",
       "save": "保存配置",
       "addItem": "添加",
       "tabConfig": "配置",
@@ -1157,7 +1160,7 @@
   },
   "search": {
     "placeholder": "搜索消息…",
-    "results": "{{count}} 条结果",
+    "loadMore": "显示更多（{{shown}}/{{total}}）",
     "empty": "未找到消息。",
     "error": "搜索失败。请重试。",
     "unavailable": "搜索未配置。",

@@ -25,10 +25,10 @@ export class InstanceThrottlerGuard extends ProxyAwareThrottlerGuard {
     // the very first hit. An explicit 0 is still rejected at boot by env.validation.
     this.throttlers = [
       {
-        // Sized well ABOVE the per-instance limit so it never becomes the binding constraint for a
-        // legitimate provider fanning many tenants through one egress IP: 10x the instance default.
-        // Raise it with `INGRESS_IP_LIMIT` when one IP legitimately drives more than that. The tier
-        // keeps the inherited proxy-aware client-IP tracker.
+        // Sized 10x the per-instance default. It counts every request, including those the
+        // per-instance bucket later sheds, so one tenant pushing a shared egress IP past it sheds
+        // its neighbours too. Raise it with `INGRESS_IP_LIMIT` when one IP legitimately drives more
+        // than that. The tier keeps the inherited proxy-aware client-IP tracker.
         name: 'ingress-ip',
         limit: resolveNonNegativeIntEnv(process.env.INGRESS_IP_LIMIT, 1200),
         ttl: resolveNonNegativeIntEnv(process.env.INGRESS_INSTANCE_TTL, 60000),

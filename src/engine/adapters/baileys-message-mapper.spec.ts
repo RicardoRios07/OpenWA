@@ -1,4 +1,5 @@
 import {
+  BaileysContextContent,
   BaileysIncomingFields,
   baileysChatJid,
   buildIncomingMessageFromBaileys,
@@ -253,6 +254,23 @@ describe('extractBaileysContext (quoted body shares the live body extractor)', (
       ephemeralDuration: 86400,
       mentionedJids: ['628222@s.whatsapp.net'],
     });
+  });
+
+  it.each([
+    'productMessage',
+    'contactMessage',
+    'contactsArrayMessage',
+    'pollCreationMessageV3',
+    'liveLocationMessage',
+    'orderMessage',
+    'eventMessage',
+  ])('reads the disappearing-messages timer off a %s', type => {
+    const content = { [type]: { contextInfo: { expiration: 86400 } } } as BaileysContextContent;
+    expect(extractBaileysContext(content).ephemeralDuration).toBe(86400);
+  });
+
+  it('reads no timer when no content node carries one', () => {
+    expect(extractBaileysContext({ conversation: 'hi' } as BaileysContextContent).ephemeralDuration).toBeUndefined();
   });
 
   it('carries a quote from a button-reply contextInfo', () => {

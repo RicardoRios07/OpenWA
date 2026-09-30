@@ -487,7 +487,7 @@ export function Infrastructure() {
                   type="text"
                   value={configForm.engineConfig.browserArgs}
                   onChange={e => configForm.updateEngineConfig('browserArgs', e.target.value)}
-                  placeholder="--no-sandbox --disable-gpu"
+                  placeholder="--no-sandbox --disable-setuid-sandbox --disable-dev-shm-usage --disable-gpu"
                 />
                 {pinNote('PUPPETEER_ARGS')}
               </div>
@@ -885,7 +885,7 @@ export function Infrastructure() {
                   style={{
                     width:
                       restartFlow.restartCountdown > 0
-                        ? `${((30 - restartFlow.restartCountdown) / 30) * 100}%`
+                        ? `${((restartFlow.restartTotal - restartFlow.restartCountdown) / restartFlow.restartTotal) * 100}%`
                         : '100%',
                   }}
                 />

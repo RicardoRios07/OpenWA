@@ -30,7 +30,8 @@ export class MetricsModule implements NestModule {
     // Middleware runs BEFORE the global guards, so this boundary sees the requests the guards
     // reject (throttler 429, API-key 401/403) that never reach the interceptor. The pair
     // coordinates through a per-request claim so each response is counted exactly once.
-    // '*' resolves against the global prefix, i.e. every /api route.
-    consumer.apply(requestMetricsBoundaryMiddleware).forRoutes('*');
+    // '{*splat}' resolves against the global prefix, i.e. every /api route. The named wildcard is
+    // the path-to-regexp v8 form; a bare '*' works too but logs a legacy-route warning on every boot.
+    consumer.apply(requestMetricsBoundaryMiddleware).forRoutes('{*splat}');
   }
 }

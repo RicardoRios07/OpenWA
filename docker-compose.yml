@@ -396,7 +396,6 @@ services:
       - DOCKER_HOST=tcp://docker-proxy:2375
     volumes:
       - openwa-data:/app/data
-      - ./docker-compose.yml:/app/docker-compose.yml:ro
     depends_on:
       docker-proxy:
         condition: service_started

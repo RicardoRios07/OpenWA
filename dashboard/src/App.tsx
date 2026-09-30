@@ -79,6 +79,10 @@ function AppContent() {
     })
       .then(async res => {
         const decision = resolveStartupValidation(res.status, await res.json().catch(() => null));
+        // Nothing cancels this request on logout. If the user has since signed out, or back in with
+        // another key, the answer is about a key no longer in use: applying it would hand the new
+        // session the old key's role, or log it out over the old key's 401.
+        if (sessionStorage.getItem('openwa_api_key') !== savedKey) return;
         if (decision.action === 'logout') {
           handleLogout();
         } else if (decision.action === 'role') {

@@ -6,6 +6,9 @@ import {
   PluginLogLevel,
 } from './protocol';
 import type { SearchQuery, SearchResults } from '../../../modules/search/search.types';
+import { createLogger } from '../../../common/services/logger.service';
+
+const logger = createLogger('PluginWorkerHost');
 
 /**
  * Capability verbs whose host-side work IS an outbound message send. A media send (the URL
@@ -34,9 +37,8 @@ const PROGRESS_KINDS: ReadonlySet<WorkerToHostMessage['kind']> = new Set([
  * Host-side driver for a single untrusted plugin running in a worker. Owns the request/response
  * correlation over a {@link PluginWorkerChannel}: it posts `load`/`lifecycle` messages and resolves
  * the matching promise when the worker replies, and fails every outstanding call if the worker dies.
- *
- * Phase B1 covers lifecycle only. The capability bridge (B2) and hook bridge (B3) extend this with
- * their own correlated message kinds, all over the same channel.
+ * Capability, hook, webhook, search and health traffic use their own correlated message kinds over
+ * the same channel.
  */
 export class PluginWorkerHost {
   private nextId = 1;
@@ -210,9 +212,9 @@ export class PluginWorkerHost {
 
   /**
    * Dispatch a verified inbound webhook to the worker and await its handler result. Cloned from
-   * dispatchHook: bounded by `timeoutMs`, and fail-open — a slow or wedged worker resolves a default
-   * 504 (the provider was already ack'd in async mode) rather than hanging the HTTP request. A
-   * mid-request worker crash is drained to 502 in handleExit, so the request never hangs forever.
+   * dispatchHook and bounded by `timeoutMs`: a slow or wedged worker resolves ok:false with 504, and a
+   * mid-dispatch worker crash is drained to 502 in handleExit. The ingress job throws on either, so the
+   * queued delivery is retried or dead-lettered rather than waiting forever.
    */
   dispatchWebhook(options: {
     instanceId: string;
@@ -238,7 +240,7 @@ export class PluginWorkerHost {
         this.webhookPending.delete(id);
         options.onTimeout?.();
         this.probeLiveness();
-        resolve({ ok: false, status: 504 }); // fail-open: provider already ack'd in async mode
+        resolve({ ok: false, status: 504 }); // the ingress job retries or dead-letters the delivery
       }, options.timeoutMs);
       this.webhookPending.set(id, { resolve, timer });
       this.channel.postMessage({
@@ -388,6 +390,20 @@ export class PluginWorkerHost {
   }
 
   private handleMessage(message: WorkerToHostMessage): void {
+    // Plugin code can post to parentPort directly, so a message is untrusted input. Anything that throws
+    // here escapes the channel's listener as an uncaught exception and takes the whole host down.
+    if (typeof message !== 'object' || message === null) return;
+    try {
+      this.routeMessage(message);
+    } catch (error) {
+      logger.warn(
+        `Dropped a malformed sandbox worker message: ${error instanceof Error ? error.message : String(error)}`,
+        { action: 'sandbox_worker_message_dropped' },
+      );
+    }
+  }
+
+  private routeMessage(message: WorkerToHostMessage): void {
     // Only answers to host requests count as progress: a synchronous loop can still post log, cap or
     // subscribe messages, but it cannot finish a dispatch.
     if (this.probe && PROGRESS_KINDS.has(message.kind)) this.armProbe(this.probe.id);
@@ -604,8 +620,8 @@ export class PluginWorkerHost {
       resolve({ continue: true });
     });
     this.hookPending.clear();
-    // Drain in-flight webhooks: a mid-request worker crash must return 502, never hang the HTTP
-    // request. (The per-request timeout would eventually fail-open to 504, but the request should not
+    // Drain in-flight webhooks: a mid-dispatch worker crash returns 502 so the ingress job fails the
+    // delivery now. (The per-dispatch timeout would eventually resolve 504, but the job should not
     // wait the full window when the worker is already known dead.)
     this.webhookPending.forEach(({ resolve, timer }) => {
       clearTimeout(timer);

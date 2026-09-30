@@ -52,9 +52,13 @@ const themeIcons = { light: Sun, dark: Moon, system: Monitor };
 
 export function Layout({ onLogout, userRole }: LayoutProps) {
   const { t, i18n } = useTranslation();
-  const { theme, setTheme, resolvedTheme } = useTheme();
+  const { theme, toggleTheme } = useTheme();
   const ThemeIcon = themeIcons[theme];
   const themeLabel = t(`theme.${theme}`);
+  // toggleTheme cycles light, dark, system; the button names the state a click selects.
+  const nextThemeLabel = t('theme.toggleTo', {
+    value: t(`theme.${theme === 'light' ? 'dark' : theme === 'dark' ? 'system' : 'light'}`),
+  });
 
   const navItems = allNavItems.filter(item => !item.adminOnly || userRole === 'admin');
 
@@ -262,9 +266,9 @@ export function Layout({ onLogout, userRole }: LayoutProps) {
           <div className="appearance-menu">
             <button
               className="theme-toggle-btn"
-              onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}
-              title={t('theme.toggleTo', { value: t(resolvedTheme === 'dark' ? 'theme.light' : 'theme.dark') })}
-              aria-label={t('theme.toggleTo', { value: t(resolvedTheme === 'dark' ? 'theme.light' : 'theme.dark') })}
+              onClick={toggleTheme}
+              title={nextThemeLabel}
+              aria-label={nextThemeLabel}
             >
               <span className="appearance-button-cue" aria-hidden="true">
                 <ThemeIcon size={16} />

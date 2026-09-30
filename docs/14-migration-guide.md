@@ -127,18 +127,25 @@ curl -X POST 'http://localhost:2785/api/infra/import-data' \
 
 > [!IMPORTANT]
 > **The import is one request, bounded by the target's `BODY_SIZE_LIMIT`** (default `25mb`); a larger
-> file is refused with `413`. Compare `ls -l data-backup.json` with that limit before Step 4. If the
-> file is bigger, set `BODY_SIZE_LIMIT` on the target to at least its size (for example `50mb`) and
-> restart, since the value is read at boot; put it back afterwards, because it applies to every route.
+> file is refused with `413`, as is one above half the in-flight body budget (twice `BODY_SIZE_LIMIT`
+> at the default budget). Retrying does not help either way; raise the limit as below, which clears
+> both because the default budget scales with it. Compare
+> `ls -l data-backup.json` with that limit before Step 4. If the file is bigger, set `BODY_SIZE_LIMIT`
+> on the target to at least its size (for example `50mb`) and restart, since the value is read at
+> boot; put it back afterwards, because it applies to every route.
 > An explicit `INFLIGHT_BODY_BUDGET_BYTES` must stay at least twice the file size, because one caller
-> may hold only half of it; a body above that share is refused with `503`. `EXPORT_INLINE_MEDIA_BUDGET_BYTES`
+> may hold only half of it; a body above that share is refused with `413`. `EXPORT_INLINE_MEDIA_BUDGET_BYTES`
 > bounds inline media only, so a long text history can still pass the limit and needs the memory to
 > parse it on both ends.
 >
-> **Credentials do not travel.** Webhooks are restored without their `secret` and custom `headers`, so
-> deliveries go unsigned until you set them again with `PUT /api/sessions/:sessionId/webhooks/:id`. A
-> session `proxyUrl` keeps its host but loses its `user:pass`, so a proxy that needs authentication
-> fails the session's next start until you re-enter it with `PATCH /api/sessions/:sessionId/proxy`.
+> **Webhook and proxy credentials do not travel.** Webhooks are restored without their `secret` and
+> custom `headers`, so deliveries go unsigned until you set them again with
+> `PUT /api/sessions/:sessionId/webhooks/:id`. A session `proxyUrl` keeps its host but loses its
+> `user:pass`, so a proxy that needs authentication fails the session's next start until you re-enter
+> it with `PATCH /api/sessions/:sessionId/proxy`.
+> Plugin instances are the exception: their ingress `secret`, `verifyToken` and `config` (API tokens
+> included) are exported and restored in plaintext, so treat `data-backup.json` as a secret and delete
+> it after the import.
 
 > [!NOTE]
 > **Session statuses in the backup describe the source host.** An active status (`ready`,
@@ -304,6 +311,12 @@ REDIS_PASSWORD=optional
 > whose configuration lives in `.env` — but if you manage datastores from the dashboard, leave the
 > key unset (as the shipped templates do) and set only the connection details above. The same holds
 > for `POSTGRES_BUILTIN` and `MINIO_BUILTIN`.
+>
+> This applies to a bare-metal install that reads the project `.env`. Compose does not forward
+> `REDIS_BUILTIN` (nor `POSTGRES_BUILTIN` or `MINIO_BUILTIN`), so on compose clear "Use Built-in Redis
+> Container" in Dashboard > Infrastructure (or set `REDIS_BUILTIN=false` in `data/.env.generated`), and
+> put only the forwarded `REDIS_ENABLED`, `REDIS_HOST`, `REDIS_PORT`, `REDIS_USERNAME` and
+> `REDIS_PASSWORD` in the `.env` next to `docker-compose.yml`.
 
 | Scenario                  | Support | Notes                                      |
 | ------------------------- | ------- | ------------------------------------------ |
@@ -696,10 +709,11 @@ ssh new-server "cd $APP_DIR && docker compose stop openwa-api"
 # 2. Copy the auth profile out of the source container, to the target host, and back in.
 #    whatsapp-web.js: /app/data/sessions/session-<id>.
 #    Baileys:         /app/data/baileys/<id> (no "session-" prefix).
+#    rsync refuses two remote ends, so the copy goes through this workstation in two hops.
 ssh old-server "cd $APP_DIR && docker compose cp \
     openwa-api:/app/data/sessions/session-$OLD_ID ./session-$OLD_ID"
-rsync -avz --progress "old-server:$APP_DIR/session-$OLD_ID/" \
-    "new-server:$APP_DIR/session-$NEW_ID/"
+rsync -avz --progress "old-server:$APP_DIR/session-$OLD_ID/" "./session-$OLD_ID/"
+rsync -avz --progress "./session-$OLD_ID/" "new-server:$APP_DIR/session-$NEW_ID/"
 ssh new-server "cd $APP_DIR && docker compose cp \
     ./session-$NEW_ID openwa-api:/app/data/sessions/session-$NEW_ID"
 
@@ -707,7 +721,8 @@ ssh new-server "cd $APP_DIR && docker compose cp \
 ssh new-server "cd $APP_DIR && docker compose start openwa-api"
 ```
 
-Delete the staging copies (`$APP_DIR/session-$OLD_ID` and `$APP_DIR/session-$NEW_ID`) afterwards — they hold
+Delete the staging copies (`$APP_DIR/session-$OLD_ID` and `$APP_DIR/session-$NEW_ID` on the hosts, and
+`./session-$OLD_ID` on the workstation) afterwards — they hold
 live WhatsApp credentials.
 
 #### Method 2: Records via the Infra API + auth state by file copy
@@ -798,7 +813,8 @@ docker compose down
 #    The repo's compose file BUILDS the API image from source:
 git pull && docker compose up -d --build
 #    Deployments pinned to a published image instead (ghcr.io/rmyndharis/openwa:<version>)
-#    bump the tag in their compose file, then: docker compose pull openwa-api && docker compose up -d --no-build
+#    bump the tag and bring the compose file up to the release (git pull for the repo checkout),
+#    then: docker compose pull openwa-api && docker compose up -d --no-build
 
 # 4. Wait for health — every route lives under the /api prefix
 for i in {1..30}; do
@@ -882,10 +898,11 @@ The authoritative list is `CHANGELOG.md`; breaking items are flagged there with 
 ```bash
 #!/bin/bash
 # rollback.sh
+set -euo pipefail
 
 # A DIRECTORY of restored files — not the tar.gz that scripts/backup.sh writes (see the TIP below).
-BACKUP_DIR=$1
-TARGET_VERSION=$2
+BACKUP_DIR=${1:-}
+TARGET_VERSION=${2:-}
 
 if [ -z "$BACKUP_DIR" ] || [ -z "$TARGET_VERSION" ]; then
     echo "Usage: ./rollback.sh <backup-dir> <target-version>"
@@ -898,16 +915,31 @@ echo "🔄 Rolling back to v${TARGET_VERSION}..."
 # Started with docker-compose.dev.yml (the README Quick Start)? Add `-f docker-compose.dev.yml` to
 # every docker compose command below, and write `openwa` wherever one names the `openwa-api` service.
 
-# 1. Stop current
+# 1. Stop current and check out the target version. The checkout comes before step 4: a restored
+#    docker-compose.yml that differs from the checked-out one makes git refuse the checkout.
 docker compose down
+git checkout "v${TARGET_VERSION}"
 
 # 2. Restore the databases, both from the same backup. The main DB (API keys, audit log) is always
 #    SQLite, whatever the data store is. Stale journal files go first, as scripts/restore.sh does,
 #    so SQLite cannot replay them into the restored file.
 echo "📥 Restoring database..."
 if [ -f "$BACKUP_DIR/database.sql" ]; then
-    # PostgreSQL
-    psql -h "$DATABASE_HOST" -U "$DATABASE_USERNAME" -d "$DATABASE_NAME" < "$BACKUP_DIR/database.sql"
+    # PostgreSQL: load the dump into an empty database. Replayed over the upgraded tables, its CREATE
+    # statements fail and its rows mix with theirs. This is the built-in PostgreSQL (the compose
+    # `postgres` service, or the openwa-postgres container Dashboard > Infrastructure created, which
+    # carries no compose labels, so step 1 left it running). docker start covers a leftover or
+    # dashboard-created container; compose creates the service only when none exists. For an external
+    # server, rename the database and load the dump as step 3 of 11 - Runbook: Restore from Backup
+    # shows. The upgraded database is kept under a _pre_restore_ name, and sed drops the pg_dump 17
+    # line PostgreSQL 16 rejects.
+    docker start openwa-postgres 2>/dev/null || docker compose --profile postgres up -d postgres
+    docker exec openwa-postgres sh -c 'until pg_isready -q -U "$POSTGRES_USER"; do sleep 1; done'
+    docker exec openwa-postgres sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres \
+      -c "ALTER DATABASE \"$POSTGRES_DB\" RENAME TO \"${POSTGRES_DB}_pre_restore_$(date +%Y%m%d%H%M%S)\"" \
+      -c "CREATE DATABASE \"$POSTGRES_DB\" OWNER \"$POSTGRES_USER\""'
+    sed '/^SET transaction_timeout = 0;$/d' "$BACKUP_DIR/database.sql" |
+      docker exec -i openwa-postgres sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 else
     # SQLite
     rm -f ./data/openwa.sqlite-{wal,shm,journal}
@@ -928,11 +960,10 @@ echo "📥 Restoring configuration..."
 cp "$BACKUP_DIR/.env" .
 cp "$BACKUP_DIR/docker-compose.yml" .
 
-# 5. Start the target version. The repo compose BUILDS the image, so check out the tag and rebuild;
-#    a deployment pinned to a published image bumps the tag and runs
+# 5. Start the target version. The repo compose BUILDS the image, so rebuild from the tag checked
+#    out in step 1; a deployment pinned to a published image bumps the tag and runs
 #    `docker compose pull openwa-api && docker compose up -d --no-build` instead.
 echo "▶️ Starting v${TARGET_VERSION}..."
-git checkout "v${TARGET_VERSION}"
 docker compose up -d --build
 
 # 6. Verify
@@ -1003,7 +1034,11 @@ flowchart TD
 > column's migration. To recover, restore `main.sqlite` from the backup taken before the rollback,
 > which brings the chat scopes back with it, or delete that ledger row as
 > [05 - Database Design, section 5.6](./05-database-design.md#56-migration-strategy) shows, after which
-> the column comes back empty, which means every chat. Before such a rollback, revoke every key that has
+> the column comes back empty, which means every chat. Section 5.6 gives the source and compose forms;
+> on the Helm chart, scale the StatefulSet to 0, start the helper pod on the release's data PVC as
+> [11 - Runbook: Restore from Backup](./11-operational-runbooks.md#runbook-restore-from-backup) does,
+> run the same `sqlite3 /app/data/main.sqlite` command there with `kubectl exec openwa-restore --`,
+> then delete the pod and scale back to 1. Before such a rollback, revoke every key that has
 > `allowedChats` (`POST /api/auth/api-keys/:id/revoke`) and issue new ones after upgrading again.
 > Starting the older image with `MAIN_DATABASE_SYNCHRONIZE=false` keeps the column and its values for
 > the next upgrade (the compose file forwards it since 0.14.5), but the older image still does not

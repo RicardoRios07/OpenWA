@@ -173,7 +173,7 @@ describe('a job that runs a repo script checks the repo out', () => {
  *
  * Python installs cannot be pinned that way: `pip install` resolves the ranges in pyproject.toml, and
  * `python -m build` fetches its build backend into an isolated environment no pin reaches. The same
- * holds for pipx, uv, uvx, poetry and pyproject-build. So an id-token job runs none of them; the
+ * holds for pipx, uv, uvx, poetry, pdm, hatch, flit and pyproject-build. So an id-token job runs none of them; the
  * install, test and build happen in a job without the grant.
  *
  * Only these two families are checked: other installers (npx, a local npm install, gem, go) in an
@@ -184,10 +184,13 @@ describe('a job that can mint a publish credential pins global npm installs and 
   type OidcJob = { permissions?: Permissions; steps?: Step[] };
   type OidcWorkflow = { permissions?: Permissions; jobs?: Record<string, OidcJob> };
   const workflows = fs.readdirSync(workflowDir).filter(f => f.endsWith('.yml') || f.endsWith('.yaml'));
-  const GLOBAL_INSTALL = /\bnpm\s+(?:install|i|add)\s+(?:-g|--global)\s+([^\n;&|]+)/g;
-  // `pip`, `pip3`, `python -m pip` and `uv pip` all contain `pip install`.
+  // Options may sit before the subcommand or anywhere after it: group 1 holds the leading ones, group 2
+  // the rest of the command, and the global flag may be in either.
+  const NPM_INSTALL = /\bnpm((?:[ \t]+-\S+)*)[ \t]+(?:install|i|add)\b([^\n;&|]*)/g;
+  const GLOBAL_FLAG = /(?:^|\s)(?:-g|--global|--location=global)(?=\s|$)/;
+  // `pip`, `pip3`, `python -m pip` and `uv pip` all contain `pip install`, with options allowed between.
   const PYTHON_INSTALL =
-    /\bpip[\d.]*\s+(?:install|wheel|download)\b|\bpython[\d.]*\s+-m\s+build\b|\bpyproject-build\b|\bpipx\s+(?:install|run)\b|\buvx\b|\buv\s+(?:sync|build|run|add|tool)\b|\bpoetry\s+(?:install|build|add)\b/g;
+    /\bpip[\d.]*(?:[ \t]+-\S+)*[ \t]+(?:install|wheel|download)\b|\bpython[\d.]*\s+-m\s+build\b|\bpyproject-build\b|\bpipx\s+(?:install|run)\b|\buvx\b|\buv\s+(?:sync|build|run|add|tool)\b|\bpoetry\s+(?:install|sync|update|lock|build|add|publish)\b|\bpdm\s+(?:install|sync|update|add|build|publish)\b|\bhatch\s+(?:build|publish|run|env)\b|\bflit\s+(?:build|publish|install)\b/g;
 
   // A job without its own `permissions` inherits the workflow-level block; `write-all` grants id-token too.
   const grantsIdToken = (perms: Permissions): boolean =>
@@ -205,13 +208,15 @@ describe('a job that can mint a publish credential pins global npm installs and 
 
   const globalInstallsInOidcJobs = (source: string | OidcWorkflow): Array<{ job: string; spec: string }> =>
     oidcJobRuns(source).flatMap(({ job, run }) =>
-      [...run.matchAll(GLOBAL_INSTALL)].flatMap(match =>
-        match[1]
-          .trim()
-          .split(/\s+/)
-          .filter(arg => !arg.startsWith('-'))
-          .map(spec => ({ job, spec })),
-      ),
+      [...run.matchAll(NPM_INSTALL)]
+        .filter(match => GLOBAL_FLAG.test(`${match[1]} ${match[2]}`))
+        .flatMap(match =>
+          match[2]
+            .trim()
+            .split(/\s+/)
+            .filter(arg => !arg.startsWith('-'))
+            .map(spec => ({ job, spec })),
+        ),
     );
 
   const pythonInstallsInOidcJobs = (source: string | OidcWorkflow): string[] =>
@@ -233,6 +238,33 @@ describe('a job that can mint a publish credential pins global npm installs and 
     expect(
       globalInstallsInOidcJobs({ permissions: 'write-all', jobs: { publish: { ...job, permissions: {} } } }),
     ).toHaveLength(0);
+  });
+
+  it('finds a global npm install whatever the order of its flags', () => {
+    const commands = [
+      'npm install npm@latest --global',
+      'npm -g install npm@latest',
+      'npm install --no-fund -g npm@latest',
+      'npm i npm@11 -g',
+      'npm add --location=global npm@latest',
+    ];
+    const job: OidcWorkflow = {
+      jobs: { publish: { permissions: { 'id-token': 'write' }, steps: commands.map(run => ({ run })) } },
+    };
+    expect(globalInstallsInOidcJobs(job).map(entry => entry.spec)).toEqual([
+      'npm@latest',
+      'npm@latest',
+      'npm@latest',
+      'npm@11',
+      'npm@latest',
+    ]);
+    // A local install and a clean install grant nothing global.
+    const local: OidcWorkflow = {
+      jobs: {
+        publish: { permissions: { 'id-token': 'write' }, steps: [{ run: 'npm ci\nnpm install --no-save foo' }] },
+      },
+    };
+    expect(globalInstallsInOidcJobs(local)).toEqual([]);
   });
 
   it.each(workflows)('%s: global installs in id-token jobs are pinned to an exact version', file => {
@@ -272,8 +304,16 @@ describe('a job that can mint a publish credential pins global npm installs and 
       'uv tool install twine',
       'poetry install',
       'poetry build',
+      'poetry sync',
+      'poetry update',
+      'poetry publish --build',
+      'pdm install',
+      'hatch build',
+      'flit publish',
       'pyproject-build',
       'python -m pip wheel .',
+      'pip -q install twine',
+      'python -m pip --quiet install build',
     ];
     const job: OidcWorkflow = {
       jobs: { publish: { permissions: { 'id-token': 'write' }, steps: commands.map(run => ({ run })) } },

@@ -122,6 +122,18 @@ describe('performPluginFetch', () => {
       performPluginFetch('https://api.example.com/t', {}, { fetch: fakeSafeFetch(cannedResponse('{}', {}), sink) }),
     ).resolves.toMatchObject({ ok: true });
   });
+
+  it('treats a null init as no options and never holds a concurrency slot for it', async () => {
+    // A sandboxed plugin can send `null` across the worker bridge; the `= {}` default only covers undefined.
+    const sink: { init?: RequestInit } = {};
+    const fetcher = fakeSafeFetch(cannedResponse('{}', {}), sink);
+    for (let i = 0; i < 17; i++) {
+      await expect(performPluginFetch('https://api.example.com/t', null, { fetch: fetcher })).resolves.toMatchObject({
+        ok: true,
+      });
+    }
+    expect(sink.init?.method).toBe('GET');
+  });
 });
 
 describe('effectiveNetAllow', () => {

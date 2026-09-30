@@ -312,7 +312,7 @@ function installFetchStub(): void {
     if (method === 'GET' && /\/contacts\/[^/]+\/profile-picture$/.test(path)) {
       return Promise.resolve(jsonResponse({ url: null }));
     }
-    if (method === 'GET' && path === `/api/sessions/${SESSION.id}/contacts`) {
+    if (method === 'GET' && path.startsWith(`/api/sessions/${SESSION.id}/contacts?`)) {
       return Promise.resolve(jsonResponse([CONTACT]));
     }
     if (method === 'GET' && path.startsWith(`/api/sessions/${SESSION.id}/messages?`)) {
@@ -440,7 +440,7 @@ afterEach(async () => {
   statuses = [];
 });
 
-function renderChats(): { container: HTMLElement } {
+function renderChats(): ReturnType<RTL['render']> {
   // The avatar and message hooks set their own gcTime over this 1s default; afterEach cancels before it
   // clears so their timers cannot hold the test process open.
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 1_000 } } });
@@ -705,6 +705,19 @@ test('a read-only key is offered no status compose trigger', async () => {
   }
 });
 
+// GET /search needs an operator key, so a viewer would only ever get "Search failed. Try again."
+test('a read-only key is offered no message search', async () => {
+  const { screen } = rtl;
+  window.sessionStorage.setItem('openwa_user_role', 'viewer');
+  try {
+    renderChats();
+    await screen.findByText('Alice');
+    assert.ok(!screen.queryByLabelText('Search messages…'), 'a viewer key was offered message search');
+  } finally {
+    window.sessionStorage.setItem('openwa_user_role', 'admin');
+  }
+});
+
 test('an operator key on whatsapp-web.js posts a status without the admin-only engine route', async () => {
   const { screen, fireEvent, within, waitFor } = rtl;
   window.sessionStorage.setItem('openwa_user_role', 'operator');
@@ -864,6 +877,78 @@ test('a socket reconnect refetches the chat list so the sidebar shows what arriv
   assert.equal(countFetchCalls('GET', chatsPath), 2);
 });
 
+test('a message that lands while a reconnect refetch is out survives the older snapshot', async () => {
+  const { screen, act, waitFor } = rtl;
+  resetFetchCalls();
+  renderChats();
+  await screen.findByText('Alice');
+
+  // The refetch's snapshot was built before the live message below reached the gateway.
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => {
+    release = resolve;
+  });
+  chatsResponder = () => gate.then(() => jsonResponse([CHAT, CHAT_2]));
+  const socket = lastSocket();
+  assert.ok(socket, 'expected the page to have opened a socket');
+  act(() => socket.receive('disconnect', 'transport close'));
+  act(() => socket.receive('connect'));
+  await waitFor(() => assert.equal(countFetchCalls('GET', `/api/sessions/${SESSION.id}/chats`), 2));
+
+  act(() =>
+    socket.receive('message', {
+      type: 'event',
+      timestamp: new Date(1_700_002_000_000).toISOString(),
+      payload: {
+        event: 'message.received',
+        sessionId: SESSION.id,
+        data: {
+          id: 'wamid.live.refetch',
+          chatId: CHAT.id,
+          from: CHAT.id,
+          to: 'me',
+          body: 'while the list reloads',
+          type: 'text',
+          fromMe: false,
+          timestamp: 1_700_001_000,
+        },
+      },
+    }),
+  );
+  await screen.findByText('while the list reloads');
+
+  release();
+  await flush();
+  await flush();
+  assert.ok(screen.queryByText('while the list reloads'), 'the older snapshot replaced the live preview');
+  assert.ok(screen.queryByLabelText('3 unread messages'), 'the older snapshot dropped the live unread count');
+});
+
+test('a row a send stamped with the browser clock does not outrank a later reconnect snapshot', async () => {
+  const { screen, fireEvent, within, act, waitFor } = rtl;
+  const { container } = renderChats();
+  await screen.findByText('Main (15551234567)');
+  fireEvent.click(await screen.findByText('Alice'));
+  await within(container.querySelector('.room-messages') as HTMLElement).findByText('hello from alice');
+
+  // The send stamps Alice's row with the browser clock, far ahead of the fixture timestamps, and no
+  // echo arrives to replace that stamp with the gateway's.
+  fireEvent.change(screen.getByPlaceholderText('Type a message...'), { target: { value: 'hello back' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+  await waitFor(() => assert.ok(findFetchCall('POST', `/api/sessions/${SESSION.id}/messages/send-text`)));
+
+  chatsResponder = () =>
+    Promise.resolve(
+      jsonResponse([{ ...CHAT, lastMessage: 'a reply after the send', timestamp: 1_700_000_800 }, CHAT_2]),
+    );
+  const socket = lastSocket();
+  assert.ok(socket, 'expected the page to have opened a socket');
+  act(() => socket.receive('disconnect', 'transport close'));
+  act(() => socket.receive('connect'));
+
+  await screen.findByText('a reply after the send');
+});
+
 test('a socket reconnect keeps the open chat read instead of badging it with the gap count', async () => {
   const { screen, fireEvent, within, act, waitFor } = rtl;
   const { container } = renderChats();
@@ -949,6 +1034,37 @@ test('a reconnect refetch that settles after the open chat was left keeps its un
         (c.body as { chatId?: string } | undefined)?.chatId === CHAT.id,
     ),
     'the chat the user left was marked read',
+  );
+});
+
+test('a reconnect refetch that settles after the page was left sends no mark-as-read', async () => {
+  const { screen, fireEvent, within, act, waitFor } = rtl;
+  const { container, unmount } = renderChats();
+  await screen.findByText('Main (15551234567)');
+  fireEvent.click(await screen.findByText('Alice'));
+  await within(container.querySelector('.room-messages') as HTMLElement).findByText('hello from alice');
+  await new Promise(resolve => setTimeout(resolve, 1_000));
+  resetFetchCalls();
+
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => {
+    release = resolve;
+  });
+  chatsResponder = () =>
+    gate.then(() => jsonResponse([{ ...CHAT, unreadCount: 4, lastMessage: 'sent after leaving' }, CHAT_2]));
+  const socket = lastSocket();
+  assert.ok(socket, 'expected the page to have opened a socket');
+  act(() => socket.receive('disconnect', 'transport close'));
+  act(() => socket.receive('connect'));
+  await waitFor(() => assert.equal(countFetchCalls('GET', `/api/sessions/${SESSION.id}/chats`), 1));
+
+  // The operator opens another page before the refetch lands; the gap messages were never seen.
+  unmount();
+  release();
+  await new Promise(resolve => setTimeout(resolve, 1_000));
+  assert.ok(
+    !findFetchCall('POST', `/api/sessions/${SESSION.id}/chats/read`),
+    'the chat was marked read after the page was left',
   );
 });
 
@@ -1319,6 +1435,45 @@ test('a staged reply is kept on reopening its chat and dropped when a different 
     null,
     "Alice's reply followed the user into Carol's room",
   );
+});
+
+test('a chat reopened after switching sessions and back fetches its thread again', async () => {
+  const { screen, fireEvent, within, waitFor } = rtl;
+  twoSessions = true;
+  chatsResponder = sessionId => Promise.resolve(jsonResponse(sessionId === SESSION.id ? [CHAT] : [CHAT_2]));
+  // The stub folds session 2's routes onto session 1's, so the thread reads are counted before that.
+  const threadPath = `/api/sessions/${SESSION.id}/messages?chatId=${encodeURIComponent(CHAT.id)}&`;
+  let threadFetches = 0;
+  const stub = globalThis.fetch;
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input).includes(threadPath)) threadFetches++;
+    return stub(input, init);
+  }) as typeof fetch;
+  try {
+    const { container } = renderChats();
+    const selectSession = (id: string) =>
+      fireEvent.change(container.querySelector('select.session-selector') as HTMLSelectElement, {
+        target: { value: id },
+      });
+
+    await screen.findByText('Main (15551234567)');
+    fireEvent.click(await screen.findByText('Alice'));
+    await within(container.querySelector('.room-messages') as HTMLElement).findByText('hello from alice');
+    assert.equal(threadFetches, 1);
+
+    // Session 1's events are not delivered while session 2 is selected, so its cached threads may
+    // have missed messages by the time it is selected again.
+    selectSession(SESSION_2.id);
+    await screen.findByText('Carol');
+    await waitFor(() => assert.equal(screen.queryByText('Alice'), null));
+    selectSession(SESSION.id);
+    fireEvent.click(await screen.findByText('Alice'));
+    await within(container.querySelector('.room-messages') as HTMLElement).findByText('hello from alice');
+    await waitFor(() => assert.equal(threadFetches, 2, 'the cached thread was shown without a refetch'));
+  } finally {
+    globalThis.fetch = stub;
+    twoSessions = false;
+  }
 });
 
 test('a staged reply is dropped when another session is opened', async () => {
@@ -1719,6 +1874,88 @@ test("a search hit in another session opens that session's chat, not the one the
     await within(header).findByText('Alice on two');
   } finally {
     twoSessions = false;
+  }
+});
+
+// Search reads stored messages while the list comes from the engine, so a hit's chat can be missing.
+test("a search hit whose chat the other session's list lacks does not open it later on its own", async () => {
+  const { screen, fireEvent, within, act, waitFor } = rtl;
+  twoSessions = true;
+  const DAVE: Chat = { ...CHAT_2, id: '15550005555@c.us', name: 'Dave', timestamp: 1_700_000_900 };
+  searchHits = [{ ...THIRD_SESSION_HIT, sessionId: SESSION_2.id, chatId: DAVE.id }];
+  try {
+    const { container } = renderChats();
+    await screen.findByText('Alice');
+    await clickSearchHit(container);
+    const select = container.querySelector('select.session-selector') as HTMLSelectElement;
+    await waitFor(() => assert.equal(select.value, SESSION_2.id));
+    await flush();
+
+    fireEvent.click(await screen.findByText('Carol'));
+    const header = await waitFor(() => {
+      const found = container.querySelector('.room-header');
+      assert.ok(found, 'Carol did not open');
+      return found as HTMLElement;
+    });
+    await within(header).findByText('Carol');
+
+    // Dave writes; the refetch his unlisted chat triggers now lists him.
+    chatsResponder = () => Promise.resolve(jsonResponse([CHAT, CHAT_2, DAVE]));
+    const socket = lastSocket();
+    assert.ok(socket, 'expected the page to have opened a socket');
+    act(() =>
+      socket.receive('message', {
+        type: 'event',
+        timestamp: new Date(1_700_002_000_000).toISOString(),
+        payload: {
+          event: 'message.received',
+          sessionId: SESSION_2.id,
+          data: {
+            id: 'wamid.live.dave',
+            chatId: DAVE.id,
+            from: DAVE.id,
+            to: 'me',
+            body: 'dave says hi',
+            type: 'text',
+            fromMe: false,
+            timestamp: 1_700_001_900,
+          },
+        },
+      }),
+    );
+    await screen.findByText('Dave');
+    await flush();
+    await flush();
+    const room = container.querySelector('.room-header') as HTMLElement;
+    assert.equal(within(room).queryByText('Dave') === null, true, 'the old search hit opened Dave');
+  } finally {
+    twoSessions = false;
+  }
+});
+
+test('a second search hit in the chat already open scrolls to it at once', async () => {
+  const { screen, fireEvent, within, waitFor } = rtl;
+  searchHits = [{ ...THIRD_SESSION_HIT, sessionId: SESSION.id, chatId: CHAT.id, waMessageId: DB_MESSAGE.waMessageId! }];
+  const scrolled: Element[] = [];
+  const original = Element.prototype.scrollIntoView;
+  Element.prototype.scrollIntoView = function (this: Element) {
+    scrolled.push(this);
+  };
+  try {
+    const { container } = renderChats();
+    fireEvent.click(await screen.findByText('Alice'));
+    await within(container.querySelector('.room-messages') as HTMLElement).findByText('hello from alice');
+    const toHit = () => scrolled.filter(el => el.getAttribute('data-wa-message-id') === DB_MESSAGE.waMessageId);
+
+    await clickSearchHit(container);
+    await waitFor(() => assert.equal(toHit().length, 1, 'the first hit did not scroll'));
+    // The same hit again, after the user scrolled away: the chat is open, so nothing else changes.
+    fireEvent.click(screen.getByLabelText('Search messages…'));
+    fireEvent.click(await waitFor(() => container.querySelector('.global-search-hit') as HTMLElement));
+    await flush();
+    assert.equal(toHit().length, 2, 'the second hit did not scroll');
+  } finally {
+    Element.prototype.scrollIntoView = original;
   }
 });
 

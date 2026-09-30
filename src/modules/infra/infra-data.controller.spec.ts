@@ -355,6 +355,59 @@ describe('InfraDataController.importData round-trips export-data (no silent mess
     await expect(controller.importData({ tables: dump.tables })).resolves.toMatchObject({ imported: true });
   });
 
+  // On better-sqlite3 an export's reads share the import's connection, so they would see its
+  // uncommitted, possibly rolled-back tables and archive a state that is neither the old nor the new DB.
+  it('refuses an export while an import is running', async () => {
+    await seedSession('s1');
+    const dump = await controller.exportData();
+
+    const importing = controller.importData({ tables: dump.tables });
+    const refusal = await controller.exportData().catch((e: unknown) => e);
+    expect(refusal).toBeInstanceOf(ConflictException);
+    expect((refusal as ConflictException).getResponse()).toMatchObject({ code: 'IMPORT_ALREADY_RUNNING' });
+    await expect(importing).resolves.toMatchObject({ imported: true });
+    await expect(controller.exportData()).resolves.toMatchObject({ counts: { sessions: 1 } });
+  });
+
+  it('refuses an import while an export is running', async () => {
+    await seedSession('s1');
+    const dump = await controller.exportData();
+
+    const exporting = controller.exportData();
+    const refusal = await controller.importData({ tables: dump.tables }).catch((e: unknown) => e);
+    expect(refusal).toBeInstanceOf(ConflictException);
+    expect((refusal as ConflictException).getResponse()).toMatchObject({ code: 'EXPORT_IN_PROGRESS' });
+    await expect(exporting).resolves.toMatchObject({ counts: { sessions: 1 } });
+    await expect(controller.importData({ tables: dump.tables })).resolves.toMatchObject({ imported: true });
+  });
+
+  it('leaves out child rows of a session created after the sessions table was read', async () => {
+    await seedSession('s1');
+    await ds
+      .getRepository(Template)
+      .save(ds.getRepository(Template).create({ id: 't1', sessionId: 's1', name: 'greet', body: 'Hi' }));
+    // The export reads each table separately, so a session paired mid-export is missing from the
+    // archive while a child row written for it before its table is read is not.
+    const query = ds.query.bind(ds);
+    jest.spyOn(ds, 'query').mockImplementation(async (...args: Parameters<DataSource['query']>) => {
+      const rows: unknown = await query(...args);
+      if (args[0] === 'SELECT * FROM sessions') {
+        await seedSession('s2');
+        await ds
+          .getRepository(Template)
+          .save(ds.getRepository(Template).create({ id: 't2', sessionId: 's2', name: 'late', body: 'Hi' }));
+      }
+      return rows;
+    });
+
+    const dump = await controller.exportData();
+    jest.restoreAllMocks();
+
+    expect(dump.counts).toMatchObject({ sessions: 1, templates: 1 });
+    expect((dump.tables.templates as Array<{ id: string }>).map(t => t.id)).toEqual(['t1']);
+    await expect(controller.importData({ tables: dump.tables })).resolves.toMatchObject({ imported: true });
+  });
+
   it('releases the loss-detection token even when the transaction never opens', async () => {
     await seedSession('s1');
     const dump = await controller.exportData();

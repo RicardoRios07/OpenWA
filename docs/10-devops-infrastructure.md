@@ -126,14 +126,14 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
     ports:
-      - '5432:5432'
+      - '127.0.0.1:5432:5432'
 
   redis:
     image: redis:7-alpine
     volumes:
       - redis-data:/data
     ports:
-      - '6379:6379'
+      - '127.0.0.1:6379:6379'
 
   # No separate dashboard service: the `app` image bundles the dashboard SPA and serves it
   # from the same port (2785) via NestJS. Open http://localhost:2785 for the UI.
@@ -426,7 +426,8 @@ LOG_FORMAT=json
 # REDIS_HOST=localhost
 # REDIS_PORT=6379
 # REDIS_TLS=false      # true for a Redis that requires TLS (not the built-in container); every client
-#                      # (cache, rate limits, queue, WebSocket fan-out) uses it. Private CA: NODE_EXTRA_CA_CERTS
+#                      # (cache, rate limits, queue, WebSocket fan-out) uses it. Private CA: NODE_EXTRA_CA_CERTS in the launch
+#                      # environment (shell, systemd, compose environment:), not in .env
 # REDIS_CACHE_DB=1     # logical database for the cache
 # Redis-backed caching switches on when REDIS_ENABLED=true OR CACHE_ENABLED=true — enabling Redis
 # for the queue alone therefore also enables the cache.
@@ -442,11 +443,13 @@ LOG_FORMAT=json
 # SESSION_DATA_PATH=./data/sessions
 
 # Puppeteer (for whatsapp-web.js)
-PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+# Path to a system Chromium/Chrome binary. Leave unset to use the bundled browser; the Docker image sets its own.
+# PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 # PUPPETEER_HEADLESS=true
 # PUPPETEER_ARGS=--no-sandbox,--disable-setuid-sandbox,--disable-dev-shm-usage,--disable-gpu
-# Optional per-browser-command budget, ms. Unset = Puppeteer's own budget. Raise only after seeing
-# "Runtime.callFunctionOn timed out"; positive integer, max 2147483647 (cost: see docs/12).
+# Optional per-browser-command budget, ms. Unset = Puppeteer's own budget. Raise only after a read answers
+# 503 "did not answer ... in time" or fails with "Runtime.callFunctionOn timed out"; positive integer, max
+# 2147483647 (cost: see docs/12).
 # PUPPETEER_PROTOCOL_TIMEOUT_MS=300000
 
 # ===========================================
@@ -621,7 +624,7 @@ services:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.retention.time=30d'
     ports:
-      - '9090:9090'
+      - '127.0.0.1:9090:9090'
     restart: unless-stopped
 
   grafana:
@@ -631,10 +634,10 @@ services:
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
       - grafana-data:/var/lib/grafana
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:?set GRAFANA_PASSWORD}
       - GF_USERS_ALLOW_SIGN_UP=false
     ports:
-      - '3001:3000'
+      - '127.0.0.1:3001:3000'
     depends_on:
       - prometheus
       - loki
@@ -647,7 +650,7 @@ services:
       - loki-data:/loki
     command: -config.file=/etc/loki/local-config.yaml
     ports:
-      - '3100:3100'
+      - '127.0.0.1:3100:3100'
     restart: unless-stopped
 
   promtail:
@@ -665,8 +668,10 @@ services:
     image: prom/alertmanager:v0.26.0
     volumes:
       - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+      # Holds the Slack webhook URL; see the Alertmanager config below
+      - ./monitoring/slack_webhook_url:/etc/alertmanager/slack_webhook_url:ro
     ports:
-      - '9093:9093'
+      - '127.0.0.1:9093:9093'
     restart: unless-stopped
 
   node-exporter:
@@ -679,7 +684,7 @@ services:
       - '--path.procfs=/host/proc'
       - '--path.sysfs=/host/sys'
     ports:
-      - '9100:9100'
+      - '127.0.0.1:9100:9100'
     restart: unless-stopped
 
 volumes:
@@ -794,7 +799,8 @@ groups:
 # monitoring/alertmanager.yml
 global:
   resolve_timeout: 5m
-  slack_api_url: '${SLACK_WEBHOOK_URL}'
+  # Alertmanager does not expand env vars in its config, so mount the webhook URL as a file.
+  slack_api_url_file: /etc/alertmanager/slack_webhook_url
 
 route:
   group_by: ['alertname', 'severity']
@@ -835,11 +841,11 @@ receivers:
 All health endpoints are `@Public()` (no API key) and `@SkipThrottle()`, and live under the global
 `api` prefix. There is **no** `/health/detailed` endpoint.
 
-| Endpoint                | Purpose                                                                                                                                 | Body                                                           | Codes     |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- | --------- |
-| `GET /api/health`       | Basic check                                                                                                                             | `{ status, timestamp, version }` (version from `package.json`) | 200       |
-| `GET /api/health/live`  | Liveness (deliberately static — a transient dependency outage must not KILL the pod)                                                    | `{ status: 'ok' }`                                             | 200       |
-| `GET /api/health/ready` | Readiness — probes **both** databases (`main` + `data`, `SELECT 1`, 3s timeout each) and reports 503 while draining (graceful shutdown) | `{ status, details: { mainDatabase, dataDatabase } }`          | 200 / 503 |
+| Endpoint                | Purpose                                                                                                                                 | Body                                                                                                                                   | Codes     |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| `GET /api/health`       | Basic check                                                                                                                             | `{ status, timestamp, version? }`: `version` (from `package.json`) only for a request carrying a valid API key (`X-API-Key` or Bearer) | 200       |
+| `GET /api/health/live`  | Liveness (deliberately static — a transient dependency outage must not KILL the pod)                                                    | `{ status: 'ok' }`                                                                                                                     | 200       |
+| `GET /api/health/ready` | Readiness — probes **both** databases (`main` + `data`, `SELECT 1`, 3s timeout each) and reports 503 while draining (graceful shutdown) | `{ status, details: { mainDatabase, dataDatabase } }`                                                                                  | 200 / 503 |
 
 ```typescript
 // health/health.controller.ts
@@ -848,8 +854,14 @@ All health endpoints are `@Public()` (no API key) and `@SkipThrottle()`, and liv
 @SkipThrottle()
 export class HealthController {
   @Get()
-  check(): { status: string; timestamp: string; version: string } {
-    return { status: 'ok', timestamp: new Date().toISOString(), version: APP_VERSION };
+  async check(@Req() req: Request): Promise<{ status: string; timestamp: string; version?: string }> {
+    const body: { status: string; timestamp: string; version?: string } = {
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+    };
+    // The version is disclosed only to a caller presenting a valid key (X-API-Key or Bearer).
+    if (await this.hasValidApiKey(req)) body.version = APP_VERSION;
+    return body;
   }
 
   @Get('live')
@@ -886,7 +898,9 @@ short TTL (~5s, so back-to-back scrapes don't repeat the DB scan), and exposes i
 
 Access is **disabled by default**: the endpoint returns **404** unless `METRICS_TOKEN` is set. When
 set, scrapers must send `Authorization: Bearer <token>` (compared with `timingSafeEqual`); a missing or
-wrong token returns 401. The token is **separate** from the API key — the route is `@Public()` (skips
+wrong token returns 401. After 10 failed attempts from one client IP within a minute, that client is
+answered 429 (even with the correct token) until the window slides; a successful scrape does not count
+against the limit. The token is **separate** from the API key — the route is `@Public()` (skips
 the API-key guard) and `@SkipThrottle()`.
 
 ```typescript
@@ -1099,10 +1113,12 @@ These are the metrics OpenWA actually exports at `GET /api/metrics`:
 | **System**   | `openwa_process_heap_used_bytes`              | V8 heap used                                            | Growth                           |
 | **System**   | `openwa_process_uptime_seconds`               | Process uptime                                          | Frequent restarts (resets)       |
 
-> OpenWA does **not** expose request-rate, latency-histogram, webhook, queue, or Node default
-> (`nodejs_*`) metrics. For host/container-level signals (CPU, memory pressure, event-loop), scrape
-> external exporters: `up` and `container_memory_usage_bytes` come from blackbox/cAdvisor, and
-> `node_*` from node-exporter — not from the app.
+> This table is a starting subset. The HTTP (`http_requests_total`, `http_request_duration_seconds`),
+> webhook (`openwa_webhook_delivery_failures_total`), queue (`openwa_queue_jobs`) and event-loop
+> (`openwa_event_loop_delay_*`) series are in the complete list under **Exported metric names** above.
+> OpenWA does **not** expose Node default (`nodejs_*`) metrics or host/container CPU and memory
+> signals; scrape cAdvisor (`container_*`) or node-exporter (`node_*`) for those. `up` is recorded by
+> Prometheus itself for every scrape target.
 
 ## 10.7 Backup & Recovery
 

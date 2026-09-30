@@ -5,10 +5,11 @@ import { buildFfmpegArgs, voiceEncodeArgs, videoEncodeArgs } from './ffmpeg';
  * "tidying": the quoting inside the scale filter, and the codec choices WhatsApp actually requires.
  *
  * The scale quoting is not cosmetic. ffmpeg splits a filter description on commas, so the comma
- * inside `min(1280,iw)` terminates the filter unless the expression is quoted — the unquoted form
- * fails with `Invalid size 'min(1280'`. Because these arguments are passed through spawn rather than
- * a shell, the quotes have to be part of the string itself; a reviewer removing them as redundant
- * shell syntax would break every video conversion, and nothing else here would notice.
+ * inside `if()` or `min()` terminates the filter unless the expression is quoted — the unquoted form
+ * fails to parse (`scale=min(1280,iw)` gave `Invalid size 'min(1280'`). Because these arguments
+ * are passed through spawn rather than a shell, the quotes have to be part of the string itself; a
+ * reviewer removing them as redundant shell syntax would break every video conversion, and nothing
+ * else here would notice.
  */
 describe('ffmpeg encoder arguments', () => {
   /** Read `-flag value` out of an argv array, so assertions do not depend on argument order. */
@@ -51,14 +52,14 @@ describe('ffmpeg encoder arguments', () => {
       expect(valueOf(args, '-movflags')).toBe('+faststart');
     });
 
-    // The regression this exists for: unquoted, ffmpeg reads the filter as `scale=min(1280`.
-    it('quotes the scale expression so its comma stays inside min()', () => {
-      expect(valueOf(args, '-vf')).toBe("scale='min(1280,iw)':-2");
-    });
-
-    // -2 keeps the computed edge even, which H.264 requires; -1 would produce odd heights and fail.
-    it('keeps the derived edge even', () => {
-      expect(valueOf(args, '-vf')).toMatch(/:-2$/);
+    // Unquoted, ffmpeg reads the filter as `scale=if(gte(iw`. The longer edge is capped at 1280 and
+    // truncated to even, and -2 derives the other edge, even too; H.264 requires both. Bounding the
+    // width alone let an odd width through (a 499x281 GIF, refused by libx264) and left a 1080x1920
+    // portrait video at its full height.
+    it('quotes the scale expressions, bounds the longer edge and keeps both edges even', () => {
+      expect(valueOf(args, '-vf')).toBe(
+        "scale='if(gte(iw,ih),min(1280,trunc(iw/2)*2),-2)':'if(gte(iw,ih),-2,min(1280,trunc(ih/2)*2))'",
+      );
     });
   });
 });

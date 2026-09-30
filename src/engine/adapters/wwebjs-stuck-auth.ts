@@ -84,8 +84,12 @@ export class WwebjsStuckAuth {
       });
     }
     // Clear auth + disconnect (the recovery path), then finish the client teardown in the background
-    // so a hung destroy can't block (or skip) the recovery.
-    await this.clearLocalAuth();
+    // so a hung destroy can't block (or skip) the recovery. The removal is registered with the
+    // credential-teardown fence before it is awaited, as the logout path does: a stop and start
+    // arriving meanwhile would otherwise launch a new Chromium into the directory being deleted.
+    const removal = this.clearLocalAuth();
+    this.host.getCallbacks().onCredentialTeardownStarted?.(removal);
+    await removal;
     this.host.setStatus(EngineStatus.DISCONNECTED);
     // onDisconnected drives the lifecycle's reconnect, which re-creates the engine with no saved auth
     // → a fresh QR. (A no-op once the engine is superseded/torn down.)

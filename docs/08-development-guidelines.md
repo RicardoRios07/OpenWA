@@ -40,6 +40,7 @@ openwa/
   "compilerOptions": {
     "module": "nodenext",
     "moduleResolution": "nodenext",
+    "esModuleInterop": true,
     "target": "ES2023",
     "rootDir": ".",
     "outDir": "./dist",
@@ -47,13 +48,8 @@ openwa/
     "declaration": true,
     "emitDecoratorMetadata": true,
     "experimentalDecorators": true,
-    "strictNullChecks": true,
-    "noImplicitAny": true,
-    "strictBindCallApply": true,
-    "noFallthroughCasesInSwitch": true,
-    "strictPropertyInitialization": false,
-    "strictFunctionTypes": false,
-    "useUnknownInCatchVariables": false
+    "strict": true,
+    "noFallthroughCasesInSwitch": true
   },
   "include": ["src", "test"],
   "exclude": ["node_modules", "dist", "dashboard"]
@@ -61,9 +57,9 @@ openwa/
 ```
 
 There are **no path aliases** — no `baseUrl`, no `paths`. Import with relative paths
-(`../common/services/logger.service`), not `@/…`. Under TypeScript 6 the strict family defaults on,
-so the three `false` entries above are deliberate opt-outs pending their own migrations
-(`strictPropertyInitialization` alone flags around 260 TypeORM entity properties). `types` must be
+(`../common/services/logger.service`), not `@/…`. The whole strict family is on, with no opt-outs,
+so entity and DTO properties the framework populates carry a definite-assignment `!`
+(`name!: string;`), since no constructor assigns them. `types` must be
 listed explicitly because TypeScript 6 no longer auto-includes every `@types` package.
 
 ### ESLint Configuration
@@ -114,11 +110,11 @@ let messageCount = 0;
 const MAX_RETRY_COUNT = 3;
 const DEFAULT_TIMEOUT = 30000;
 
-// Enums: PascalCase with PascalCase values
+// Enums: PascalCase name with UPPER_SNAKE_CASE values
 enum SessionStatus {
-  Created = 'created',
-  Ready = 'ready',
-  Disconnected = 'disconnected',
+  CREATED = 'created',
+  READY = 'ready',
+  DISCONNECTED = 'disconnected',
 }
 ```
 
@@ -259,7 +255,7 @@ export class CreateExampleDto {
   @ApiProperty({ description: 'Example name', example: 'My Example' })
   @IsString()
   @MaxLength(100)
-  name: string;
+  name!: string;
 
   @ApiPropertyOptional({ description: 'Optional description' })
   @IsOptional()
@@ -430,10 +426,14 @@ describe('resolveReconnectConfig', () => {
 
 ```typescript
 // test/app.e2e-spec.ts
+// archiver is ESM-only and AppModule pulls it in; stub it so ts-jest (CommonJS) can load the graph.
+jest.mock('archiver', () => ({ TarArchive: jest.fn() }));
+
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
-import * as request from 'supertest';
+import request from 'supertest';
 import { AppModule } from '../src/app.module';
+import { applyGlobalValidation } from '../src/config/app-validation';
 
 describe('App (e2e)', () => {
   let app: INestApplication;
@@ -444,6 +444,7 @@ describe('App (e2e)', () => {
     }).compile();
 
     app = moduleFixture.createNestApplication();
+    applyGlobalValidation(app);
     await app.init();
   });
 
@@ -576,7 +577,7 @@ Add a new one only when the condition is engine-agnostic and recurs; a one-off s
 
 ```bash
 # Required
-- Node.js 22 LTS
+- Node.js 22.19 or newer (22 LTS)
 - npm 10+
 - Docker & Docker Compose
 - Git
@@ -920,21 +921,11 @@ const sessions = await sessionRepo
 
 ### Caching Strategy
 
-```typescript
-// CacheService exposes typed helpers; prefer those over ad hoc string keys in feature code.
-@Injectable()
-export class SessionStatsService {
-  constructor(private readonly cache: CacheService) {}
-
-  async getCachedStats(): Promise<SessionStats | null> {
-    return this.cache.getSessionsStats();
-  }
-
-  async updateCachedStats(stats: SessionStats): Promise<void> {
-    await this.cache.setSessionsStats(stats);
-  }
-}
-```
+Memoize a hot, expensive read in-process with a TTL, as `StatsService` does for its aggregate
+responses (`STATS_CACHE_TTL_MS`, default 30000; `0` disables the memo). `CacheService` is an optional,
+fail-open Redis layer: when Redis is disabled or down every read returns `null` and every write is a
+no-op, so never make a request path depend on it. No request path reads from it today (see
+[3.13.3 Cache Service](./03-system-architecture.md#3133-cache-service)).
 
 ### Async Operations
 
@@ -1021,18 +1012,11 @@ export class EngineTeardownService {
 
 **Solution:**
 
-```typescript
-// config/typeorm.config.ts
-{
-  type: 'postgres',
-  // Limit pool size
-  extra: {
-    max: 20, // Default is 10
-    connectionTimeoutMillis: 5000,
-    idleTimeoutMillis: 30000,
-  },
-}
-```
+Set `DATABASE_POOL_SIZE` in `.env` (default 10). It becomes the pool `max` of the PostgreSQL data
+connection, both in the app and in the migration CLI. Keep the pool size times the number of
+replicas below the server's `max_connections`. See
+[12 - Troubleshooting](./12-troubleshooting-faq.md#issue-slow-api-response) for the related
+timeouts.
 
 #### Migration Fails
 

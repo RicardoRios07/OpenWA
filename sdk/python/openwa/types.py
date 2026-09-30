@@ -284,7 +284,7 @@ class SessionConfig(TypedDict):
 
 
 class UpdateSessionConfigRequest(TypedDict, total=False):
-    """Partial update of a running session's config -- no re-link, no QR scan.
+    """Partial update of a session's config, in any state -- no re-link, no QR scan.
 
     Send ``None`` for ``maxReconnectAttempts`` to restore unlimited retries, which no in-range number
     can express.
@@ -953,7 +953,7 @@ class WebhookDelivery(TypedDict):
 
 
 class WebhookDeliveryFailure(TypedDict):
-    """A webhook delivery abandoned after every retry, as listed by the delivery-failure log."""
+    """A webhook delivery the gateway gave up on or could not dispatch, as listed by the delivery-failure log."""
 
     id: str
     webhookId: str
@@ -963,12 +963,12 @@ class WebhookDeliveryFailure(TypedDict):
     # The idempotency key the receiver would have deduped on.
     idempotencyKey: NotRequired[str | None]
     deliveryId: NotRequired[str | None]
-    # Total attempts made before giving up.
+    # Attempts recorded; 0 when the delivery was shed, refused or failed before sending.
     attempts: int
     # Last HTTP status when the failure was a non-2xx response; None for a network or timeout error.
     lastStatusCode: NotRequired[int | None]
     lastError: str
-    # ISO timestamp of when the delivery was finally abandoned.
+    # ISO timestamp of when the failure was first recorded.
     createdAt: str
 
 
@@ -982,7 +982,7 @@ class ChatSummary(TypedDict):
     unreadCount: int
     # Server returns a plain preview string, not a message object.
     lastMessage: NotRequired[str]
-    timestamp: str | int
+    timestamp: int
     kind: ChatKind
     archived: bool
     pinned: bool
@@ -1212,9 +1212,13 @@ class HealthResponse(TypedDict, total=False):
     version: str
 
 
+class HealthDependencyStatus(TypedDict):
+    status: str
+
+
 class HealthReadyResponse(TypedDict, total=False):
     status: str
-    details: dict[str, str]
+    details: dict[str, HealthDependencyStatus]
 
 
 # ── Auth ──────────────────────────────────────────────────────────

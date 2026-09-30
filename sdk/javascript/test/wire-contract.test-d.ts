@@ -21,6 +21,7 @@ import type {
   ChannelMessageRecord,
   ChannelRecord,
   ChatHistoryMessage,
+  HealthReadyResponse,
   LabelRecord,
   StatusRecord,
 } from '../src/types.js';
@@ -153,6 +154,15 @@ interface WireCatalog {
 }
 
 /**
+ * `ReadinessResponseDto`: the 200 body of `GET /api/health/ready`. Each dependency is an object
+ * carrying its own `status`, not a bare string.
+ */
+interface WireReadiness {
+  status: string;
+  details: { mainDatabase: { status: 'up' | 'down' }; dataDatabase: { status: 'up' | 'down' } };
+}
+
+/**
  * Resolves to `true` only when `Rec` is an honest view of `Wire`: it can hold every real response
  * (so no field access that the server answers is a compile error), and it declares no field the
  * server never sends (so no access silently evaluates to `undefined`). A mismatch resolves to a
@@ -172,5 +182,6 @@ const channel: Mirrors<WireChannel, ChannelRecord> = true;
 const channelMessage: Mirrors<WireChannelMessage, ChannelMessageRecord> = true;
 const catalog: Mirrors<WireCatalog, CatalogInfo> = true;
 const chatHistoryMessage: Mirrors<WireChatHistoryMessage, ChatHistoryMessage> = true;
+const readiness: Mirrors<WireReadiness, HealthReadyResponse> = true;
 
-export const contract = [label, status, channel, channelMessage, catalog, chatHistoryMessage];
+export const contract = [label, status, channel, channelMessage, catalog, chatHistoryMessage, readiness];

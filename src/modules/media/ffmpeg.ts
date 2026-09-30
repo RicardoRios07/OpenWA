@@ -119,9 +119,10 @@ export function voiceEncodeArgs(): string[] {
  *
  * Baseline H.264 with yuv420p is the combination that plays on every WhatsApp client, including the
  * older Android ones that reject High profile. `faststart` relocates the index to the front so the
- * receiver can begin playback before the whole file arrives. The scale filter bounds the long edge
- * at 1280 while `-2` keeps the other edge even, which H.264 requires — and `min()` means a smaller
- * video is never upscaled into a larger file than it started as.
+ * receiver can begin playback before the whole file arrives. The scale filter caps whichever edge is
+ * longer at 1280 and truncates it to even, while `-2` derives the other edge and keeps it even, which
+ * H.264 requires — and `min()` means a smaller video is never upscaled into a larger file than it
+ * started as.
  */
 export function videoEncodeArgs(): string[] {
   return [
@@ -134,7 +135,7 @@ export function videoEncodeArgs(): string[] {
     '-pix_fmt',
     'yuv420p',
     '-vf',
-    "scale='min(1280,iw)':-2",
+    "scale='if(gte(iw,ih),min(1280,trunc(iw/2)*2),-2)':'if(gte(iw,ih),-2,min(1280,trunc(ih/2)*2))'",
     '-c:a',
     'aac',
     '-b:a',
@@ -192,7 +193,9 @@ function execute(args: string[], options: FfmpegRunOptions): Promise<void> {
   return new Promise((resolve, reject) => {
     // An argument array, never a shell string: nothing here can be word-split or expanded, so a
     // filename with a space or a quote is data rather than syntax.
-    const child = spawn(options.ffmpegPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    // `detached` puts the child at the head of its own process group, so the timeout can kill
+    // everything under it (see below).
+    const child = spawn(options.ffmpegPath, args, { stdio: ['ignore', 'ignore', 'pipe'], detached: true });
 
     let stderr = '';
     let timedOut = false;
@@ -204,8 +207,16 @@ function execute(args: string[], options: FfmpegRunOptions): Promise<void> {
     const timer = setTimeout(() => {
       timedOut = true;
       // SIGKILL rather than SIGTERM: the case being defended against is a codec stuck in a loop,
-      // which is exactly the case that would ignore a polite signal.
-      child.kill('SIGKILL');
+      // which is exactly the case that would ignore a polite signal. The whole group, because a
+      // wrapper script that runs ffmpeg without `exec` leaves the real worker as a grandchild, and
+      // killing only the wrapper would free the concurrency slot while that worker keeps running.
+      try {
+        // A negative pid addresses the process group; no pid means the spawn failed and nothing runs.
+        if (child.pid !== undefined) process.kill(-child.pid, 'SIGKILL');
+      } catch {
+        // The group is already gone, or the platform has no process groups: fall back to the child.
+        child.kill('SIGKILL');
+      }
       // Let go of our end of the stderr pipe too. A descendant of the killed process (ffmpeg under a
       // wrapper script) can still hold the inherited stderr, and the open pipe would keep this
       // process alive until that descendant exits.

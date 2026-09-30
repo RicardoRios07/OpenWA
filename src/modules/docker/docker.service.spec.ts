@@ -757,7 +757,7 @@ describe('DockerService.orchestrateProfiles', () => {
     expect(result.success).toBe(true);
     expect(result.containersStarted).toEqual(['postgres']);
     expect(result.errors).toEqual([
-      "Service 'redis' container not found. It may need to be created first with docker-compose.",
+      "Failed to create or start the 'redis' container; see the server log for the Docker error.",
     ]);
     expect(result.message).toBe(result.errors.join('; '));
   });

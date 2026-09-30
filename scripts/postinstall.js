@@ -35,8 +35,8 @@
  *  11. `node scripts/patch-baileys-appstate.js --best-effort` when present, the app-state resync
  *      bound, gated the same way.
  *  12. `node scripts/patch-baileys-newsletter-create.js --best-effort` when present, the
- *      newsletter-create parse fix. Steps 11-12 are the Baileys patches, so a Baileys-only install
- *      runs those and skips 2-10.
+ *      newsletter-create parse fix. Steps 11-12 are the Baileys patches. Every patcher runs whenever
+ *      its script is present, whatever ENGINE_TYPE is set to.
  *
  * Structured like scripts/patch-wwebjs-201832.js: pure planning + injectable spawn, so the spec
  * (scripts/postinstall.spec.js, node:test) exercises every branch without a real npm run.

@@ -252,7 +252,7 @@ export class BuiltInFtsProvider implements SearchProvider, OnModuleInit {
 
   async health(): Promise<{ ok: boolean; detail?: string }> {
     // Reflects FTS availability (not just raw connectivity): a non-FTS5 build reports unhealthy here
-    // so /health and the registry surface the true state. DB errors still map to { ok: false }.
+    // for callers of health(). DB errors still map to { ok: false }.
     try {
       const ok = await this.probeFts();
       return { ok, detail: ok ? undefined : 'full-text index absent' };

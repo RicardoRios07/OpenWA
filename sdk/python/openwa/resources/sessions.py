@@ -51,9 +51,10 @@ class SessionsResource:
         return self._http.request("GET", f"/api/sessions/{quote_segment(session_id)}/config")
 
     def update_config(self, session_id: str, body: UpdateSessionConfigRequest) -> SessionConfig:
-        """Update a RUNNING session's configuration -- no re-link and no QR scan.
+        """Update a session's configuration, in any state, with no restart, re-link or QR scan.
 
-        All three fields were fixed at creation before this route existed.
+        All three fields were fixed at creation before this route existed. ``autoRejectCalls`` applies
+        immediately; ``maxReconnectAttempts`` and ``reconnectBaseDelay`` apply on the next start.
         """
         return self._http.request(
             "PATCH", f"/api/sessions/{quote_segment(session_id)}/config", body=body

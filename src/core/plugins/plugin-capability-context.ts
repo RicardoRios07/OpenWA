@@ -442,6 +442,13 @@ export class PluginCapabilityContext {
         // it reuses CONVERSATION_SEND rather than adding a new permission.
         this.assertPermission(plugin.manifest, PluginCapabilityPermission.CONVERSATION_SEND);
         this.assertSessionActive(plugin, key.sessionId);
+        // The sandbox router checks this too; an in-process plain-JS plugin reaches here unchecked,
+        // and any other value would be stored and silently never hold the chat.
+        if (state !== 'bot' && state !== 'human' && state !== 'closed') {
+          throw new PluginCapabilityError(
+            `Plugin ${plugin.manifest.id}: handover state must be 'bot', 'human' or 'closed'`,
+          );
+        }
         const mapping = await this.hostServices.getConversationMappingPort().get({
           sessionId: key.sessionId,
           chatId: key.chatId,

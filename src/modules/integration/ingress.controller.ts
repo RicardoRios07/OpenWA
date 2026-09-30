@@ -18,7 +18,8 @@ import { InstanceThrottlerGuard } from './instance-throttler.guard';
 // per-instance limit's 120/min, so a provider delivering every tenant's webhooks from one shared
 // egress IP was 429'd at the IP tier before the instance bound ever fired). InstanceThrottlerGuard
 // bounds each client instead, and IngressService charges a per-(pluginId, instanceId) bucket once a
-// delivery's signature verifies, so a noisy tenant sheds alone.
+// delivery's signature verifies. The client tier counts every request, including one the instance
+// bucket then sheds, so a tenant pushing one shared IP past INGRESS_IP_LIMIT sheds its neighbours too.
 @SkipThrottle()
 @Controller('ingress')
 export class IngressController {
@@ -64,6 +65,10 @@ export class IngressController {
   @ApiResponse({ status: 404, description: 'Unknown pluginId/instanceId, or no route claimed by the plugin.' })
   @ApiResponse({ status: 413, description: 'Request body exceeds the route maxBodyBytes limit.' })
   @ApiResponse({
+    status: 415,
+    description: 'Request body is not `application/json` or `application/x-www-form-urlencoded`.',
+  })
+  @ApiResponse({
     status: 429,
     description:
       'Rate limit exceeded: the per-instance bucket (INGRESS_INSTANCE_LIMIT) or the per-client-IP bucket (INGRESS_IP_LIMIT). The `Retry-After-instance` / `Retry-After-ingress-ip` header names which one shed the request, and a plain `Retry-After` carries the same delay for a client that reads only the standard name.',
@@ -104,6 +109,11 @@ export class IngressController {
       ]),
     );
     const rawBody = req.rawBody?.toString('utf8') ?? '';
+    // Only json() and urlencoded() capture req.rawBody, so a body in any other content type reaches
+    // here unread; the service refuses it rather than handling it as the empty body.
+    const unparsedBody =
+      req.rawBody === undefined &&
+      (Number(headers['content-length'] || 0) > 0 || headers['transfer-encoding'] !== undefined);
     const result = await this.ingress.handle({
       pluginId,
       instanceId,
@@ -112,6 +122,7 @@ export class IngressController {
       headers,
       query: flatQuery,
       rawBody,
+      unparsedBody,
     });
     if (result.headers) res.set(safeAckHeaders(result.headers));
     // Both reflections echo provider-controlled strings (hub.challenge, the ack template). Express

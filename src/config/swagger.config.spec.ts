@@ -120,9 +120,29 @@ describe('documentErrorResponses', () => {
       { description: string; content?: unknown }
     >;
     expect(Object.keys(responses)).toEqual(['201', '401', '403', '404']);
-    expect(responses['403'].description).toBe('Session-scoped keys cannot create sessions');
+    expect(responses['403'].description).toBe(
+      "Session-scoped keys cannot create sessions. Also returned when the API key's role, session or chat scope, " +
+        'or IP allow-list does not allow this operation.',
+    );
     for (const status of ['401', '403', '404']) expect(responses[status].content).toEqual(ref);
     expect(responses['201']).toEqual({ description: 'Created' });
+  });
+
+  // The auth guard answers 403 before the handler runs, so an operation's own 403 cannot replace it.
+  it('merges the auth refusal into an existing 403 once, however often it runs', () => {
+    const doc = documentErrorResponses(documentErrorResponses(fixtureDoc()));
+    const description = (doc.paths['/api/sessions'].post!.responses['403'] as { description: string }).description;
+    expect(description.match(/IP allow-list/g)).toHaveLength(1);
+    expect(description.startsWith('Session-scoped keys cannot create sessions. ')).toBe(true);
+  });
+
+  it('adds the plain auth refusal once to an operation without a 403 of its own, however often it runs', () => {
+    const doc = fixtureDoc();
+    doc.paths['/api/sessions'].get = { responses: { '200': { description: 'ok' } } };
+    const twice = documentErrorResponses(documentErrorResponses(doc));
+    expect((twice.paths['/api/sessions'].get!.responses['403'] as { description: string }).description).toBe(
+      "The API key's role, session or chat scope, or IP allow-list does not allow this operation",
+    );
   });
 
   it('leaves operations with their own security as they were', () => {

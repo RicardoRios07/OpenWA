@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1623,5 +1625,112 @@ func TestRequestEnumWireValues(t *testing.T) {
 	}
 	if !strings.Contains(string(pin), `"durationSeconds":86400`) {
 		t.Errorf("durationSeconds did not marshal as a bare number: %s", pin)
+	}
+}
+
+// A Do path that does not begin with "/" would be appended to the base URL's
+// authority, so "@evil.example/x" sends the API key to evil.example.
+func TestDoPathWithoutLeadingSlashRefused(t *testing.T) {
+	rt := &recordTransport{status: 200, body: `{}`}
+	c := newTestClient(t, rt)
+	for _, path := range []string{"@evil.example/api/x", ".evil.example/api/x", "api/x", ""} {
+		if err := c.Do(context.Background(), "GET", path, nil, nil, nil); err == nil {
+			t.Errorf("Do %q: want an error", path)
+		}
+	}
+	if rt.lastReq != nil {
+		t.Fatalf("request sent to %s, want none", rt.lastReq.URL.Host)
+	}
+}
+
+// stallServer stalls every request before answering; with flush set it sends
+// the headers first and stalls the body instead. It blocks until the request is
+// cancelled or the test ends.
+func stallServer(t *testing.T, flush bool) *httptest.Server {
+	t.Helper()
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if flush {
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("partial"))
+			w.(http.Flusher).Flush()
+		}
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) })
+	return srv
+}
+
+func TestTimeoutReportsTheBudgetThatExpired(t *testing.T) {
+	for _, flush := range []bool{false, true} {
+		srv := stallServer(t, flush)
+
+		// The client timeout fired: the error names it.
+		c, err := New(srv.URL, "k", WithTimeout(100*time.Millisecond))
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		_, err = c.Messages.Media(context.Background(), "s1", "c1", "m1")
+		var te *TimeoutError
+		if !errors.As(err, &te) || te.Timeout != 100*time.Millisecond {
+			t.Errorf("flush=%v client timeout: err = %v, want a *TimeoutError after 100ms", flush, err)
+		}
+
+		// The caller's shorter deadline fired: the 30s client timeout is not the
+		// budget that ran out, so the error does not name it.
+		c, err = New(srv.URL, "k")
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		_, err = c.Messages.Media(ctx, "s1", "c1", "m1")
+		cancel()
+		te = nil
+		if !errors.As(err, &te) || te.Timeout != 0 || err.Error() != "openwa: request timed out" {
+			t.Errorf("flush=%v caller deadline: err = %v, want a *TimeoutError without a duration", flush, err)
+		}
+	}
+}
+
+// argsLogger records every logged key-value argument as text.
+type argsLogger struct{ text strings.Builder }
+
+func (l *argsLogger) Log(_ context.Context, _ string, msg string, args ...any) {
+	fmt.Fprintln(&l.text, msg, args)
+}
+
+// A base URL may carry basic-auth credentials for a fronting proxy; the
+// password must not reach the request log.
+func TestRequestLogRedactsBaseURLPassword(t *testing.T) {
+	ok := &recordTransport{status: 200, body: `{}`}
+	failing := RoundTripperFunc(func(*http.Request) (*http.Response, error) { return nil, errors.New("refused") })
+	for _, rt := range []http.RoundTripper{ok, failing} {
+		lg := &argsLogger{}
+		c, err := New("https://proxyuser:s3cret@api.example.com", "k", WithTransport(rt), WithLogger(lg))
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		_, _ = c.Health.Check(context.Background())
+		if got := lg.text.String(); !strings.Contains(got, "api.example.com") || strings.Contains(got, "s3cret") {
+			t.Errorf("request log = %q, want the URL without the password", got)
+		}
+	}
+
+	// The retry layer logs the URL of every request it replays.
+	lg := &argsLogger{}
+	policy := RetryPolicy{MaxRetries: 1, BaseDelay: time.Millisecond, MaxDelay: time.Millisecond}
+	c, err := New("https://proxyuser:s3cret@api.example.com", "k",
+		WithTransport(&statusTransport{status: 503}), WithLogger(lg), WithRetry(policy))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, _ = c.Health.Check(context.Background())
+	if got := lg.text.String(); !strings.Contains(got, "openwa retrying request") || strings.Contains(got, "s3cret") {
+		t.Errorf("retry log = %q, want the retry logged without the password", got)
 	}
 }

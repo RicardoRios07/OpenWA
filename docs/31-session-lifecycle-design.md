@@ -28,8 +28,8 @@ starting" read; two engines come up; one is leaked forever (registry holds the s
 **Defense:** `initializingSessions` is reserved SYNCHRONOUSLY (before any `await`) in
 `session-engine-controls.ts` — the second request observes the reservation and fails fast.
 **Pinned by:** `session.service.spec.ts` (the maxConcurrent/double-start cases, incl. the concurrent-start
-claim-holding verbs at `')() keeps the claim when a concurrent start still holds the session
-here'`).
+claim-holding verbs at
+`'%s() keeps the claim when a concurrent start still holds the session here'`).
 **The naive fix that is wrong:** checking session.status instead — status is written to the DB
 and read back with an await in between; the reservation map is the only synchronous view.
 
@@ -77,8 +77,11 @@ session lingers on disk.
 (`session-engine-lifecycle.service.ts`) call `isSessionRetired`, which treats a stop mark or a missing
 row as retired (delete clears its mark before a slow init resolves), then tear down the
 just-registered engine and re-purge with `purgeAuthDirsIfDeleted`.
-**Pinned by:** `session.service.spec.ts` ('tears down the just-initialized engine if a
-stop/delete lands during start() (no resurrection to READY)').
+**Pinned by:** `session.service.spec.ts` ('re-purges the auth dirs when a start completes after its
+row was deleted (init re-created them)' for `start()`, and 'tears down an engine created when a
+delete lands during init (session row gone, mark cleared)' for `executeReconnect`). The opposite half,
+that a stop retirement does not purge, is pinned by 'tears down the just-initialized engine if a
+stop/delete lands during start() (no resurrection to READY)'.
 
 ### INV-6 — Lease loss tears down local engines only; it never writes session rows
 
@@ -106,9 +109,13 @@ worth resuming: unauthenticated, mid-pairing, or operator-flagged failed').
 
 **Interleaving:** `client.logout()` chains `authStrategy.logout()` → `fs.rm(userDataDir)` while
 the Chromium process still holds file handles → rm fails or races a browser re-write.
-**Defense:** the logout path force-destroys the browser first, waits, then removes the dir; the
-spec enumerates the interleavings.
-**Pinned by:** `logout-teardown-race.spec.ts` — the module's most complete race corpus. Read it
+**Defense:** whatsapp-web.js's own `Client.logout()` closes the browser and polls up to ~1 s for it
+to disconnect before LocalAuth removes the profile dir. OpenWA's part is the name-keyed
+credential-teardown fence: `teardownEngineSafely` registers the whole `engine.logout()` promise under
+the session name, and `start()`, `delete()` and `executeReconnect` wait for it through
+`awaitPendingTeardown` (bounded at 10 s and fail-closed: a timeout is a 409 for `start()`/`delete()`
+and a failed attempt for a reconnect), so no new engine or purge races the rm.
+**Pinned by:** `logout-teardown-race.spec.ts`, which enumerates that fence's interleavings. Read it
 before touching anything in the logout/forceKill path.
 
 ### INV-9 — The reconnect loop bounds itself: backoff with jitter, clamp ≤ 5 min and ≤ setTimeout's 32-bit range, alert every 5 consecutive attempts
@@ -135,13 +142,13 @@ for minutes; detaching from bootstrap means the API answers while engines warm.
 Every transition has a known, enumerated set of writers. When debugging a status surprise, find the
 writer before anything else:
 
-| Transition                      | Writers                                                                                   |
-| ------------------------------- | ----------------------------------------------------------------------------------------- |
-| → `INITIALIZING`                | `initializeEngine` (persisted before `initialize()`)                                      |
-| → `QR_READY` / `AUTHENTICATING` | engine callbacks (wired in the lifecycle delegate), via the registry's liveness check     |
-| → `READY`                       | `handleEngineReady` (also drops a recorded failure reason, see INV-7's rationale comment) |
-| → `DISCONNECTED`                | init-timeout eviction, graceful stop, puppeteer-death detection                           |
-| → `FAILED`                      | four terminal paths only, all ownership-fenced: see below                                 |
+| Transition                      | Writers                                                                                                                                                                                                                                                                                                                                                                           |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| → `INITIALIZING`                | `initializeEngine` (persisted before `initialize()`)                                                                                                                                                                                                                                                                                                                              |
+| → `QR_READY` / `AUTHENTICATING` | engine callbacks (wired in the lifecycle delegate), via the registry's liveness check                                                                                                                                                                                                                                                                                             |
+| → `READY`                       | `handleEngineReady` (also drops a recorded failure reason, see INV-7's rationale comment)                                                                                                                                                                                                                                                                                         |
+| → `DISCONNECTED`                | init-timeout eviction, graceful stop, logout, forceKill, a delete whose teardown fence times out, the engine `onDisconnected` callback and the liveness watchdog (`handleEngineDisconnected`), the boot reset, a backup import (active rows restored as disconnected), engine-reported `DISCONNECTED` via `onStateChanged`, the takeover sweep's `markLapsedDisconnected` (INV-6) |
+| → `FAILED`                      | five terminal paths only, all ownership-fenced: see below                                                                                                                                                                                                                                                                                                                         |
 
 `FAILED` is the one worth spelling out, because it is terminal (neither the boot reset nor the
 takeover sweep resumes a FAILED row, INV-7) and because more than one path reaches it:
@@ -153,10 +160,12 @@ takeover sweep resumes a FAILED row, INV-7) and because more than one path reach
    forwards verbatim (`session-engine-event-wiring.ts`).
 4. A reconnect chain that EXHAUSTS its attempts, so the session is not left silently stuck
    `DISCONNECTED` with no engine (`session-engine-lifecycle.service.ts`).
+5. `rejectRebind`, when a different WhatsApp account scans a bound session's QR: it logs that account
+   out and lands `FAILED` with the reason (`session-engine-lifecycle.service.ts`).
 
 What still holds, and is load-bearing, is the narrower claim: no reconnect ATTEMPT writes FAILED.
 Only the exhaustion of the whole chain does. A loop that marked each failed attempt would turn every
-transient network blip into an operator-visible terminal state and defeat INV-7's signal. All four
+transient network blip into an operator-visible terminal state and defeat INV-7's signal. All five
 paths are fenced on `ownsSession`, so a dying generation cannot park a peer's session in a status
 nothing resets automatically.
 

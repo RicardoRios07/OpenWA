@@ -148,9 +148,9 @@ async function bootstrap() {
   // the adapter. Inert (plain in-memory adapter) without REDIS_ENABLED, so single-node pays nothing.
   app.useWebSocketAdapter(new RedisIoAdapter(app));
 
-  // The production HTTP surface: in-flight body budget, body parsers, request context, the CSP
-  // nonce, helmet, the SPA document handler and CORS. Extracted so the e2e lane runs the SAME
-  // stack instead of a copy of it (src/config/configure-app.ts).
+  // The production HTTP surface: request context, the CSP nonce, helmet, the SPA document handler,
+  // CORS, in-flight body budget, body parsers and the trailing-slash DELETE refusal. Extracted so the
+  // e2e lane runs the SAME stack instead of a copy of it (src/configure-app.ts).
   const { bodyLimit, inflightBudgetBytes } = configureApp(app);
   bootstrapLogger.log(`Request body caps: ${bodyLimit} per request, ${inflightBudgetBytes} bytes aggregate in flight`);
 
@@ -241,20 +241,20 @@ async function bootstrap() {
   // sending #731 chasing BASE_URL/BIND_HOST/API_PORT instead of the real cause.
   const publicUrl = process.env.BASE_URL || `http://localhost:${port}`;
 
-  console.log(`🚀 OpenWA is running on: ${publicUrl}`);
+  bootstrapLogger.log(`OpenWA is running on: ${publicUrl}`);
   if (swaggerEnabled) {
-    console.log(`📚 Swagger docs: ${publicUrl}/api/docs`);
+    bootstrapLogger.log(`Swagger docs: ${publicUrl}/api/docs`);
   }
 
   // Make the dashboard-serving outcome explicit so a missing build (no UI on `/`)
   // is obvious instead of a silent 404.
   if (!dashboardServingEnabled) {
-    console.log('🖥️  Dashboard: serving disabled (SERVE_DASHBOARD=false); API only');
+    bootstrapLogger.log('Dashboard: serving disabled (SERVE_DASHBOARD=false); API only');
   } else if (dashboardBuildPresent) {
-    console.log(`🖥️  Dashboard: serving bundled UI at ${publicUrl}`);
+    bootstrapLogger.log(`Dashboard: serving bundled UI at ${publicUrl}`);
   } else {
-    console.warn(
-      `⚠️  Dashboard: no build at ${DASHBOARD_DIST} - UI disabled (API still serves /api). ` +
+    bootstrapLogger.warn(
+      `Dashboard: no build at ${DASHBOARD_DIST} - UI disabled (API still serves /api). ` +
         'Run `npm run build:all` to bundle it, or use the Vite dev server (`npm run dev`).',
     );
   }
@@ -270,8 +270,8 @@ async function bootstrap() {
       dashboardServed: dashboardServingEnabled && dashboardBuildPresent,
     })
   ) {
-    console.warn(
-      '⚠️  Dashboard: CSP upgrade-insecure-requests is ON (production default). If this instance is ' +
+    bootstrapLogger.warn(
+      'Dashboard: CSP upgrade-insecure-requests is ON (production default). If this instance is ' +
         "reached over plain HTTP, the browser will upgrade the UI's scripts to https:// and the " +
         'dashboard will render blank. Behind a TLS proxy? Ignore this. Serving direct HTTP? Set ' +
         'CSP_UPGRADE_INSECURE_REQUESTS=false.',

@@ -328,6 +328,61 @@ describe('EventsGateway connection auth + subscribe re-validation', () => {
     }
   });
 
+  it('holds a frame that arrives while the handshake is still validating until it completes', async () => {
+    // socket.io sends CONNECT before Nest runs handleConnection, so a client that subscribes from its
+    // 'connect' handler can land here before the key is stored on the socket.
+    let finishHandshake!: (key: unknown) => void;
+    authService.validateApiKey.mockReturnValueOnce(new Promise(resolve => (finishHandshake = resolve)));
+    authService.validateApiKey.mockResolvedValue({ id: 'k1', name: 'k', allowedSessions: null });
+    const sock = makeSocket({ apiKey: 'good' });
+    const connecting = gateway.handleConnection(asSocket(sock));
+
+    const subscribing = gateway.handleMessage(asSocket(sock), subscribeMsg('sess-1', ['message.received']));
+    finishHandshake({ id: 'k1', name: 'k', allowedSessions: null });
+    await connecting;
+
+    const res = (await subscribing) as WSSubscribedResponse;
+    expect(res.type).toBe('subscribed');
+    expect(sock.disconnect).not.toHaveBeenCalled();
+    expect(sessionRoomJoins(sock)).toEqual([buildRoomName('sess-1', 'message.received')]);
+  });
+
+  it('drops a frame that arrived during a handshake that was then refused', async () => {
+    let failHandshake!: (err: Error) => void;
+    authService.validateApiKey.mockReturnValueOnce(new Promise((_, reject) => (failHandshake = reject)));
+    const sock = makeSocket({ apiKey: 'bad' });
+    sock.disconnect.mockImplementation(() => (sock.disconnected = true));
+    const connecting = gateway.handleConnection(asSocket(sock));
+
+    const subscribing = gateway.handleMessage(asSocket(sock), subscribeMsg('sess-1', ['message.received']));
+    failHandshake(new UnauthorizedException('Invalid API key'));
+    await connecting;
+
+    expect(await subscribing).toBeUndefined();
+    // Only the handshake's own refusal reached the client, and the frame never re-validated.
+    expect(sock.emit).toHaveBeenCalledTimes(1);
+    expect(authService.validateApiKey).toHaveBeenCalledTimes(1);
+    expect(sessionRoomJoins(sock)).toEqual([]);
+  });
+
+  it('answers an unsubscribe without a sessionId with INVALID_SESSION and leaves the rooms alone', async () => {
+    authService.validateApiKey.mockResolvedValue({ name: 'k', allowedSessions: null });
+    const sock = makeSocket({ apiKey: 'good' });
+    await gateway.handleConnection(asSocket(sock));
+    sock.rooms.add(buildRoomName('sess-1', 'message.received'));
+
+    for (const sessionId of [undefined, null, 5]) {
+      const res = (await gateway.handleMessage(asSocket(sock), {
+        type: 'unsubscribe',
+        sessionId,
+        requestId: 'r1',
+      } as unknown as WSClientMessage)) as WSErrorResponse;
+      expect(res.code).toBe('INVALID_SESSION');
+      expect(res.requestId).toBe('r1');
+    }
+    expect(sock.leave).not.toHaveBeenCalledWith(buildRoomName('sess-1', 'message.received'));
+  });
+
   it('forbids a session-scoped key from subscribing to the * wildcard', async () => {
     authService.validateApiKey.mockResolvedValue({ name: 'k', allowedSessions: ['sess-1'] });
     const sock = makeSocket({ apiKey: 'good' });

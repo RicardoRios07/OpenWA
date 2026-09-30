@@ -2,7 +2,10 @@ package com.rmyndharis.openwa.model;
 
 import java.util.Map;
 
-/** Request body for creating a session. Requires an OPERATOR-level key. */
+/**
+ * Request body for creating a session. Requires an OPERATOR-level key; setting {@code proxyUrl}
+ * requires an ADMIN key.
+ */
 public record CreateSessionRequest(String name, Map<String, Object> config, String proxyUrl, ProxyType proxyType) {
     public static Builder builder() {
         return new Builder();
@@ -25,6 +28,7 @@ public record CreateSessionRequest(String name, Map<String, Object> config, Stri
             return this;
         }
 
+        /** Requires an ADMIN key; the gateway answers 403 otherwise. */
         public Builder proxyUrl(String v) {
             this.proxyUrl = v;
             return this;

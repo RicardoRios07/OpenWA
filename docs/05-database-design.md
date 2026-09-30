@@ -29,7 +29,7 @@ always a SQLite file on each node, and running more than one replica is not supp
 > SQLite can be used in production with limitations:
 >
 > - Maximum ~5 concurrent sessions (due to single-writer limitation)
-> - Single-file storage — back up `./data/*.sqlite` rather than relying on a dump tool
+> - Single-file storage — back up with [`scripts/backup.sh`](../scripts/backup.sh) (§5.8), which copies `main.sqlite` and the data store (consistently while the app runs, when `sqlite3` is installed) and also captures the engine auth state; a bare copy of `./data/*.sqlite` restores every session unpaired
 > - No horizontal scaling support
 > - Ideal for: personal bots, small businesses with 1-3 WhatsApp numbers
 >
@@ -120,7 +120,8 @@ POSTGRES_SCHEMA=public   # Default behavior (historical)
 **Requirements:**
 
 - The schema must already exist before migration time
-- Built-in PostgreSQL container automatically creates the schema via init script
+- The compose `postgres` service creates the schema via `scripts/postgres-init-schema.sh`, but only when its volume is first initialized; on an existing volume, run `CREATE SCHEMA <name>;` once
+- The dashboard built-in database (`POSTGRES_BUILTIN=true`) always uses `public`
 - External/managed PostgreSQL: run `CREATE SCHEMA <name>;` once before first startup
 - SQLite ignores this setting
 
@@ -162,18 +163,28 @@ curl -X POST 'http://localhost:2785/api/infra/import-data' \
 
 #### Cross-Database Date Portability
 
-To ensure date/time values work across both SQLite and PostgreSQL, OpenWA uses a `DateTransformer` that stores dates as ISO 8601 text strings:
+To ensure date/time values work across both SQLite and PostgreSQL, OpenWA uses a `DateTransformer` together with `dateColumnType()`. On SQLite the column is `text` and dates are stored as ISO 8601 strings; on PostgreSQL the column is a native `timestamp` and the `Date` passes through to the driver:
 
 ```typescript
 // src/common/transformers/date.transformer.ts
 export const DateTransformer: ValueTransformer = {
-  from: (value: string | null) => value ? new Date(value) : null,
-  to: (value: Date | null) => value ? value.toISOString() : null,
+  from: (value: string | Date | null): Date | null => {
+    if (!value) return null;
+    if (value instanceof Date) return value;
+    return new Date(value);
+  },
+  to: (value: Date | null): string | Date | null => {
+    if (!value) return null;
+    if (value instanceof Date) {
+      return process.env.DATABASE_TYPE === 'postgres' ? value : value.toISOString();
+    }
+    return value;
+  },
 };
 
-// Usage in entities (Data DB only)
-@Column({ type: 'text', nullable: true, transformer: DateTransformer })
-connectedAt: Date | null;
+// Usage in entities (Data DB only); dateColumnType() is 'timestamp' on PostgreSQL, 'text' on SQLite
+@Column({ type: dateColumnType(), nullable: true, transformer: DateTransformer })
+connectedAt!: Date | null;
 ```
 
 > [!NOTE]
@@ -237,7 +248,7 @@ erDiagram
 
     MESSAGE {
         uuid id PK
-        uuid sessionId FK
+        uuid sessionId
         varchar waMessageId
         varchar chatId
         varchar chatName
@@ -291,6 +302,8 @@ erDiagram
     }
 ```
 
+`messages` and `message_batches` reference `sessions.id` through a plain `sessionId` (`session_id` on `message_batches`) with no foreign key. Deleting a session through the API removes their rows explicitly; a raw `DELETE FROM sessions` leaves them behind.
+
 ## 5.3 Table Specifications
 
 > [!IMPORTANT]
@@ -337,7 +350,7 @@ CREATE TABLE sessions (
 ```
 
 > [!NOTE]
-> The **types** above are illustrative — the schema is defined by the TypeORM entity (`src/modules/session/entities/session.entity.ts`) and column types are dialect-portable (`jsonColumnType()` → `simple-json`, dates via `DateTransformer`). The **column names are literal**: see the naming note in §5.3 below before writing SQL against any of these tables. The `sessions` entity declares only the index implied by the `UNIQUE` constraint on `name`; there are no separate `status`/`phone`/`createdAt` indexes.
+> The **types** above are illustrative — the schema is defined by the TypeORM entity (`src/modules/session/entities/session.entity.ts`) and column types are dialect-portable (`jsonColumnType()` → `simple-json`, dates via `DateTransformer`). The **column names are literal**: see the naming note at the top of §5.3 above before writing SQL against any of these tables. The `sessions` entity declares only the index implied by the `UNIQUE` constraint on `name`; there are no separate `status`/`phone`/`createdAt` indexes.
 
 > [!NOTE]
 > Auth state is **not** stored in this table. Both engines persist credentials on the **filesystem**: `whatsapp-web.js` through LocalAuth, Baileys in a multi-file auth dir with the layout of its `useMultiFileAuthState`, written atomically. An unparseable Baileys `creds.json` is moved aside with its key files to `corrupt-<ms>-<suffix>/` and the session relinks by QR. The `baileys_stored_messages` table holds only Baileys' serialized message store (the library ships none), not credentials.
@@ -530,6 +543,7 @@ CREATE INDEX "IDX_36bc604c820bb9adc4c75cd411" ON messages("chatId");
 CREATE INDEX "IDX_messages_sessionId_chatId_createdAt" ON messages("sessionId", "chatId", "createdAt");
 CREATE INDEX "IDX_befd307485dbf0559d17e4a4d2" ON messages(status);
 CREATE INDEX "IDX_messages_createdAt" ON messages("createdAt");   -- createdAt-only stats aggregates
+CREATE INDEX "IDX_messages_mediaPath" ON messages("mediaPath") WHERE "mediaPath" IS NOT NULL;   -- partial; chat-media orphan sweep
 
 -- Inbound dedup (issue #464): one row per ("sessionId", "waMessageId").
 -- NULL "waMessageId" rows are exempt (SQL treats NULLs as distinct).
@@ -584,12 +598,12 @@ CREATE UNIQUE INDEX "IDX_api_keys_keyHash" ON api_keys("keyHash");
 
 ### 5.3.6 audit_logs
 
-Consolidated audit trail for API-key, session, message, and webhook events. This is the **only** audit table — there are no separate `session_logs`, `webhook_logs`, or `api_key_logs` tables. Lives on the **main** (always-SQLite) connection.
+Consolidated audit trail for API-key, session, send-pacing, rate-limit, queue-dashboard, integration-instance and infrastructure events. This is the **only** audit table — there are no separate `session_logs`, `webhook_logs`, or `api_key_logs` tables. Lives on the **main** (always-SQLite) connection.
 
 ```sql
 CREATE TABLE audit_logs (
     id VARCHAR PRIMARY KEY,
-    action VARCHAR(50) NOT NULL,                   -- e.g. session_created, message_sent, webhook_failed
+    action VARCHAR(50) NOT NULL,                   -- e.g. session_created, api_key_auth_failed, infra_config_saved
     severity VARCHAR(10) NOT NULL DEFAULT 'info',  -- info | warn | error
     "apiKeyId" VARCHAR(36),
     "apiKeyName" VARCHAR(100),
@@ -690,8 +704,8 @@ The data connection also owns:
 
 - **`templates`** — reusable message templates (`src/modules/template/entities/template.entity.ts`), with a unique constraint on `(sessionId, name)` — one template name per session.
 - **`status_updates`** — inbound status/story broadcasts with a 24-hour TTL (`src/modules/status-store/entities/status-update.entity.ts`); unique on `(sessionId, waStatusId)`. Attached media is stored via `StorageService`, not in the row.
-- **`webhook_delivery_failures`** — durable record of a webhook delivery that exhausted all retries (`src/modules/webhook/entities/webhook-delivery-failure.entity.ts`), surfaced via the ADMIN `GET /webhooks/delivery-failures`.
-- **`webhook_outbox_events`**: the outbound webhook delivery record (`src/modules/webhook/entities/webhook-outbox-event.entity.ts`): a row is written `pending` before the delivery attempt, so a delivery lost to a crash is replayed by the reconciler. It settles as `dispatched` once a durable owner (the BullMQ queue, or the inline POST in direct mode) holds it, or as `failed` when the replays run out. Settled rows drop their payload and are pruned on age (§5.7).
+- **`webhook_delivery_failures`** — durable record of a webhook delivery that exhausted its retries, or was not sent (attempts 0: shed, refused at shutdown, oversize or a preflight failure) and is pending replay (`src/modules/webhook/entities/webhook-delivery-failure.entity.ts`), surfaced via the ADMIN `GET /webhooks/delivery-failures`. A later successful delivery removes the row.
+- **`webhook_outbox_events`**: the outbound webhook delivery record (`src/modules/webhook/entities/webhook-outbox-event.entity.ts`): a row is written `pending` before the delivery attempt, so a delivery lost to a crash is replayed by the reconciler. It settles as `dispatched` once a durable owner (the BullMQ queue, or the inline POST in direct mode) holds it, or as `failed` when the replays run out or the reconciler finds the webhook removed, disabled or unsubscribed from the event (no failure row is written then). Settled rows drop their payload and are pruned on age (§5.7).
 - **`plugin_instances`** — one configured instance of an adapter plugin, keyed `${pluginId}:${instanceId}` (`src/modules/integration/entities/plugin-instance.entity.ts`); holds the host-minted ingress HMAC secret, masked on API reads.
 - **`ingress_events`** — persist-before-ack durable row and inbound dedup oracle, unique on `(pluginId, instanceId, providerDeliveryId)` (`src/modules/integration/entities/ingress-event.entity.ts`). The full payload is retired to `NULL` once dispatch is settled, leaving a slim dedup marker.
 - **`conversation_mappings`** — bidirectional WA-chat ↔ provider-conversation mapping plus handover state (`src/modules/integration/entities/conversation-mapping.entity.ts`).
@@ -703,7 +717,7 @@ The data connection also owns:
 Additionally, the `AddMessagesFts` migration creates the full-text-search structures over `messages` (a FTS5 virtual table on SQLite, a generated `body_ts` `tsvector` column plus GIN index on PostgreSQL) that back the `/search` endpoint.
 
 > [!NOTE]
-> **Tables that do _not_ exist.** Earlier drafts referenced `contacts`, `session_logs`, `webhook_logs`, `api_key_logs`, `webhook_idempotency`, and `ip_whitelist`. None of these are implemented. Contacts are read live from the engine; auditing is the single `audit_logs` table; webhook idempotency is not a persisted table; and per-key IP restrictions are stored inline on `api_keys.allowed_ips` (a `simple-array`), not in a separate `ip_whitelist` table.
+> **Tables that do _not_ exist.** Earlier drafts referenced `contacts`, `session_logs`, `webhook_logs`, `api_key_logs`, `webhook_idempotency`, and `ip_whitelist`. None of these are implemented. Contacts are read live from the engine; auditing is the single `audit_logs` table; webhook idempotency is not a persisted table; and per-key IP restrictions are stored inline on `api_keys."allowedIps"` (a `simple-array`), not in a separate `ip_whitelist` table.
 
 ---
 
@@ -741,7 +755,9 @@ CREATE INDEX "IDX_webhooks_sessionId" ON webhooks("sessionId");
 
 -- message_batches: batch ids are unique per session, not globally.
 -- Note the snake_case: this table really is named that way — see the naming note in §5.3.
-CREATE UNIQUE INDEX "UQ_message_batches_session_id_batch_id" ON message_batches(session_id, batch_id);
+-- This is a UNIQUE constraint, not a standalone index: on PostgreSQL drop it with ALTER TABLE ... DROP CONSTRAINT;
+-- SQLite cannot drop a constraint in place and needs a table rebuild.
+ALTER TABLE message_batches ADD CONSTRAINT "UQ_message_batches_session_id_batch_id" UNIQUE (session_id, batch_id);
 
 -- audit_logs (main DB): filter by action / key / session, ordered by time
 CREATE INDEX "IDX_audit_logs_action" ON audit_logs(action);
@@ -842,7 +858,7 @@ OpenWA runs **two separate TypeORM connections**, each with its own migrations d
 Migrations are hand-authored and idempotent (`IF NOT EXISTS`) so they are safe to adopt on a database originally created by `synchronize`. The two connections differ in how schema is managed:
 
 - **data** — `synchronize` defaults **off**, so this connection is migration-managed by default. On PostgreSQL `migrationsRun` is hardcoded on, and `DATABASE_SYNCHRONIZE=true` is rejected outright at boot validation (it would drop the migration-created `body_ts` tsvector column that `/search` depends on). On SQLite there is no such rejection and `migrationsRun` is the inverse of `synchronize` — so an opted-in `DATABASE_SYNCHRONIZE=true` switches the data connection to entity-synchronized schema and turns its migrations **off**.
-- **main**: migration-managed by default, like data: `migrations-main/` creates and upgrades `api_keys` / `audit_logs` at boot. The chain is idempotent, so a `main.sqlite` an earlier release built with synchronize is adopted in place on the first boot (rows kept, missing columns added, the ledger written). `MAIN_DATABASE_SYNCHRONIZE=true` additionally synchronizes after the chain, for development; it cannot add an entity column that has no migration yet, because the missing-column check below refuses the boot first, so write the migration in `migrations-main/`. Boot logs a warning when it is set under `NODE_ENV=production`. Before any provider reads the file, boot refuses to start (in both modes) when the ledger records a migration this release does not ship (a newer release upgraded the file) or when an entity column is still missing after the chain ran (an older release rebuilt the table, so its values are gone, or the column has no migration yet); the error names the migration or column. For a newer ledger or a rebuilt table, the remedy is restoring `main.sqlite` from the backup taken before the downgrade or upgrade; for a column with no migration yet, it is adding one in `migrations-main/`. For a table rebuilt without `api_keys.allowedChats` and no backup, stop the instance, delete that migration's ledger row from the file the error names (the `MAIN_DATABASE_NAME` path, `data/main.sqlite` by default) and start it. On a source install that is `sqlite3 data/main.sqlite "DELETE FROM migrations WHERE name = 'AddApiKeyAllowedChats1786600000000'"`. On the compose deployment the file lives in the `openwa-data` volume, not on the host, and a stopped container cannot be exec'd into, so run the CLI in a one-off container of the service: `docker compose stop openwa-api && docker compose run --rm --no-deps openwa-api sqlite3 /app/data/main.sqlite "DELETE FROM migrations WHERE name = 'AddApiKeyAllowedChats1786600000000'"` (with `MAIN_DATABASE_NAME` set, use that path under `/app`). Then the chain re-creates `api_keys.allowedChats` empty, which means every chat, so re-apply each key's `allowedChats` before exposing the API. A file whose ledger does not record the lost column's migration (0.23.6 and 0.23.7 wrote the ledger only with `MAIN_DATABASE_SYNCHRONIZE=false`) is not detected: the column comes back empty, which means every chat, so each key's `allowedChats` must be re-applied. Never delete or rename a `migrations-main/` file: its ledger row would read as a newer release's.
+- **main**: migration-managed by default, like data: `migrations-main/` creates and upgrades `api_keys` / `audit_logs` at boot. The chain is idempotent, so a `main.sqlite` an earlier release built with synchronize is adopted in place on the first boot (rows kept, missing columns added, the ledger written). `MAIN_DATABASE_SYNCHRONIZE=true` additionally synchronizes after the chain, for development; it cannot add an entity column that has no migration yet, because the missing-column check below refuses the boot first, so write the migration in `migrations-main/`. Boot logs a warning when it is set under `NODE_ENV=production`. Before any provider reads the file, boot refuses to start (in both modes) when the ledger records a migration this release does not ship (a newer release upgraded the file) or when an entity column is still missing after the chain ran (an older release rebuilt the table, so its values are gone, or the column has no migration yet); the error names the migration or column. For a newer ledger or a rebuilt table, the remedy is restoring `main.sqlite` from the backup taken before the downgrade or upgrade; for a column with no migration yet, it is adding one in `migrations-main/`. For a table rebuilt without `api_keys.allowedChats` and no backup, stop the instance, delete that migration's ledger row from the file the error names (the `MAIN_DATABASE_NAME` path, `data/main.sqlite` by default) and start it. On a source install that is `sqlite3 data/main.sqlite "DELETE FROM migrations WHERE name = 'AddApiKeyAllowedChats1786600000000'"`. On the compose deployment the file lives in the `openwa-data` volume, not on the host, and a stopped container cannot be exec'd into, so run the CLI in a one-off container of the service: `docker compose stop openwa-api && docker compose run --rm --no-deps openwa-api sqlite3 /app/data/main.sqlite "DELETE FROM migrations WHERE name = 'AddApiKeyAllowedChats1786600000000'"` (with `MAIN_DATABASE_NAME` set, use that path under `/app`). On the Helm chart, scale the StatefulSet to 0 and start the `openwa-restore` helper pod on the release's data PVC as [11 - Runbook: Restore from Backup](./11-operational-runbooks.md#runbook-restore-from-backup) does, run `kubectl exec openwa-restore -- sqlite3 /app/data/main.sqlite "DELETE FROM migrations WHERE name = 'AddApiKeyAllowedChats1786600000000'"`, then delete the pod and scale back to 1. Then the chain re-creates `api_keys.allowedChats` empty, which means every chat, so re-apply each key's `allowedChats` before exposing the API. A file whose ledger does not record the lost column's migration (0.23.6 and 0.23.7 wrote the ledger only with `MAIN_DATABASE_SYNCHRONIZE=false`) is not detected: the column comes back empty, which means every chat, so each key's `allowedChats` must be re-applied. Never delete or rename a `migrations-main/` file: its ledger row would read as a newer release's.
 
 ### Migration Files
 

@@ -311,9 +311,9 @@ async function lookupWithDeadline(host: string, signal?: AbortSignal | null): Pr
  *
  * Returns the vetted resolved addresses so a caller can PIN the connection to them — defeating the
  * DNS-rebinding window where the address validated here differs from the one `fetch` would re-resolve.
- * Returns null when there is nothing to pin: an allowlisted host (trusted — deliberately left
- * unpinned, since the operator opts in to whatever its DNS returns) or a literal IP (no DNS, so no
- * rebind is possible — fetch connects straight to the validated literal).
+ * Hosts in `SSRF_ALLOWED_HOSTS` skip the block check but are still resolved, and their addresses are
+ * returned for pinning, so an allowlisted name cannot rebind after validation. Returns null only for a
+ * literal IP (no DNS, so no rebind is possible; fetch connects straight to the validated literal).
  */
 export async function resolveSafeFetchTarget(
   rawUrl: string,

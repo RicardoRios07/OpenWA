@@ -90,6 +90,7 @@
     "noMessageYet": "尚無訊息",
     "unreadBadge": "{{count}} 條未讀訊息",
     "unreadBadge_other": "{{count}} 條未讀訊息",
+    "markedUnread": "已標示為未讀",
     "loadingMessages": "正在載入訊息...",
     "loadingOlderMessages": "正在載入較舊的訊息...",
     "loadOlderMessagesError": "無法載入較舊的訊息。向上捲動重試。",
@@ -452,6 +453,7 @@
     "filters": {
       "title": "篩選條件（選填）",
       "hint": "僅當所有條件都符合時才觸發。適用於訊息事件。",
+      "incomplete": "請為每個篩選條件填寫值，且條件最多 20 個、每個條件最多 100 個值、文字最多 1000 個字元。",
       "badge": "{{count}} 個篩選條件",
       "badge_other": "{{count}} 個篩選條件",
       "addCondition": "新增條件",
@@ -599,6 +601,7 @@
     },
     "empty": {
       "title": "未儲存任何範本",
+      "noMatch": "沒有符合搜尋條件的範本。",
       "description": "建立可重用的範本，加快常用回覆和通知的速度。",
       "noSessionsTitle": "沒有可用的工作階段",
       "noSessionsDesc": "請先建立 WhatsApp 工作階段，才能新增範本。",
@@ -958,7 +961,7 @@
       "checking": "正在檢查伺服器狀態...",
       "dontClose": "請不要關閉此視窗",
       "successMsg": "伺服器已重新上線！頁面將自動重新載入。",
-      "errorMsg": "伺服器在 30 秒後仍未回應。請檢查 Docker 記錄並手動重新啟動。",
+      "errorMsg": "伺服器沒有回應。請檢查 Docker 記錄並手動重新啟動。",
       "outcomeUnknown": "伺服器回應前代理傳回了錯誤，因此無法確定重新啟動是否正在進行。請在一分鐘後重新載入頁面查看。",
       "reload": "重新載入頁面"
     },
@@ -1021,7 +1024,7 @@
     "config": {
       "title": "設定 {{name}}",
       "noOptions": "此外掛沒有可用設定選項",
-      "uiHandshakeError": "外掛設定介面未初始化。如有可用的結構表單，請使用下方表單。",
+      "uiHandshakeError": "外掛設定介面未初始化。",
       "save": "儲存設定",
       "addItem": "新增",
       "tabConfig": "設定",
@@ -1157,7 +1160,7 @@
   },
   "search": {
     "placeholder": "搜尋訊息…",
-    "results": "{{count}} 個結果",
+    "loadMore": "顯示更多（{{shown}}/{{total}}）",
     "empty": "未找到訊息。",
     "error": "搜尋失敗。請重試。",
     "unavailable": "搜尋未設定。",

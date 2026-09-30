@@ -10,8 +10,11 @@ import { DateTransformer } from '../../../common/transformers/date.transformer';
 //                   webhook_delivery_failures, so a 'dispatched' row is never the reconciler's
 //                   concern. Retiring on ENQUEUE rather than on the POST is what stops the
 //                   reconciler duplicating work BullMQ already owns.
-//  - 'failed'     - terminal: the reconciler exhausted its replay budget. Recovery continues
-//                   through the failure row.
+//  - 'failed'     - terminal, set only by the reconciler: either the replay budget is spent
+//                   (recovery continues through the failure row), or the webhook was removed,
+//                   disabled or unsubscribed from the event before a replay (no failure row;
+//                   nothing to recover). The gated direct path closes that second case as
+//                   'dispatched' instead.
 // NULL marks rows that predate these columns on a synchronize-bootstrapped database. NULL reads as
 // "not watched", so an upgrade can never mass-replay history.
 export type WebhookOutboxState = 'pending' | 'dispatched' | 'failed';

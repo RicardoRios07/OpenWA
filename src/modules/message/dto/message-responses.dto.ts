@@ -57,7 +57,8 @@ export class MessageListItemDto {
   @ApiPropertyOptional({
     type: String,
     nullable: true,
-    description: 'Human-readable chat name when known (contact pushName, group subject).',
+    description:
+      'Push name of the message sender as the engine reported it; in a group this is the member who posted, not the group subject. Null when no contact name was known.',
     example: 'Alice',
   })
   chatName?: string | null;
@@ -305,7 +306,8 @@ export class ChatHistoryMessageDto {
   @ApiPropertyOptional({
     type: String,
     nullable: true,
-    description: 'Best-effort phone digits of a privacy-id sender, when resolved.',
+    description:
+      'Never set on this route: live history does no privacy-id resolution. Resolve an @lid sender with GET /api/sessions/{sessionId}/contacts/{contactId}/phone.',
     example: null,
   })
   senderPhone?: string | null;

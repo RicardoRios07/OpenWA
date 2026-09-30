@@ -145,6 +145,26 @@ EOF
   log "WARN: engine auth state may have been written during the copy; a restore may need re-pairing: $1"
 }
 
+# copy_live_tree <src> <dest> [label] - cp -pRH, except that a file the app deleted or renamed while
+# cp walked the tree (Chromium cache and LevelDB churn, the Baileys store's temp files and consumed
+# keys, media retention and plugin storage writes) is a torn copy, not a failed backup. With a label
+# the copy is engine auth state and goes in ENGINE-STATE-NOTE; without one it is only logged. Every
+# other cp error stays fatal.
+copy_live_tree() {
+  local err
+  if ! err="$(cp -pRH "$1" "$2" 2>&1)"; then
+    if printf '%s\n' "$err" | grep -qv 'No such file or directory'; then
+      printf '%s\n' "$err" >&2
+      exit 1
+    fi
+    if [ -n "${3:-}" ]; then
+      record_engine_state_note "$3 (files changed during the copy)"
+    else
+      log "WARN: files under $1 changed during the copy"
+    fi
+  fi
+}
+
 # Online SQLite backup (consistent without stopping the app) when sqlite3 is present. A missing
 # source database is FATAL: an archive without the configured databases is not a backup, and a
 # silent skip is how an empty archive gets reported as "Backup complete".
@@ -202,13 +222,15 @@ fi
 # linked back is archived by its content. Without it the archive held only the link, with no data.
 if [ -d "$SESSIONS_DIR" ]; then
   log "Backing up whatsapp-web.js sessions"
-  cp -pRH "$SESSIONS_DIR" "$STAGE/sessions"
-  # Chromium holds a SingletonLock (a symlink, so not `-e`) in every profile it has open, and the
-  # entrypoint clears stale ones at start, so a lock here means a browser was writing that profile.
-  OPEN_PROFILES="$(find -H "$SESSIONS_DIR" -mindepth 2 -maxdepth 2 -name SingletonLock -exec dirname {} \; |
-    sed 's|.*/||' | sort | tr '\n' ' ')"
+  copy_live_tree "$SESSIONS_DIR" "$STAGE/sessions" sessions/
+  # Chromium holds a SingletonLock (a symlink, so not `-e`) in every profile it has open. A browser
+  # killed outright (force-kill, a stop that timed out) leaves its lock behind until the next launch
+  # or container start clears it, so a lock here means the profile is open or was last hard-killed.
+  OPEN_PROFILES="$({
+    find -H "$SESSIONS_DIR" -mindepth 2 -maxdepth 2 -name SingletonLock -exec dirname {} \; 2>/dev/null || true
+  } | sed 's|.*/||' | sort | tr '\n' ' ')"
   if [ -n "$OPEN_PROFILES" ]; then
-    record_engine_state_note "sessions/ (whatsapp-web.js profiles open in a browser: ${OPEN_PROFILES% })"
+    record_engine_state_note "sessions/ (whatsapp-web.js profiles holding a Chromium SingletonLock, open or left by a killed browser: ${OPEN_PROFILES% })"
   fi
 else
   log "WARN: $SESSIONS_DIR not found — skipping sessions"
@@ -216,26 +238,26 @@ fi
 
 if [ -d "$BAILEYS_DIR" ]; then
   log "Backing up Baileys authentication state"
-  cp -pRH "$BAILEYS_DIR" "$STAGE/baileys"
+  copy_live_tree "$BAILEYS_DIR" "$STAGE/baileys" baileys/
   # Baileys rewrites creds.json and its key files during normal traffic and leaves no sign of being
   # live, so any session's state counts, stopped or not.
   if [ -n "$(find -H "$BAILEYS_DIR" -mindepth 1 -maxdepth 1 -type d -print -quit)" ]; then
     record_engine_state_note "baileys/ (recorded whenever Baileys state exists; it cannot show whether it was live)"
   fi
-elif [ "${ENGINE_TYPE:-}" = "baileys" ]; then
+elif [ "$(openwa_resolve ENGINE_TYPE '')" = "baileys" ]; then
   log "WARN: ENGINE_TYPE=baileys but $BAILEYS_DIR was not found — restored sessions will require pairing"
 fi
 
 if [ -d "$MEDIA_DIR" ]; then
   log "Backing up local media"
-  cp -pRH "$MEDIA_DIR" "$STAGE/media"
+  copy_live_tree "$MEDIA_DIR" "$STAGE/media"
 else
   log "WARN: $MEDIA_DIR not found; skipping local media"
 fi
 
 if [ -d "$PLUGIN_PACKAGES_DIR" ]; then
   log "Backing up installed plugin packages"
-  cp -pRH "$PLUGIN_PACKAGES_DIR" "$STAGE/plugin-packages"
+  copy_live_tree "$PLUGIN_PACKAGES_DIR" "$STAGE/plugin-packages"
 fi
 
 # With PLUGINS_DIR unset the app also loads packages from ./plugins, its default up to 0.12.1 (see
@@ -248,7 +270,7 @@ fi
 
 if [ -d "$PLUGIN_STATE_DIR" ]; then
   log "Backing up plugin registry and persisted state"
-  cp -pRH "$PLUGIN_STATE_DIR" "$STAGE/plugin-state"
+  copy_live_tree "$PLUGIN_STATE_DIR" "$STAGE/plugin-state"
 fi
 
 if [ -f "$GENERATED_ENV" ]; then

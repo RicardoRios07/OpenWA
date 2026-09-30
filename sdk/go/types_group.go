@@ -57,7 +57,6 @@ type MembershipRequestActionRequest struct {
 	Participants []string `json:"participants"`
 }
 
-// GroupInfo is the full group detail.
 // MemberAddMode is who may add participants to a group.
 type MemberAddMode string
 
@@ -66,6 +65,7 @@ const (
 	MemberAddAdmins MemberAddMode = "admins"
 )
 
+// GroupInfo is the full group detail.
 type GroupInfo struct {
 	ID           string             `json:"id"`
 	Name         string             `json:"name"`

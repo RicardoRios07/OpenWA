@@ -71,7 +71,12 @@ export class InfraStorageStatusDto {
   @ApiProperty({ enum: ['local', 's3'], example: 'local' })
   type!: string;
 
-  @ApiPropertyOptional({ description: 'Local storage root. Present only for `local`.', example: './data/storage' })
+  @ApiPropertyOptional({
+    description:
+      'Local storage root. Also reported for `s3`, where it is the fallback directory used while the bucket ' +
+      'is unreachable.',
+    example: './data/media',
+  })
   path?: string;
 
   @ApiPropertyOptional({ description: 'Bucket name. Present only for `s3`.', example: 'openwa-media' })
@@ -491,13 +496,25 @@ export class InfraImportDataResponseDto {
   @ApiProperty({ type: TableCountsDto, description: 'Rows written per table.' })
   counts!: TableCountsDto;
 
-  @ApiProperty({ type: [String], description: 'Problems that did not stop the import.', example: [] })
+  @ApiProperty({
+    type: [String],
+    description:
+      'Why the restore was rolled back (per-row failures, or a backup with no rows). Non-empty only when ' +
+      '`imported` is false; non-fatal messages are in `notices`.',
+    example: [],
+  })
   warnings!: string[];
 
   @ApiProperty({ type: [String], description: 'Informational messages about what the import did.', example: [] })
   notices!: string[];
 
-  @ApiProperty({ description: 'Whether the process must restart before the imported state is live.', example: true })
+  @ApiProperty({
+    description:
+      'True when an engine may still be writing into the restored tables (orphans left running by `force`, a ' +
+      'failed `stopOrphans` teardown, sessions held by another node, or plugin bindings not re-applied). Restart ' +
+      'to reconcile. Can be true even when `imported` is false.',
+    example: false,
+  })
   restartRequired!: boolean;
 
   @ApiProperty({

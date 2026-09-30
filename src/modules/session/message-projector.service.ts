@@ -130,6 +130,8 @@ export class MessageProjector {
     {
       message: InboundMessageData;
       revoked?: boolean;
+      // Set when the revoke came from the engine, so message.revoked went out for it.
+      revokeAnnounced?: boolean;
       editedBody?: string;
       ackStatus?: MessageStatus;
       // Latest reaction per sender; '' means the sender withdrew theirs.
@@ -228,8 +230,8 @@ export class MessageProjector {
 
   /** Record a message as not yet written; a re-fire of the same id keeps the changes recorded so far. */
   private trackInFlight(key: string, message: InboundMessageData) {
-    const { revoked, editedBody, ackStatus, reactions } = this.inboundInFlight.get(key) ?? {};
-    const inFlight = { message, revoked, editedBody, ackStatus, reactions };
+    const { revoked, revokeAnnounced, editedBody, ackStatus, reactions } = this.inboundInFlight.get(key) ?? {};
+    const inFlight = { message, revoked, revokeAnnounced, editedBody, ackStatus, reactions };
     this.inboundInFlight.set(key, inFlight);
     return inFlight;
   }
@@ -589,13 +591,35 @@ export class MessageProjector {
       void this.chatMediaArchive?.archive(dbMessage).catch(() => undefined);
     }
 
+    const announced = this.withChangesMadeInFlight(id, finalMessage);
+    if (!announced) return;
     // Dispatch to webhooks with potentially modified message
-    void this.webhookService.dispatch(id, 'message.received', finalMessage);
+    void this.webhookService.dispatch(id, 'message.received', announced);
     // Autoreply rules ride the same at-most-once dispatch (the insert oracle above dedupes engine
     // re-fires) and stay fail-open like the webhook: a broken rule must never break the receive path.
-    void this.automationRules?.evaluateInbound(id, finalMessage).catch(() => undefined);
+    void this.automationRules?.evaluateInbound(id, announced).catch(() => undefined);
     // Emit real-time event to WebSocket clients
-    this.eventsGateway.emitMessage(id, finalMessage);
+    this.eventsGateway.emitMessage(id, announced);
+  }
+
+  /**
+   * The message as a revoke or edit that arrived while it was in flight left it, for its announcement:
+   * null once the engine revoked it (message.revoked already went out, so the deleted content is not
+   * announced after it), the revoked placeholder when only the REST delete did (a delete-for-me emits no
+   * engine revoke, and the message still exists for its sender), the edited body when edited
+   * (message.edited already went out with it). The stored row takes the same changes in
+   * {@link applyChangesMadeInFlight}.
+   */
+  private withChangesMadeInFlight(id: string, message: InboundMessageData): InboundMessageData | null {
+    const pending = this.inboundInFlight.get(`${id}:${message.id}`);
+    if (pending?.revokeAnnounced) return null;
+    if (pending?.revoked) {
+      // Nothing of the content survives, as in REVOKED_ROW_PATCH.
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { media, quotedMessage, call, buttons, button, location, order, product, mentionedIds, ...kept } = message;
+      return { ...kept, body: '', type: 'revoked' };
+    }
+    return pending?.editedBody === undefined ? message : { ...message, body: pending.editedBody };
   }
 
   /** Engine callback body, lifted out of initializeEngine so the wiring table stays readable. */
@@ -628,20 +652,25 @@ export class MessageProjector {
       this.logger.error(`onMessageCreate handler failed for ${id}`, String(err));
       return null;
     };
+    // The commit may wait behind a slow earlier message of the chat; a revoke, edit or ack of this
+    // send landing meanwhile is recorded here and applied once the row is written. Like the inbound
+    // path, the entry follows the chain's rewrites, so a quote carries what the row will hold.
+    const inFlightKey = `${id}:${message.id}`;
+    const inFlight = this.trackInFlight(inFlightKey, messageData);
     // Execute hook for message sent - plugins can modify or stop processing. Like the inbound path,
     // the hook chain runs concurrently and the commit waits its turn on the chat's queue.
     const prepared = this.hookManager
       .execute('message:sent', messageData, {
         sessionId: id,
         source: 'Engine',
-        accept: isMessagePayload,
+        accept: data => {
+          if (!isMessagePayload(data)) return false;
+          inFlight.message = data;
+          return true;
+        },
       })
       .then(({ data }) => this.messageOrEngineCopy(id, 'message:sent', data, message))
       .catch(onFailure);
-    // The commit may wait behind a slow earlier message of the chat; a revoke, edit or ack of this
-    // send landing meanwhile is recorded here and applied once the row is written.
-    const inFlightKey = `${id}:${message.id}`;
-    const inFlight = this.trackInFlight(inFlightKey, messageData);
     this.chatCommits.enqueue(this.chatCommitKey(id, message), async () => {
       try {
         const finalMessage = await prepared;
@@ -728,9 +757,11 @@ export class MessageProjector {
       }
     }
 
-    void this.webhookService.dispatch(id, 'message.sent', finalMessage);
+    const announced = this.withChangesMadeInFlight(id, finalMessage);
+    if (!announced) return;
+    void this.webhookService.dispatch(id, 'message.sent', announced);
     // Emit real-time event to WebSocket clients (as message.sent, not message.received)
-    this.eventsGateway.emitMessageSent(id, finalMessage);
+    this.eventsGateway.emitMessageSent(id, announced);
   }
 
   /** Engine callback body, lifted out of initializeEngine so the wiring table stays readable. */
@@ -852,6 +883,8 @@ export class MessageProjector {
     // `revokedId` falls back to `id` (Baileys, where the two are the same).
     const revokedWaMessageId = message.revokedId ?? message.id;
     void this.recordRevoke(id, revokedWaMessageId);
+    const inFlight = this.inboundInFlight.get(`${id}:${revokedWaMessageId}`);
+    if (inFlight) inFlight.revokeAnnounced = true;
 
     // Notify consumers regardless of whether the row existed: webhook (message.revoked
     // is a declared event) + the real-time dashboard stream.

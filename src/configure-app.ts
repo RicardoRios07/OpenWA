@@ -13,6 +13,7 @@ import {
 } from './config/inflight-body-budget';
 import { ActiveKeyIndex } from './modules/auth/active-key-index';
 import { requestContextMiddleware } from './common/middleware/request-context.middleware';
+import { createLogger } from './common/services/logger.service';
 import { injectDashboardCspNonce } from './config/dashboard-csp';
 import { resolveCorsPolicy, isUpgradeInsecureRequestsEnabled, resolveBodyLimit } from './config/bootstrap-security';
 import { resolveRequestTimeoutMs } from './config/http-timeouts';
@@ -40,86 +41,25 @@ export interface AppliedBodyCaps {
 }
 
 /**
- * Everything the production HTTP surface installs on the Express app: the in-flight body budget,
- * the body parsers, request context, the CSP nonce, helmet, the SPA document handler and CORS.
+ * Everything the production HTTP surface installs on the Express app: request context, the CSP
+ * nonce, helmet, the SPA document handler, CORS, the in-flight body budget, the body parsers and the
+ * trailing-slash DELETE refusal.
  *
  * It lives here rather than inside bootstrap() so the e2e lane can run the SAME stack. main.ts
  * boots on import, so a suite cannot import it; the whole stack was therefore executed by nothing,
  * and the one suite that needed the document handler carried its own copy of it.
  *
  * ORDER IS LOAD-BEARING. The budget must precede the parsers (a refused connection must not buffer
- * a byte), and the nonce must precede helmet (the CSP directive reads res.locals.cspNonce).
+ * a byte), and the nonce must precede helmet (the CSP directive reads res.locals.cspNonce). Request
+ * context, helmet and CORS must precede both: the budget answers its 503/415 itself and a parser
+ * error skips every later non-error middleware, so a rejection registered ahead of them reaches a
+ * cross-origin browser as an opaque network error, without the request id.
  */
 export function configureApp(app: INestApplication, options: ConfigureAppOptions = {}): AppliedBodyCaps {
   const dashboard: DashboardSource = options.dashboard ?? {
     distDir: DASHBOARD_DIST,
     enabled: dashboardServingEnabled && dashboardBuildPresent,
   };
-
-  // Aggregate in-flight body budget (DoS hardening): once too many body bytes are being buffered
-  // across ALL connections, new requests get 503 + Retry-After without their body being read.
-  // This is a deliberate PRE-GUARD: the throttler/auth guards run at the Nest routing layer —
-  // AFTER middleware and body buffering — so they can never stop slow-body memory pinning, and
-  // this must run BEFORE the body parser so a rejected connection never buffers a byte. The
-  // per-request BODY_SIZE_LIMIT below is a separate, unchanged cap on each admitted request.
-  const inflightBudgetBytes = resolveInflightBodyBudgetBytes(
-    process.env.INFLIGHT_BODY_BUDGET_BYTES,
-    process.env.BODY_SIZE_LIMIT,
-  );
-  // Cap request body size (DoS hardening). Media sends carry base64 in the JSON body,
-  // so the default is generous; tune with BODY_SIZE_LIMIT.
-  const bodyLimit = resolveBodyLimit(process.env.BODY_SIZE_LIMIT);
-  // Requests without a recognised API key share a pool of a quarter of the budget, never less than
-  // two BODY_SIZE_LIMIT bodies (half the default budget). With no AuthModule in the app (some test
-  // modules) every request is unrecognised, which is the stricter side.
-  // Looked up through ModuleRef: a failed app.get() aborts the process instead of throwing.
-  let keyIndex: ActiveKeyIndex | undefined;
-  try {
-    keyIndex = app.get(ModuleRef).get(ActiveKeyIndex, { strict: false });
-  } catch {
-    keyIndex = undefined;
-  }
-  app.use(
-    createInflightBodyBudget(inflightBudgetBytes, {
-      trustedProxies: (process.env.TRUSTED_PROXIES || '')
-        .split(',')
-        .map(p => p.trim())
-        .filter(Boolean),
-      classify: (req, clientIp) => keyIndex?.recognise(req.headers, clientIp),
-      bodyLimitBytes: parseBodyLimitBytes(bodyLimit),
-      requestTimeoutMs: resolveRequestTimeoutMs(process.env.REQUEST_TIMEOUT_MS),
-    }).middleware,
-  );
-  // The `verify` callback stashes the EXACT bytes json() received on req.rawBody, byte-identical to
-  // what a provider signed, so the @Public ingress controller can HMAC-verify over the raw body
-  // (JSON.stringify(req.body) is NOT byte-identical). Cheap for every route; non-ingress routes ignore it.
-  // `inflate: false` is a backstop, not the guard: the budget middleware above already refuses a
-  // compressed body with 415 before a byte is read. It sits here so a future reordering of these
-  // parsers relative to that middleware cannot silently reopen the gap — an inflated body is
-  // charged to the budget at its compressed size and bounded by nothing. Every other parser in the
-  // process must carry the same flag for that argument to hold; the MCP route-level fallback
-  // (src/modules/mcp/mcp.server.ts) does.
-  app.use(
-    json({
-      limit: bodyLimit,
-      inflate: false,
-      verify: (req: Request & { rawBody?: Buffer }, _res, buf) => {
-        req.rawBody = buf;
-      },
-    }),
-  );
-  app.use(
-    urlencoded({
-      extended: true,
-      limit: bodyLimit,
-      inflate: false,
-      // Form-encoded webhook providers also sign the exact wire bytes. Use the same capture contract
-      // as json(); other content types remain unsupported rather than installing a global catch-all.
-      verify: (req: Request & { rawBody?: Buffer }, _res, buf) => {
-        req.rawBody = buf;
-      },
-    }),
-  );
 
   // Assign a request id to every inbound request (X-Request-ID), echo it on the response, and run
   // the whole downstream chain inside its scope so every log line + audit row carries it.
@@ -203,8 +143,8 @@ export function configureApp(app: INestApplication, options: ConfigureAppOptions
   // CORS Configuration (#221 hardening)
   const corsPolicy = resolveCorsPolicy(process.env.CORS_ORIGINS, process.env.NODE_ENV);
   if (process.env.NODE_ENV === 'production' && corsPolicy.origins.length === 0 && !corsPolicy.allowAnyOrigin) {
-    console.warn(
-      '[Bootstrap] No explicit CORS_ORIGINS in production (wildcard "*" is refused): cross-origin browser ' +
+    createLogger('Bootstrap').warn(
+      'No explicit CORS_ORIGINS in production (wildcard "*" is refused): cross-origin browser ' +
         'requests will be blocked. Set CORS_ORIGINS to your dashboard origin(s).',
     );
   }
@@ -257,6 +197,71 @@ export function configureApp(app: INestApplication, options: ConfigureAppOptions
     ],
     maxAge: 86400, // 24 hours
   });
+
+  // Aggregate in-flight body budget (DoS hardening): once too many body bytes are being buffered
+  // across ALL connections, new requests get 503 + Retry-After without their body being read.
+  // This is a deliberate PRE-GUARD: the throttler/auth guards run at the Nest routing layer —
+  // AFTER middleware and body buffering — so they can never stop slow-body memory pinning, and
+  // this must run BEFORE the body parser so a rejected connection never buffers a byte. The
+  // per-request BODY_SIZE_LIMIT below is a separate, unchanged cap on each admitted request.
+  const inflightBudgetBytes = resolveInflightBodyBudgetBytes(
+    process.env.INFLIGHT_BODY_BUDGET_BYTES,
+    process.env.BODY_SIZE_LIMIT,
+  );
+  // Cap request body size (DoS hardening). Media sends carry base64 in the JSON body,
+  // so the default is generous; tune with BODY_SIZE_LIMIT.
+  const bodyLimit = resolveBodyLimit(process.env.BODY_SIZE_LIMIT);
+  // Requests without a recognised API key share a pool of a quarter of the budget, never less than
+  // two BODY_SIZE_LIMIT bodies (half the default budget). With no AuthModule in the app (some test
+  // modules) every request is unrecognised, which is the stricter side.
+  // Looked up through ModuleRef: a failed app.get() aborts the process instead of throwing.
+  let keyIndex: ActiveKeyIndex | undefined;
+  try {
+    keyIndex = app.get(ModuleRef).get(ActiveKeyIndex, { strict: false });
+  } catch {
+    keyIndex = undefined;
+  }
+  app.use(
+    createInflightBodyBudget(inflightBudgetBytes, {
+      trustedProxies: (process.env.TRUSTED_PROXIES || '')
+        .split(',')
+        .map(p => p.trim())
+        .filter(Boolean),
+      classify: (req, clientIp) => keyIndex?.recognise(req.headers, clientIp),
+      bodyLimitBytes: parseBodyLimitBytes(bodyLimit),
+      requestTimeoutMs: resolveRequestTimeoutMs(process.env.REQUEST_TIMEOUT_MS),
+    }).middleware,
+  );
+  // The `verify` callback stashes the EXACT bytes json() received on req.rawBody, byte-identical to
+  // what a provider signed, so the @Public ingress controller can HMAC-verify over the raw body
+  // (JSON.stringify(req.body) is NOT byte-identical). Cheap for every route; non-ingress routes ignore it.
+  // `inflate: false` is a backstop, not the guard: the budget middleware above already refuses a
+  // compressed body with 415 before a byte is read. It sits here so a future reordering of these
+  // parsers relative to that middleware cannot silently reopen the gap — an inflated body is
+  // charged to the budget at its compressed size and bounded by nothing. Every other parser in the
+  // process must carry the same flag for that argument to hold; the MCP route-level fallback
+  // (src/modules/mcp/mcp.server.ts) does.
+  app.use(
+    json({
+      limit: bodyLimit,
+      inflate: false,
+      verify: (req: Request & { rawBody?: Buffer }, _res, buf) => {
+        req.rawBody = buf;
+      },
+    }),
+  );
+  app.use(
+    urlencoded({
+      extended: true,
+      limit: bodyLimit,
+      inflate: false,
+      // Form-encoded webhook providers also sign the exact wire bytes. Use the same capture contract
+      // as json(); other content types remain unsupported rather than installing a global catch-all.
+      verify: (req: Request & { rawBody?: Buffer }, _res, buf) => {
+        req.rawBody = buf;
+      },
+    }),
+  );
 
   // A DELETE path ending in '/' names no resource. Non-strict routing would still match it to the
   // route without the slash, so a client that normalises `<parent>/<child>/..` down to `<parent>/`

@@ -4,7 +4,7 @@ import { jsonColumnType } from '../../../common/utils/column-types';
 /**
  * A `bigint` column reads back as a string on PostgreSQL (pg avoids >2^53 precision loss) but as a
  * number on SQLite. WhatsApp epoch-seconds are far below 2^53, so coerce reads to a number for a
- * consistent REST/SDK/MCP contract (entity, DTO, all three SDKs, and dashboard declare `number`).
+ * consistent REST/SDK/MCP contract (entity, DTO, the typed SDKs, and dashboard declare a numeric type).
  * Writes pass through unchanged; null stays null.
  */
 export const bigintToNumberTransformer: ValueTransformer = {

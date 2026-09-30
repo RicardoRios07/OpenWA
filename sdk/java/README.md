@@ -27,6 +27,13 @@ Java 17+, one runtime dependency ([Gson](https://github.com/google/gson)).
 implementation 'com.rmyndharis:openwa:0.5.0'
 ```
 
+This README describes `main`. The 0.5.0 release lacks `sessions.getProxy`,
+`sessions.updateProxy`, `messages.clickButton`, the `name` filter of
+`ListSessionsQuery`, `WebhookSignature.verify`, the `WebhookDelivery` types, the
+`code()`, `retryAfterSeconds()` and `headers()` error accessors, the `UNKNOWN`
+enum fallback and the refusal of an empty, `.` or `..` id or path segment; they
+ship with the next SDK release. See [the SDK overview](../README.md#coverage).
+
 ## Quickstart
 
 ```java
@@ -107,19 +114,46 @@ try {
 }
 ```
 
-| Class                           | HTTP | Meaning                                 |
-| ------------------------------- | ---- | --------------------------------------- |
-| `OpenWAAuthError`               | 401  | Missing or invalid API key              |
-| `OpenWAForbiddenError`          | 403  | API key role or scope refuses the call  |
-| `OpenWANotFoundError`           | 404  | Resource not found                      |
-| `OpenWAConflictError`           | 409  | Engine not ready                        |
-| `OpenWARateLimitError`          | 429  | Rate limited                            |
-| `OpenWANotImplementedError`     | 501  | Active engine does not support the call |
-| `OpenWAServiceUnavailableError` | 503  | Engine did not confirm in time          |
-| `OpenWAApiError`                | —    | Any other non-2xx (carries `.status()`) |
-| `OpenWATimeoutError`            | —    | Request exceeded the configured timeout |
+| Class                           | HTTP | Meaning                                                     |
+| ------------------------------- | ---- | ----------------------------------------------------------- |
+| `OpenWAAuthError`               | 401  | Missing or invalid API key                                  |
+| `OpenWAForbiddenError`          | 403  | API key role or scope, or WhatsApp itself, refuses the call |
+| `OpenWANotFoundError`           | 404  | Resource not found                                          |
+| `OpenWAConflictError`           | 409  | Engine not ready                                            |
+| `OpenWARateLimitError`          | 429  | Rate limited                                                |
+| `OpenWANotImplementedError`     | 501  | Active engine does not support the call                     |
+| `OpenWAServiceUnavailableError` | 503  | Engine did not confirm in time                              |
+| `OpenWAApiError`                | —    | Any other non-2xx (carries `.status()`)                     |
+| `OpenWATimeoutError`            | —    | Request exceeded the configured timeout                     |
 
-All extend `OpenWAError` (a `RuntimeException`). 503 is transient, but a catalog 503 can persist because WhatsApp may never answer that query, so bound any retry. A 429 from the global rate limiter lifts when its window expires (seconds for the per-second tier, up to an hour for the hourly tier by default), and `retryAfterSeconds()` carries its `Retry-After` header. A 429 whose `code()` is `"SEND_PACING_LIMITED"` is not transient: do not retry it before `retryAfterSeconds()`, which then comes from the body and can be hours. `headers()` returns the response headers. In a routed deployment only 503 proves the request was never carried out: a forward that fails after the request reached the owner node answers 502 or 504.
+All extend `OpenWAError` (a `RuntimeException`). 503 is transient, but a catalog 503 can persist because WhatsApp may never answer that query, so bound any retry. A 429 from the global rate limiter lifts when its window expires (seconds for the per-second tier, up to an hour for the hourly tier by default), and `retryAfterSeconds()` carries its `Retry-After` header. A 429 whose `code()` is `"SEND_PACING_LIMITED"` is not transient: do not retry it before `retryAfterSeconds()`, which then comes from the body and can be hours. `headers()` returns the response headers. A 503 does not prove a write was never carried out: the engine answers it when WhatsApp did not confirm in time, and the change may still have been applied, so re-read the state before repeating it. In a routed deployment a forward that fails before reaching the owner node answers 503, one that fails after the request reached it answers 502 or 504, and a 503 from the owner itself is relayed unchanged.
+
+## Receiving webhooks
+
+A webhook configured with a secret signs each delivery in its
+`X-OpenWA-Signature` header. Check it with `WebhookSignature.verify` against
+the raw request body, exactly as received (a `byte[]`, or a `String` read as
+UTF-8), and parse the JSON only after the check passes: a re-serialized body can
+differ byte for byte and will not verify. The helper returns `false` (never
+throws) for a missing, malformed or non-matching signature.
+`com.rmyndharis.openwa.model.WebhookDelivery` types the parsed body.
+
+```java
+import com.google.gson.Gson;
+import com.rmyndharis.openwa.WebhookSignature;
+import com.rmyndharis.openwa.model.WebhookDelivery;
+import java.nio.charset.StandardCharsets;
+
+// In a servlet's doPost(request, response):
+byte[] rawBody = request.getInputStream().readAllBytes();
+if (!WebhookSignature.verify(rawBody, request.getHeader("X-OpenWA-Signature"), secret)) {
+    response.setStatus(401);
+    return;
+}
+WebhookDelivery delivery =
+    new Gson().fromJson(new String(rawBody, StandardCharsets.UTF_8), WebhookDelivery.class);
+// Process delivery.event() and delivery.data() here.
+```
 
 ## Reliability & security
 

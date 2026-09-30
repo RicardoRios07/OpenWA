@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { chmod, mkdtemp, readdir, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FfmpegConversionError, probeFfmpeg, runFfmpeg } from './ffmpeg';
@@ -46,6 +46,7 @@ done
 case "$mode" in
   fail)  echo "Invalid data found when processing input" >&2; exit 1 ;;
   hang)  sleep 10 ;;
+  orphan) sleep 10 & echo $! > "$0.pid"; wait ;;
   empty) : > "$out" ;;
   big)   head -c 4096 /dev/zero > "$out" ;;
   argv)  printf '%s ' "$@" > "$out" ;;
@@ -125,6 +126,31 @@ esac
 
     const child = spawned.mock.results[0].value as ChildProcess;
     expect(child.stderr?.destroyed).toBe(true);
+  }, 15_000);
+
+  // A wrapper that runs ffmpeg without `exec` leaves the real worker as a grandchild. Killing only the
+  // wrapper would free the concurrency slot while that worker keeps running.
+  it('kills the whole process group on timeout, not just the direct child', async () => {
+    const pidFile = `${stubPath}.pid`;
+    await expect(
+      runFfmpeg(Buffer.from('input'), 'bin', 'ogg', mode('orphan'), options({ timeoutMs: 300 })),
+    ).rejects.toThrow(/timed out after 300ms/);
+
+    const grandchild = Number((await readFile(pidFile, 'utf8')).trim());
+    const alive = (): boolean => {
+      try {
+        process.kill(grandchild, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    try {
+      for (let i = 0; i < 40 && alive(); i++) await new Promise(r => setTimeout(r, 50));
+      expect(alive()).toBe(false);
+    } finally {
+      if (alive()) process.kill(grandchild, 'SIGKILL');
+    }
   }, 15_000);
 
   // Transcoding can inflate as well as shrink, so the output needs a ceiling of its own.

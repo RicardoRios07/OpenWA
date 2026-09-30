@@ -1,15 +1,6 @@
-import {
-  IsString,
-  IsOptional,
-  IsEnum,
-  IsArray,
-  ArrayUnique,
-  IsDateString,
-  MinLength,
-  MaxLength,
-  Validate,
-} from 'class-validator';
+import { IsString, IsOptional, IsEnum, IsArray, ArrayUnique, IsDateString, MinLength, Validate } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { MaxCodePoints } from '../../../common/validation/max-code-points';
 import { ApiKeyRole } from '../entities/api-key.entity';
 import { IsIpOrCidrConstraint } from './is-ip-or-cidr.validator';
 import { IsSessionIdConstraint } from './is-session-id.validator';
@@ -22,7 +13,7 @@ export class CreateApiKeyDto {
   })
   @IsString()
   @MinLength(3)
-  @MaxLength(100)
+  @MaxCodePoints(100)
   name!: string;
 
   @ApiPropertyOptional({
@@ -90,7 +81,7 @@ export class ApiKeyResponseDto {
   name!: string;
 
   @ApiProperty({
-    description: 'First 8 characters of the key (for identification)',
+    description: 'First 12 characters of the key (for identification)',
   })
   keyPrefix!: string;
 
@@ -150,7 +141,7 @@ export class UpdateApiKeyDto {
   @IsOptional()
   @IsString()
   @MinLength(3)
-  @MaxLength(100)
+  @MaxCodePoints(100)
   name?: string;
 
   @ApiPropertyOptional({ enum: ApiKeyRole })
@@ -181,8 +172,12 @@ export class UpdateApiKeyDto {
   @Validate(IsChatIdConstraint, { each: true })
   allowedChats?: string[];
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description: 'Expiration date (ISO 8601); null clears it (an empty string is rejected)',
+  })
   @IsOptional()
   @IsDateString()
-  expiresAt?: string;
+  expiresAt?: string | null;
 }

@@ -32,7 +32,7 @@ import {
   HeadBucketCommand,
   ListObjectsV2Command,
 } from '@aws-sdk/client-s3';
-import { DEFAULT_S3_REPROBE_INTERVAL_MS, StorageService } from './storage.service';
+import { DEFAULT_S3_REPROBE_INTERVAL_MS, S3_DELETE_TIMEOUT_MS, StorageService } from './storage.service';
 
 const ENV_KEYS = [
   'S3_ENDPOINT',
@@ -179,11 +179,12 @@ describe('StorageService S3 re-probe and recovery', () => {
     expect(svc.isS3Available()).toBe(false);
   });
 
-  it('stays on the local fallback when the re-probe cannot create the missing bucket', async () => {
+  it('stays on the local fallback when the re-probe cannot create the missing bucket, and says why', async () => {
     mockSend.mockRejectedValueOnce(s3Error('NetworkingError'));
     const svc = new StorageService(makeConfig());
-    warnSpyOf(svc);
+    const warn = warnSpyOf(svc);
     await flush();
+    expect(warn).toHaveBeenLastCalledWith(expect.stringContaining('NetworkingError'));
 
     mockSend.mockImplementation((cmd: unknown) =>
       Promise.reject(s3Error(cmd instanceof HeadBucketCommand ? 'NoSuchBucket' : 'AccessDenied')),
@@ -191,6 +192,8 @@ describe('StorageService S3 re-probe and recovery', () => {
     await jest.advanceTimersByTimeAsync(DEFAULT_S3_REPROBE_INTERVAL_MS);
 
     expect(svc.isS3Available()).toBe(false);
+    // The store answered: the periodic warning names the refused create, not the boot-time outage.
+    expect(warn).toHaveBeenLastCalledWith(expect.stringContaining('AccessDenied'));
   });
 
   it('never transitions true→false: an S3-healthy boot ignores later transient probe failures', async () => {
@@ -312,6 +315,24 @@ describe('StorageService S3 re-probe and recovery', () => {
     await expect(svc.openFile('missing.bin')).rejects.toThrow('NoSuchKey');
   });
 
+  it('openFile surfaces the local error when the fallback copy exists but cannot be opened', async () => {
+    mockSend.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof GetObjectCommand) return Promise.reject(s3Error('NoSuchKey'));
+      return Promise.resolve({});
+    });
+    const svc = new StorageService(makeConfig());
+    await flush();
+    fs.writeFileSync(path.join(localPath, 'gap.bin'), 'gap-media');
+    const denied = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+    const openSpy = jest.spyOn(fs.promises, 'open').mockRejectedValueOnce(denied);
+
+    try {
+      await expect(svc.openFile('gap.bin')).rejects.toBe(denied);
+    } finally {
+      openSpy.mockRestore();
+    }
+  });
+
   it('deleteFile removes the local fallback copy as well as the S3 object', async () => {
     mockSend.mockResolvedValue({}); // HeadBucket at boot, DeleteObject later
     const svc = new StorageService(makeConfig());
@@ -337,6 +358,38 @@ describe('StorageService S3 re-probe and recovery', () => {
     await expect(svc.deleteFile('s3-only.bin')).resolves.toBeUndefined();
     const deleteCalls = mockSend.mock.calls.filter(([cmd]) => cmd instanceof DeleteObjectCommand);
     expect(deleteCalls.length).toBe(1);
+  });
+
+  it('deleteFile rejects once a DeleteObject that never settles hits its timeout', async () => {
+    // A hung delete used to await forever, holding the retention purges' single-flight guard so no
+    // purge ran again until a restart. The SDK's HTTP handler rejects when the abort signal fires.
+    mockSend.mockImplementation((cmd: unknown, options?: { abortSignal?: AbortSignal }) => {
+      if (!(cmd instanceof DeleteObjectCommand)) return Promise.resolve({});
+      return new Promise((_resolve, reject) => {
+        options?.abortSignal?.addEventListener('abort', () => reject(s3Error('AbortError')));
+      });
+    });
+    // AbortSignal.timeout runs on Node's internal timers, which fake timers do not reach.
+    const timeout = jest.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), ms);
+      return controller.signal;
+    });
+    try {
+      const svc = new StorageService(makeConfig());
+      await flush();
+
+      const outcome = svc.deleteFile('hung.bin').then(
+        () => 'resolved',
+        (error: Error) => error.name,
+      );
+      await jest.advanceTimersByTimeAsync(S3_DELETE_TIMEOUT_MS - 1);
+      await expect(Promise.race([outcome, Promise.resolve('pending')])).resolves.toBe('pending');
+      await jest.advanceTimersByTimeAsync(1);
+      await expect(outcome).resolves.toBe('AbortError');
+    } finally {
+      timeout.mockRestore();
+    }
   });
 
   it('listFiles unions S3 objects with the local fallback dir (each key once)', async () => {

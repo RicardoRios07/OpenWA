@@ -98,6 +98,7 @@ export class SessionController {
     description:
       'Key lacks the OPERATOR role, is restricted to specific sessions, or set proxyUrl without the ADMIN role',
   })
+  @ApiResponse({ status: 400, description: 'Validation failed, or the body carries a field the DTO does not declare.' })
   @ApiResponse({ status: 409, description: 'Session name already exists' })
   async create(@Body() dto: CreateSessionDto, @CurrentApiKey() apiKey?: ApiKey): Promise<SessionResponseDto> {
     // A session proxy carries the session's egress, including the gateway's fetches of caller-supplied
@@ -131,6 +132,7 @@ export class SessionController {
       'Return only the session with exactly this name (case-sensitive); no match returns an empty array. ' +
       'An empty value or a repeated key is rejected with 400.',
   })
+  @ApiResponse({ status: 400, description: '`name` is empty or repeated.' })
   async findAll(
     @CurrentApiKey() apiKey?: ApiKey,
     @Query('limit') limit?: string,
@@ -143,7 +145,7 @@ export class SessionController {
       throw new BadRequestException('name must be a single non-empty value');
     }
     // Scope to the key's allowedSessions so a session-restricted key cannot enumerate every
-    // session. A null/empty allowlist (e.g. ADMIN) still lists all.
+    // session. A null/empty allowlist lists all whatever the key's role; a scoped ADMIN key is filtered too.
     const sessions = await this.sessionService.findAll(apiKey?.allowedSessions, {
       limit: limit ? parseInt(limit, 10) : undefined,
       offset: offset ? parseInt(offset, 10) : undefined,
@@ -309,6 +311,13 @@ export class SessionController {
       'when a stop or force-kill of this session finished while the start was waiting: the stop ' +
       'stands, and a new POST /start clears it and starts the session.',
   })
+  @ApiResponse({
+    status: 504,
+    description:
+      'The engine did not finish starting within its timeout (WhatsApp Web or the network unreachable, ' +
+      'a stalled browser or resource limit, an unreachable proxyUrl, or the whatsapp-web.js auth ' +
+      'timeout); the engine is torn down and the start can be retried.',
+  })
   async start(@Param('sessionId', ParseUUIDPipe) id: string): Promise<SessionResponseDto> {
     const session = await this.sessionService.start(id, { explicit: true });
     await this.auditService.logInfo(AuditAction.SESSION_STARTED, {
@@ -432,6 +441,14 @@ export class SessionController {
   })
   @ApiResponse({ status: 400, description: 'Session is not started' })
   @ApiResponse({ status: 404, description: 'Session not found' })
+  @ApiResponse({
+    status: 502,
+    description:
+      'Session was stopped locally, but the engine force-kill did not complete (the force-destroy ' +
+      'threw or timed out, so the engine process may still be running). The body carries ' +
+      "`code: 'SESSION_FORCE_KILL_INCOMPLETE'`; the status is settled to `disconnected` and no " +
+      'success audit is written. Restart the node to reap a leaked process.',
+  })
   async forceKill(@Param('sessionId', ParseUUIDPipe) id: string): Promise<SessionResponseDto> {
     const session = await this.sessionService.forceKill(id);
     await this.auditService.logInfo(AuditAction.SESSION_FORCE_KILLED, {

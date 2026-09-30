@@ -250,6 +250,25 @@ describe('MetricsService runtime series', () => {
     expect(sample(text, 'openwa_event_loop_delay_max_seconds')).toBeCloseTo(0.2, 9);
   });
 
+  // Resetting Node's interval histogram also dropped its previous-tick timestamp, so the first gap
+  // after each render went unrecorded, and with it a stall that began right there.
+  it('records a stall that begins right after an uncached render', async () => {
+    const svc = make();
+    const idle = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 60));
+    await idle();
+    await svc.render();
+    const until = Date.now() + 300;
+    while (Date.now() < until) {
+      // block the event loop
+    }
+    await idle();
+    (svc as unknown as { cachedRender: unknown }).cachedRender = null;
+
+    const text = await svc.render();
+
+    expect(sample(text, 'openwa_event_loop_delay_max_seconds')).toBeGreaterThanOrEqual(0.25);
+  });
+
   it('counts unhandled rejections by kind', async () => {
     const before = getUnhandledRejections();
     incrementUnhandledRejections('other');

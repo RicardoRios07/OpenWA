@@ -159,6 +159,12 @@ export interface ExportTable<K extends keyof MigrationTables = keyof MigrationTa
    * export, because a backup that silently omits them is worse than no backup.
    */
   optional?: boolean;
+  /**
+   * Rows carry an FK `sessionId` to sessions. The reads share no snapshot, so a session created after
+   * `sessions` was read can leave child rows here that would fail the restore's FK check and roll the
+   * whole import back; the export drops rows whose session is not in the archive.
+   */
+  sessionFk?: boolean;
   /** In-place row mutation applied right after the read (redaction, artifact stripping). */
   afterRead?: (rows: MigrationTables[K]) => void;
   /**
@@ -217,7 +223,7 @@ function defineExportTable<K extends keyof MigrationTables>(table: ExportTable<K
 export const EXPORT_TABLES: AnyExportTable[] = [
   // sessions first: webhooks/messages/templates/etc. all reference it (some via FK, all by sessionId).
   defineExportTable({ key: 'sessions', table: 'sessions', afterRead: redactSessionProxyCredentials }),
-  defineExportTable({ key: 'webhooks', table: 'webhooks', afterRead: redactWebhookCredentials }),
+  defineExportTable({ key: 'webhooks', table: 'webhooks', sessionFk: true, afterRead: redactWebhookCredentials }),
 
   // Both carry a full inline base64 payload, so they share ONE budget: messages are served first
   // (newest media kept), batches spend what is left. Optional — an older DB may predate them.
@@ -250,8 +256,13 @@ export const EXPORT_TABLES: AnyExportTable[] = [
   // templates + baileys_stored_messages both FK sessions ON DELETE CASCADE, so the import's
   // `DELETE FROM sessions` wipes them; they must be exported and re-inserted or the documented
   // backup flow loses them permanently.
-  defineExportTable({ key: 'templates', table: 'templates', optional: true }),
-  defineExportTable({ key: 'baileysStoredMessages', table: 'baileys_stored_messages', optional: true }),
+  defineExportTable({ key: 'templates', table: 'templates', optional: true, sessionFk: true }),
+  defineExportTable({
+    key: 'baileysStoredMessages',
+    table: 'baileys_stored_messages',
+    optional: true,
+    sessionFk: true,
+  }),
 
   // The persisted lid->phone resolution cache. Not a FK to sessions (provenance only), so the
   // import's `DELETE FROM sessions` never clears it — it must be exported + re-inserted explicitly
@@ -284,7 +295,7 @@ export const EXPORT_TABLES: AnyExportTable[] = [
   // automation_rules has an ON DELETE CASCADE FK to sessions, so the sessions DELETE takes every
   // rule with it — exporting and re-inserting it is not optional, or a restore silently destroys
   // every autoreply rule.
-  defineExportTable({ key: 'automationRules', table: 'automation_rules', optional: true }),
+  defineExportTable({ key: 'automationRules', table: 'automation_rules', optional: true, sessionFk: true }),
 ];
 
 /**

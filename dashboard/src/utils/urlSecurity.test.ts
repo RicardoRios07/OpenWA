@@ -53,6 +53,23 @@ test('warnIfInsecureHttpUrl is silent on https', () => {
   assert.equal(warns.length, 0);
 });
 
+// VITE_WS_URL naturally takes a ws:// value, and the socket sends the same API key over it.
+test('warnIfInsecureHttpUrl warns on non-localhost ws and names the scheme', () => {
+  const warns: string[] = [];
+  const original = console.warn;
+  console.warn = (msg: string) => warns.push(msg);
+  try {
+    warnIfInsecureHttpUrl('ws://gateway.example.com:2785', 'VITE_WS_URL');
+    warnIfInsecureHttpUrl('ws://localhost:2785', 'VITE_WS_URL');
+    warnIfInsecureHttpUrl('wss://gateway.example.com:2785', 'VITE_WS_URL');
+  } finally {
+    console.warn = original;
+  }
+  assert.equal(warns.length, 1);
+  assert.match(warns[0]!, /insecure ws:\/\//);
+  assert.match(warns[0]!, /gateway\.example\.com/);
+});
+
 test('warnIfInsecureHttpUrl returns the URL unchanged (does not throw)', () => {
   assert.equal(warnIfInsecureHttpUrl('http://gateway.example.com', 'x'), 'http://gateway.example.com');
 });

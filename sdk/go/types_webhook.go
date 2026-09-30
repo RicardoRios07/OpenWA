@@ -47,9 +47,10 @@ type GroupEventChanges struct {
 }
 
 // GroupEventPayload is the payload of the group.join / group.leave /
-// group.update events (webhook and socket alike). ParticipantIDs carries the
-// affected users for join/leave and is empty for metadata updates; Changes is
-// the metadata delta, present on group.update. Timestamp is unix seconds.
+// group.update / group.join_request events (webhook and socket alike).
+// ParticipantIDs carries the affected users for join/leave, the users asking
+// to join for join_request, and is empty for metadata updates; Changes is the
+// metadata delta, present on group.update. Timestamp is unix seconds.
 type GroupEventPayload struct {
 	GroupID        string             `json:"groupId"`
 	ActorID        *string            `json:"actorId,omitempty"`
@@ -84,6 +85,19 @@ type WebhookFilterCondition struct {
 // WebhookFilters groups filter conditions.
 type WebhookFilters struct {
 	Conditions []WebhookFilterCondition `json:"conditions"`
+}
+
+// MarshalJSON encodes a nil Conditions as `[]` rather than `null`.
+//
+// The gateway requires conditions to be an array and answers 400 for `null`, so the zero value
+// &WebhookFilters{} could not express the documented empty filter `{ "conditions": [] }`.
+func (f WebhookFilters) MarshalJSON() ([]byte, error) {
+	type alias WebhookFilters
+	out := alias(f)
+	if out.Conditions == nil {
+		out.Conditions = []WebhookFilterCondition{}
+	}
+	return json.Marshal(out)
 }
 
 // CreateWebhookRequest registers a webhook. RetryCount is 0–5 (default 3).
@@ -166,8 +180,9 @@ type WebhookTestResult struct {
 	Error      string `json:"error,omitempty"`
 }
 
-// WebhookDeliveryFailure is a webhook delivery abandoned after every retry,
-// as listed by the delivery-failure log.
+// WebhookDeliveryFailure is a webhook delivery the gateway gave up on or could
+// not dispatch, as listed by the delivery-failure log. A later successful
+// delivery removes the row.
 type WebhookDeliveryFailure struct {
 	ID        string `json:"id"`
 	WebhookID string `json:"webhookId"`
@@ -177,13 +192,14 @@ type WebhookDeliveryFailure struct {
 	// IdempotencyKey is the key the receiver would have deduped on.
 	IdempotencyKey *string `json:"idempotencyKey,omitempty"`
 	DeliveryID     *string `json:"deliveryId,omitempty"`
-	// Attempts is the total number of attempts made before giving up.
+	// Attempts is the number of attempts recorded; 0 when the delivery was
+	// shed, refused or failed before sending.
 	Attempts int `json:"attempts"`
 	// LastStatusCode is the last HTTP status when the failure was a non-2xx
 	// response; nil for a network or timeout error.
 	LastStatusCode *int   `json:"lastStatusCode,omitempty"`
 	LastError      string `json:"lastError"`
-	// CreatedAt is the ISO timestamp of when the delivery was finally abandoned.
+	// CreatedAt is the ISO timestamp of when the failure was first recorded.
 	CreatedAt string `json:"createdAt"`
 }
 

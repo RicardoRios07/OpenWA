@@ -16,6 +16,26 @@ describe('AuthController — scoped-key confinement marker', () => {
   });
 });
 
+// Every route that loads a key by id answers 404 for an unknown one, and every route with a body
+// answers 400 on validation: the contract must say so, or a generated client has no case for them.
+describe('AuthController OpenAPI error responses', () => {
+  const declared = (handler: keyof AuthController) =>
+    Object.keys(
+      (Reflect.getMetadata(
+        'swagger/apiResponse',
+        Object.getOwnPropertyDescriptor(AuthController.prototype, handler)?.value as object,
+      ) ?? {}) as Record<string, unknown>,
+    );
+
+  it.each(['findOne', 'update', 'delete', 'revoke'] as const)('declares 404 on %s', handler => {
+    expect(declared(handler)).toContain('404');
+  });
+
+  it.each(['create', 'update'] as const)('declares 400 on %s', handler => {
+    expect(declared(handler)).toContain('400');
+  });
+});
+
 // API-key lifecycle operations (create / delete / revoke) must leave an audit trail — they were
 // previously unrecorded. These assert the controller emits the matching audit action with the acting
 // admin key, the resolved client IP, and the target key in metadata.

@@ -4,6 +4,7 @@ import { EngineRegistry } from '../../engine/engine-registry.service';
 import { IWhatsAppEngine } from '../../engine/interfaces/whatsapp-engine.interface';
 import { EngineNotSupportedError } from '../../common/errors/engine-not-supported.error';
 import { EngineRefusedError } from '../../common/errors/engine-refused.error';
+import { EngineTransportError } from '../../common/errors/engine-transport.error';
 import { SendPacingService } from '../message/send-pacing.service';
 
 /** Pacing is off by default; its own spec covers the governor, so here it must simply not refuse. */
@@ -131,7 +132,7 @@ describe('GroupService', () => {
   });
 
   it('refunds the reservation when the engine refuses the add (the participants were never contacted)', async () => {
-    const addParticipants = jest.fn().mockRejectedValue(new Error('no admin rights'));
+    const addParticipants = jest.fn().mockRejectedValue(new EngineRefusedError('no admin rights'));
     const reservation = { coldCount: 3, dayStartMs: 1 };
     const { svc, pacing } = makeServiceWithPacing(
       { addParticipants },
@@ -145,7 +146,7 @@ describe('GroupService', () => {
   });
 
   it('refunds the reservation when createGroup fails (whatsapp-web.js always 501s)', async () => {
-    const createGroup = jest.fn().mockRejectedValue(new Error('EngineNotSupportedError'));
+    const createGroup = jest.fn().mockRejectedValue(new EngineNotSupportedError('createGroup'));
     const reservation = { coldCount: 2, dayStartMs: 1 };
     const { svc, pacing } = makeServiceWithPacing(
       { createGroup },
@@ -156,6 +157,24 @@ describe('GroupService', () => {
     );
     await expect(svc.createGroup('s1', 'G', ['628111111@c.us', '628222222@c.us'])).rejects.toThrow();
     expect(pacing.refundGroupReachouts).toHaveBeenCalledWith('s1', reservation);
+  });
+
+  it.each([
+    ['a timed-out add (WhatsApp may still apply it)', new EngineTransportError('did not answer in time')],
+    ['a raw socket error', new Error('Connection Closed')],
+  ])('keeps the reservation charged after %s: the outcome is unknown', async (_label, error) => {
+    const addParticipants = jest.fn().mockRejectedValue(error);
+    const createGroup = jest.fn().mockRejectedValue(error);
+    const { svc, pacing } = makeServiceWithPacing(
+      { addParticipants, createGroup },
+      {
+        assertReachoutAllowed: jest.fn().mockResolvedValue({ coldCount: 3, dayStartMs: 1 }),
+        refundGroupReachouts: jest.fn(),
+      },
+    );
+    await expect(svc.addParticipants('s1', 'g1', ['628111111@c.us'])).rejects.toBe(error);
+    await expect(svc.createGroup('s1', 'G', ['628111111@c.us'])).rejects.toBe(error);
+    expect(pacing.refundGroupReachouts).not.toHaveBeenCalled();
   });
 
   it('passes participant lists straight through to the engine', async () => {

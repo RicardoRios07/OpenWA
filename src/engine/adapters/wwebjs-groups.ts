@@ -128,15 +128,25 @@ export class WwebjsGroups {
           isSuperAdmin: Boolean(p.isSuperAdmin),
         }));
 
+      // GroupChat.createdAt is a getter returning a Date (GroupChat.js:36), which serialises as an
+      // ISO string; the contract is Unix seconds, so read the raw metadata field instead.
+      const creation = (groupChat.groupMetadata as { creation?: unknown } | undefined)?.creation;
+      // GroupChat has no isAnnounce, and WA Web overwrites isReadOnly with the announce SETTING
+      // (Injected/Utils.js:1005), which tells an admin of an announce-only group they cannot post.
+      // Derive both from the metadata, as the Baileys mapper does.
+      const announce = Boolean(groupChat.groupMetadata?.announce);
+      const selfWid = readWid(this.client().info?.wid);
+      const selfIsAdmin = participants.some(p => p.isAdmin && selfWid !== undefined && p.id === selfWid);
+
       return {
         id: chat.id._serialized,
         name: chat.name,
         description: groupChat.description ? String(groupChat.description) : undefined,
         owner: readWid(groupChat.owner),
-        createdAt: groupChat.createdAt,
+        createdAt: typeof creation === 'number' ? creation : undefined,
         participants,
-        isReadOnly: Boolean(groupChat.isReadOnly),
-        isAnnounce: Boolean(groupChat.isAnnounce),
+        isReadOnly: announce && !selfIsAdmin,
+        isAnnounce: announce,
         announce: groupChat.groupMetadata?.announce,
         locked: groupChat.groupMetadata?.restrict,
         ephemeralSeconds: groupChat.groupMetadata?.ephemeralDuration,

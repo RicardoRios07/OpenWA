@@ -51,8 +51,9 @@ let warnedRemoteTrust = false;
 // non-strict, loads WhatsApp's live build when the fetch fails: the #488 class the pin exists to
 // prevent. A non-OK answer falls back with nothing logged, a network error reaches only a bare
 // console.error, and a hang never ends. It is fetched here instead, bounded, and handed to the library
-// as a strict local cache. A successful download is kept per URL for the life of the process (a
-// build's HTML does not change); a failure is not, so the next start retries.
+// as a strict local cache. The latest successful download is kept in memory (a build's HTML does not
+// change, and a pin only moves forward, so older builds are dropped); a failure is not, so the next
+// start retries.
 export const PINNED_HTML_TIMEOUT_MS = 10_000;
 const PINNED_HTML_MIN_LENGTH = 1024;
 const PINNED_HTML_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
@@ -302,6 +303,7 @@ async function downloadPinnedHtml(remotePath: string, fetcher: typeof fetch): Pr
     if (html.length < PINNED_HTML_MIN_LENGTH || !/<html/i.test(html)) {
       throw new Error('the response is not a WhatsApp Web page');
     }
+    pinnedHtml.clear();
     pinnedHtml.set(remotePath, html);
     return html;
   } catch (error) {

@@ -75,8 +75,8 @@ func (s *ContactsService) Phone(ctx context.Context, sessionID, contactID string
 	return &out, nil
 }
 
-// Block blocks a contact.
-// Upsert saves a contact to the addressbook, or edits an existing entry.
+// Upsert saves a contact to the addressbook, or edits an existing entry. Requires an OPERATOR-level
+// key.
 func (s *ContactsService) Upsert(ctx context.Context, sessionID, contactID string, body UpsertContactRequest) (*SuccessResult, error) {
 	var out SuccessResult
 	if err := s.client.do(ctx, "PUT", s.base(sessionID)+"/"+pathEscape(contactID), nil, body, &out); err != nil {
@@ -85,7 +85,7 @@ func (s *ContactsService) Upsert(ctx context.Context, sessionID, contactID strin
 	return &out, nil
 }
 
-// Delete removes a contact from the addressbook.
+// Delete removes a contact from the addressbook. Requires an OPERATOR-level key.
 func (s *ContactsService) Delete(ctx context.Context, sessionID, contactID string) (*SuccessResult, error) {
 	var out SuccessResult
 	if err := s.client.do(ctx, "DELETE", s.base(sessionID)+"/"+pathEscape(contactID), nil, nil, &out); err != nil {
@@ -94,6 +94,7 @@ func (s *ContactsService) Delete(ctx context.Context, sessionID, contactID strin
 	return &out, nil
 }
 
+// Block blocks a contact. Requires an OPERATOR-level key.
 func (s *ContactsService) Block(ctx context.Context, sessionID, contactID string) (*SuccessResult, error) {
 	var out SuccessResult
 	err := s.client.do(ctx, "POST", s.base(sessionID)+"/"+pathEscape(contactID)+"/block", nil, nil, &out)
@@ -103,7 +104,7 @@ func (s *ContactsService) Block(ctx context.Context, sessionID, contactID string
 	return &out, nil
 }
 
-// Unblock unblocks a contact.
+// Unblock unblocks a contact. Requires an OPERATOR-level key.
 func (s *ContactsService) Unblock(ctx context.Context, sessionID, contactID string) (*SuccessResult, error) {
 	var out SuccessResult
 	err := s.client.do(ctx, "DELETE", s.base(sessionID)+"/"+pathEscape(contactID)+"/block", nil, nil, &out)

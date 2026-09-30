@@ -101,6 +101,90 @@ describe('SessionOwnershipService', () => {
     });
   });
 
+  // What a node whose lease lapsed left unfinished (its bulk batches) is failed once this process takes
+  // the session over, by claiming it or by releasing that node's claim.
+  describe('taking a session over from a lapsed node', () => {
+    const settle = (): Promise<void> => new Promise(resolve => setImmediate(resolve));
+    const lapsedBy = (nodeId: string): Partial<Session> => ({
+      nodeId,
+      claimedAt: new Date(Date.now() - 120_000),
+      leaseExpiresAt: new Date(Date.now() - 60_000),
+    });
+    const liveBy = (nodeId: string): Partial<Session> => ({
+      nodeId,
+      claimedAt: new Date(),
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+    });
+
+    // A released row is not taken over: the node that released it may still be finishing its own
+    // batches, and failing them under it would leave two writers on one batch row.
+    it('runs the adoption handler for a claim of a lapsed foreign lease only', async () => {
+      const handler = jest.fn().mockResolvedValue(undefined);
+      const node = service('node-b');
+      node.onAdoption(handler);
+      const own = await seed(lapsedBy('node-b'));
+      const live = await seed(liveBy('node-c'));
+      const released = await seed();
+      const orphaned = await seed(lapsedBy('node-a'));
+
+      await expect(node.claim(own.id)).resolves.toBe(true);
+      await expect(node.claim(live.id)).resolves.toBe(false);
+      await expect(node.claim(released.id)).resolves.toBe(true);
+      await settle();
+      expect(handler).not.toHaveBeenCalled();
+
+      await expect(node.claim(orphaned.id)).resolves.toBe(true);
+      await settle();
+      expect(handler.mock.calls).toEqual([[orphaned.id]]);
+    });
+
+    // A stop of a session whose holder died clears that holder's claim, and a later start then finds a
+    // released row; the release is where the takeover happens.
+    it('runs the adoption handler when a release clears a lapsed foreign claim, and only then', async () => {
+      const handler = jest.fn().mockResolvedValue(undefined);
+      const node = service('node-b');
+      node.onAdoption(handler);
+      const own = await seed(liveBy('node-b'));
+      const live = await seed(liveBy('node-c'));
+      const orphaned = await seed(lapsedBy('node-a'));
+
+      await node.release(own.id);
+      await node.release(live.id);
+      await settle();
+      expect(handler).not.toHaveBeenCalled();
+      expect((await sessions.findOneByOrFail({ id: own.id })).nodeId).toBeNull();
+      expect((await sessions.findOneByOrFail({ id: live.id })).nodeId).toBe('node-c');
+
+      await node.release(orphaned.id);
+      await settle();
+      expect(handler.mock.calls).toEqual([[orphaned.id]]);
+      expect((await sessions.findOneByOrFail({ id: orphaned.id })).nodeId).toBeNull();
+    });
+
+    // Awaiting the handler inside claim() held a start between its claim and the moment it counted as
+    // starting; a stop landing then released the claim and the engine launched on a row nobody held.
+    it('returns from the claim without waiting for the adoption handler', async () => {
+      const node = service('node-b');
+      const handler = jest.fn(() => new Promise<void>(() => undefined));
+      node.onAdoption(handler);
+      const session = await seed(lapsedBy('node-a'));
+
+      await expect(node.claim(session.id)).resolves.toBe(true);
+      await settle();
+      expect(handler).toHaveBeenCalledWith(session.id);
+    });
+
+    it('keeps the claim when the adoption handler fails', async () => {
+      const node = service('node-b');
+      node.onAdoption(() => Promise.reject(new Error('database unavailable')));
+      const session = await seed(lapsedBy('node-a'));
+
+      await expect(node.claim(session.id)).resolves.toBe(true);
+      await settle();
+      expect((await sessions.findOneByOrFail({ id: session.id })).nodeId).toBe('node-b');
+    });
+  });
+
   describe('releasing', () => {
     it('frees the session so a peer can take it without waiting for the lease', async () => {
       const session = await seed();
@@ -427,6 +511,49 @@ describe('SessionOwnershipService', () => {
 
       await expect(nodeA.renew()).resolves.toBeUndefined();
       expect(nodeA.ownedIds()).toEqual([]);
+    });
+
+    // A stop releases the claim while a tick is in flight: the row no longer names this node, but
+    // nothing was lost to a peer, and the lease-loss teardown would leave a stale stop mark.
+    it('does not report a session this process released during the tick', async () => {
+      const session = await seed();
+      const nodeA = service('node-a');
+      await nodeA.claim(session.id);
+      const lost: string[][] = [];
+      nodeA.onLeaseLoss(ids => void lost.push(ids));
+      const realFind = sessions.find.bind(sessions);
+      jest.spyOn(sessions, 'find').mockImplementation(async (...args: Parameters<typeof realFind>) => {
+        await nodeA.release(session.id);
+        return realFind(...args);
+      });
+
+      await nodeA.renew();
+      jest.restoreAllMocks();
+
+      expect(lost).toEqual([]);
+    });
+
+    // A stop then a start: the tick read the row between the release and the re-claim. Reporting it
+    // lost would drop the fresh claim from `owned` and tear down the engine the start is launching.
+    it('does not report a session released and re-claimed during the tick', async () => {
+      const session = await seed();
+      const nodeA = service('node-a');
+      await nodeA.claim(session.id);
+      const lost: string[][] = [];
+      nodeA.onLeaseLoss(ids => void lost.push(ids));
+      const realFind = sessions.find.bind(sessions);
+      jest.spyOn(sessions, 'find').mockImplementation(async (...args: Parameters<typeof realFind>) => {
+        await nodeA.release(session.id);
+        const rows = await realFind(...args);
+        await nodeA.claim(session.id);
+        return rows;
+      });
+
+      await nodeA.renew();
+      jest.restoreAllMocks();
+
+      expect(lost).toEqual([]);
+      expect(nodeA.ownedIds()).toEqual([session.id]);
     });
   });
 

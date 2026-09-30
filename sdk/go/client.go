@@ -191,7 +191,8 @@ func warnIfInsecure(cfg *config) {
 
 // Do issues a raw request against the API and decodes the JSON response into
 // out (pass nil to ignore the body). It is the escape hatch for endpoints the
-// typed services do not cover. path must begin with "/".
+// typed services do not cover. path must begin with "/"; any other path returns
+// an error and nothing is sent.
 //
 // A 2xx body is assigned verbatim when out is a *[]byte, and a non-JSON 2xx
 // body falls back to the raw text when out is a *string — mirroring the
@@ -276,7 +277,7 @@ func (c *Client) doRaw(ctx context.Context, method, path string, query url.Value
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		if isTimeout(err) {
-			return nil, "", &TimeoutError{Timeout: c.timeout, Err: err}
+			return nil, "", c.timeoutErr(ctx, err)
 		}
 		return nil, "", fmt.Errorf("openwa: %s %s: %w", method, path, err)
 	}
@@ -284,6 +285,9 @@ func (c *Client) doRaw(ctx context.Context, method, path string, query url.Value
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
+		if isTimeout(err) {
+			return nil, "", c.timeoutErr(ctx, err)
+		}
 		return nil, "", fmt.Errorf("openwa: reading response body: %w", err)
 	}
 
@@ -292,6 +296,16 @@ func (c *Client) doRaw(ctx context.Context, method, path string, query url.Value
 		return nil, "", parseAPIError(resp.StatusCode, data, method+" "+path, resp.Header)
 	}
 	return data, resp.Header.Get("Content-Type"), nil
+}
+
+// timeoutErr names the client timeout only when it is the budget that ran out.
+// The client timeout never cancels ctx, so an expired ctx means the caller's own
+// deadline fired first and the error carries no duration.
+func (c *Client) timeoutErr(ctx context.Context, err error) *TimeoutError {
+	if ctx.Err() != nil {
+		return &TimeoutError{Err: err}
+	}
+	return &TimeoutError{Timeout: c.timeout, Err: err}
 }
 
 func isTimeout(err error) bool {
@@ -318,9 +332,14 @@ var jidRestorer = strings.NewReplacer("%40", "@", "%3A", ":", "%2B", "+")
 
 var dotFolder = strings.NewReplacer("%2e", ".", "%2E", ".")
 
-// checkPathSegments refuses a "." or ".." segment (also written %2e), and an
-// empty one unless allowEmpty. The query and fragment are not path segments.
+// checkPathSegments refuses a path that does not begin with "/" (appended to the
+// base URL, "@host/x" would move the request and its API key to another host), a
+// "." or ".." segment (also written %2e), and an empty one unless allowEmpty. The
+// query and fragment are not path segments.
 func checkPathSegments(path string, allowEmpty bool) error {
+	if !strings.HasPrefix(path, "/") {
+		return fmt.Errorf("openwa: path must begin with \"/\": %q", path)
+	}
 	p := path
 	if i := strings.IndexAny(p, "?#"); i >= 0 {
 		p = p[:i]

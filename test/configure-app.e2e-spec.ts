@@ -205,9 +205,11 @@ describe('production HTTP surface (configureApp)', () => {
     expect(omittedOn).not.toMatch(/malformed/i);
   });
 
-  it('refuses a declared body over the aggregate in-flight budget with 503, a different layer', async () => {
+  it('refuses a declared body the in-flight budget can never admit with 413, before reading it', async () => {
     // The budget is a PRE-guard: it answers on the DECLARED length, before the parser reads a byte,
-    // which is what stops slow-body memory pinning that no route guard can reach. Asserting it by
+    // which is what stops slow-body memory pinning that no route guard can reach. A declared size the
+    // whole budget can never hold gets 413 without Retry-After, since retrying cannot help; a body that
+    // fits once the budget frees gets 503 + Retry-After (the tiers suite below). Asserting it by
     // actually uploading an oversized body is timing-dependent: the server refuses and destroys
     // the socket while the client is still writing, so the client sees ECONNRESET instead of the
     // response often enough to flake. Declaring the size and sending almost nothing tests the same
@@ -221,8 +223,8 @@ describe('production HTTP surface (configureApp)', () => {
       .timeout({ deadline: 5000, response: 5000 })
       .send('{}');
 
-    expect(res.status).toBe(503);
-    expect(res.headers['retry-after']).toBeDefined();
+    expect(res.status).toBe(413);
+    expect(res.headers['retry-after']).toBeUndefined();
   });
 
   it('refuses a DELETE whose path ends in a slash instead of matching the route without it', async () => {
@@ -266,6 +268,31 @@ describe('production HTTP surface (configureApp)', () => {
       .send('{}');
 
     expect(res.status).toBe(415);
+  });
+
+  it('answers every body rejection with the CORS, helmet and request-id headers', async () => {
+    const post = () =>
+      request(app.getHttpServer())
+        .post('/api/echo')
+        .set('Content-Type', 'application/json')
+        .set('Origin', 'https://allowed.example');
+    const rejections = [
+      await post().send('{bad'),
+      await post().send({ blob: 'x'.repeat(1100 * 1024) }),
+      await post()
+        .set('Content-Length', String(8 * 1024 * 1024))
+        .timeout({ deadline: 5000, response: 5000 })
+        .send('{}'),
+      await post().set('Content-Encoding', 'gzip').send('{}'),
+    ];
+
+    expect(rejections.map(res => res.status)).toEqual([400, 413, 413, 415]);
+    for (const res of rejections) {
+      // Without the CORS header a cross-origin browser sees an opaque network error, not the status.
+      expect(res.headers['access-control-allow-origin']).toBe('https://allowed.example');
+      expect(res.headers['x-request-id']).toBeDefined();
+      expect(res.headers['x-content-type-options']).toBe('nosniff');
+    }
   });
 });
 
@@ -316,6 +343,7 @@ describe('in-flight body budget tiers (configureApp)', () => {
         .set('Content-Type', 'application/json')
         .send({ small: true });
       expect(anonymous.status).toBe(503);
+      expect(anonymous.headers['retry-after']).toBeDefined();
 
       const keyed = await request(app.getHttpServer())
         .post('/api/echo')

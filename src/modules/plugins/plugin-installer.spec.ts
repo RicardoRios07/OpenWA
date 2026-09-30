@@ -191,6 +191,20 @@ describe('parsePluginPackage', () => {
     expect(() => parsePluginPackage(z.toBuffer())).toThrow(/unsafe path/i);
   });
 
+  it('rejects two entries that normalize to the same path, so the validated manifest is the one written', () => {
+    const z = new AdmZip();
+    z.addFile('manifest.json', Buffer.from(JSON.stringify(validManifest)));
+    z.addFile('index.js', Buffer.from('x'));
+    z.addFile('other.json', Buffer.from(JSON.stringify({ ...validManifest, id: 'other-id' })));
+    z.getEntries().find(e => e.entryName === 'other.json')!.entryName = 'z/../manifest.json';
+    expect(() => parsePluginPackage(z.toBuffer())).toThrow(/duplicate path/i);
+  });
+
+  it('rejects entries that differ only in case (one file on a case-insensitive filesystem)', () => {
+    const buf = zipOf({ 'manifest.json': JSON.stringify(validManifest), 'index.js': 'x', 'INDEX.js': 'y' });
+    expect(() => parsePluginPackage(buf)).toThrow(/duplicate path/i);
+  });
+
   it('rejects a package missing its declared main file', () => {
     const buf = zipOf({ 'manifest.json': JSON.stringify(validManifest), 'other.js': 'x' });
     expect(() => parsePluginPackage(buf)).toThrow(/missing its main file/i);

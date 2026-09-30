@@ -130,6 +130,28 @@ describe('PluginStorageService sandboxed per-plugin storage containment', () => 
     expect(JSON.parse(fs.readFileSync(packagePath, 'utf8'))).toEqual({ name: pluginId });
   });
 
+  it('lists no package file as a key when storage shares the package directory', async () => {
+    // By default <dataDir>/plugins/<id> is both the installed package and ctx.storage, so a
+    // clear-all loop over list() must not reach the package's own root JSON files.
+    const pluginDataDir = path.join(dataDir, 'plugins', pluginId);
+    fs.writeFileSync(path.join(pluginDataDir, 'manifest.json'), JSON.stringify({ id: pluginId }));
+    for (const name of ['tsconfig.json', 'package-lock.json', 'defaults.json']) {
+      fs.writeFileSync(path.join(pluginDataDir, name), '{}');
+    }
+    await storage.set('real', 1);
+
+    expect(await storage.list()).toEqual(['real']);
+    for (const key of await storage.list()) await storage.delete(key);
+    expect(fs.readdirSync(pluginDataDir).sort()).toEqual([
+      'defaults.json',
+      'manifest.json',
+      'package-lock.json',
+      'tsconfig.json',
+    ]);
+    // A legacy key the plugin names explicitly stays readable.
+    expect(await storage.get('defaults')).toEqual({});
+  });
+
   it('does not mangle a literal legacy filename that happens to start with "key-"', async () => {
     const pluginDataDir = path.join(dataDir, 'plugins', pluginId);
     // A pre-encoding plugin could have stored a key literally named "key-zzz" -> key-zzz.json.

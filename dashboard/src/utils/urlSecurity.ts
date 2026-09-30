@@ -6,18 +6,19 @@ export function isLocalhostHost(hostname: string): boolean {
 }
 
 /**
- * Warn (NOT throw) when a URL is `http://` and the host is not localhost. Sending API keys over
- * plaintext http to a non-local host exposes credentials on the wire; warning instead of refusing
+ * Warn (NOT throw) when a URL is `http://` or `ws://` and the host is not localhost. Sending API keys
+ * over plaintext to a non-local host exposes credentials on the wire; warning instead of refusing
  * keeps local dev and TLS-terminating-proxy setups working. Returns the original URL unchanged so
  * the caller can chain.
  */
 export function warnIfInsecureHttpUrl(url: string, label: string): string {
   try {
     const parsed = new URL(url);
-    if (parsed.protocol === 'http:' && !isLocalhostHost(parsed.hostname)) {
+    if ((parsed.protocol === 'http:' || parsed.protocol === 'ws:') && !isLocalhostHost(parsed.hostname)) {
+      const scheme = parsed.protocol.slice(0, -1);
       console.warn(
-        `[OpenWA] ${label} uses an insecure http:// URL (host: ${parsed.hostname}). ` +
-          'API keys are sent in cleartext over http. Use https:// in production.',
+        `[OpenWA] ${label} uses an insecure ${scheme}:// URL (host: ${parsed.hostname}). ` +
+          `API keys are sent in cleartext over ${scheme}. Use https:// or wss:// in production.`,
       );
     }
   } catch {

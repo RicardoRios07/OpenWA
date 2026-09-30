@@ -128,15 +128,18 @@ describe('docs/06 matches the published contract', () => {
    */
   const ROUTE_SPECIFIC_CODES = new Set(['409', '413', '415', '422', '429', '501', '502', '503']);
 
-  it('documents every route-specific status code the contract declares for the operation', () => {
-    const spec = JSON.parse(read('openapi.json')) as {
+  const readContract = () =>
+    JSON.parse(read('openapi.json')) as {
       paths: Record<string, Record<string, { responses?: Record<string, unknown> }>>;
     };
+
+  /** The status codes each operation's `**Errors:**` block names, keyed like the contract operations. */
+  const documentedErrors = (): Map<string, string[]> => {
     const doc = read('docs', '06-api-specification.md');
 
     // Slice the document into per-heading sections so each Errors line is matched to its operation.
     const headings = [...doc.matchAll(/^#### (GET|POST|PUT|PATCH|DELETE) (\S+)$/gm)];
-    const errorsOf = new Map<string, string>();
+    const errorsOf = new Map<string, string[]>();
     for (let i = 0; i < headings.length; i++) {
       const key = `${headings[i][1]} ${normalise(headings[i][2])}`;
       const body = doc.slice(headings[i].index, (headings[i + 1] ?? { index: doc.length }).index);
@@ -150,8 +153,14 @@ describe('docs/06 matches the published contract', () => {
         if (capturing) blockLines.push(raw);
       }
       const line = blockLines.join('\n');
-      errorsOf.set(key, [...line.matchAll(/`(\d{3})`/g)].map(match => match[1]).join(','));
+      errorsOf.set(key, [...new Set([...line.matchAll(/`(\d{3})`/g)].map(match => match[1]))]);
     }
+    return errorsOf;
+  };
+
+  it('documents every route-specific status code the contract declares for the operation', () => {
+    const spec = readContract();
+    const errorsOf = documentedErrors();
 
     const missing: string[] = [];
     let checked = 0;
@@ -162,7 +171,7 @@ describe('docs/06 matches the published contract', () => {
         const declared = Object.keys(item[method].responses ?? {}).filter(code => ROUTE_SPECIFIC_CODES.has(code));
         if (declared.length === 0) continue;
         checked++;
-        const documented = errorsOf.get(key) ?? '';
+        const documented = errorsOf.get(key) ?? [];
         for (const code of declared) {
           if (!documented.includes(code)) missing.push(`${key} misses ${code}`);
         }
@@ -171,6 +180,37 @@ describe('docs/06 matches the published contract', () => {
     // Non-vacuity: the contract declares route-specific codes on a large share of the surface.
     expect(checked).toBeGreaterThan(80);
     expect(missing).toEqual([]);
+  });
+
+  /**
+   * The reverse direction: a code the section promises must be one the contract declares, or a
+   * generated client and the published schema disagree with the prose about what the route answers.
+   * `415`/`429`/`500`/`503` can come from any route (compressed body, rate limiter, unexpected
+   * error, body budget or a dependency not ready) and `400`/`404` are the universal validation and
+   * existence answers, so the General Error Codes table covers them and a section may restate them
+   * without the operation declaring them.
+   */
+  const UNDECLARED_ALLOWED = new Set(['400', '404', '415', '429', '500', '503']);
+
+  it('declares in the contract every status code the section documents', () => {
+    const spec = readContract();
+    const undeclared: string[] = [];
+    let checked = 0;
+    for (const [key, codes] of documentedErrors()) {
+      const [method, path] = key.split(' ');
+      const operation = Object.entries(spec.paths).find(([candidate]) => normalise(candidate) === path)?.[1][
+        method.toLowerCase()
+      ];
+      if (!operation) continue;
+      for (const code of codes) {
+        if (UNDECLARED_ALLOWED.has(code)) continue;
+        checked++;
+        if (!operation.responses?.[code]) undeclared.push(`${key} documents ${code}`);
+      }
+    }
+    // Non-vacuity: nearly every section names its auth and conflict answers.
+    expect(checked).toBeGreaterThan(400);
+    expect(undeclared.sort()).toEqual([]);
   });
 
   // The gate's own controls. Without these, a matcher that silently stops working is

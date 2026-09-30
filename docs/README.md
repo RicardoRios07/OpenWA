@@ -186,25 +186,25 @@ socket.on('message', msg => {
 
 ## Features (Current)
 
-| Feature                             | Status                                   |
-| ----------------------------------- | ---------------------------------------- |
-| REST API for WhatsApp               | Ready                                    |
-| WebSocket Events (Socket.IO)        | Ready                                    |
-| Multi-session Support               | Ready                                    |
-| Web Dashboard                       | Ready                                    |
-| Docker Deployment                   | Ready                                    |
-| Webhooks with HMAC Signature        | Ready                                    |
-| SQLite / PostgreSQL Storage         | Ready                                    |
-| API Key Authentication & Roles      | Ready                                    |
-| CIDR IP Whitelisting                | Ready                                    |
-| Rate Limiting                       | Ready                                    |
-| Audit Logging                       | Ready                                    |
-| Groups / Contacts / Labels API      | Ready                                    |
-| Channels / Status API               | Experimental (engine-limited)            |
-| Catalog / Product API               | Endpoints defined; `501` on both engines |
-| Pluggable Engine (wwebjs / Baileys) | Ready (set `ENGINE_TYPE`)                |
-| Plugin Extension System             | Ready                                    |
-| Queue-based Webhook Retries         | Optional (QUEUE_ENABLED=true)            |
+| Feature                             | Status                                       |
+| ----------------------------------- | -------------------------------------------- |
+| REST API for WhatsApp               | Ready                                        |
+| WebSocket Events (Socket.IO)        | Ready                                        |
+| Multi-session Support               | Ready                                        |
+| Web Dashboard                       | Ready                                        |
+| Docker Deployment                   | Ready                                        |
+| Webhooks with HMAC Signature        | Ready                                        |
+| SQLite / PostgreSQL Storage         | Ready                                        |
+| API Key Authentication & Roles      | Ready                                        |
+| CIDR IP Whitelisting                | Ready                                        |
+| Rate Limiting                       | Ready                                        |
+| Audit Logging                       | Ready                                        |
+| Groups / Contacts / Labels API      | Ready                                        |
+| Channels / Status API               | Experimental (engine-limited)                |
+| Catalog / Product API               | Baileys only (whatsapp-web.js answers `501`) |
+| Pluggable Engine (wwebjs / Baileys) | Ready (set `ENGINE_TYPE`)                    |
+| Plugin Extension System             | Ready                                        |
+| Queue-based Webhook Retries         | Optional (QUEUE_ENABLED=true)                |
 
 ## Tech Stack
 

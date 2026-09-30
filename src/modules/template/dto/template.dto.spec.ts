@@ -1,5 +1,5 @@
 import { BadRequestException, ValidationPipe } from '@nestjs/common';
-import { UpdateTemplateDto } from './template.dto';
+import { CreateTemplateDto, UpdateTemplateDto } from './template.dto';
 import { GLOBAL_VALIDATION_OPTIONS } from '../../../config/app-validation';
 
 describe('UpdateTemplateDto', () => {
@@ -22,5 +22,24 @@ describe('UpdateTemplateDto', () => {
   // so the table and the behaviour cannot drift apart.
   it.each(['header', 'footer'])('accepts an explicit null %s, which clears the stored value', async field => {
     await expect(through({ [field]: null })).resolves.toEqual({ [field]: null });
+  });
+});
+
+// The name column is varchar(100), which PostgreSQL counts in code points. A length check that folds
+// a presentation selector (U+FE0F) into the character before it let 200 code points through, and the
+// INSERT then failed as a 500.
+describe('template name length', () => {
+  const pipe = new ValidationPipe(GLOBAL_VALIDATION_OPTIONS);
+  const emoji = '\u2714\uFE0F';
+
+  it.each([
+    ['create', CreateTemplateDto, { body: 'hi' }],
+    ['update', UpdateTemplateDto, {}],
+  ])('%s counts the name in code points', async (_label, metatype, rest) => {
+    const through = (name: string): Promise<unknown> => pipe.transform({ ...rest, name }, { type: 'body', metatype });
+    await expect(through(emoji.repeat(100))).rejects.toBeInstanceOf(BadRequestException);
+    await expect(through(emoji.repeat(50))).resolves.toMatchObject({ name: emoji.repeat(50) });
+    await expect(through('a'.repeat(100))).resolves.toMatchObject({ name: 'a'.repeat(100) });
+    await expect(through('a'.repeat(101))).rejects.toBeInstanceOf(BadRequestException);
   });
 });

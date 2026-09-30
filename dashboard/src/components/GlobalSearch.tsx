@@ -7,7 +7,7 @@ import './GlobalSearch.css';
 interface GlobalSearchProps {
   /** Called when the user clicks a result — the parent navigates to that chat/message. */
   onHit: (hit: SearchHit) => void;
-  /** When set, the scope toggle defaults to this session (optional). */
+  /** When set, offers a toggle that limits the search to this session (off by default). */
   currentSessionId?: string;
 }
 
@@ -197,7 +197,7 @@ export function GlobalSearch({ onHit, currentSessionId }: GlobalSearchProps) {
             // preventDefault on mousedown keeps focus in the input, so a mouse click does not start the
             // close timer; click still fires for the mouse and for Enter/Space.
             <button className="global-search-more" onMouseDown={e => e.preventDefault()} onClick={loadMore}>
-              {t('search.results', { count: total })}
+              {t('search.loadMore', { shown: hits.length, total })}
             </button>
           )}
         </div>

@@ -167,7 +167,7 @@ docker compose up -d --build   # `docker compose pull` never updates it
 **Symptoms:**
 
 - The API is healthy (`curl http://<host>:2785/api/health` returns `200`) but the dashboard is blank
-- The startup log says `🖥️ Dashboard: serving bundled UI at …` — the UI _is_ being served
+- The startup log says `Dashboard: serving bundled UI at …` — the UI _is_ being served
 - The browser console shows script-loading errors; DevTools → Network shows the `/assets/*.js`
   requests going to `https://` even though you opened the page over `http://`
 - You reach the instance directly over plain HTTP (a host:port allocation, a private network, a
@@ -247,7 +247,7 @@ docker compose restart openwa-api
 > this document assume a source install (`npm run start:dev`) or that dev bind mount.
 
 Proxy egress (if WhatsApp is blocked on your network) is configured **per session** via the
-`proxyUrl`/`proxyType` fields on `POST /api/sessions` — it is **not** an environment variable, and an
+`proxyUrl` field on `POST /api/sessions` — it is **not** an environment variable, and an
 unreachable proxy silently blocks the WhatsApp WebSocket (see the _No QR code appears, or `/start`
 returns `504`_ entry below).
 
@@ -310,7 +310,7 @@ curl -X POST "$BASE/api/sessions" -H "X-API-Key: $API_KEY" -H "Content-Type: app
 ```
 
 > ℹ️ Proxy egress for the `whatsapp-web.js` engine is configured **per session** via the
-> `proxyUrl`/`proxyType` fields on `POST /api/sessions` — not via environment variables.
+> `proxyUrl` field on `POST /api/sessions` — not via environment variables.
 
 > ℹ️ A `504` whose body starts with `Engine initialization timed out after ...` is a **different**
 > failure with a different fix: initialization never finished at all. That happens when WhatsApp Web,
@@ -709,15 +709,16 @@ curl -H "X-API-Key: $API_KEY" \
 ```typescript
 // Correct format
 const validFormats = [
-  '628123456789@c.us',      // Indonesian
-  '14155552671@c.us',       // US
+  '628123456789@c.us', // Indonesian
+  '14155552671@c.us', // US
   '628123456789-1234@g.us', // Group ID
 ];
+```
 
-// API to check if number exists
-// GET /api/sessions/{id}/contacts/check/{number}
+```bash
+# Check whether a number is on WhatsApp (needs an OPERATOR key; {sessionId} is the id from GET /api/sessions)
 curl -H "X-API-Key: $API_KEY" \
-  "http://localhost:2785/api/sessions/default/contacts/check/628123456789"
+  "http://localhost:2785/api/sessions/{sessionId}/contacts/check/628123456789"
 ```
 
 ### Issue: Sends return 500 "engine returned no message", and chats or media fail with `r: r`
@@ -857,10 +858,14 @@ BODY_SIZE_LIMIT=25mb
 # is refused with 415 — the aggregate in-flight cap counts bytes on the wire, so a compressed
 # body would be admitted small and then inflated past the memory that cap exists to bound.
 
-# Note: one client IP may hold at most half the aggregate in-flight budget, and is refused with
-# 503 + Retry-After past that even while the gateway as a whole has room. Behind a reverse proxy,
-# set TRUSTED_PROXIES: without it every caller resolves to the proxy's own address and shares a
-# single half, which looks like a 503 at half the budget you configured.
+# Note: one active API key may hold at most half the aggregate in-flight budget, wherever its
+# requests come from, and is refused with 503 + Retry-After past that even while the gateway as a
+# whole has room. A single declared body larger than that share gets 413 instead, since a retry
+# cannot help. Requests without a recognised key (ingress deliveries included) share a pool of a
+# quarter of the budget or twice BODY_SIZE_LIMIT, whichever is larger, and each client IP gets at
+# most half of that pool (never less than one full-size body). Behind a reverse proxy, set
+# TRUSTED_PROXIES: without it every unkeyed caller resolves to the proxy's own address and shares
+# a single IP's share of that pool.
 
 # Supported formats
 # Images: jpg, jpeg, png, gif, webp
@@ -1056,19 +1061,19 @@ ANALYZE sessions;
 ANALYZE messages;
 ```
 
-Pooling and caching are environment variables — OpenWA has no config file:
+Pool size and Redis are set in Dashboard > Infrastructure, which saves them to `data/.env.generated`; an uncommented value in `.env` or the process environment pins them over the dashboard. The timeouts below are environment-only:
 
 ```bash
 # Connection pool + timeouts (applied to the PostgreSQL data connection)
-DATABASE_POOL_SIZE=10                 # max pooled connections (default 10)
+# DATABASE_POOL_SIZE=10               # max pooled connections (default 10)
 DATABASE_IDLE_TIMEOUT_MS=30000        # idle client eviction (default 30000)
 DATABASE_CONNECTION_TIMEOUT_MS=10000  # wait for a free connection (default 10000)
 DATABASE_STATEMENT_TIMEOUT_MS=30000   # server-side per-query cap (default 30000)
 
 # Redis caching (per-key TTLs are fixed in code — there is no cache TTL env var)
-REDIS_ENABLED=true
-REDIS_HOST=localhost
-REDIS_PORT=6379
+# REDIS_ENABLED=true
+# REDIS_HOST=localhost
+# REDIS_PORT=6379
 ```
 
 ## 12.6 Database Issues
@@ -1201,7 +1206,8 @@ networks:
 
 ```bash
 # Test connectivity from container
-docker exec openwa-api ping postgres
+docker exec openwa-api getent hosts postgres            # DNS: does the name resolve?
+docker exec openwa-api pg_isready -h postgres -p 5432    # TCP + PostgreSQL accepting connections
 docker exec openwa-api curl http://host.docker.internal:8080
 ```
 
@@ -1415,7 +1421,7 @@ available_events:
   - session.disconnected # Session disconnected
   - session.reconnect_loop # Every 5th consecutive reconnect attempt (payload: sessionId, attempts, nextDelayMs)
   - session.restriction # WhatsApp restricted the account, or lifted it (payload: sessionId, active, kind, code, expiresAt)
-  - presence.update # A subscribed chat's presence changed (payload: sessionId, chatId, participants, groupOnlineCount)
+  - presence.update # A subscribed chat's presence changed (Baileys only; the subscribe route answers 501 on whatsapp-web.js; payload: sessionId, chatId, participants, groupOnlineCount)
   - call.accepted # A ringing call was answered (Baileys only; payload: sessionId, callId, from, outcome, isVideo, isGroup, timestamp)
   - call.rejected # A ringing call was declined (Baileys only)
   - call.missed # A ringing call was never picked up (Baileys only)
@@ -1436,23 +1442,25 @@ available_events:
 {
   "event": "message.received",
   "timestamp": "2026-02-02T10:30:00Z",
-  "sessionId": "sess_abc123",
-  "idempotencyKey": "msg_sess_abc123_ABC123_DEF456_f1e2d3c4-b5a6-7890-1234-567890abcdef",
+  "sessionId": "3f2a9c1e-7b4d-4e8a-9c2f-1d5e6a7b8c9d",
+  "idempotencyKey": "msg_3f2a9c1e-7b4d-4e8a-9c2f-1d5e6a7b8c9d_ABC123_DEF456_f1e2d3c4-b5a6-7890-1234-567890abcdef",
   "deliveryId": "dlv_550e8400-e29b-41d4-a716-446655440000",
   "data": {
     "id": "ABC123_DEF456",
     "from": "628123456789@c.us",
     "to": "628987654321@c.us",
+    "chatId": "628123456789@c.us",
     "body": "Hello!",
     "type": "text",
     "timestamp": 1706868600,
+    "fromMe": false,
     "isGroup": false,
-    "author": null,
-    "hasMedia": false,
-    "media": null
+    "kind": "individual"
   }
 }
 ```
+
+A media message also carries `media: { mimetype, filename?, data?, omitted?, sizeBytes? }`, and a group message carries `author` (the sender, since `from` is the group); neither is present on a 1:1 text message like this one. There is no `hasMedia` field: test for `media`.
 
 ## 12.9 Error Code Reference
 
@@ -1496,7 +1504,7 @@ There are no machine-readable WhatsApp error codes. Errors use the NestJS defaul
 
 When creating GitHub issue, include:
 
-```markdown
+````markdown
 ## Environment
 
 - OpenWA version: x.x.x
@@ -1524,24 +1532,23 @@ When creating GitHub issue, include:
 [What actually happens]
 
 ## Logs
+
 ```
-
 [Paste relevant logs here]
-
-````
+```
 
 ## Configuration
+
 ```yaml
 # Sanitized docker-compose.yml or .env
-````
-
 ```
+````
 
 ### Community Resources
 
 - **GitHub Issues**: [github.com/rmyndharis/OpenWA/issues](https://github.com/rmyndharis/OpenWA/issues)
 - **Discussions**: [github.com/rmyndharis/OpenWA/discussions](https://github.com/rmyndharis/OpenWA/discussions)
-- **Stack Overflow**: Tag with `openwa`
+
 ---
 
 <div align="center">
@@ -1549,4 +1556,3 @@ When creating GitHub issue, include:
 [← 11 - Operational Runbooks](./11-operational-runbooks.md) · [Documentation Index](./README.md) · [Next: 13 - Horizontal Scaling Guide →](./13-horizontal-scaling.md)
 
 </div>
-```

@@ -891,6 +891,10 @@ export class MessageController {
     description: 'Session not active or invalid request',
   })
   @ApiResponse({ status: 413, description: BULK_MEDIA_TOO_LARGE_413 })
+  @ApiResponse({
+    status: 429,
+    description: 'Too many bulk batches in progress on this node (BULK_MAX_CONCURRENT_BATCHES); retry shortly',
+  })
   async sendBulk(
     @Param('sessionId') sessionId: string,
     @Body() dto: SendBulkMessageDto,

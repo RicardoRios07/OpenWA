@@ -6,6 +6,7 @@ import { contactApi, sessionApi } from '../../services/api';
 import { useRole } from '../../hooks/useRole';
 import { useToast } from '../../hooks/useToast';
 import { Modal } from '../Modal';
+import { MEDIA_UPLOAD_MAX_BYTES } from './ChatComposer';
 
 // Mirrors @ArrayMaxSize(256) on the send-status DTOs — the picker caps selection client-side so the
 // user can't build a list the backend is guaranteed to reject.
@@ -103,6 +104,13 @@ function StatusComposeModal({ sessionId, onClose, onPosted }: Props) {
   const handleComposeImageFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    // Posted as base64 JSON, so an oversized image would only be refused after the whole inflated
+    // body went up. Rejected before anything is cleared, so an image URL or earlier pick is kept.
+    if (file.size > MEDIA_UPLOAD_MAX_BYTES) {
+      showErrorToast(t('chats.errors.fileTooLarge'));
+      e.target.value = '';
+      return;
+    }
     setComposeImageUrl('');
     const myRead = ++composeImageReadSeq.current;
     const reader = new FileReader();

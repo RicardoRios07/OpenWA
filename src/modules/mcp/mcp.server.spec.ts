@@ -9,6 +9,7 @@ import type { AnyToolDescriptor } from '../../core/agent-tools/tool-descriptor';
 import type { ToolRegistryService } from '../../core/agent-tools/tool-registry.service';
 import type { AuthService } from '../auth/auth.service';
 import type { AuditService } from '../audit/audit.service';
+import { LoggerService } from '../../common/services/logger.service';
 
 // The request-handling path news up an McpServer + StreamableHTTPServerTransport per POST. Both SDK
 // classes are mocked so tests can observe the per-request transport (handleRequest args) and invoke
@@ -509,6 +510,20 @@ describe('mountMcpServer (raw-Express request-handling path)', () => {
     expect(mockHandleRequest).toHaveBeenCalledWith(req, res, body);
     expect(res.on).toHaveBeenCalledWith('close', expect.any(Function)); // per-request teardown wired
     expect(res.status).not.toHaveBeenCalled(); // no error fallback
+  });
+
+  it('logs the tool count once at mount, not on every request', async () => {
+    const info = jest.spyOn(LoggerService.prototype, 'log');
+    try {
+      const h = mount();
+      expect(info).toHaveBeenCalledTimes(1);
+      await post(h, { jsonrpc: '2.0', id: 1, method: 'tools/list' }, { 'x-api-key': 'good-key' });
+      await post(h, { jsonrpc: '2.0', id: 2, method: 'tools/list' }, { 'x-api-key': 'good-key' });
+      expect(mockServerConnect).toHaveBeenCalledTimes(2);
+      expect(info).toHaveBeenCalledTimes(1);
+    } finally {
+      info.mockRestore();
+    }
   });
 
   it('refuses an invalid API key inside the dispatch: tool error result, tool handler never runs', async () => {

@@ -151,3 +151,24 @@ test('an @mention of a participant who posted in the thread shows their first na
   assert.equal(body?.querySelector('bdi')?.textContent, '@Bob');
   assert.equal(container.querySelector('.quote-body bdi')?.textContent, '@Bob');
 });
+
+test('a document sent by URL opens in a new tab instead of navigating the dashboard away', () => {
+  // Browsers ignore `download` on a cross-origin link, so a plain click would unload the dashboard.
+  const doc = (id: string, data: string): ChatMessageView => ({
+    ...PROMPT,
+    id,
+    waMessageId: `wamid.${id}`,
+    body: '',
+    type: 'document',
+    metadata: { media: { mimetype: 'application/pdf', filename: `${id}.pdf`, data } },
+  });
+  const { container } = renderThread('operator', [
+    doc('remote', 'https://files.example.com/remote.pdf'),
+    doc('inline', 'JVBERi0='),
+  ]);
+  const [remote, inline] = Array.from(container.querySelectorAll<HTMLAnchorElement>('a.chat-document-media'));
+  assert.equal(remote.getAttribute('target'), '_blank');
+  assert.equal(remote.getAttribute('rel'), 'noopener noreferrer');
+  assert.equal(inline.getAttribute('target'), null);
+  assert.equal(inline.getAttribute('download'), 'inline.pdf');
+});

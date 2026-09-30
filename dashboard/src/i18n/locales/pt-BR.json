@@ -93,6 +93,7 @@
     "unreadBadge": "{{count}} mensagem não lida",
     "unreadBadge_other": "{{count}} mensagens não lidas",
     "unreadBadge_many": "{{count}} mensagens não lidas",
+    "markedUnread": "Marcado como não lido",
     "loadingMessages": "Carregando mensagens...",
     "loadingOlderMessages": "Carregando mensagens anteriores...",
     "loadOlderMessagesError": "Não foi possível carregar mensagens anteriores. Role para cima para tentar novamente.",
@@ -457,6 +458,7 @@
     "filters": {
       "title": "Filtros (opcional)",
       "hint": "Disparar somente quando todas as condições forem atendidas. Aplica-se a eventos de mensagens.",
+      "incomplete": "Informe um valor para cada condição de filtro e use no máximo 20 condições, 100 valores por condição e 1000 caracteres de texto.",
       "badge": "{{count}} filtro",
       "badge_other": "{{count}} filtros",
       "badge_many": "{{count}} filtros",
@@ -849,6 +851,7 @@
     },
     "empty": {
       "title": "Nenhum modelo salvo",
+      "noMatch": "Nenhum modelo corresponde à sua pesquisa.",
       "description": "Crie um modelo reutilizável para agilizar respostas e notificações habituais.",
       "noSessionsTitle": "Nenhuma sessão disponível",
       "noSessionsDesc": "Crie uma sessão do WhatsApp antes de adicionar modelos.",
@@ -964,7 +967,7 @@
       "checking": "Verificando status do servidor...",
       "dontClose": "Por favor, não feche esta janela",
       "successMsg": "O servidor voltou a ficar online! A página será recarregada automaticamente.",
-      "errorMsg": "O servidor não respondeu após 30 segundos. Verifique os logs do Docker e reinicie manualmente.",
+      "errorMsg": "O servidor não respondeu. Verifique os logs do Docker e reinicie manualmente.",
       "outcomeUnknown": "O proxy retornou um erro antes de o servidor responder, então não é possível saber se a reinicialização está em andamento. Recarregue a página em um minuto para verificar.",
       "reload": "Recarregar página"
     },
@@ -1027,7 +1030,7 @@
     "config": {
       "title": "Configurar {{name}}",
       "noOptions": "Não há opções de configuração disponíveis para este plugin",
-      "uiHandshakeError": "A interface de configuração do plugin não foi iniciada. Use o formulário abaixo, se disponível.",
+      "uiHandshakeError": "A interface de configuração do plugin não foi iniciada.",
       "save": "Salvar configuração",
       "addItem": "Adicionar",
       "tabConfig": "Configuração",
@@ -1163,7 +1166,7 @@
   },
   "search": {
     "placeholder": "Pesquisar mensagens…",
-    "results": "{{count}} resultados",
+    "loadMore": "Mostrar mais ({{shown}} de {{total}})",
     "empty": "Nenhuma mensagem encontrada.",
     "error": "Falha na pesquisa. Tente novamente.",
     "unavailable": "A pesquisa não está configurada.",

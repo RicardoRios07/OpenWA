@@ -21,7 +21,8 @@ export interface ReconnectDecision {
  * chat message cache uses staleTime:Infinity, so it won't refetch on its own; the caller invalidates
  * on `invalidate: true` to force a refresh of the thread the gap left stale.
  *
- * - First connect (hadConnected false): no invalidate — nothing is cached yet to refresh.
+ * - First connect (hadConnected false): no invalidate. The cache is not necessarily empty (a remount
+ *   within gcTime keeps the threads read before it); refreshing those is not this decision's job.
  * - Disconnect after the first connect: mark a gap (wasDisconnected), no invalidate.
  * - Connect with a marked gap: RECONNECT — invalidate, then clear the gap marker.
  * - Disconnect before any connect (transient noise on mount): no gap marked (avoid a spurious first-

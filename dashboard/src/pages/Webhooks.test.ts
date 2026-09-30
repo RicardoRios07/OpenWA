@@ -14,6 +14,14 @@ let createCalls = 0;
 let updateCalls = 0;
 let createBody: Record<string, unknown> | undefined;
 let updateBody: Record<string, unknown> | undefined;
+// Test deliveries and deletes, recorded by path; each answers only once `releaseRequests` runs.
+let testCalls: string[] = [];
+let deleteCalls: string[] = [];
+let heldRequests: Promise<void> = Promise.resolve();
+let releaseRequests: () => void = () => {};
+function holdRequests(): void {
+  heldRequests = new Promise<void>(resolve => (releaseRequests = resolve));
+}
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
@@ -34,6 +42,18 @@ function installFetchStub(): void {
       updateCalls++;
       updateBody = JSON.parse(String(init.body));
       return new Promise<Response>(() => {});
+    }
+    if (init?.method === 'POST' && /^\/api\/sessions\/sess-1\/webhooks\/[^/]+\/test$/.test(path)) {
+      testCalls.push(path);
+      return heldRequests.then(() => jsonResponse({ success: true, statusCode: 200 }));
+    }
+    if (init?.method === 'DELETE' && /^\/api\/sessions\/sess-1\/webhooks\/[^/]+$/.test(path)) {
+      deleteCalls.push(path);
+      // A repeat delete finds the row gone, as the gateway's does.
+      const repeat = deleteCalls.filter(p => p === path).length > 1;
+      return heldRequests.then(() =>
+        repeat ? jsonResponse({ message: 'Webhook not found' }, 404) : new Response(null, { status: 204 }),
+      );
     }
     if (path === '/api/webhooks') {
       if (webhooksStatus === 403) {
@@ -75,6 +95,10 @@ afterEach(() => {
   updateCalls = 0;
   createBody = undefined;
   updateBody = undefined;
+  testCalls = [];
+  deleteCalls = [];
+  releaseRequests();
+  heldRequests = Promise.resolve();
   window.sessionStorage.setItem('openwa_user_role', 'viewer');
 });
 
@@ -410,4 +434,121 @@ test('replacing headers sends the whole map, and no rows sends an empty map', as
   fireEvent.click(save);
   await rtl.waitFor(() => assert.equal(updateCalls, 1));
   assert.deepEqual(updateBody!.headers, {});
+});
+
+const FILTERS_HINT =
+  'Give every filter condition a value, and use at most 20 conditions, 100 values per condition and 1000 characters of text.';
+
+// FilterBuilder starts a condition as "sender is" with no contact, and the gateway refuses an empty
+// value list and more than 20 conditions. Either would come back as raw English in a toast.
+test('an incomplete filter condition keeps Create disabled and says why', async () => {
+  const { screen, fireEvent } = rtl;
+  const create = await openCreateModal();
+  assert.equal(create.disabled, false);
+
+  fireEvent.click(screen.getByRole('button', { name: 'Add condition' }));
+  assert.equal(create.disabled, true);
+  screen.getByText(FILTERS_HINT);
+  fireEvent.click(create);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(createCalls, 0);
+
+  fireEvent.click(screen.getByRole('button', { name: 'Remove condition' }));
+  assert.equal(create.disabled, false);
+});
+
+function editWebhookWith(conditions: unknown[]): void {
+  webhooksStatus = 200;
+  webhookList = [
+    {
+      id: 'w1',
+      sessionId: 'sess-1',
+      url: 'https://example.test/hook',
+      events: ['message.received'],
+      active: true,
+      filters: { conditions },
+    },
+  ];
+  window.sessionStorage.setItem('openwa_user_role', 'operator');
+  renderWebhooks();
+}
+
+async function openEdit(): Promise<HTMLButtonElement> {
+  const { screen, fireEvent } = rtl;
+  fireEvent.click(await screen.findByTitle('Edit'));
+  return screen.getByRole<HTMLButtonElement>('button', { name: 'Save Changes' });
+}
+
+test('more than 20 filter conditions keep Save disabled', async () => {
+  const { screen, fireEvent } = rtl;
+  // Stored before the limit: the builder no longer adds a 21st row, but it can still load one.
+  editWebhookWith(Array.from({ length: 21 }, () => ({ field: 'fromMe', operator: 'is', value: true })));
+  const save = await openEdit();
+  assert.equal(save.disabled, true);
+  screen.getByText(FILTERS_HINT);
+
+  fireEvent.click(screen.getAllByRole('button', { name: 'Remove condition' })[0]);
+  assert.equal(save.disabled, false);
+});
+
+test('a condition with more than 100 values keeps Save disabled', async () => {
+  const { screen, fireEvent } = rtl;
+  const values = Array.from({ length: 101 }, (_, i) => `${i}@c.us`);
+  editWebhookWith([{ field: 'sender', operator: 'is', value: values }]);
+  const save = await openEdit();
+  assert.equal(save.disabled, true);
+  screen.getByText(FILTERS_HINT);
+  fireEvent.click(save);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(updateCalls, 0);
+});
+
+test('a test in flight on one webhook is not ended by a test on another', async () => {
+  const { screen, fireEvent, waitFor } = rtl;
+  webhooksStatus = 200;
+  webhookList = ['w1', 'w2'].map(id => ({
+    id,
+    sessionId: 'sess-1',
+    url: `https://example.test/${id}`,
+    events: ['message.received'],
+    active: true,
+  }));
+  holdRequests();
+  renderWebhooks();
+  await screen.findByText('https://example.test/w2');
+  const [first, second] = screen.getAllByTitle<HTMLButtonElement>('Test');
+
+  fireEvent.click(first);
+  fireEvent.click(second);
+  await waitFor(() => assert.equal(testCalls.length, 2));
+  assert.equal(first.disabled, true, 'the first test is still in flight');
+  assert.equal(second.disabled, true);
+
+  fireEvent.click(first);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(testCalls.length, 2);
+  releaseRequests();
+  await waitFor(() => assert.equal(first.disabled, false));
+  assert.equal(second.disabled, false);
+});
+
+test('a second click on the delete confirm while the first delete is in flight sends nothing', async () => {
+  const { screen, fireEvent, waitFor, within } = rtl;
+  webhooksStatus = 200;
+  webhookList = [{ id: 'w1', sessionId: 'sess-1', url: 'https://example.test/hook', events: [], active: true }];
+  window.sessionStorage.setItem('openwa_user_role', 'operator');
+  holdRequests();
+  renderWebhooks();
+  fireEvent.click(await screen.findByTitle('Delete'));
+
+  const confirm = within(screen.getByRole('dialog')).getByRole<HTMLButtonElement>('button', { name: 'Delete' });
+  fireEvent.click(confirm);
+  await waitFor(() => assert.equal(deleteCalls.length, 1));
+  await new Promise(resolve => setTimeout(resolve, 50));
+  fireEvent.click(confirm);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(deleteCalls.length, 1);
+  releaseRequests();
+  await screen.findByText('Webhook deleted successfully');
+  assert.equal(screen.queryByRole('alert'), null);
 });

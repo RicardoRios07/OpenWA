@@ -48,6 +48,8 @@ interface EntityFile {
   file: string;
   connection: Connection;
   tables: string[];
+  /** Of those, the tables carrying an FK to sessions. */
+  sessionFkTables: string[];
 }
 
 function findEntityFiles(dir: string, found: string[] = []): string[] {
@@ -92,12 +94,23 @@ async function loadEntityFiles(): Promise<EntityFile[]> {
   });
   await ds.initialize();
   const tableOf = new Map<unknown, string>(ds.entityMetadatas.map(metadata => [metadata.target, metadata.tableName]));
+  const sessionFkTables = new Set(
+    ds.entityMetadatas
+      .filter(metadata => metadata.foreignKeys.some(fk => fk.referencedTablePath === 'sessions'))
+      .map(metadata => metadata.tableName),
+  );
   await ds.destroy();
-  return discovered.map(entry => ({
-    file: entry.file,
-    connection: classify(entry.file),
-    tables: entry.classes.map(cls => tableOf.get(cls)).filter((table): table is string => typeof table === 'string'),
-  }));
+  return discovered.map(entry => {
+    const tables = entry.classes
+      .map(cls => tableOf.get(cls))
+      .filter((table): table is string => typeof table === 'string');
+    return {
+      file: entry.file,
+      connection: classify(entry.file),
+      tables,
+      sessionFkTables: tables.filter(table => sessionFkTables.has(table)),
+    };
+  });
 }
 
 /** Top-level property names of a published schema, read from the committed OpenAPI contract. */
@@ -151,6 +164,13 @@ describe('export-tables registry: every data-DB entity table has a backup decisi
     const dataTables = new Set(entityFiles.filter(f => f.connection === 'data').flatMap(f => f.tables));
     const stale = EXPORT_TABLES.filter(entry => !dataTables.has(entry.table)).map(entry => entry.table);
     expect(stale).toEqual([]);
+  });
+
+  it('flags exactly the tables with an FK to sessions, so the export drops their orphaned rows', () => {
+    const flagged = EXPORT_TABLES.filter(entry => entry.sessionFk).map(entry => entry.table);
+    const withFk = entityFiles.filter(f => f.connection === 'data').flatMap(f => f.sessionFkTables);
+    expect(flagged.sort()).toEqual(withFk.sort());
+    expect(flagged.length).toBeGreaterThan(0);
   });
 
   it('exports and imports the same tables in the same FK-safe order', () => {

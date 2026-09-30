@@ -441,6 +441,21 @@ describe('BaileysSessionStore', () => {
     expect(store.listChats()[0]).toEqual(expect.objectContaining({ lastMessage: 'after edit', timestamp: 200 }));
   });
 
+  it.each([
+    ['its own id, once only the phone twin has a chat record', ['628111@s.whatsapp.net'], '999@lid'],
+    ['the phone twin, when both twins have a chat record', ['628111@s.whatsapp.net', '999@lid'], '628111@c.us'],
+  ])('updates a lid-filed preview when the edit arrives through %s', (_label, chats, editedVia) => {
+    store.addLidMappings([{ lid: '999@lid', pn: '628111@s.whatsapp.net' }]);
+    store.recordMessage({
+      key: { remoteJid: '999@lid', id: 'M1' },
+      message: { conversation: 'secret' },
+      messageTimestamp: 200,
+    });
+    store.upsertChats(chats.map(id => ({ id })));
+    store.recordMessageEdit(editedVia, 'M1', '');
+    expect(store.listChats().map(c => c.lastMessage)).toEqual(['']);
+  });
+
   it('flags a group chat by jid', () => {
     store.upsertChats([{ id: '123-456@g.us', name: 'Grp' }]);
     expect(store.listChats()[0].isGroup).toBe(true);

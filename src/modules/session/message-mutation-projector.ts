@@ -53,7 +53,11 @@ export class MessageMutationProjector {
       // no protection against that — the row it finds is real, just the wrong one.
       if (!event.messageId) return;
 
-      const msg = await this.messageRepository.findOne({ where: { sessionId: id, waMessageId: event.messageId } });
+      // A revoked row reads as absent, like the edit paths: a reaction that lands after the delete must
+      // not write a reactions map back onto the cleared metadata.
+      const msg = await this.messageRepository.findOne({
+        where: { sessionId: id, waMessageId: event.messageId, type: Not('revoked') },
+      });
 
       // The stored copy is best-effort — a message is absent whenever it was never persisted (an
       // ephemeral one under STORE_EPHEMERAL_MESSAGES=false, or one that arrived before the session

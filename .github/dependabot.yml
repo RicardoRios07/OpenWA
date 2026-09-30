@@ -121,11 +121,11 @@ updates:
     ignore:
       # TypeScript 7 is the native port: `require('typescript')` no longer exposes the classic
       # compiler API from its main entry, so @typescript-eslint/typescript-estree throws at load
-      # reading `ts.Extension` ("Cannot read properties of undefined (reading 'Cjs')"). ts-jest@29
-      # independently caps typescript at ">=4.3 <7". Proven by #727/#729.
+      # reading `ts.Extension` ("Cannot read properties of undefined (reading 'Cjs')"). Proven by
+      # #727/#729.
       #
       # Pinned on the version, not update-types: the 6.x line is healthy (6.0.3 runs fine today) and
-      # this must not silently block it. Lift when typescript-eslint and ts-jest support TypeScript 7.
+      # this must not silently block it. Lift when typescript-eslint supports TypeScript 7.
       #
       # NB: typescript-eslint's peer is "<6.1.0", so a future 6.1 bump WILL fail resolution — that is
       # a separate matter from this ignore; pin with ~ rather than ^ when a 6.0.x bump lands.

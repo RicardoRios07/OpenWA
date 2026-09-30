@@ -25,7 +25,9 @@ export function Login({ onLogin }: LoginProps) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!apiKey.trim()) {
+    // The stored key is matched against key prefixes elsewhere, so a pasted space must not reach it.
+    const key = apiKey.trim();
+    if (!key) {
       setError(t('login.apiKeyRequired'));
       return;
     }
@@ -37,7 +39,7 @@ export function Login({ onLogin }: LoginProps) {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-API-Key': apiKey,
+          'X-API-Key': key,
         },
       });
 
@@ -45,7 +47,7 @@ export function Login({ onLogin }: LoginProps) {
         // The validate body already carries the key's role — hand it up so the app can set it
         // directly instead of re-validating the same key a second time.
         const data: { role?: string; engineType?: string } = await response.json().catch(() => ({}));
-        onLogin(apiKey, data.role, typeof data.engineType === 'string' ? data.engineType : undefined);
+        onLogin(key, data.role, typeof data.engineType === 'string' ? data.engineType : undefined);
       } else {
         const errorData = await response.json().catch(() => ({}));
         setError(errorData.message || t('login.invalidKey'));

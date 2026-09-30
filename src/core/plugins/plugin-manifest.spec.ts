@@ -23,6 +23,39 @@ describe('validatePluginManifest', () => {
     expect(() => validatePluginManifest(bad)).toThrow(/required field: main/i);
   });
 
+  it('rejects a list field that is not an array of strings', () => {
+    // `.includes` also works on a string, so `sessions: 'sales-team'` would match session 'sales'.
+    for (const field of ['permissions', 'sessions', 'hooks']) {
+      for (const value of ['sales-team', [1], {}]) {
+        expect(() => validatePluginManifest({ ...valid, [field]: value })).toThrow(
+          `manifest.json ${field} must be an array of strings`,
+        );
+      }
+    }
+    expect(() => validatePluginManifest({ ...valid, net: { allow: 'api.example.com' } })).toThrow(
+      'manifest.json net.allow must be an array of strings',
+    );
+    expect(() => validatePluginManifest({ ...valid, net: { allowConfigHosts: 'baseUrl' } })).toThrow(
+      'manifest.json net.allowConfigHosts must be an array of strings',
+    );
+    expect(() => validatePluginManifest({ ...valid, net: ['api.example.com'] })).toThrow(
+      'manifest.json net must be an object',
+    );
+  });
+
+  it('accepts absent, null or string-array list fields', () => {
+    expect(() =>
+      validatePluginManifest({
+        ...valid,
+        permissions: ['net:fetch'],
+        sessions: null,
+        hooks: [],
+        net: { allow: ['api.example.com'], allowConfigHosts: null },
+      }),
+    ).not.toThrow();
+    expect(() => validatePluginManifest({ ...valid, net: null })).not.toThrow();
+  });
+
   it('rejects a non-string required field (numeric main)', () => {
     expect(() => validatePluginManifest({ ...valid, main: 123 })).toThrow(/invalid required field/i);
   });

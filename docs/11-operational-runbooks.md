@@ -86,6 +86,9 @@ docker compose restart openwa-api
 # Check health
 curl http://localhost:2785/api/health
 
+# Sessions reconnect on their own only with AUTO_START_SESSIONS=true. The production compose
+# leaves it unset (off), so start each session first:
+#   curl -X POST -H "X-API-Key: $API_KEY" http://localhost:2785/api/sessions/{sessionId}/start
 # Check all sessions reconnected (id alongside status — the send below needs the id)
 curl -H "X-API-Key: $API_KEY" \
   http://localhost:2785/api/sessions | jq '.[] | {id, name, status}'
@@ -110,7 +113,7 @@ curl -X POST http://localhost:2785/api/sessions/{sessionId}/messages/send-text \
 
 **Prerequisites:**
 
-- API Key
+- An OPERATOR (or ADMIN) API key
 - Physical access to phone (if QR needed)
 
 **Steps:**
@@ -146,8 +149,11 @@ curl -H "X-API-Key: $API_KEY" \
 curl -H "X-API-Key: $API_KEY" \
   http://localhost:2785/api/sessions/{sessionId}/qr
 
-# Display QR in terminal: there is no raw/format param — consume the `session.qr`
-# webhook/WebSocket event to get the raw QR string for qrencode.
+# Save the QR as a PNG to open or scan. There is no raw QR string: the `session.qr`
+# webhook/WebSocket event carries the same PNG data URL as this endpoint.
+curl -s -H "X-API-Key: $API_KEY" \
+  http://localhost:2785/api/sessions/{sessionId}/qr \
+  | jq -r .qrCode | sed 's#^data:image/png;base64,##' | base64 -d > qr.png
 ```
 
 **Verification:**
@@ -196,14 +202,14 @@ docker compose logs openwa-api 2>&1 | grep -i "heap\|memory\|gc"
 
 # 4. Immediate actions:
 
-# A. Clear the in-process cache (no runtime cache-clear API — restart the container;
-#    if using Redis, flush via redis-cli)
+# A. Restart container (sessions reconnect on their own only with AUTO_START_SESSIONS=true;
+#    otherwise POST /api/sessions/{sessionId}/start each one). This also drops the in-process
+#    caches; there is no runtime cache-clear API. Flushing Redis frees no openwa-api memory, since
+#    Redis is a separate process. Never run FLUSHALL: the queue and rate limits live in db 0, and the cache
+#    has its own database (REDIS_CACHE_DB, default 1)
 docker compose restart openwa-api
 
-# B. Restart container (will reconnect sessions)
-docker compose restart openwa-api
-
-# C. If caused by too many sessions:
+# B. If caused by too many sessions:
 # List sessions (no sort param); process memory is in stats/overview (memoryUsage, MB)
 curl -H "X-API-Key: $API_KEY" \
   http://localhost:2785/api/sessions/stats/overview
@@ -241,7 +247,7 @@ as a delivery failure rather than retaining payloads without limit.
 
 **Prerequisites:**
 
-- API key, and an ADMIN key for step 2
+- An OPERATOR (or ADMIN) API key, and an ADMIN key for step 2
 - Access to webhook endpoint
 
 **Steps:**
@@ -358,7 +364,8 @@ docker stats --no-stream
 # 3. Create a backup in the running container, where the data is mounted, and copy it off the
 #    volume (see Runbook: Database Backup). A host run of ./scripts/backup.sh archives ./data in the
 #    checkout, which only a bare-metal install or docker-compose.dev.yml reads. Engine auth state is
-#    copied live; stop the sessions first if a restore must not need re-pairing
+#    copied live; stop the sessions first if a restore must not need re-pairing, and start them
+#    again in step 10
 docker exec -e BACKUP_DIR=/app/data/backups -e TMPDIR=/app/data/backups openwa-api ./scripts/backup.sh
 docker cp openwa-api:/app/data/backups/. ./backups/
 
@@ -389,6 +396,9 @@ sleep 30
 curl http://localhost:2785/api/health
 
 # 10. Verify all sessions reconnected
+#     (on their own only with AUTO_START_SESSIONS=true; otherwise POST
+#     /api/sessions/{sessionId}/start each one first). A session stopped in step 3 stays down,
+#     even with AUTO_START_SESSIONS=true, until that explicit start
 curl -H "X-API-Key: $API_KEY" \
   http://localhost:2785/api/sessions | jq '.[].status'
 
@@ -438,7 +448,7 @@ curl -H "X-API-Key: $API_KEY" \
 #    ./data in the checkout, which the production compose never reads (see Runbook: Database Backup).
 #    An image older than 0.19.0 has no scripts/backup.sh, and on PostgreSQL one older than 0.22.0 has
 #    no pg_dump: see 14 - Known Upgrade Hazards. Engine auth state is copied live; stop the sessions
-#    first if a rollback must not need re-pairing
+#    first if a rollback must not need re-pairing, and start them again in step 11
 export BACKUP_DIR="/backups/openwa"
 mkdir -p "$BACKUP_DIR"
 docker exec -e BACKUP_DIR=/app/data/backups -e TMPDIR=/app/data/backups openwa-api ./scripts/backup.sh
@@ -480,6 +490,9 @@ curl http://localhost:2785/api/health
 curl -H "X-API-Key: $API_KEY" http://localhost:2785/api/health | jq '.version'
 
 # 11. Verify all sessions
+#     (they reconnect on their own only with AUTO_START_SESSIONS=true; otherwise POST
+#     /api/sessions/{sessionId}/start each one first). A session stopped in step 2 stays down,
+#     even with AUTO_START_SESSIONS=true, until that explicit start
 curl -H "X-API-Key: $API_KEY" \
   http://localhost:2785/api/sessions
 
@@ -491,7 +504,8 @@ curl -X POST http://localhost:2785/api/sessions/{sessionId}/messages/send-text \
 ```
 
 > If you deploy the published image instead of building from source — your own compose file with
-> `image: ghcr.io/rmyndharis/openwa:<tag>` — replace steps 5-6 with editing that tag, running
+> `image: ghcr.io/rmyndharis/openwa:<tag>` — keep step 5 (or copy the release's `docker-compose.yml`
+> changes into your own compose file) and replace step 6 with editing that tag, running
 > `docker compose pull openwa-api`, and confirming the image landed with
 > `docker image inspect ghcr.io/rmyndharis/openwa:<tag>`. `docker compose run` in step 7 has no
 > `--no-build`, so when the service keeps a `build:` section a failed pull would otherwise build from
@@ -610,6 +624,9 @@ curl -H "X-API-Key: $API_KEY" http://localhost:2785/api/health
 `pg_dump`). Engine authentication state (`sessions/`, `baileys/`) is copied while the engines write
 it, so a restored session can need re-pairing; for a copy that is consistent by construction, stop
 the sessions first (`POST /api/sessions/:id/stop`), or stop the container and archive the volume.
+A stopped session stays down across restarts, even with `AUTO_START_SESSIONS=true`, so start each
+one again with `POST /api/sessions/:id/start` once the backup is copied. The stop is recorded in the
+backed-up database, so a restore of that archive keeps the session stopped too.
 
 **Prerequisites:**
 
@@ -935,9 +952,13 @@ du -sh "$(docker inspect --format='{{.LogPath}}' openwa-api)"
 
 # 3. Clean up:
 
-# A. Docker cleanup
-docker system prune -af
-docker volume prune -f
+# A. Docker cleanup: dangling images and build cache only
+docker image prune -f
+docker builder prune -f
+# Never run `docker system prune` or `docker volume prune` on this host. They remove stopped
+# containers (a stopped openwa-api, or a built-in openwa-postgres/openwa-redis/openwa-minio), and on
+# Docker older than 23.0 or on Podman the volume prune deletes every unused named volume, including
+# openwa_openwa-data (API keys, session auth, media) and openwa_postgres-data.
 
 # B. Container log (Docker-managed; cap it at the daemon/compose log-driver level to stop it
 #    growing back)
@@ -946,9 +967,10 @@ sudo truncate -s 0 "$(docker inspect --format='{{.LogPath}}' openwa-api)"
 # C. Old backups
 find /backups -name "*.tar.gz" -mtime +30 -delete
 
-# D. Message attachments (if backed up)
-# Warning: This deletes media files
-find ./data/media -mtime +30 -delete
+# D. Archived chat media: let the app expire it instead of deleting files, which leaves rows
+#    pointing at missing files. Set CHAT_MEDIA_ARCHIVE_TTL_DAYS (default 0, keep forever) and
+#    restart; expiry clears the file and the row's media columns. Under the production compose the
+#    media lives in the openwa_openwa-data volume, not in ./data in the checkout.
 
 # 4. Verify
 df -h

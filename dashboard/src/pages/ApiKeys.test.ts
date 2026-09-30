@@ -108,6 +108,19 @@ test('a key row shows its prefix masked and offers no show/hide toggle', async (
   );
 });
 
+// ApiKeys.css turns rows into cards at max-width: 768px, which has no slot for the Last Used cell.
+test('at 768px the table drops the columns the card layout has no place for', async () => {
+  const width = window.innerWidth;
+  window.innerWidth = 768;
+  try {
+    renderApiKeys();
+    await rtl.screen.findByText('owa_k1ab****');
+    assert.equal(rtl.screen.queryByText('Last Used') === null, true, 'the Last Used column is still shown');
+  } finally {
+    window.innerWidth = width;
+  }
+});
+
 // An admin key restricted to sessions is refused here (the route needs an unscoped key), and a
 // failed read is not an empty list: "No API keys created" would read as a gateway with no keys.
 test('a refused read says so instead of showing the empty state', async () => {
@@ -162,6 +175,12 @@ test('a create sends the IP allow-list, chats and expiry only when filled in', a
     allowedChats: ['6281234@c.us', '120363000@g.us'],
     expiresAt: new Date('2027-06-01T09:30').toISOString(),
   });
+});
+
+// A production gateway refuses a name over 100 characters with a bare "Bad Request".
+test('the key name cannot exceed the 100 characters the gateway takes', async () => {
+  await openCreate();
+  assert.equal(rtl.screen.getByLabelText<HTMLInputElement>('Name').maxLength, 100);
 });
 
 test('an IP or chat line the gateway would refuse keeps Create disabled and names the line', async () => {
@@ -437,6 +456,44 @@ test('an expiry past the year 9999 blocks Create and Save with a message', async
   await screen.findByText(invalidExpiry);
   assert.deepEqual(updateBodies, []);
 });
+
+async function inTimeZone(zone: string, run: () => Promise<void>): Promise<void> {
+  const previous = process.env.TZ;
+  process.env.TZ = zone;
+  try {
+    await run();
+  } finally {
+    if (previous === undefined) delete process.env.TZ;
+    else process.env.TZ = previous;
+  }
+}
+
+// 9999-12-31T23:00 in New York is 10000-01-01T04:00Z, which serializes with a six-digit year the
+// gateway refuses, so the cap follows the browser's offset.
+test('west of UTC the expiry cap is the last minute of 9999 in UTC', () =>
+  inTimeZone('America/New_York', async () => {
+    const { screen, fireEvent } = rtl;
+    const create = await openCreate();
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'crm-bot' } });
+    const input = screen.getByLabelText<HTMLInputElement>('Expires at (optional)');
+    assert.equal(input.max, '9999-12-31T18:59');
+    fireEvent.change(input, { target: { value: '9999-12-31T23:00' } });
+    fireEvent.click(create);
+    await screen.findByText(invalidExpiry);
+    assert.equal(createBody, undefined);
+  }));
+
+// A 9999-12-31T23:59:59Z expiry reads as 10000-01-01T06:59 in Jakarta, past the input's max.
+test('east of UTC a stored expiry past the cap does not block an unrelated edit', () =>
+  inTimeZone('Asia/Jakarta', async () => {
+    const { screen, fireEvent, waitFor } = rtl;
+    const save = await openEdit({ ...billingBot, expiresAt: '9999-12-31T23:59:59.000Z' });
+    assert.equal(screen.getByLabelText<HTMLInputElement>('Expires at (optional)').max, '9999-12-31T23:59');
+    fireEvent.change(screen.getByLabelText('Role'), { target: { value: 'viewer' } });
+    fireEvent.click(save);
+    await waitFor(() => assert.equal(updateBodies.length, 1));
+    assert.deepEqual(updateBodies[0], { role: 'viewer' });
+  }));
 
 test('an expiry Save cannot convert ends in an error toast, not a silent no-op', async () => {
   const { screen, fireEvent } = rtl;

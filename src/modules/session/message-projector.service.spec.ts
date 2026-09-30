@@ -785,6 +785,19 @@ describe('MessageProjector (inbound projection)', () => {
       expect(messageRepository.update.mock.calls.at(-1)).toEqual([where, revokedPatch]);
     });
 
+    it('takes no reaction that arrives after the revoke, and announces it without a snapshot', async () => {
+      const revoked = { ...where, ...revokedPatch };
+      messageRepository.findOne.mockImplementation(({ where: w }: { where: { type?: unknown } }) =>
+        Promise.resolve(w.type ? null : revoked),
+      );
+
+      projector.applyReactionQueued(SESSION_ID, { messageId: 'wamid.1', senderId: 'x@c.us', reaction: 'ok' } as never);
+      await flush();
+
+      expect(messageRepository.update).not.toHaveBeenCalled();
+      expect(dispatchPayload(webhookService.dispatch)).not.toHaveProperty('reactions');
+    });
+
     it('never takes an edit, inbound or outbound', async () => {
       projector.applyMessageEditQueued(SESSION_ID, { messageId: 'wamid.1', body: 'late' } as never);
       await projector.recordOutboundMessageEdit(SESSION_ID, 'wamid.1', 'later');
@@ -917,6 +930,58 @@ describe('MessageProjector (inbound projection)', () => {
       expect(afterB).toEqual([
         [{ sessionId: SESSION_ID, waMessageId: 'B' }, expect.objectContaining({ type: 'revoked' })],
       ]);
+      // message.revoked already went out: B is not announced with the content its sender deleted.
+      expect(dispatched()).toEqual(['message.revoked:B', 'message.received:A']);
+      expect(eventsGateway.emitMessage.mock.calls.map(([, m]) => (m as { id: string }).id)).toEqual(['A']);
+      expect(automationRules.evaluateInbound.mock.calls.map(([, m]) => (m as { id: string }).id)).toEqual(['A']);
+    });
+
+    it('announces a message deleted for me while it waits for its turn as the revoked placeholder', async () => {
+      const engine = makeEngine();
+      engines.set(SESSION_ID, engine);
+      const release = holdHooks();
+
+      projector.handleInboundMessage(SESSION_ID, engine, makeIncoming({ id: 'A', chatId: chatA }));
+      const b = makeIncoming({ id: 'B', chatId: chatA, body: 'secret', quotedMessage: { id: 'Q', body: 'quoted' } });
+      projector.handleInboundMessage(SESSION_ID, engine, b);
+      release.get('B')!();
+      await flush();
+      // The REST delete-for-me: no engine revoke event follows, so no message.revoked went out.
+      void projector.recordRevoke(SESSION_ID, 'B');
+      release.get('A')!();
+      await flush();
+
+      expect(dispatched()).toEqual(['message.received:A', 'message.received:B']);
+      const announcedB = (webhookService.dispatch.mock.calls as unknown[][]).at(-1)![2] as Record<string, unknown>;
+      expect(announcedB).toMatchObject({ id: 'B', body: '', type: 'revoked' });
+      expect(announcedB).not.toHaveProperty('quotedMessage');
+      expect(eventsGateway.emitMessage).toHaveBeenLastCalledWith(SESSION_ID, announcedB);
+      expect(automationRules.evaluateInbound).toHaveBeenLastCalledWith(SESSION_ID, announcedB);
+    });
+
+    it('announces a message edited while it waits for its turn with the edited body', async () => {
+      Object.assign(eventsGateway, { emitMessageEdited: jest.fn() });
+      const engine = makeEngine();
+      engines.set(SESSION_ID, engine);
+      const release = holdHooks();
+
+      projector.handleInboundMessage(SESSION_ID, engine, makeIncoming({ id: 'A', chatId: chatA }));
+      projector.handleInboundMessage(SESSION_ID, engine, makeIncoming({ id: 'B', chatId: chatA, body: 'typo' }));
+      release.get('B')!();
+      await flush();
+      projector.applyMessageEditQueued(SESSION_ID, { messageId: 'B', body: 'fixed' } as never);
+      release.get('A')!();
+      await flush();
+
+      expect(webhookService.dispatch).toHaveBeenCalledWith(
+        SESSION_ID,
+        'message.received',
+        expect.objectContaining({ id: 'B', body: 'fixed' }),
+      );
+      expect(eventsGateway.emitMessage).toHaveBeenLastCalledWith(
+        SESSION_ID,
+        expect.objectContaining({ body: 'fixed' }),
+      );
     });
 
     it('orders an own-send echo after an earlier inbound message of the same chat', async () => {
@@ -970,6 +1035,8 @@ describe('MessageProjector (inbound projection)', () => {
 
         expect(inserted()).toEqual(['A', 'S']);
         expect(updatesAfterS()).toEqual([[whereS, expect.objectContaining({ body: '', type: 'revoked' })]]);
+        expect(dispatched()).toEqual(['message.revoked:S', 'message.received:A']);
+        expect(eventsGateway.emitMessageSent).not.toHaveBeenCalled();
       });
 
       it('writes an edit onto the echo row once it is written', async () => {
@@ -979,6 +1046,11 @@ describe('MessageProjector (inbound projection)', () => {
         await flush();
 
         expect(updatesAfterS()).toEqual([[whereS, { body: 'fixed' }]]);
+        expect(webhookService.dispatch).toHaveBeenCalledWith(
+          SESSION_ID,
+          'message.sent',
+          expect.objectContaining({ id: 'S', body: 'fixed' }),
+        );
       });
 
       it('advances the echo row to the furthest ack that arrived before it was written', async () => {
@@ -998,6 +1070,11 @@ describe('MessageProjector (inbound projection)', () => {
         await flush();
 
         expect(updatesAfterS()).toEqual([[whereS, expect.objectContaining({ body: '', type: 'revoked' })]]);
+        expect(webhookService.dispatch).toHaveBeenCalledWith(
+          SESSION_ID,
+          'message.sent',
+          expect.objectContaining({ id: 'S', body: '', type: 'revoked' }),
+        );
       });
 
       it('writes a REST edit onto the echo row once it is written', async () => {
@@ -1187,6 +1264,24 @@ describe('MessageProjector (inbound projection)', () => {
   });
 
   describe('handleOwnSendEcho', () => {
+    it('lends a quote the body its message:sent chain rewrote, until the row is written', async () => {
+      const engine = makeEngine();
+      engines.set(SESSION_ID, engine);
+      hookManager.execute.mockImplementationOnce(
+        (_event: string, data: IncomingMessage, options: { accept: (d: unknown) => boolean }) => {
+          const rewritten = { ...data, body: '[redacted]' };
+          options.accept(rewritten);
+          return Promise.resolve({ continue: true, data: rewritten });
+        },
+      );
+      messageRepository.insert.mockImplementationOnce(() => new Promise(() => undefined));
+
+      projector.handleOwnSendEcho(SESSION_ID, engine, makeIncoming({ fromMe: true }));
+      await new Promise(resolve => setImmediate(resolve));
+
+      expect(projector.inFlightInbound(SESSION_ID, 'wamid.1')).toMatchObject({ body: '[redacted]' });
+    });
+
     it('still persists and dispatches the send when a message:sent hook returns null', async () => {
       const engine = makeEngine();
       engines.set(SESSION_ID, engine);

@@ -4,8 +4,8 @@ import { chatKind } from '../identity/wa-id';
 /**
  * Content types that change or annotate another message and carry nothing of their own: a poll vote,
  * an in-chat pin, a keep-in-chat toggle, an album header (its photos arrive as their own messages), an
- * encrypted reaction and an event RSVP. Mapped, they would surface as a bodyless `unknown` message, so
- * the live and history paths drop them instead.
+ * encrypted reaction, an event RSVP, an encrypted edit (an event edit) and an encrypted comment. Mapped,
+ * they would surface as a bodyless `unknown` message, so the live and history paths drop them instead.
  */
 export const BAILEYS_NON_CONTENT_TYPES: ReadonlySet<string> = new Set([
   'pollUpdateMessage',
@@ -14,6 +14,8 @@ export const BAILEYS_NON_CONTENT_TYPES: ReadonlySet<string> = new Set([
   'albumMessage',
   'encReactionMessage',
   'encEventResponseMessage',
+  'secretEncryptedMessage',
+  'encCommentMessage',
 ]);
 
 /**
@@ -860,9 +862,16 @@ export function extractBaileysContext(content: BaileysContextContent): BaileysMe
   // surface it so the store/viewer can render the story the way it was posted.
   const extText = content.extendedTextMessage;
   const contextInfo = subForContext?.contextInfo;
+  // WhatsApp stamps the timer on every message in a disappearing chat, a product, poll, contact card, live
+  // location, order or event included, so any content node answers when the carriers above have none.
+  const expiration =
+    contextInfo?.expiration ??
+    Object.values(content)
+      .map(node => (node as BaileysContextCarrier | null | undefined)?.contextInfo?.expiration)
+      .find((e): e is number => typeof e === 'number' && e > 0);
 
   const context: BaileysMessageContext = {
-    ephemeralDuration: contextInfo?.expiration ?? undefined,
+    ephemeralDuration: expiration ?? undefined,
     mentionedJids: contextInfo?.mentionedJid ?? undefined,
     backgroundArgb: typeof extText?.backgroundArgb === 'number' ? extText.backgroundArgb : undefined,
     font: typeof extText?.font === 'number' ? extText.font : undefined,

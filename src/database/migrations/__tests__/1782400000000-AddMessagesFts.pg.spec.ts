@@ -102,6 +102,41 @@ const POSTGRES_ENABLED = process.env.DATABASE_TYPE === 'postgres';
     expect((await provider.health()).ok).toBe(true);
   });
 
+  // The boot self-heal reads the catalog and creates only what is missing. health() alone cannot
+  // prove the catalog query works: it re-probes on its own, so it passes even when onModuleInit threw.
+  const bootSelfHeal = async (): Promise<{ ddl: string[]; errors: jest.SpyInstance }> => {
+    const internals = provider as unknown as { logger: { error: (message: string) => void } };
+    const errors = jest.spyOn(internals.logger, 'error');
+    const query = jest.spyOn(ds, 'query');
+    await provider.onModuleInit();
+    const ddl = query.mock.calls.map(([sql]) => sql).filter(sql => /ALTER TABLE|CREATE INDEX/i.test(sql));
+    query.mockRestore();
+    return { ddl, errors };
+  };
+  const ftsAvailable = (): boolean | null => (provider as unknown as { ftsAvailable: boolean | null }).ftsAvailable;
+
+  it('issues no DDL at boot when the migration already built the column and the index', async () => {
+    const { ddl, errors } = await bootSelfHeal();
+
+    expect(errors).not.toHaveBeenCalled();
+    expect(ftsAvailable()).toBe(true);
+    expect(ddl).toEqual([]);
+  });
+
+  it('recreates only the missing GIN index at boot', async () => {
+    await ds.query(`DROP INDEX "idx_messages_body_ts"`);
+
+    const { ddl, errors } = await bootSelfHeal();
+
+    expect(errors).not.toHaveBeenCalled();
+    expect(ftsAvailable()).toBe(true);
+    expect(ddl).toEqual([expect.stringMatching(/^CREATE INDEX IF NOT EXISTS "idx_messages_body_ts"/)]);
+    const indexes: Array<{ indexname: string }> = await ds.query(
+      `SELECT indexname FROM pg_indexes WHERE tablename = 'messages' AND indexname = 'idx_messages_body_ts'`,
+    );
+    expect(indexes).toHaveLength(1);
+  });
+
   // Task 12 PG carry-forward: prove the generated `body_ts` tsvector re-derives across the clear+re-
   // insert path that POST /infra/import-data performs (companion to the SQLite round-trip in
   // providers/search-dual-db.spec.ts). A STORED generated column is recomputed on every INSERT, so

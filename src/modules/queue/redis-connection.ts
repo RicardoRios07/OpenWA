@@ -35,8 +35,9 @@ const DEFAULT_WEBHOOK_WORKER_CONCURRENCY = 10;
  * default a quarter of this value; a job already running when the failure lands is not counted)
  * and returns the rest to the delayed set. Size this value above that cap times the number of
  * sessions whose receivers may fail at once, or those sessions fill the pool. Override via
- * WEBHOOK_WORKER_CONCURRENCY; a non-positive/garbage value falls back to the default. (Read at
- * module import like workerConnectionOptions above.)
+ * WEBHOOK_WORKER_CONCURRENCY; unset or blank uses the default, and any other value that is not a
+ * positive integer fails boot validation (env.validation.ts). (Read at module import like
+ * workerConnectionOptions above.)
  */
 export function webhookWorkerConcurrency(): number {
   return resolveNonNegativeIntEnv(process.env.WEBHOOK_WORKER_CONCURRENCY, 0) || DEFAULT_WEBHOOK_WORKER_CONCURRENCY;
@@ -51,8 +52,9 @@ const DEFAULT_INGRESS_WORKER_CONCURRENCY = 10;
  * concurrency here parallelizes unrelated conversations. A job waiting on a busy key still holds a
  * slot, though: a burst on one key larger than this value blocks every other key until it drains.
  * Size it above the largest expected per-key burst; the key is the whole instance unless the route
- * declares a conversationId pointer. Override via INGRESS_WORKER_CONCURRENCY; a
- * non-positive/garbage value falls back to the default.
+ * declares a conversationId pointer. Override via INGRESS_WORKER_CONCURRENCY; unset or blank uses
+ * the default, and any other value that is not a positive integer fails boot validation
+ * (env.validation.ts).
  */
 export function ingressWorkerConcurrency(): number {
   return resolveNonNegativeIntEnv(process.env.INGRESS_WORKER_CONCURRENCY, 0) || DEFAULT_INGRESS_WORKER_CONCURRENCY;

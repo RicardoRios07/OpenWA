@@ -27,7 +27,7 @@ export interface WebhookJobResult {
 }
 
 /**
- * The exact `failedReason` BullMQ 5.80.x sets when a job stalls more than `maxStalledCount` (worker
+ * The exact `failedReason` BullMQ 6.x sets when a job stalls more than `maxStalledCount` (worker
  * default 1, so the SECOND genuine stall): the stalled checker (moveStalledJobsToWait Lua script)
  * stores it as the job's deferred failure, and the worker then fails the job itself — emitting
  * 'failed' WITHOUT ever calling process(). Lock renewal means a slow-but-alive processor never

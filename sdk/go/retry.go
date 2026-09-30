@@ -245,7 +245,7 @@ func retryMiddleware(p RetryPolicy, log Logger) Middleware {
 				}
 
 				log.Log(req.Context(), LevelWarn, "openwa retrying request",
-					"method", req.Method, "url", req.URL.String(),
+					"method", req.Method, "url", req.URL.Redacted(),
 					"attempt", attempt+1, "delay_ms", delay.Milliseconds())
 
 				timer := time.NewTimer(delay)

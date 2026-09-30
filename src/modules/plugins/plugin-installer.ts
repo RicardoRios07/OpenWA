@@ -102,6 +102,10 @@ export function parsePluginPackage(buffer: Buffer, limits: PackageLimits = DEFAU
   if (declared > limits.maxTotalBytes) throw new BadRequestException('The archive contents exceed the size limit');
 
   const entries: { relPath: string; data: Buffer }[] = [];
+  // Normalized paths already taken, lowercased because a case-insensitive filesystem writes
+  // `Manifest.json` and `manifest.json` to one file. Entries are written in order, so a repeat would
+  // let a later `z/../manifest.json` replace the manifest validated above.
+  const seen = new Set<string>();
   let actualBytes = 0;
   for (const e of packaged) {
     const relPath = e.entryName.slice(prefix.length);
@@ -110,6 +114,9 @@ export function parsePluginPackage(buffer: Buffer, limits: PackageLimits = DEFAU
     if (relPath.includes('\\') || norm.startsWith('..') || norm === '..' || path.posix.isAbsolute(norm)) {
       throw new BadRequestException(`Unsafe path in archive: ${e.entryName}`);
     }
+    const key = norm.toLowerCase();
+    if (seen.has(key)) throw new BadRequestException(`Duplicate path in archive: ${e.entryName}`);
+    seen.add(key);
     let data: Buffer;
     try {
       data = readEntryData(e, limits.maxTotalBytes);

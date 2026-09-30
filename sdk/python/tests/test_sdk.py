@@ -149,6 +149,11 @@ class TestClientCore:
         assert "sessionId" not in url
         assert "None" not in url
 
+    def test_raw_request_keeps_a_query_string_in_the_path(self):
+        backend = MockBackend().on("GET", "/api/sessions", body=[])
+        make_client(backend).request("GET", "/api/sessions?limit=5", query={"name": "x"})
+        assert backend.last_call.url == "http://localhost:2785/api/sessions?limit=5&name=x"
+
     def test_204_is_none(self):
         # `delete` is declared `-> None`, so asserting on its result is a type error and proves
         # nothing the signature does not already guarantee. What is worth asserting is that a 204
@@ -829,13 +834,15 @@ class TestChatsAndHealth:
         backend = MockBackend()
         backend.on("GET", "/api/health", body={"status": "ok", "version": "0.7.2"})
         backend.on("GET", "/live", body={"status": "ok"})
-        backend.on("GET", "/ready", body={"status": "ok", "details": {}})
+        # The full path, so it outranks the shorter /api/health prefix it contains.
+        ready = {"status": "ok", "details": {"mainDatabase": {"status": "up"}, "dataDatabase": {"status": "up"}}}
+        backend.on("GET", "/api/health/ready", body=ready)
         backend.on("POST", "/validate", body={"valid": True, "role": "admin"})
         client = make_client(backend)
         client.health.check()
         assert backend.calls[-1].url == "http://localhost:2785/api/health"
         client.health.live()
-        client.health.ready()
+        assert client.health.ready()["details"]["mainDatabase"]["status"] == "up"
         client.auth()
         assert backend.calls[-1].method == "POST"
         assert "/auth/validate" in backend.calls[-1].url

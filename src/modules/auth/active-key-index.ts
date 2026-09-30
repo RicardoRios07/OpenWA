@@ -60,14 +60,19 @@ export class ActiveKeyIndex implements OnApplicationBootstrap, OnModuleDestroy {
       this.reloadAgain = true;
       return;
     }
+    // Cleared in the same continuation that leaves the loop: a `.finally` on the returned promise
+    // would run a microtask later, and a call landing in that gap would set reloadAgain after the
+    // loop had stopped reading it. load() always awaits, so the assignment lands first.
     this.loading = (async () => {
-      do {
-        this.reloadAgain = false;
-        await this.load();
-      } while (this.reloadAgain && !this.destroyed);
-    })().finally(() => {
-      this.loading = undefined;
-    });
+      try {
+        do {
+          this.reloadAgain = false;
+          await this.load();
+        } while (this.reloadAgain && !this.destroyed);
+      } finally {
+        this.loading = undefined;
+      }
+    })();
   }
 
   /**

@@ -186,8 +186,10 @@ export class SessionLifecycleFences {
     if (!pending || pending.engine !== engine) return;
 
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // A rejected write has settled too, and start()'s catch owns reporting it: the retiring control
+    // must still reach its teardown and final write.
     const settled = await Promise.race([
-      pending.promise.then(() => true),
+      pending.promise.catch(() => undefined).then(() => true),
       new Promise<boolean>(resolve => {
         timer = setTimeout(() => resolve(false), 10_000);
       }),

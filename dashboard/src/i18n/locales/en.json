@@ -90,6 +90,7 @@
     "noMessageYet": "No messages yet",
     "unreadBadge": "{{count}} unread message",
     "unreadBadge_other": "{{count}} unread messages",
+    "markedUnread": "Marked as unread",
     "loadingMessages": "Loading messages...",
     "loadingOlderMessages": "Loading older messages...",
     "loadOlderMessagesError": "Couldn't load older messages. Scroll up to retry.",
@@ -452,6 +453,7 @@
     "filters": {
       "title": "Filters (optional)",
       "hint": "Only fire when all conditions match. Applies to message events.",
+      "incomplete": "Give every filter condition a value, and use at most 20 conditions, 100 values per condition and 1000 characters of text.",
       "badge": "{{count}} filter",
       "badge_other": "{{count}} filters",
       "addCondition": "Add condition",
@@ -599,6 +601,7 @@
     },
     "empty": {
       "title": "No templates saved",
+      "noMatch": "No templates match your search.",
       "description": "Create a reusable template to speed up common replies and notifications.",
       "noSessionsTitle": "No sessions available",
       "noSessionsDesc": "Create a WhatsApp session before adding templates.",
@@ -978,7 +981,7 @@
       "checking": "Checking server status...",
       "dontClose": "Please do not close this window",
       "successMsg": "Server is back online! The page will reload automatically.",
-      "errorMsg": "Server did not respond after 30 seconds. Please check the Docker logs and restart manually.",
+      "errorMsg": "Server did not respond. Please check the Docker logs and restart manually.",
       "outcomeUnknown": "The proxy returned an error before the server answered, so it is not known whether the restart is in progress. Reload in a minute to check.",
       "reload": "Reload Page"
     },
@@ -1021,7 +1024,7 @@
     "config": {
       "title": "Configure {{name}}",
       "noOptions": "No configuration options available for this plugin",
-      "uiHandshakeError": "The plugin configuration UI did not initialize. Use the schema form below if available.",
+      "uiHandshakeError": "The plugin configuration UI did not initialize.",
       "save": "Save Configuration",
       "addItem": "Add",
       "tabConfig": "Configuration",
@@ -1157,7 +1160,7 @@
   },
   "search": {
     "placeholder": "Search messages…",
-    "results": "{{count}} results",
+    "loadMore": "Show more ({{shown}} of {{total}})",
     "empty": "No messages found.",
     "error": "Search failed. Try again.",
     "unavailable": "Search is not configured.",

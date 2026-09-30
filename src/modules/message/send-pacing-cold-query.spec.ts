@@ -7,6 +7,7 @@ import type { ConfigService } from '@nestjs/config';
 import { GroupService } from '../group/group.service';
 import { EngineRegistry } from '../../engine/engine-registry.service';
 import type { IWhatsAppEngine } from '../../engine/interfaces/whatsapp-engine.interface';
+import { EngineRefusedError } from '../../common/errors/engine-refused.error';
 
 /**
  * The cold-reachout count is the one piece of this feature that cannot be proven with a mocked
@@ -413,12 +414,31 @@ describe('group reachouts against a real database', () => {
       });
     });
 
+    // Both engines report a refused batch (no admin rights) as EngineRefusedError, a 403: nobody was
+    // contacted, so the reservation is refunded.
     it('refunds the batch when the engine refuses the add, so the next batch still fits', async () => {
-      const addParticipants = jest.fn().mockRejectedValueOnce(new Error('not an admin')).mockResolvedValueOnce([]);
+      const addParticipants = jest
+        .fn()
+        .mockRejectedValueOnce(new EngineRefusedError('not an admin'))
+        .mockResolvedValueOnce([]);
       const svc = groupService({ addParticipants });
 
       await expect(svc.addParticipants('s1', 'g1@g.us', tenStrangers('811'))).rejects.toThrow('not an admin');
       await expect(svc.addParticipants('s1', 'g1@g.us', tenStrangers('822'))).resolves.toEqual([]);
+    });
+
+    // A failure that does not prove nobody was reached (a dropped socket, a deadline while the query is
+    // still in flight) keeps the batch charged: WhatsApp may already have added the participants.
+    it('keeps the batch charged when the add fails with an unknown outcome', async () => {
+      const addParticipants = jest.fn().mockRejectedValueOnce(new Error('socket closed')).mockResolvedValueOnce([]);
+      const svc = groupService({ addParticipants });
+
+      await expect(svc.addParticipants('s1', 'g1@g.us', tenStrangers('811'))).rejects.toThrow('socket closed');
+      await expect(svc.addParticipants('s1', 'g1@g.us', tenStrangers('822'))).rejects.toMatchObject({
+        status: 429,
+        response: { code: SEND_PACING_LIMITED },
+      });
+      expect(addParticipants).toHaveBeenCalledTimes(1);
     });
   });
 });

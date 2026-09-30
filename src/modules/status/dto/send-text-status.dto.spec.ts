@@ -68,3 +68,16 @@ describe('SendTextStatusDto recipients validation', () => {
     expect(errors).toHaveLength(0);
   });
 });
+
+describe('SendTextStatusDto text validation', () => {
+  it('rejects an empty or whitespace-only body', async () => {
+    for (const text of ['', '   ', '\n\t']) {
+      const errors = await validate(plainToInstance(SendTextStatusDto, { text }));
+      expect(errors.some(e => e.property === 'text')).toBe(true);
+    }
+  });
+
+  it('accepts a body with surrounding whitespace', async () => {
+    expect(await validate(plainToInstance(SendTextStatusDto, { text: '  hi  ' }))).toHaveLength(0);
+  });
+});

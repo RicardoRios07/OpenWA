@@ -98,7 +98,7 @@ These are practical guardrails, not guarantees — but they materially reduce th
 
 1. **Warm up fresh numbers.** For the first several days, behave like a normal human user: scan the QR, exchange a handful of messages with saved contacts, join a group or two, set a profile photo. Don't blast on day one.
 2. **Don't cold-blast strangers.** Sending the first-ever message to a large batch of numbers that have never messaged you is the single most reliable way to get restricted — on either engine.
-3. **Pace sends per session.** Set `SEND_PACING_ENABLED=true` (off by default) for a per-session daily cap: an allowance that grows with the session's age (`SEND_PACING_WARMUP_SCHEDULE`), a separate cap on new conversations (`SEND_PACING_COLD_DAILY_CAP`) and a consecutive-failure breaker; [R002 in the risk guide](docs/16-risk-management.md#r002-user-account-banned) lists what it counts. No per-minute cap is enforced, so spacing within a day is up to the caller: bulk sends wait `delayBetweenMessages` between messages, and single text sends pause behind a typing indicator (`SIMULATE_TYPING`, on by default). A few messages per minute per session is sustainable; "thousands in an hour" is not. The `RATE_LIMIT_*` variables are API abuse protection per client IP, not a send cap: they throttle every request, including dashboard and read traffic.
+3. **Pace sends per session.** Set `SEND_PACING_ENABLED=true` (off by default) for a per-session daily cap: an allowance that grows with the session's age (`SEND_PACING_WARMUP_SCHEDULE`), a separate cap on new conversations (`SEND_PACING_COLD_DAILY_CAP`) and a consecutive-failure breaker; [R002 in the risk guide](docs/16-risk-management.md#r002-user-account-banned) lists what it counts. No per-minute cap is enforced, so spacing within a day is up to the caller: bulk sends wait `delayBetweenMessages` between messages, and single text sends pause behind a typing indicator (`SIMULATE_TYPING`, on by default). A few messages per minute per session is sustainable; "thousands in an hour" is not. The `RATE_LIMIT_*` variables are API abuse protection, counted per route and client IP, not a send cap: they throttle dashboard and read traffic too.
 4. **Use opted-in recipients.** The safest workloads are replies and alerts to people who already expect to hear from you (OTP to your own users, order updates, support replies).
 5. **Keep a fallback.** For anything auth-critical or revenue-critical, keep an SMS / email / official-Cloud-API path. Do not bet a login flow solely on an unofficial client.
 6. **Mind the hosting IP.** Cheap datacenter IPs are flagged more aggressively than residential ones. A residential proxy (supported per-session via the proxy settings) can help; it is not a license to spam.
@@ -329,11 +329,14 @@ services:
     image: ghcr.io/rmyndharis/openwa:latest
 ```
 
-Run `docker compose pull openwa-api && docker compose up -d --no-build`, and use the same command to
-upgrade. Pin a release by replacing `latest` with its version number. Once the image is pulled, Compose
-runs it and builds nothing. The service keeps its `build:` section, so if the pull fails (a mistyped tag,
-no registry access) Compose falls back to building from source and tags that build with the published
-name; `--no-build` makes that case fail instead. For the same reason, do not use `--build` or
+Run `docker compose pull openwa-api && docker compose up -d --no-build`. To upgrade, update the checkout
+first (`git pull`, or `git checkout v<version>` when pinning), then run the same command: the override
+replaces only the image, and `docker-compose.yml` forwards an explicit variable list with no `env_file`,
+so an outdated copy drops the variables a newer release adds and keeps the old service definitions. Pin a
+release by replacing `latest` with its version number. Once the image is pulled, Compose runs it and
+builds nothing. The service keeps its `build:` section, so if the pull fails (a mistyped tag, no registry
+access) Compose falls back to building from source and tags that build with the published name;
+`--no-build` makes that case fail instead. For the same reason, do not use `--build` or
 `docker compose build` with this override.
 
 ## 🔌 Ports

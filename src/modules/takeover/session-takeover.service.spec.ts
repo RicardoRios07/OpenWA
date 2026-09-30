@@ -4,7 +4,6 @@ import { SessionStoppedException } from '../session/session-engine-controls';
 import { Session, SessionStatus } from '../session/entities/session.entity';
 import type { SessionService } from '../session/session.service';
 import type { SessionOwnershipService } from '../session/session-ownership.service';
-import type { BulkMessageService } from '../message/bulk-message.service';
 import type { ConfigService } from '@nestjs/config';
 import type { ShutdownService } from '../../common/services/shutdown.service';
 
@@ -12,7 +11,8 @@ import type { ShutdownService } from '../../common/services/shutdown.service';
  * The sweep is the retry that boot auto-start never had: both live incidents (a container recreate
  * landing inside the old identity's lease, and a crashed peer) left sessions sitting disconnected
  * until a manual POST /start. What has to hold: only lapsed-lease sessions worth resuming are
- * started, a lost claim race is a non-event, and adopting a session reconciles its stuck batches.
+ * started, and a lost claim race is a non-event. The claim on the start path fails the previous
+ * holder's stuck batches (see the ownership and bulk message specs).
  */
 describe('SessionTakeoverService', () => {
   const lapsed = (over: Partial<Session> = {}): Session =>
@@ -31,11 +31,9 @@ describe('SessionTakeoverService', () => {
   ): {
     svc: SessionTakeoverService;
     start: jest.Mock;
-    reap: jest.Mock;
     markLapsedDisconnected: jest.Mock;
   } => {
     const start = opts.startImpl ?? jest.fn().mockResolvedValue({});
-    const reap = jest.fn().mockResolvedValue(0);
     const markLapsedDisconnected = jest.fn().mockResolvedValue([]);
     const config = {
       get: (key: string, def?: unknown) =>
@@ -50,10 +48,9 @@ describe('SessionTakeoverService', () => {
         lapsedHeldByOthers: jest.fn().mockResolvedValue(rows),
         leaseTtlMs: 60_000,
       } as unknown as SessionOwnershipService,
-      { reapProcessingBatches: reap } as unknown as BulkMessageService,
       config,
     );
-    return { svc, start, reap, markLapsedDisconnected };
+    return { svc, start, markLapsedDisconnected };
   };
 
   afterEach(() => {
@@ -67,13 +64,12 @@ describe('SessionTakeoverService', () => {
   // leaving it unclaimable by any peer until the lease lapsed.
   describe('a sweep racing shutdown', () => {
     it('adopts nothing once the module is being destroyed', async () => {
-      const { svc, start, reap } = build([lapsed({ name: 'a' }), lapsed({ name: 'b' })]);
+      const { svc, start } = build([lapsed({ name: 'a' }), lapsed({ name: 'b' })]);
 
       svc.onModuleDestroy();
       await svc.sweep();
 
       expect(start).not.toHaveBeenCalled();
-      expect(reap).not.toHaveBeenCalled();
     });
 
     it('stops adopting the rest of the batch when shutdown begins mid-sweep', async () => {
@@ -102,13 +98,12 @@ describe('SessionTakeoverService', () => {
     });
   });
 
-  it('adopts a lapsed authenticated session and reconciles its stuck batches', async () => {
-    const { svc, start, reap } = build([lapsed({ name: 'a' })]);
+  it('adopts a lapsed authenticated session through the ordinary start path', async () => {
+    const { svc, start } = build([lapsed({ name: 'a' })]);
 
     await svc.sweep();
 
     expect(start).toHaveBeenCalledWith('id-a');
-    expect(reap).toHaveBeenCalledWith('id-a', expect.stringContaining('lapsed'));
   });
 
   it('skips sessions not worth resuming: unauthenticated, mid-pairing, or operator-flagged failed', async () => {
@@ -134,28 +129,25 @@ describe('SessionTakeoverService', () => {
     expect(start.mock.calls).toEqual([['id-dropped']]);
   });
 
-  it('a lost claim race is a non-event: no batch reconcile, and the next candidate still starts', async () => {
+  it('a lost claim race is a non-event: the next candidate still starts', async () => {
     jest.useFakeTimers();
     const start = jest.fn().mockRejectedValueOnce(new ConflictException('held elsewhere')).mockResolvedValueOnce({});
-    const { svc, reap } = build([lapsed({ name: 'raced' }), lapsed({ name: 'ours' })], { startImpl: start });
+    const { svc } = build([lapsed({ name: 'raced' }), lapsed({ name: 'ours' })], { startImpl: start });
 
     const sweep = svc.sweep();
     await jest.advanceTimersByTimeAsync(2100); // the inter-launch stagger
     await sweep;
 
-    expect(start).toHaveBeenCalledTimes(2);
-    expect(reap).toHaveBeenCalledTimes(1);
-    expect(reap).toHaveBeenCalledWith('id-ours', expect.any(String));
+    expect(start.mock.calls).toEqual([['id-raced'], ['id-ours']]);
   });
 
   it('a session stopped after the sweep read it is logged as skipped, not as a lost claim race', async () => {
     const start = jest.fn().mockRejectedValueOnce(new SessionStoppedException('Session id-halted was stopped'));
-    const { svc, reap } = build([lapsed({ name: 'halted' })], { startImpl: start });
+    const { svc } = build([lapsed({ name: 'halted' })], { startImpl: start });
     const debug = jest.spyOn((svc as unknown as { logger: { debug: jest.Mock } }).logger, 'debug');
 
     await svc.sweep();
 
-    expect(reap).not.toHaveBeenCalled();
     expect(debug.mock.calls.map(([message]) => message as string)).toEqual([
       'Session halted skipped: stopped by an operator',
     ]);
@@ -261,7 +253,6 @@ describe('SessionTakeoverService', () => {
     const svc = new SessionTakeoverService(
       { start, markLapsedDisconnected: jest.fn().mockResolvedValue([]) } as unknown as SessionService,
       { lapsedHeldByOthers: ownershipCalls, leaseTtlMs: 60_000 } as unknown as SessionOwnershipService,
-      { reapProcessingBatches: jest.fn().mockResolvedValue(0) } as unknown as BulkMessageService,
       config,
     );
 
@@ -302,7 +293,6 @@ describe('SessionTakeoverService', () => {
     const svc = new SessionTakeoverService(
       { start } as unknown as SessionService,
       { lapsedHeldByOthers: ownershipCalls } as unknown as SessionOwnershipService,
-      { reapProcessingBatches: jest.fn().mockResolvedValue(0) } as unknown as BulkMessageService,
       config,
       { isShuttingDown: () => true } as unknown as ShutdownService,
     );
@@ -324,7 +314,6 @@ describe('SessionTakeoverService', () => {
     const svc = new SessionTakeoverService(
       { start: jest.fn().mockResolvedValue(undefined) } as unknown as SessionService,
       { lapsedHeldByOthers: ownershipCalls } as unknown as SessionOwnershipService,
-      { reapProcessingBatches: jest.fn().mockResolvedValue(0) } as unknown as BulkMessageService,
       config,
     );
 

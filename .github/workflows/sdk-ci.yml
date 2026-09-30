@@ -1,9 +1,10 @@
 name: SDK CI
 
-# Runs the JavaScript/Python/PHP client SDK suites. Path-filtered to SDK sources AND the server
-# contract surfaces the SDK types mirror (DTOs + the engine interface), so a backend DTO change also
-# re-runs the SDK suites and surfaces contract drift. The JavaScript job also builds and runs the
-# dual-format packaging smoke test (require() + import() both consumable).
+# Runs the JavaScript, Python, PHP, Java and Go client SDK suites. Path-filtered to SDK sources AND
+# the server contract surfaces the SDK types mirror (DTOs, controllers, services + the engine
+# interface), so a backend DTO change also re-runs the SDK suites and surfaces contract drift. The
+# JavaScript job also builds and runs the dual-format packaging smoke test (require() + import() both
+# consumable).
 on:
   push:
     branches: [main]

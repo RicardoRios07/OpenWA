@@ -106,6 +106,8 @@ export function mergeTwinStates(rows: ChatStateValue[]): ChatStateValue | undefi
   return out;
 }
 
+type SessionWrites = { pending: Set<Promise<void>>; seq: number; generation: number };
+
 const SEP = '\u0000'; // a null byte never appears in a session name or JID, so the join cannot collide
 
 // One global LRU across all sessions, default 5000, matching the other engine maps. A
@@ -147,6 +149,12 @@ export class ChatStateStoreService implements ChatStateStore, OnModuleInit {
   private readonly completeSessions = new Set<string>();
   /** Bumped by every write that indexes or persists, so a load can tell a write overlapped its read. */
   private writeSeq = 0;
+  /**
+   * Per session: its writes queued or running, a count bumped like {@link writeSeq} by its own writes
+   * only, so a refresh is not held up by another session's traffic, and the generation
+   * {@link clearSession} bumps, so a write queued before an unlink cannot re-create a row after it.
+   */
+  private readonly sessionWrites = new Map<string, SessionWrites>();
   private warnedEviction = false;
   private readonly maxEntries: number;
   /** One write chain per chat, so each remember() merges onto the state the previous one left. */
@@ -165,6 +173,7 @@ export class ChatStateStoreService implements ChatStateStore, OnModuleInit {
 
   async reload(): Promise<void> {
     const seq = this.writeSeq;
+    const idle = this.writes.size === 0;
     try {
       const rows = await this.repo.find({
         order: { updatedAt: 'DESC' },
@@ -178,7 +187,7 @@ export class ChatStateStoreService implements ChatStateStore, OnModuleInit {
       for (const row of [...rows].reverse()) {
         this.index(this.key(row.sessionId, row.chatId), fromRow(row));
       }
-      if (this.loadWasWhole(rows.length, seq)) {
+      if (this.loadWasWhole(rows.length, idle && this.writeSeq === seq && this.writes.size === 0)) {
         for (const row of rows) this.completeSessions.add(row.sessionId);
       }
       this.logger.log(
@@ -212,9 +221,10 @@ export class ChatStateStoreService implements ChatStateStore, OnModuleInit {
    */
   remember(sessionId: string, chatId: string, patch: Partial<ChatStateValue>, create = true): Promise<void> {
     const k = this.key(sessionId, chatId);
-    return new Promise<void>((resolve, reject) =>
-      this.writes.enqueue(k, () => this.applyPatch(k, sessionId, chatId, patch, create).then(() => resolve(), reject)),
-    );
+    const generation = this.writesOf(sessionId).generation;
+    return this.enqueue(sessionId, k, async () => {
+      await this.applyPatch(k, sessionId, chatId, patch, generation, create);
+    });
   }
 
   fold(
@@ -225,9 +235,37 @@ export class ChatStateStoreService implements ChatStateStore, OnModuleInit {
     create = true,
   ): Promise<void> {
     const k = this.key(sessionId, chatId);
-    return new Promise<void>((resolve, reject) =>
-      this.writes.enqueue(k, () => this.applyFold(k, sessionId, chatId, twins, patch, create).then(resolve, reject)),
-    );
+    const generation = this.writesOf(sessionId).generation;
+    return this.enqueue(sessionId, k, () => this.applyFold(k, sessionId, chatId, twins, patch, generation, create));
+  }
+
+  /** Queues work on the chat's write chain and counts it under the session until it settles. */
+  private enqueue(sessionId: string, k: string, work: () => Promise<void>): Promise<void> {
+    const { pending } = this.writesOf(sessionId);
+    const done = new Promise<void>((resolve, reject) => this.writes.enqueue(k, () => work().then(resolve, reject)));
+    pending.add(done);
+    const settle = () => pending.delete(done);
+    done.then(settle, settle);
+    return done;
+  }
+
+  private writesOf(sessionId: string): SessionWrites {
+    let writes = this.sessionWrites.get(sessionId);
+    if (!writes) {
+      writes = { pending: new Set(), seq: 0, generation: 0 };
+      this.sessionWrites.set(sessionId, writes);
+    }
+    return writes;
+  }
+
+  /** True once {@link clearSession} ran after the write was queued: it must neither index nor persist. */
+  private cleared(sessionId: string, generation: number): boolean {
+    return this.writesOf(sessionId).generation !== generation;
+  }
+
+  private bumpWriteSeq(sessionId: string): void {
+    this.writeSeq++;
+    this.writesOf(sessionId).seq++;
   }
 
   /**
@@ -242,6 +280,7 @@ export class ChatStateStoreService implements ChatStateStore, OnModuleInit {
     chatId: string,
     twins: string[],
     patch: Partial<ChatStateValue>,
+    generation: number,
     create: boolean,
   ): Promise<void> {
     const rows: ChatStateValue[] = [];
@@ -256,17 +295,17 @@ export class ChatStateStoreService implements ChatStateStore, OnModuleInit {
         rows.push(v);
       }
     } catch {
-      await this.applyPatch(k, sessionId, chatId, patch, create);
+      await this.applyPatch(k, sessionId, chatId, patch, generation, create);
       return;
     }
     if (!found.length) {
-      await this.applyPatch(k, sessionId, chatId, patch, create);
+      await this.applyPatch(k, sessionId, chatId, patch, generation, create);
       return;
     }
     // Only the fields some row observed are carried, so the folded row still tells them from defaults.
     const merged = mergeTwinStates(rows)!;
     const base = Object.fromEntries(FIELDS.filter(f => saw(merged, f)).map(f => [f, merged[f]]));
-    if (await this.applyPatch(k, sessionId, chatId, { ...base, ...patch })) {
+    if (await this.applyPatch(k, sessionId, chatId, { ...base, ...patch }, generation)) {
       await this.forget(sessionId, found);
     }
   }
@@ -276,6 +315,8 @@ export class ChatStateStoreService implements ChatStateStore, OnModuleInit {
     const cached = this.states.get(k);
     if (cached || this.completeSessions.has(sessionId) || this.absent.has(k)) return cached;
     const row = await this.repo.findOne({ where: { sessionId, chatId } });
+    // Recorded like a listing's miss, or every fold of a lid-addressed chat queries its twin again.
+    if (!row && !this.states.has(k)) this.markAbsent(k);
     return row ? fromRow(row) : undefined;
   }
 
@@ -285,8 +326,10 @@ export class ChatStateStoreService implements ChatStateStore, OnModuleInit {
     sessionId: string,
     chatId: string,
     patch: Partial<ChatStateValue>,
+    generation: number,
     create = true,
   ): Promise<boolean> {
+    if (this.cleared(sessionId, generation)) return false;
     // The merge base must be the CURRENT state, not DEFAULT_STATE, or a partial `chats.update` (Baileys
     // emits single-field patches, e.g. `{ pinned }` alone) would reset the columns it omits. On a cache
     // miss the persisted row is that base: the read path warms lazily, but the write path upserts every
@@ -305,13 +348,15 @@ export class ChatStateStoreService implements ChatStateStore, OnModuleInit {
       try {
         row = await this.repo.findOne({ where: { sessionId, chatId } });
       } catch {
+        if (this.cleared(sessionId, generation)) return false;
         // Persisted but not indexed, so the session's cache no longer holds all of its rows.
-        this.writeSeq++;
+        this.bumpWriteSeq(sessionId);
         this.completeSessions.delete(sessionId);
         const ok = await this.persistBlind(sessionId, chatId, patch, !restatesDefaults);
         this.absent.delete(k);
         return ok;
       }
+      if (this.cleared(sessionId, generation)) return false;
       if (!row && restatesDefaults) {
         this.markAbsent(k);
         return true;
@@ -334,7 +379,7 @@ export class ChatStateStoreService implements ChatStateStore, OnModuleInit {
     }
     const at = new Date();
     next.updatedAt = at.getTime();
-    this.writeSeq++;
+    this.bumpWriteSeq(sessionId);
     this.index(k, next);
     return this.persist(sessionId, chatId, next, at);
   }
@@ -391,7 +436,15 @@ export class ChatStateStoreService implements ChatStateStore, OnModuleInit {
     }
   }
 
+  /**
+   * Fences the session's writes first: one queued before the unlink skips its write, and the delete
+   * waits for any already writing, so none can land after it and hand the old account's chat to the
+   * next one.
+   */
   async clearSession(sessionId: string): Promise<void> {
+    const writes = this.writesOf(sessionId);
+    writes.generation++;
+    await Promise.allSettled([...writes.pending]);
     await this.repo.delete({ sessionId });
     // Evicted after the delete, so a read-through that raced it cannot leave a deleted row cached.
     const prefix = `${sessionId}${SEP}`;
@@ -400,24 +453,28 @@ export class ChatStateStoreService implements ChatStateStore, OnModuleInit {
     }
   }
 
-  /** Queued behind each chat's pending writes, so a patch still in flight cannot re-create the row. */
+  /**
+   * Queued behind each chat's pending writes, so a patch still in flight cannot re-create the row. The
+   * cache drops the chat at once and knows it absent, so a listing in the meantime neither shows it nor
+   * warms it back from the table; the drop repeats after the delete for a patch queued ahead of it.
+   */
   async forget(sessionId: string, chatIds: string[]): Promise<void> {
     await Promise.all(
       chatIds.map(chatId => {
         const k = this.key(sessionId, chatId);
-        return new Promise<void>(resolve =>
-          this.writes.enqueue(k, async () => {
-            try {
-              await this.repo.delete({ sessionId, chatId });
-            } catch (err) {
-              this.logger.warn(
-                `Failed to forget chat state for ${chatId}: ${err instanceof Error ? err.message : String(err)}`,
-              );
-            }
-            this.states.delete(k);
-            resolve();
-          }),
-        );
+        this.states.delete(k);
+        this.markAbsent(k);
+        return this.enqueue(sessionId, k, async () => {
+          try {
+            await this.repo.delete({ sessionId, chatId });
+            this.markAbsent(k);
+          } catch (err) {
+            this.logger.warn(
+              `Failed to forget chat state for ${chatId}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+          this.states.delete(k);
+        });
       }),
     );
   }
@@ -432,7 +489,9 @@ export class ChatStateStoreService implements ChatStateStore, OnModuleInit {
    */
   async refreshSession(sessionId: string): Promise<void> {
     const prefix = `${sessionId}${SEP}`;
-    const seq = this.writeSeq;
+    const writes = this.writesOf(sessionId);
+    const seq = writes.seq;
+    const idle = writes.pending.size === 0;
     this.completeSessions.delete(sessionId);
     let rows: ChatState[] | undefined;
     try {
@@ -458,16 +517,20 @@ export class ChatStateStoreService implements ChatStateStore, OnModuleInit {
       this.index(this.key(sessionId, row.chatId), fromRow(row));
     }
     // Marked after the loop: indexing these rows can evict other sessions' keys, never this one's.
-    if (this.loadWasWhole(rows.length, seq)) this.completeSessions.add(sessionId);
+    // Only this session's writes can leave its keys out of the load, so another session's do not count.
+    if (this.loadWasWhole(rows.length, idle && writes.seq === seq && writes.pending.size === 0)) {
+      this.completeSessions.add(sessionId);
+    }
   }
 
   /**
-   * True when a load holds every row it asked for and no write ran meanwhile. A write in flight during
-   * the read may be missing from `rows` while its key was just dropped from the cache, so the session
-   * cannot be vouched for; skipping the mark only keeps the read-through path.
+   * True when a load holds every row it asked for and no write was in flight from the start of its read
+   * to the end (`quiet`). A write in flight during the read may be missing from `rows` while its key was
+   * just dropped from the cache, even one that finished before the read did, so the session cannot be
+   * vouched for; skipping the mark only keeps the read-through path.
    */
-  private loadWasWhole(count: number, seq: number): boolean {
-    return (this.maxEntries === 0 || count < this.maxEntries) && this.writeSeq === seq && this.writes.size === 0;
+  private loadWasWhole(count: number, quiet: boolean): boolean {
+    return quiet && (this.maxEntries === 0 || count < this.maxEntries);
   }
 
   /** Warm a cache miss from the table. This lookup still returns undefined (the read cannot await); the next hits. */

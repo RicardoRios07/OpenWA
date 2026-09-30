@@ -47,6 +47,7 @@ export class StatsController {
     description: 'Per-session statistics for the requested session.',
     type: SessionStatsResponseDto,
   })
+  @ApiResponse({ status: 404, description: 'Session not found' })
   async getSessionStats(@Param('sessionId') sessionId: string) {
     return this.statsService.getSessionStats(sessionId);
   }

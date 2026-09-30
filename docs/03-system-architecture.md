@@ -187,9 +187,11 @@ normalizes like any other lid. Baileys makes the same fold itself on every inbou
 The shared implementation lives in `src/engine/identity/wa-id.ts` (`parseWaId` / `toNeutralJid`); the
 contract is documented on the `IWhatsAppEngine` interface.
 
-> **Rollout status:** the contract is applied per-engine. It currently covers the **Baileys inbound
-> read path** (message / revoked / reaction payloads). Outbound id de-normalization (neutral -> engine
-> dialect on send) and contact/chat list ids are tracked follow-ups.
+> **Rollout status:** the contract is applied per-engine. On Baileys it covers **inbound event
+> payloads** (message / revoked / reaction, group, call and presence events), the ids returned by the
+> contact, chat and blocklist listings and by the number check, and **outbound ids**: sends, message
+> actions and contact / group-participant writes fold a neutral id back to the engine dialect with
+> `toEngineJid` (`baileys-session-store.ts`).
 
 ### Engine Lifecycle State Machine
 
@@ -390,8 +392,8 @@ flowchart TB
 Trimmed to the load-bearing directories — `src/modules/` holds 31 feature modules. Only `*.module.ts`
 is common to all of them; the rest of the shape varies. Most pair a `*.controller.ts` with a
 `*.service.ts`, but `events/` is a WebSocket gateway, `mcp/` an MCP server and `queue/` pure BullMQ
-wiring (none of the three has either); `docker/` and `status-store/` are service-only; `health/` and
-`settings/` are controller-only (`infra/` gained `infra-data.service.ts`); and 9 modules own an `entities/` directory:
+wiring (none of the three has either); `docker/`, `status-store/`, `chat-media/` and `takeover/` are
+service-only; `health/` and `settings/` are controller-only (`infra/` gained `infra-data.service.ts`); and 9 modules own an `entities/` directory:
 
 ```
 src/
@@ -482,6 +484,7 @@ classDiagram
         AUTHENTICATING
         READY
         DISCONNECTED
+        ACTION_REQUIRED
         FAILED
     }
 
@@ -505,16 +508,14 @@ classDiagram
 flowchart TB
     subgraph Outbound["Outbound Message Flow"]
         A1[API Request] --> V1[Validate]
-        V1 --> Q1[Queue Job]
-        Q1 --> P1[Process]
-        P1 --> E1[Engine Send]
+        V1 --> E1[Engine Send]
         E1 --> R1[Response]
     end
 
     subgraph Inbound["Inbound Message Flow"]
         E2[Engine Event] --> P2[Process]
         P2 --> S2[Store]
-        S2 --> W2[Webhook Queue]
+        S2 --> W2[Webhook Dispatch]
         W2 --> D2[Deliver]
     end
 ```
@@ -545,25 +546,30 @@ classDiagram
 
     class WebhookPayload {
         +event: EventType
-        +timestamp: Date
+        +timestamp: string
         +sessionId: string
-        +data: any
-        +signature: string
+        +idempotencyKey: string
+        +deliveryId: string
+        +data: object
     }
 
     class EventType {
         <<enumeration>>
-        MESSAGE_RECEIVED
-        MESSAGE_SENT
-        MESSAGE_ACK
-        SESSION_STATUS
-        QR_CODE
+        message.received
+        message.sent
+        message.ack
+        session.status
+        session.qr
     }
 
     WebhookManager --> Webhook
     WebhookManager --> WebhookPayload
     Webhook --> EventType
 ```
+
+`timestamp` is an ISO 8601 string. The body carries no signature: when the webhook has a secret, the
+HMAC travels in the `X-OpenWA-Signature: sha256=<hex>` header. `EventType` shows a few of the dotted
+event names; `WEBHOOK_EVENTS` in `src/modules/webhook/dto/webhook.dto.ts` is the full list.
 
 ## 3.6 Data Flow Diagrams
 
@@ -583,14 +589,14 @@ flowchart LR
 
     subgraph Processing["3. Processing"]
         E --> F[Get Session]
-        F --> G{Session Ready?}
+        F --> G{Engine loaded?}
         G -->|No| H[400 Error]
-        G -->|Yes| I[Queue Job]
+        G -->|Yes| G2{Engine ready?}
+        G2 -->|No| H2[409 Error]
+        G2 -->|Yes| K[Engine]
     end
 
     subgraph Execution["4. Execution"]
-        I --> J[Worker]
-        J --> K[Engine]
         K --> L[WhatsApp]
     end
 
@@ -606,12 +612,14 @@ flowchart LR
 ```mermaid
 flowchart TB
     A[Event Triggered] --> B[Create Payload]
-    B --> C[Sign Payload]
-    C --> D[Queue Delivery Job]
-    D --> E[Worker Process]
+    B --> Q{QUEUE_ENABLED?}
+    Q -->|No, default| D1[Direct in-process delivery]
+    Q -->|Yes| D2[BullMQ delivery job]
+    D1 --> E[Sign & POST]
+    D2 --> E
     E --> F{Deliver}
     F -->|Success| G[Mark Delivered]
-    F -->|Failed| H{Retry < 3?}
+    F -->|Failed| H{Attempts < webhook.retryCount?}
     H -->|Yes| I[Delay & Retry]
     I --> E
     H -->|No| J[Mark Failed]
@@ -710,13 +718,13 @@ Errors use the NestJS default shape.
 {
   "id": "abc",
   "name": "my-session",
-  "status": "READY"
+  "status": "ready"
 }
 
 // List Response — a bare array
 [
-  { "id": "abc", "name": "my-session", "status": "READY" },
-  { "id": "def", "name": "other-session", "status": "DISCONNECTED" }
+  { "id": "abc", "name": "my-session", "status": "ready" },
+  { "id": "def", "name": "other-session", "status": "disconnected" }
 ]
 
 // Error Response — NestJS default shape
@@ -785,11 +793,12 @@ flowchart TB
 
 ## 3.11 Scalability Considerations
 
-> **Future design, not the shipped topology.** Live engines are held in an in-process `Map` in
-> `SessionService`, so a session can only be driven by the instance that started it — there is no
-> session registry, node claim, or affinity router in the codebase. OpenWA runs as one API instance
-> per session-data volume; the two sketches below are retained for planning. See the single-instance
-> note in §3.2 and [13 - Horizontal Scaling](13-horizontal-scaling.md).
+> **Partially implemented; still deploy `replicas: 1`.** Live engines are held in an in-process `Map`
+> in `EngineRegistry`. Each session carries an owner lease (`nodeId`, `nodeUrl`, `leaseExpiresAt`)
+> claimed by `SessionOwnershipService`, a takeover sweep adopts sessions whose lease lapsed, and when
+> `NODE_URL` is set `SessionProxyInterceptor` forwards session-scoped requests to the owner node.
+> OpenWA still runs as one API instance per session-data volume; the two sketches below are retained
+> for planning. See the single-instance note in §3.2 and [13 - Horizontal Scaling](13-horizontal-scaling.md).
 
 ### Horizontal Scaling Strategy (sketch)
 
@@ -914,9 +923,15 @@ export interface EngineEventCallbacks {
   onCall?: (event: IncomingCallEvent) => void; // incoming call ringing; Baileys can rejectCall() while it rings
   onHistoryMessages?: (messages: IncomingMessage[]) => void; // bulk initial sync; persist, don't dispatch
   onDisconnected?: (reason: string) => void; // recoverable -> reconnect
+  onReconnecting?: (attempt: number, nextDelayMs: number) => void; // engines that retry internally (Baileys)
   onStateChanged?: (state: EngineStatus) => void;
   onActionRequired?: (reason: string) => void; // engine alive, but an operator must act
+  onAccountRestriction?: (restriction: AccountRestriction | null) => void; // null = restriction lifted
+  onPresenceUpdate?: (event: PresenceUpdateEvent) => void; // chats this session subscribed to
+  onCallOutcome?: (event: CallOutcomeEvent) => void; // a ringing call was answered, declined or missed
   onError?: (reason: string) => void; // terminal init/auth failure
+  onCredentialTeardownStarted?: (operation: Promise<void>) => void; // auth-dir removal began; host fences on it
+  claimStuckAuthRecovery?: () => boolean; // one credential reset per reconnect episode
 }
 
 export interface IWhatsAppEngine {
@@ -955,15 +970,17 @@ The factory resolves the engine through the **plugin loader**, not a hard-coded 
 configured engine (`engine.type`, default `'whatsapp-web.js'`) is read once in the constructor; the
 built-in `whatsapp-web.js` and `baileys` plugins are registered and the configured one is enabled in
 `onModuleInit()`. `create()` takes an **options object** (engine-neutral per-call config —
-`sessionId` / `dbSessionId` / `proxyUrl` / `proxyType`), not a `type` argument. The two ids carry the
-same value: `sessionId` is the session **UUID** (`Session.id`), which is the on-disk auth-directory key
-since 0.23.5, and `dbSessionId` is that UUID under the name FK-bound stores such as
-`baileys_stored_messages` read. An out-of-tree engine plugin that keys its own storage by `sessionId`
-has to re-key it on upgrade: `SessionAuthDirMigration` renames the two built-in shapes only. There is
-no `EngineType` union and no `switch`. If the configured engine's plugin is not registered,
-`create()` throws `Engine '<type>' is not registered`; there is no direct-adapter fallback, so the
-session fails loudly at start instead of running some other engine. (A typo in `ENGINE_TYPE` is
-rejected at boot by `validateEnv`, which whitelists `whatsapp-web.js` | `baileys`.)
+`sessionId` / `dbSessionId` / `proxyUrl` / `proxyType`), not a `type` argument; when it calls the
+plugin's `createEngine()` it adds the `sessionDataPath` / `authDir` bases from config, since the factory
+hardens and purges the credential dirs under them. The two ids carry the same value: `sessionId` is the
+session **UUID** (`Session.id`), which is the on-disk auth-directory key since 0.23.5, and `dbSessionId`
+is that UUID under the name FK-bound stores such as `baileys_stored_messages` read. An out-of-tree
+engine plugin that keys its own storage by `sessionId` has to re-key it on upgrade:
+`SessionAuthDirMigration` renames the two built-in shapes only. There is no `EngineType` union and no
+`switch`. If the configured engine's plugin is not registered, `create()` throws
+`Engine '<type>' is not registered`; there is no direct-adapter fallback, so the session fails loudly
+at start instead of running some other engine. (A typo in `ENGINE_TYPE` is rejected at boot by
+`validateEnv`, which whitelists `whatsapp-web.js` | `baileys`.)
 
 ```typescript
 // engine/engine.factory.ts
@@ -1003,12 +1020,14 @@ export class EngineFactory implements OnModuleInit {
 
     if (enginePlugin?.instance && this.isEnginePlugin(enginePlugin.instance)) {
       // Engine-specific config (e.g. Puppeteer) was handed to the plugin as an opaque blob at
-      // registration, so the factory passes only engine-neutral per-call options here.
+      // registration; per-call options are engine-neutral plus the auth-dir bases the factory manages.
       return enginePlugin.instance.createEngine({
         sessionId: options.sessionId,
         dbSessionId: options.dbSessionId,
         proxyUrl: options.proxyUrl,
         proxyType: options.proxyType,
+        sessionDataPath: this.sessionDataPath(),
+        authDir: this.baileysAuthBase(),
       }) as IWhatsAppEngine;
     }
 
@@ -1192,7 +1211,7 @@ flowchart TB
 
     subgraph Migration["Migration Path"]
         C[Update engine library]
-        D[Switch to Baileys]
+        D[Switch ENGINE_TYPE to the other engine]
         E[Track upstream fix\nOperators use fallback channel]
     end
 
@@ -1202,7 +1221,7 @@ flowchart TB
 
     A --> B
     B -->|Minor| C --> F
-    B -->|Major wwebjs| D --> F
+    B -->|Major one engine| D --> F
     B -->|Major Both| E --> C
 ```
 
@@ -1375,7 +1394,7 @@ Database wiring lives inline in `AppModule` (`src/app.module.ts`) as two named
 // shape of the 'data' connection useFactory in src/app.module.ts
 const dbType = configService.get<'sqlite' | 'postgres'>('dataDatabase.type', 'sqlite');
 const baseConfig = {
-  entities: [/* session, webhook, message, template, engine, integration, status-store globs */],
+  entities: [/* session, webhook, message, template, engine, integration, status-store, automation globs */],
   migrations: [__dirname + '/database/migrations/*{.ts,.js}'],
   logging: configService.get<boolean>('dataDatabase.logging', false),
 };
@@ -1412,9 +1431,10 @@ return {
 
 > **Note:** OpenWA does not currently apply SQLite-specific concurrency hardening. There is **no**
 > `journal_mode = WAL` PRAGMA, no `SqliteWriteQueueService`, and no application-level write
-> serialization or session cap in the source. SQLite is used with TypeORM's defaults, so its standard
+> serialization in the source. SQLite is used with TypeORM's defaults, so its standard
 > single-writer behavior applies. For high write-concurrency or multi-session deployments, use
-> PostgreSQL (`DATABASE_TYPE=postgres`). Cross-dialect schema differences are handled at migration
+> PostgreSQL (`DATABASE_TYPE=postgres`). `MAX_CONCURRENT_SESSIONS` (default `0`, unlimited) caps
+> concurrent sessions on any database. Cross-dialect schema differences are handled at migration
 > time (see below), not by a runtime optimizations layer.
 
 #### Migration Strategy
@@ -1448,8 +1468,9 @@ There is **no** cache-manager / `CacheModuleOptions` / `redisStore` setup and **
 `REDIS_ENABLED` (falling back to the `cache.enabled` config flag). When caching is disabled — or Redis
 is unreachable — the service **fails open**: every read returns `null` and every write is a silent
 no-op, so the app keeps serving from its source of truth. In other words, "no cache configured" means
-**no cache** (recompute), not an in-process LRU. Cache is therefore a pure optimization layer (session
-status/info/QR/list/stats, each with its own short TTL); it is never the source of truth.
+**no cache** (recompute), not an in-process LRU. Cache is never the source of truth, and today no
+request path reads from it: the only consumers are the infra status probe (`isAvailable`) and a
+sessions-stats snapshot that `StatsService` writes and nothing reads back.
 
 ```typescript
 // src/common/cache/cache.service.ts

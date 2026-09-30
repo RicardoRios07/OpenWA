@@ -71,6 +71,16 @@ export class RedisIoAdapter extends IoAdapter {
       ] as const) {
         client.on('error', err => logger.warn(`Redis ${name} client error: ${err.message}`));
       }
+      // The adapter fires publish() on every broadcast and drops the promise. During an outage ioredis
+      // queues those commands and, each time its retries run out, rejects the whole queue, so every
+      // event emitted meanwhile surfaced as an unhandled rejection. The 'error' listener above already
+      // reports the outage once; a lost fan-out frame is only worth a debug line.
+      const publish = pubClient.publish.bind(pubClient);
+      pubClient.publish = (channel: string, message: string | Buffer) =>
+        publish(channel, message).catch((err: Error) => {
+          logger.debug(`Redis publish dropped: ${err.message}`);
+          return 0;
+        });
       this.pubClient = pubClient;
       this.subClient = subClient;
       server.adapter(createAdapter(pubClient, subClient));

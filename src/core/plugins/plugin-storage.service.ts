@@ -380,13 +380,17 @@ export class PluginStorageService {
         try {
           const files = fs.readdirSync(pluginDataDir);
           // A legacy stem is listed only when get()/delete() would consult it, so the package's own
-          // manifest.json/package.json never surface as keys that read back null.
+          // manifest.json/package.json never surface as keys that read back null. In a package directory
+          // (storage and the installed package share it by default) every other root JSON file is package
+          // content too, so only encoded keys are listed there; get()/delete() still honor a legacy key
+          // the plugin names explicitly.
+          const isPackageDir = files.includes('manifest.json');
           let keys = Array.from(
             new Set(
               files
                 .filter(f => f.endsWith('.json'))
                 .map(f => f.slice(0, -'.json'.length))
-                .map(stem => decodeStorageFileName(stem) ?? (resolveLegacyKeyPath(stem) ? stem : null))
+                .map(stem => decodeStorageFileName(stem) ?? (!isPackageDir && resolveLegacyKeyPath(stem) ? stem : null))
                 .filter((k): k is string => k !== null),
             ),
           );

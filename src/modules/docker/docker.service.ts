@@ -458,7 +458,7 @@ export class DockerService implements OnModuleInit {
     const profile = serviceToProfile[service] || service;
 
     if (!container) {
-      // Container doesn't exist - create it using docker-compose
+      // Container doesn't exist - create it from the managed spec
       this.logger.log(`Container for service '${service}' not found, creating...`);
       return this.createService(profile);
     }
@@ -595,9 +595,9 @@ export class DockerService implements OnModuleInit {
         if (started) {
           result.containersStarted.push(profile);
         } else {
-          // Container might not exist yet - this is expected for first-time setup
+          // startService creates a missing container, so false means the pull, create or start failed.
           result.errors.push(
-            `Service '${profile}' container not found. It may need to be created first with docker-compose.`,
+            `Failed to create or start the '${profile}' container; see the server log for the Docker error.`,
           );
         }
       } catch (error) {

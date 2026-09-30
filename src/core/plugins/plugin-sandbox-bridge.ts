@@ -321,19 +321,14 @@ export class PluginSandboxBridge {
 
     const onHookSubscribe = this.buildHookSubscribeHandler(pluginId, plugin);
 
-    // When the worker claims an ingress route, record it against the manifest-declared routes so the
-    // host knows which routes this worker will handle. Same hardening as onHookSubscribe (the wire
-    // `route` is an arbitrary untrusted string): drop when the manifest lacks 'webhook:ingress', drop
-    // an undeclared route (warn once), dedup, and cap. subscribedRoutes is local to this enable call,
-    // so it is dropped on disable exactly as subscribedEvents is.
-    const subscribedRoutes = new Set<string>();
-    const declaredRoutes = new Set((plugin.manifest.ingress ?? []).map(r => r.route));
+    // When the worker claims an ingress route, check the claim against the manifest-declared routes
+    // and log an undeclared one (warn once). Same hardening as onHookSubscribe (the wire `route` is an
+    // arbitrary untrusted string). Nothing is recorded: dispatch never consults the claim, and the
+    // worker answers 404 for a route it never registered.
     const onWebhookSubscribe = makeOnWebhookSubscribe({
       pluginId,
-      declaredRoutes,
+      declaredRoutes: new Set((plugin.manifest.ingress ?? []).map(r => r.route)),
       hasPermission: (plugin.manifest.permissions ?? []).includes(PluginCapabilityPermission.WEBHOOK_INGRESS),
-      subscribed: subscribedRoutes,
-      maxRoutes: declaredRoutes.size,
       warn: (message, meta) => this.logger.warn(message, meta),
     });
 
@@ -585,8 +580,11 @@ export class PluginSandboxBridge {
         typeof message === 'string' && message.length > SANDBOX_LOG_MAX_MESSAGE_LENGTH
           ? `${message.slice(0, SANDBOX_LOG_MAX_MESSAGE_LENGTH)}…[truncated]`
           : message;
+      // The level comes off the wire unchecked (plugin code can post to parentPort directly), and the
+      // plugin logger has no method for anything outside PluginLogLevel.
       if (level === 'error') context.logger.error(bounded, undefined, meta);
-      else context.logger[level](bounded, meta);
+      else if (level === 'debug' || level === 'warn') context.logger[level](bounded, meta);
+      else context.logger.log(bounded, meta);
     };
   }
 

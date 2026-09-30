@@ -443,6 +443,52 @@ describe('WhatsAppWebJsAdapter initialize() retry on a navigation-killed first i
   });
 });
 
+// A stored proxy that bypassed DTO validation used to be dropped with a warning, so Chromium
+// launched and the session egressed from the host's own address. It must fail like Baileys (#859).
+describe('WhatsAppWebJsAdapter initialize() with an unusable stored proxy', () => {
+  let rmSpy: jest.SpyInstance;
+  let clientInitSpy: jest.SpyInstance;
+  let savedWebVersion: string | undefined;
+
+  beforeEach(() => {
+    savedWebVersion = process.env.WWEBJS_WEB_VERSION;
+    process.env.WWEBJS_WEB_VERSION = 'off';
+    rmSpy = jest.spyOn(fs.promises, 'rm').mockResolvedValue(undefined);
+    clientInitSpy = jest
+      .spyOn(Client.prototype as unknown as { initialize: () => Promise<void> }, 'initialize')
+      .mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    rmSpy.mockRestore();
+    clientInitSpy.mockRestore();
+    if (savedWebVersion === undefined) {
+      delete process.env.WWEBJS_WEB_VERSION;
+    } else {
+      process.env.WWEBJS_WEB_VERSION = savedWebVersion;
+    }
+  });
+
+  it.each([
+    ['proxy.example.com:8080', /not a supported http\(s\)\/socks4\/socks5 URL/],
+    ['http://u:p%zz@h:1', /malformed percent-encoded credentials/],
+  ])('fails the session without launching for %s', async (url, reason) => {
+    const adapter = new WhatsAppWebJsAdapter({
+      sessionId: 'sess-bad-proxy',
+      sessionDataPath: './data/sessions',
+      puppeteer: {},
+      proxy: { url, type: 'http' },
+    });
+    const onError = jest.fn();
+
+    await expect(adapter.initialize({ onError })).rejects.toThrow(reason);
+
+    expect(adapter.getStatus()).toBe(EngineStatus.FAILED);
+    expect(onError).toHaveBeenCalledWith(expect.stringMatching(reason));
+    expect(clientInitSpy).not.toHaveBeenCalled();
+  });
+});
+
 describe('buildProxyLaunchConfig (#628 — proxy credentials must not go into --proxy-server)', () => {
   it('strips credentials from an HTTP proxy and returns them as proxyAuthentication', () => {
     expect(buildProxyLaunchConfig('http://user:pass@proxy.example.com:8080')).toEqual({

@@ -42,9 +42,8 @@ describe('StatsService time-series + hourly activity on SQLite (end-to-end regre
       synchronize: true,
     });
     await ds.initialize();
-    const cache = { setSessionsStats: jest.fn() };
     const config = { get: () => 30000 };
-    service = new StatsService(ds.getRepository(Session), ds.getRepository(Message), cache as never, config as never);
+    service = new StatsService(ds.getRepository(Session), ds.getRepository(Message), config as never);
   });
 
   afterEach(async () => {
@@ -310,12 +309,7 @@ describe('StatsService aggregate memo (in-process TTL)', () => {
   });
 
   const makeService = (ttlMs: number) =>
-    new StatsService(
-      ds.getRepository(Session),
-      ds.getRepository(Message),
-      { setSessionsStats: jest.fn() } as never,
-      { get: () => ttlMs } as never,
-    );
+    new StatsService(ds.getRepository(Session), ds.getRepository(Message), { get: () => ttlMs } as never);
 
   it('serves a repeated identical call from the memo within the TTL (no second DB hit)', async () => {
     const service = makeService(30000);

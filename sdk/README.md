@@ -39,7 +39,7 @@ All five SDKs expose the same fluent resource surface:
 | `templates` | list, get, create, update, delete                                                                                                                                                                                                                                                          |
 | `profile`   | setProfileName, setProfileStatus, setProfilePicture, deleteProfilePicture _(OPERATOR)_                                                                                                                                                                                                     |
 | `calls`     | rejectCall, createLink _(OPERATOR)_                                                                                                                                                                                                                                                        |
-| `media`     | conversionStatus, convertVoice, convertVideo _(OPERATOR)_                                                                                                                                                                                                                                  |
+| `media`     | conversionStatus, convertVoice _(OPERATOR)_, convertVideo _(OPERATOR)_                                                                                                                                                                                                                     |
 | `health`    | check, live, ready                                                                                                                                                                                                                                                                         |
 
 The table describes `main`. The 0.5.0 registry builds do not include
@@ -55,6 +55,13 @@ Nor is the Java fallback to `UNKNOWN`: 0.5.0 decodes a response enum value it
 does not recognise to `null` (`MessageType` and `ChatKind` included), and
 `SessionStatus`, `DeliveryStatus` and the other response enums that lack an
 `unknown` wire value have no `UNKNOWN` constant there.
+The refusal of an empty, `.` or `..` id (and, in the JavaScript, Go and Java
+raw-request methods, of a `.` or `..` path segment) and the PHP
+`sessions->create()` fix that sends an empty `config` as `{}` are not in 0.5.0
+either; they ship with the next SDK release.
+Nor is the `name` filter on `sessions.list` (`ListSessionsQuery.Name` in Go,
+the `name` field of `ListSessionsQuery` in Java, JavaScript and Python); it
+ships with the next SDK release.
 
 > ⚠️ Endpoints requiring an `OPERATOR`-level API key are noted in the inline
 > docs. Deliberately **not** exposed, matching `docs/18-sdk-design.md` exactly:
@@ -97,6 +104,8 @@ const client = new OpenWAClient({
 
 const session = await client.sessions.create({ name: 'my-session' });
 await client.sessions.start(session.id);
+// Link the account before sending: scan sessions.getQrCode or use sessions.requestPairingCode,
+// then wait for status 'ready'. An unlinked session answers the send with 409.
 const result = await client.messages.sendText(session.id, {
   chatId: '628123456789@c.us',
   text: 'Hello from the OpenWA SDK!',
@@ -136,6 +145,8 @@ client = OpenWAClient(
 
 session = client.sessions.create({"name": "my-session"})
 client.sessions.start(session["id"])
+# Link the account before sending: scan sessions.get_qr_code or use sessions.request_pairing_code,
+# then wait for status "ready". An unlinked session answers the send with 409.
 result = client.messages.send_text(session["id"], {
     "chatId": "628123456789@c.us",
     "text": "Hello from the OpenWA Python SDK!",
@@ -163,6 +174,8 @@ $client = new Client([
 
 $session = $client->sessions->create(['name' => 'my-session']);
 $client->sessions->start($session['id']);
+// Link the account before sending: scan sessions->getQrCode or use sessions->requestPairingCode,
+// then wait for status 'ready'. An unlinked session answers the send with 409.
 $result = $client->messages->sendText($session['id'], [
     'chatId' => '628123456789@c.us',
     'text'   => 'Hello from the OpenWA PHP SDK!',
@@ -194,6 +207,8 @@ OpenWAClient client = new OpenWAClient("http://localhost:2785", "owa_k1_…");
 
 SessionResponse session = client.sessions.create(CreateSessionRequest.builder().name("my-session").build());
 client.sessions.start(session.id());
+// Link the account before sending: scan sessions.getQrCode or use sessions.requestPairingCode,
+// then wait for status READY. An unlinked session answers the send with 409.
 MessageResponse result = client.messages.sendText(session.id(),
     SendTextRequest.builder()
         .chatId("628123456789@c.us")
@@ -232,11 +247,18 @@ session, err := client.Sessions.Create(ctx, openwa.CreateSessionRequest{Name: "m
 if err != nil {
     log.Fatal(err)
 }
-client.Sessions.Start(ctx, session.ID)
+if _, err := client.Sessions.Start(ctx, session.ID); err != nil {
+    log.Fatal(err)
+}
+// Link the account before sending: scan Sessions.QRCode or use Sessions.RequestPairingCode,
+// then wait for status "ready". An unlinked session answers the send with 409.
 res, err := client.Messages.SendText(ctx, session.ID, openwa.SendTextRequest{
     ChatID: "628123456789@c.us",
     Text:   "Hello from the OpenWA Go SDK!",
 })
+if err != nil {
+    log.Fatal(err)
+}
 fmt.Println(res.MessageID)
 ```
 

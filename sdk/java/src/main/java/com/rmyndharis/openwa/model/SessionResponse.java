@@ -11,7 +11,11 @@ public record SessionResponse(
     String lastActive,
     String createdAt,
     String updatedAt,
-    /** Present when {@code status == FAILED} or {@code status == ACTION_REQUIRED}. */
+    /**
+     * Human-readable reason while {@code status} is {@code FAILED} or {@code ACTION_REQUIRED}, or
+     * {@code INITIALIZING} during a prolonged automatic reconnect (fifth attempt onward, or while a
+     * failed relaunch waits to retry); {@code null} otherwise.
+     */
     String lastError,
     /**
      * A limit WhatsApp itself has placed on the account, or {@code null} when there is none.
