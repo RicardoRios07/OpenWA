@@ -9,7 +9,8 @@ import {
   ConnectedSocket,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { Logger, OnModuleDestroy } from '@nestjs/common';
+import { OnModuleDestroy } from '@nestjs/common';
+import { createLogger } from '../../common/services/logger.service';
 import { ConfigService } from '@nestjs/config';
 import { AuthService } from '../auth/auth.service';
 import { AuditService } from '../audit/audit.service';
@@ -117,7 +118,7 @@ export class EventsGateway implements OnGatewayInit, OnGatewayConnection, OnGate
   @WebSocketServer()
   server!: Server;
 
-  private logger = new Logger('EventsGateway');
+  private logger = createLogger('EventsGateway');
 
   /**
    * Active sockets keyed by their validating API-key id, so a key revoked/disabled
@@ -182,8 +183,8 @@ export class EventsGateway implements OnGatewayInit, OnGatewayConnection, OnGate
    * Re-validate the keys behind the live sockets against the database, once per tick.
    *
    * A socket carries the key snapshot taken at connect and never refreshes it, so every later change
-   * to the row is invisible to it: a key deleted, revoked, expired or narrowed by another node, by a
-   * direct database write, or by an operator change that committed in the window between this
+   * to the row is invisible to it: a key deleted, revoked, expired or narrowed by a direct write to
+   * this node's main database, or by an operator change that committed in the window between this
    * socket's validation and its registration here. The operator path still evicts synchronously in
    * the same request (see AuthService.update/revoke/delete); this is the backstop for the changes
    * that never reached this process.
@@ -532,7 +533,9 @@ export class EventsGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     }
 
     // The connect handshake refuses a chat-restricted key, but the key can gain allowedChats after
-    // connect (an update on another node), so the fresh key is held to the same rule here.
+    // connect (a direct write to this node's main database, or an operator update that committed
+    // between this socket's validation and its registration), so the fresh key is held to the same
+    // rule here.
     if ((subscriberKey.allowedChats?.length ?? 0) > 0) {
       const refusal = this.createError(
         'UNAUTHORIZED',

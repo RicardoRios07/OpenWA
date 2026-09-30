@@ -24,6 +24,7 @@ import { buildVCard } from './vcard';
 import { EngineNotSupportedError } from '../../common/errors/engine-not-supported.error';
 import { RecipientUnreachableError } from '../../common/errors/recipient-unreachable.error';
 import { type WwebjsEngineHost, withPage } from './wwebjs-host';
+import { toCapturedPageError } from './wwebjs-lifecycle';
 
 /**
  * Map a whatsapp-web.js MessageAck integer to the neutral DeliveryStatus.
@@ -349,7 +350,7 @@ export class WwebjsMessaging {
         throw new MessageNotFoundError(quotedMessageId);
       }
       if (!chatId.endsWith('@c.us') || !isNoLidForUserError(err)) {
-        throw err;
+        throw toCapturedPageError(err);
       }
       this.resolvedSendIds.delete(chatId);
       const fresh = await this.resolveSendId(chatId);
@@ -378,7 +379,7 @@ export class WwebjsMessaging {
         if (isNoLidForUserError(retryErr)) {
           throw new RecipientUnreachableError(chatId);
         }
-        throw retryErr;
+        throw toCapturedPageError(retryErr);
       }
     }
   }
@@ -628,15 +629,16 @@ export class WwebjsMessaging {
       // it (and self-heal a stale mapping) via sendResolved. Capture the id actually sent to so the
       // id-recovery below reads back from the SAME (resolved) chat, not the raw @c.us (#583 R1).
       // The ids already in that chat are read first, on every attempt, so the recovery below can tell
-      // the forwarded copy from an earlier send with the same whole-second timestamp. A failed read
-      // never blocks the forward; it only leaves the copy unidentified.
+      // the forwarded copy from an earlier send with the same whole-second timestamp. Only messages
+      // WhatsApp Web already holds are read, so this never pages the chat's history in ahead of the
+      // send. A failed read never blocks the forward; it only leaves the copy unidentified.
       let resolvedTo = toChatId;
       let before = undefined as Set<string> | undefined;
       await this.sendResolved(toChatId, async to => {
         resolvedTo = to;
         before = undefined;
         try {
-          before = new Set((await this.recentOwnMessages(to)).map(m => toMessageResult(m).id));
+          before = new Set((await this.loadedOwnMessages(to)).map(m => toMessageResult(m).id));
         } catch (error) {
           this.host.logger.warn(`Could not read the destination chat before forwarding: ${String(error)}`);
         }
@@ -655,7 +657,7 @@ export class WwebjsMessaging {
       try {
         if (before) {
           const known = before;
-          const fresh = (await this.recentOwnMessages(resolvedTo)).filter(m => {
+          const fresh = (await this.loadedOwnMessages(resolvedTo)).filter(m => {
             const id = toMessageResult(m).id;
             return id !== '' && !known.has(id);
           });
@@ -678,10 +680,14 @@ export class WwebjsMessaging {
     }
   }
 
-  /** The last few messages this account sent to a chat, in the order whatsapp-web.js returns them. */
-  private async recentOwnMessages(chatId: string): Promise<Message[]> {
+  /**
+   * The messages this account sent to a chat that WhatsApp Web already holds, forwarded copy included
+   * once the send returns. No `limit`: with one, whatsapp-web.js loads earlier history until it has
+   * that many, which in a chat this account rarely writes to walks the whole history.
+   */
+  private async loadedOwnMessages(chatId: string): Promise<Message[]> {
     const chat = await this.client().getChatById(chatId);
-    return (await chat?.fetchMessages({ limit: 5, fromMe: true })) ?? [];
+    return (await chat?.fetchMessages({ fromMe: true })) ?? [];
   }
 
   async reactToMessage(chatId: string, messageId: string, emoji: string): Promise<void> {
@@ -703,7 +709,7 @@ export class WwebjsMessaging {
       }
       await (message as MessageWithReactions).react(emoji);
     });
-    this.host.logger.log(`Reacted to message ${messageId} with ${emoji || '(removed)'}`);
+    this.host.logger.debug('Reacted to message', { messageId, emoji: emoji || '(removed)' });
   }
 
   async getMessageReactions(chatId: string, messageId: string): Promise<MessageReaction[]> {
@@ -881,7 +887,7 @@ export class WwebjsMessaging {
       }
       await message.delete(forEveryone);
     });
-    this.host.logger.log(`Deleted message ${messageId} from chat ${chatId} (forEveryone: ${forEveryone})`);
+    this.host.logger.debug('Deleted message', { chatId, messageId, forEveryone });
   }
 
   async editMessage(chatId: string, messageId: string, body: string, mentions?: string[]): Promise<MessageResult> {
@@ -913,7 +919,7 @@ export class WwebjsMessaging {
         `the edit of message ${messageId} was rejected — only the account's own text messages can be edited`,
       );
     }
-    this.host.logger.log(`Edited message ${messageId} in chat ${chatId}`);
+    this.host.logger.debug('Edited message', { chatId, messageId });
     return toMessageResult(edited);
   }
 
@@ -954,7 +960,7 @@ export class WwebjsMessaging {
       }
       throw error;
     }
-    this.host.logger.log(`Voted on poll ${pollMessageId} in chat ${chatId} (${options.length} option(s))`);
+    this.host.logger.debug('Voted on poll', { chatId, pollMessageId, options: options.length });
   }
 
   async pinMessage(chatId: string, messageId: string, durationSeconds: number): Promise<void> {
@@ -971,7 +977,7 @@ export class WwebjsMessaging {
         `the pin of message ${messageId} was rejected — in a group only admins may pin, and the duration must be 24h, 7d or 30d`,
       );
     }
-    this.host.logger.log(`Pinned message ${messageId} in chat ${chatId} for ${durationSeconds}s`);
+    this.host.logger.debug('Pinned message', { chatId, messageId, durationSeconds });
   }
 
   async starMessage(chatId: string, messageId: string, star: boolean): Promise<void> {
@@ -983,7 +989,7 @@ export class WwebjsMessaging {
       const message = await this.findInFetchWindow(chatId, messageId);
       await (star ? message.star() : message.unstar());
     });
-    this.host.logger.log(`${star ? 'Starred' : 'Unstarred'} message ${messageId} in chat ${chatId}`);
+    this.host.logger.debug(star ? 'Starred message' : 'Unstarred message', { chatId, messageId });
   }
 
   async unpinMessage(chatId: string, messageId: string): Promise<void> {
@@ -997,6 +1003,6 @@ export class WwebjsMessaging {
     if (!unpinned) {
       throw new EngineRefusedError(`the unpin of message ${messageId} was rejected — in a group only admins may unpin`);
     }
-    this.host.logger.log(`Unpinned message ${messageId} in chat ${chatId}`);
+    this.host.logger.debug('Unpinned message', { chatId, messageId });
   }
 }

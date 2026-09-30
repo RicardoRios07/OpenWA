@@ -7,6 +7,7 @@ import { isAddressableParticipant } from '../../engine/identity/wa-id';
 import { SetGroupPictureDto } from './dto/group.dto';
 import { paginate, ListOptions } from '../../common/utils/paginate';
 import { SendPacingService } from '../message/send-pacing.service';
+import { createLogger } from '../../common/services/logger.service';
 
 /**
  * Owns engine access for group operations. Controllers depend on this service instead of
@@ -15,6 +16,8 @@ import { SendPacingService } from '../message/send-pacing.service';
  */
 @Injectable()
 export class GroupService {
+  private readonly logger = createLogger('GroupService');
+
   constructor(
     private readonly engines: EngineRegistry,
     private readonly pacing: SendPacingService,
@@ -234,7 +237,9 @@ export class GroupService {
    * A failure on the FIRST applied field propagates unchanged (nothing was applied, so the patch
    * simply failed). A failure on a LATER field means the group is now in a mixed state, so the
    * error names the failed field and the ones already applied — the caller can reconcile instead
-   * of guessing which subset took effect. The wrapped error keeps the underlying HTTP status.
+   * of guessing which subset took effect. The wrapped error keeps the underlying HTTP status, and
+   * carries the underlying message only for an HTTP error; any other failure is logged here and
+   * reported as an internal error.
    */
   async updateGroupSettings(
     sessionId: string,
@@ -277,7 +282,16 @@ export class GroupService {
       } catch (error) {
         if (applied.length === 0) throw error;
         const status = error instanceof HttpException ? error.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
-        const detail = error instanceof Error ? error.message : String(error);
+        let detail = 'internal error';
+        if (error instanceof HttpException) {
+          detail = error.message;
+        } else {
+          this.logger.error(
+            'Group settings step failed after a partial apply',
+            error instanceof Error ? error.stack : String(error),
+            { sessionId, groupId, field, applied: applied.join(',') },
+          );
+        }
         throw new HttpException(
           `Group settings only partially applied: '${field}' failed (${detail}); already applied: ${applied.join(
             ', ',

@@ -4,7 +4,7 @@ import { EngineRegistry } from '../../engine/engine-registry.service';
 import { EngineNotSupportedError } from '../../common/errors/engine-not-supported.error';
 import { EngineRefusedError } from '../../common/errors/engine-refused.error';
 import type { SendPacingService } from '../message/send-pacing.service';
-import type { HookManager } from '../../core/hooks';
+import { HookManager } from '../../core/hooks';
 import type {
   IWhatsAppEngine,
   Catalog,
@@ -219,6 +219,17 @@ describe('CatalogService', () => {
       await expect(svc.sendProduct('s1', '628123@c.us', 'prod-404')).rejects.toBeInstanceOf(NotFoundException);
       await expect(svc.sendProduct('s1', '628123@c.us', 'prod-1')).rejects.toBeInstanceOf(EngineNotSupportedError);
       expect(pacing.recordSendFailure).not.toHaveBeenCalled();
+    });
+
+    // A JSON null body passes the DTO (IsOptional) and, with no plugin installed, the gate hands the
+    // caller's own envelope back. It must send like an absent body, not fail as a plugin's bad output.
+    it('sends a null body as no body when no plugin is installed', async () => {
+      const sendProduct = jest.fn().mockResolvedValue(sent);
+      const { svc } = makeService({ sendProduct }, undefined, new HookManager() as never);
+
+      await expect(svc.sendProduct('s1', '628123@c.us', 'prod-1', null as unknown as string)).resolves.toBe(sent);
+
+      expect(sendProduct).toHaveBeenCalledWith('628123@c.us', 'prod-1', undefined);
     });
   });
 });

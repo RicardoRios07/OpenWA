@@ -73,3 +73,21 @@ test('resolveSocketUrl keeps only the origin of a VITE_API_URL that carries a pa
   // A relative value is a path on the page's own host.
   assert.equal(resolveSocketUrl(undefined, '/gw', page), page);
 });
+
+test('resolveSocketUrl keeps only the origin of VITE_WS_URL', () => {
+  const page = 'https://dashboard.example.com';
+  const api = 'https://api.example.com';
+  // A trailing slash or a path would otherwise turn '/events' into an unknown namespace.
+  assert.equal(resolveSocketUrl('https://ws.example.com/', api, page), 'https://ws.example.com');
+  assert.equal(resolveSocketUrl('https://ws.example.com:8443/rt/', api, page), 'https://ws.example.com:8443');
+});
+
+test('resolveSocketUrl dials a scheme-less VITE_WS_URL on the page protocol, as socket.io did', () => {
+  const page = 'https://dashboard.example.com';
+  const api = 'https://api.example.com';
+  assert.equal(resolveSocketUrl('localhost:2785', api, page), 'https://localhost:2785');
+  assert.equal(resolveSocketUrl('ws.example.com:8443/', api, page), 'https://ws.example.com:8443');
+  assert.equal(resolveSocketUrl('ws.example.com', api, page), 'https://ws.example.com');
+  assert.equal(resolveSocketUrl('//ws.example.com/rt', api, page), 'https://ws.example.com');
+  assert.equal(resolveSocketUrl('localhost:2785', api, 'http://localhost:5173'), 'http://localhost:2785');
+});

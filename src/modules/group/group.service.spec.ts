@@ -314,6 +314,26 @@ describe('GroupService', () => {
       ).rejects.toBeInstanceOf(EngineRefusedError);
       expect(engine.setGroupMessagesAdminsOnly).not.toHaveBeenCalled();
     });
+
+    it.each([
+      ['an Error', new Error('Protocol error (Runtime.callFunctionOn): Target closed at /srv/app/page.js')],
+      ['a non-Error value', 'raw-engine-text'],
+    ])('reports a partial apply after %s as an internal error without its text', async (_label, raw) => {
+      const engine = {
+        setGroupEphemeral: jest.fn().mockResolvedValue(undefined),
+        setGroupMessagesAdminsOnly: jest.fn().mockRejectedValue(raw),
+      };
+      const svc = makeService(engine);
+      const error = await svc
+        .updateGroupSettings('s1', 'g1', { announce: true, ephemeralSeconds: 86400 })
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(HttpException);
+      const { message } = error as HttpException;
+      expect((error as HttpException).getStatus()).toBe(500);
+      expect(message).toContain("'announce' failed (internal error)");
+      expect(message).toContain('already applied: ephemeralSeconds');
+      expect(message).not.toMatch(/Protocol error|\/srv\/app|raw-engine-text/);
+    });
   });
 });
 

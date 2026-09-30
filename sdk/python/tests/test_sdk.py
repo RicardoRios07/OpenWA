@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import time
+
 import httpx
 import pytest
 
@@ -160,6 +163,50 @@ class TestClientCore:
         })
         with pytest.raises(OpenWANotFoundError):
             make_client(backend).sessions.get("missing")
+
+    def test_error_exposes_code_retry_after_and_headers(self):
+        from email.utils import formatdate
+
+        from openwa.errors import OpenWARateLimitError
+
+        def fail(status: int, body: object = None, headers: dict[str, str] | None = None, text: str = "") -> OpenWAApiError:
+            content = json.dumps(body).encode() if body is not None else text.encode()
+            transport = httpx.MockTransport(lambda _: httpx.Response(status, content=content, headers=headers))
+            client = OpenWAClient(base_url="https://x", api_key="k", transport=transport)
+            with pytest.raises(OpenWAApiError) as caught:
+                client.sessions.list()
+            return caught.value
+
+        throttled = fail(429, {"statusCode": 429, "message": "ThrottlerException: Too Many Requests"}, {"Retry-After": "7"})
+        assert isinstance(throttled, OpenWARateLimitError)
+        assert throttled.retry_after_seconds == 7
+        assert throttled.code is None
+        assert throttled.headers is not None and throttled.headers["retry-after"] == "7"
+
+        # Send pacing puts its wait in the body; a header must not shorten it.
+        pacing = {
+            "statusCode": 429,
+            "error": "Too Many Requests",
+            "message": "Daily send cap reached",
+            "code": "SEND_PACING_LIMITED",
+            "retryAfterSeconds": 34521,
+        }
+        for headers in (None, {"Retry-After": "1"}):
+            err = fail(429, pacing, headers)
+            assert err.code == "SEND_PACING_LIMITED"
+            assert err.retry_after_seconds == 34521
+
+        dated = fail(503, headers={"Retry-After": formatdate(time.time() + 2, usegmt=True)})
+        assert dated.retry_after_seconds is not None and 0 <= dated.retry_after_seconds <= 3
+        assert fail(503, headers={"Retry-After": "soon"}).retry_after_seconds is None
+        # An out-of-range date overflows inside the stdlib parser; it is still just unparseable.
+        for huge in ("Mon, 01 Jan 99999999999999999999 00:00:00 GMT", "Fri, 1 Jan 2100 00:00:00 +99999999999999999999"):
+            assert fail(503, headers={"Retry-After": huge}).retry_after_seconds is None
+
+        logout = fail(502, {"statusCode": 502, "message": "x", "code": "SESSION_LOGOUT_INCOMPLETE"})
+        assert logout.code == "SESSION_LOGOUT_INCOMPLETE"
+        plain = fail(500, text="oops")
+        assert plain.code is None and plain.retry_after_seconds is None
 
     def test_maps_503_to_service_unavailable(self):
         # The gateway answers 503 when the engine never confirmed an operation: a transport failure,

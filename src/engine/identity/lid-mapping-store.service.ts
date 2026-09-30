@@ -45,6 +45,10 @@ export interface LidMappingStore {
   resolveLid(jid: string): string | null;
   /** Sync reverse lookup: the lids currently mapped to this phone (used by the message from-filter). */
   lidsForPhone(phone: string): string[];
+  /** The phone the table holds for a lid JID, read from the database; null when none is stored. */
+  findPhoneForLid?(jid: string): Promise<string | null>;
+  /** The lids the table maps to these phone digits, read from the database. */
+  findLidsForPhone?(phone: string): Promise<string[]>;
   /** Write-through, last-write-wins: update the cache + persist. A `null` phone records a negative result. */
   remember(lid: string, phone: string | null, sessionId?: string): Promise<void>;
 }

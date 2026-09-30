@@ -58,7 +58,9 @@ export class CatalogService {
       this.hookManager,
       sessionId,
       'product',
-      { chatId, productId, body },
+      // The DTO lets a JSON null through as "no body". Normalised here, so the checks below only ever
+      // judge what a plugin handed back, never the caller's own input.
+      { chatId, productId, body: body ?? undefined },
       'CatalogService',
     );
     const gatedProductId: unknown = gated.productId;

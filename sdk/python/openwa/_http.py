@@ -138,5 +138,5 @@ class HttpExecutor:
         # rather than a success. Matches the JS transport's `!res.ok`.
         if res.status_code >= 300:
             context = f"{method} {path}"
-            raise OpenWAApiError.from_response(res.status_code, res.text, context)
+            raise OpenWAApiError.from_response(res.status_code, res.text, context, headers=res.headers)
         return res

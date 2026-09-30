@@ -154,9 +154,10 @@ export function useRestartFlow(): RestartFlow {
       if (typeof failure?.status === 'number') {
         stopCountdown();
         setRestartCountdown(0);
-        // A 504, or a 502 the gateway did not stamp with a code, came from a proxy that stopped waiting.
-        // The request may still be running (a first-time enable pulls an image before the restart), so
-        // this is neither a refusal nor something a readiness poll can settle: the old process answers.
+        // A 504, or a 502 the gateway did not stamp with a code, is a proxy answering in the gateway's place:
+        // a timeout, or an upstream connection that failed or dropped. The client cannot tell which, and the
+        // request may still be running (a first-time enable pulls an image before the restart), so this is
+        // neither a refusal nor something a readiness poll can settle: the old process answers.
         if (failure.status === 504 || (failure.status === 502 && failure.code === undefined)) {
           setRestartStatus('unknown');
           return;

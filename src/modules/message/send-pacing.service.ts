@@ -446,8 +446,9 @@ export class SendPacingService {
    * Distinct chats this session started today: it sent to them today, nothing in the chat predates
    * today, and nobody wrote to it first — a chat whose counterpart messaged earlier the same day is
    * an answered conversation, not a reachout (the "cold" rule above), however new the chat is.
-   * Expressed as NOT EXISTS probes so the outer query stays on the `(sessionId, createdAt)` and
-   * `chatId` indexes; the only aggregate is a per-chat MIN over today's outgoing rows.
+   * Expressed as NOT EXISTS probes so the outer query stays on the `(sessionId, createdAt)` index
+   * and each probe seeks `(sessionId, chatId, createdAt)`; the only aggregate is a per-chat MIN over
+   * today's outgoing rows.
    */
   private countColdReachoutsToday(sessionId: string, dayStart: Date): Promise<number> {
     return (

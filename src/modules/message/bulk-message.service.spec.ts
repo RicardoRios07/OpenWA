@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException, HttpException, Logger, PayloadTooLargeException } from '@nestjs/common';
+import { BadRequestException, HttpException, PayloadTooLargeException } from '@nestjs/common';
+import { LoggerService } from '../../common/services/logger.service';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { In, Not } from 'typeorm';
 import {
@@ -18,6 +19,7 @@ import { SendPacingService, SEND_PACING_LIMITED } from './send-pacing.service';
 import { SessionOwnershipService } from '../session/session-ownership.service';
 import { HookManager } from '../../core/hooks';
 import { SsrfBlockedError } from '../../common/security/ssrf-guard';
+import { EnginePageError } from '../../common/errors/engine-page.error';
 
 /** Regression lock for the terminal-status decision (cancel-clobber + stopOnError overwrite bugs). */
 describe('resolveFinalBatchStatus', () => {
@@ -124,7 +126,7 @@ describe('BulkMessageService.onApplicationBootstrap', () => {
     repo.update.mockImplementation((where: { id: string }) =>
       Promise.resolve({ affected: where.id === 'b-dead' ? 1 : 0 }),
     );
-    const warn = jest.spyOn((service as unknown as { logger: Logger }).logger, 'warn').mockImplementation();
+    const warn = jest.spyOn((service as unknown as { logger: LoggerService }).logger, 'warn').mockImplementation();
 
     await service.onApplicationBootstrap();
 
@@ -741,6 +743,43 @@ describe('BulkMessageService.processBatch', () => {
       expect.objectContaining({ type: 'text', error: 'boom', input: { text: 'hi', chatId: 'c0@c.us' } }),
       expect.objectContaining({ source: 'BulkMessageService' }),
     );
+  });
+
+  it('logs the in-page summary of a page error; the stored result and the hook keep only its reason and build', async () => {
+    const batch = makeBatch(1);
+    repo.findOne.mockResolvedValue(batch);
+    engine.sendTextMessage.mockRejectedValueOnce(
+      new EnginePageError(
+        { name: 'TypeError', message: 'x', build: '2.3000.1' },
+        new Error('page threw {"build":"2.3000.1","stack":"at y"}'),
+      ),
+    );
+    const warn = jest.spyOn((service as unknown as { logger: LoggerService }).logger, 'warn').mockImplementation();
+
+    await runProcessBatch();
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('page threw {"build":"2.3000.1"'));
+    const result = batch.results[0];
+    expect(result.status).toBe(BatchMessageStatus.FAILED);
+    expect(result.error?.message).toBe('WhatsApp Web rejected the operation: TypeError: x (build 2.3000.1)');
+    expect(hookManager.execute).toHaveBeenCalledWith(
+      'message:failed',
+      expect.objectContaining({ error: 'WhatsApp Web rejected the operation: TypeError: x (build 2.3000.1)' }),
+      expect.anything(),
+    );
+  });
+
+  it('never logs the cause of a blocked media URL', async () => {
+    repo.findOne.mockResolvedValue(makeBatch(1));
+    const blocked = new SsrfBlockedError('blocked');
+    blocked.cause = new Error('resolved to 10.0.0.1');
+    engine.sendTextMessage.mockRejectedValueOnce(blocked);
+    const warn = jest.spyOn((service as unknown as { logger: LoggerService }).logger, 'warn').mockImplementation();
+
+    await runProcessBatch();
+
+    expect(warn).toHaveBeenCalled();
+    expect(warn.mock.calls.flat().join(' ')).not.toContain('10.0.0.1');
   });
 
   it('does NOT fire message:failed when the gate blocks a bulk item (a block is a moderation decision, not a delivery failure)', async () => {

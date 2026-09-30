@@ -316,23 +316,29 @@ export function Chats() {
   const chatsAppliedRef = useRef(0);
   const chatsSessionRef = useRef('');
   const loadChats = useCallback(
-    async (sessionId: string, { background = false } = {}) => {
-      if (!sessionId) return;
+    async (sessionId: string, { background = false } = {}): Promise<boolean> => {
+      if (!sessionId) return false;
       const request = ++chatsRequestRef.current;
       chatsSessionRef.current = sessionId;
       const stale = () => sessionId !== chatsSessionRef.current || request < chatsAppliedRef.current;
+      // A stale answer for the session still selected was overtaken by a newer list that has applied,
+      // so this session's list on screen is as fresh as this call's would have been.
+      const overtaken = () => sessionId === chatsSessionRef.current;
       try {
         if (!background) setLoadingChats(true);
         const data = await sessionApi.getChats(sessionId);
-        if (stale()) return;
+        if (stale()) return overtaken();
         chatsAppliedRef.current = request;
         const sorted = [...data].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
         setChats(sorted);
+        return true;
       } catch (err) {
+        if (stale()) return overtaken();
         // A background refetch only refreshes summaries: keep the list it would have replaced.
-        if (stale() || background) return;
+        if (background) return false;
         showLoadError('chats.errors.loadChats', err);
         setChats([]);
+        return false;
       } finally {
         // Only the call that raised the spinner clears it: a background refetch settling first would
         // otherwise uncover the previous session's list while the switch's own load is still out.
@@ -399,8 +405,10 @@ export function Chats() {
   // Synced in a layout effect: a socket frame handled after the list commits but before passive
   // effects flush would otherwise see the previous list, miss the chat and refetch the whole list.
   const chatsRef = useRef(chats);
+  const activeChatIdRef = useRef<string | undefined>(undefined);
   useLayoutEffect(() => {
     chatsRef.current = chats;
+    activeChatIdRef.current = activeChat?.id;
   });
   const handleIncomingMessage = useCallback(
     (event: { sessionId: string; message: Record<string, unknown> }) => {
@@ -611,16 +619,18 @@ export function Chats() {
       queryClient.invalidateQueries({ queryKey: ['contact-statuses', selectedSessionId] });
       // The sidebar list is local state, so previews, unread counts and chats started during the gap
       // only show after a refetch. Background mode keeps the current list on screen meanwhile.
-      // The open chat's gap messages are read on screen: mark them read and keep its row at zero,
-      // since the snapshot still counts them (the same rule a live frame and opening a chat follow).
+      // The open chat's gap messages are read on screen, so once the refetch has applied this session's
+      // list and the chat is still open, mark it read and zero its row, since the snapshot still counts
+      // them (the same rule a live frame and opening a chat follow). An applied list also means the engine
+      // answers again: after a backend restart it may still be starting, and a read sent then fails. A
+      // newer list for this session that overtook the refetch counts as applied. A refetch that failed
+      // with no newer list applied, or a session switch, sends nothing; a chat the user left keeps its
+      // count.
       const readChatId = canWrite ? activeChatId : undefined;
-      if (readChatId) markChatRead(readChatId);
-      // The zeroing waits for the refetch, by when another session's list may be on screen; like a send's
-      // promote, it applies only while the list is still this session's.
-      void loadChats(selectedSessionId, { background: true }).then(() => {
-        if (readChatId && chatsSessionRef.current === selectedSessionId) {
-          setChats(prev => prev.map(c => (c.id === readChatId ? { ...c, unreadCount: 0 } : c)));
-        }
+      void loadChats(selectedSessionId, { background: true }).then(applied => {
+        if (!applied || !readChatId || activeChatIdRef.current !== readChatId) return;
+        markChatRead(readChatId);
+        setChats(prev => prev.map(c => (c.id === readChatId ? { ...c, unreadCount: 0 } : c)));
       });
     }
   }, [isConnected, connectionFailed, selectedSessionId, queryClient, loadChats, activeChatId, canWrite, markChatRead]);

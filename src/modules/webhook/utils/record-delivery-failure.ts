@@ -103,13 +103,18 @@ export async function recordWebhookDeliveryFailure(
                 },
               ),
             );
+        } else {
+          // A crash or a failed delete right after an earlier terminal insert can leave the
+          // attempts-0 row behind; nothing else reconciles it, so every repeat finishes the job.
+          await clearDeliveryFailureRows(repo, logger, input.webhookId, input.idempotencyKey, true);
         }
         return false;
       }
     }
     await repo.insert({ ...input, lastStatusCode: input.lastStatusCode ?? null });
     if (terminal) {
-      // Only after the insert, so a crash in between leaves both rows, never none.
+      // Only after the insert, so a crash in between leaves both rows, never none. A later terminal
+      // record of the same delivery repeats this clear.
       await clearDeliveryFailureRows(repo, logger, input.webhookId, input.idempotencyKey, true);
     }
     return true;

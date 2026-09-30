@@ -87,12 +87,50 @@ describe('recordWebhookDeliveryFailure', () => {
     const repo = {
       insert: jest.fn(),
       update,
+      delete: jest.fn().mockResolvedValue({}),
       count: jest.fn().mockResolvedValue(1),
     } as unknown as Repository<WebhookDeliveryFailure>;
 
     await expect(recordWebhookDeliveryFailure(repo, { error: jest.fn() }, input)).resolves.toBe(false);
 
     expect(update).not.toHaveBeenCalled();
+  });
+
+  it('removes an attempts-0 row an earlier terminal record failed to clear', async () => {
+    // The first terminal record inserted its row, then its attempts-0 delete failed (or the process
+    // stopped in between). The next replay finds the terminal row, and must finish that clear, or
+    // the lost event stays listed twice.
+    const insert = jest.fn();
+    const del = jest.fn().mockResolvedValue({});
+    const repo = {
+      insert,
+      update: jest.fn(),
+      delete: del,
+      count: jest.fn().mockResolvedValue(1),
+    } as unknown as Repository<WebhookDeliveryFailure>;
+    const logger = { error: jest.fn() };
+
+    await expect(recordWebhookDeliveryFailure(repo, logger, input)).resolves.toBe(false);
+
+    expect(insert).not.toHaveBeenCalled();
+    expect(del).toHaveBeenCalledWith({ webhookId: 'wh-1', idempotencyKey: 'k', attempts: 0 });
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it('removes nothing when an unsent delivery is recorded again', async () => {
+    const del = jest.fn();
+    const repo = {
+      insert: jest.fn(),
+      update: jest.fn().mockResolvedValue({}),
+      delete: del,
+      count: jest.fn().mockResolvedValue(1),
+    } as unknown as Repository<WebhookDeliveryFailure>;
+
+    await expect(recordWebhookDeliveryFailure(repo, { error: jest.fn() }, { ...input, attempts: 0 })).resolves.toBe(
+      false,
+    );
+
+    expect(del).not.toHaveBeenCalled();
   });
 
   it('still reports an unsent duplicate as not recorded when refreshing its reason fails', async () => {

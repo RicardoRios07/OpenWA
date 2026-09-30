@@ -6,6 +6,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { SendPacingService, SEND_PACING_LIMITED, countsTowardSendBreaker } from './send-pacing.service';
+import { EnginePageError } from '../../common/errors/engine-page.error';
 import { EngineRefusedError } from '../../common/errors/engine-refused.error';
 import { EngineNotSupportedError } from '../../common/errors/engine-not-supported.error';
 import { SsrfBlockedError } from '../../common/security/ssrf-guard';
@@ -601,6 +602,10 @@ describe('countsTowardSendBreaker', () => {
     ['a WhatsApp refusal (403 EngineRefusedError)', new EngineRefusedError('not allowed to send here')],
     ['a raw engine error', new Error('ack error 500')],
     ['a server-side fault', new InternalServerErrorException('boom')],
+    [
+      'a failure WhatsApp Web threw in the page (500 EnginePageError)',
+      new EnginePageError({ name: 'TypeError', message: 'x' }, new Error('page threw {}')),
+    ],
   ])('counts %s', (_label, error) => {
     expect(countsTowardSendBreaker(error)).toBe(true);
   });

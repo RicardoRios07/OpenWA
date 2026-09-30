@@ -1,11 +1,5 @@
-import {
-  Injectable,
-  Logger,
-  BadRequestException,
-  NotFoundException,
-  Optional,
-  OnApplicationBootstrap,
-} from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, Optional, OnApplicationBootstrap } from '@nestjs/common';
+import { createLogger } from '../../common/services/logger.service';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Not, QueryDeepPartialEntity, Repository } from 'typeorm';
@@ -103,7 +97,7 @@ interface BatchExecutionState {
 
 @Injectable()
 export class BulkMessageService implements OnApplicationBootstrap {
-  private readonly logger = new Logger(BulkMessageService.name);
+  private readonly logger = createLogger(BulkMessageService.name);
   private readonly processingBatches = new Map<string, boolean>(); // Track active batches for cancellation
   private inFlightBatches = 0; // count of batches currently in processBatch (memory bound, see cap above)
 
@@ -577,7 +571,15 @@ export class BulkMessageService implements OnApplicationBootstrap {
         );
       }
 
-      this.logger.warn(`Batch ${batch.batchId}: Failed message ${i + 1} to ${msg.chatId}: ${sanitized.message}`);
+      // The log alone carries the cause: an EnginePageError keeps the full in-page summary (stack,
+      // own properties) there, and this batch runs in the background, so no other log sees it.
+      const cause =
+        !(error instanceof SsrfBlockedError) && error instanceof Error && error.cause instanceof Error
+          ? ` (cause: ${error.cause.message})`
+          : '';
+      this.logger.warn(
+        `Batch ${batch.batchId}: Failed message ${i + 1} to ${msg.chatId}: ${sanitized.message}${cause}`,
+      );
 
       if (batch.options.stopOnError) {
         batch.status = BatchStatus.FAILED;

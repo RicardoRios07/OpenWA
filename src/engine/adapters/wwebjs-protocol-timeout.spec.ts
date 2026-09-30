@@ -220,15 +220,18 @@ describe('a protocol timeout is a 503, never a not-found verdict', () => {
     expect(reportIfPageTransportError).not.toHaveBeenCalled();
   });
 
-  // The two list reads walk the whole store in one command, so they are the ones a large account
-  // pushes past the budget; neither has a not-found verdict, but a raw rethrow would answer 500.
+  // The list reads walk the whole store in one command, so they are the ones a large account
+  // pushes past the budget; none has a not-found verdict, but a raw rethrow would answer 500.
   it.each([
-    ['getContacts', (host: WwebjsEngineHost) => new WwebjsContacts(host).getContacts(), 'pupPage'],
-    ['getChats', (host: WwebjsEngineHost) => chats(host).getChats(), 'getChats'],
-  ] as const)('%s answers an expired protocolTimeout with a 503 and reports no death', async (_op, call, via) => {
+    ['getContacts', (host: WwebjsEngineHost) => new WwebjsContacts(host).getContacts()],
+    ['getChats', (host: WwebjsEngineHost) => chats(host).getChats()],
+    ['getGroups', (host: WwebjsEngineHost) => new WwebjsGroups(host).getGroups()],
+  ] as const)('%s answers an expired protocolTimeout with a 503 and reports no death', async (_op, call) => {
     const timeout = jest.fn().mockRejectedValue(new Error(await puppeteerProtocolTimeoutMessage()));
-    const client = via === 'pupPage' ? { pupPage: { evaluate: timeout } } : { getChats: timeout };
-    const { host, reportIfPageTransportError } = makeHost(client as unknown as Record<string, jest.Mock>);
+    const { host, reportIfPageTransportError } = makeHost({ pupPage: { evaluate: timeout } } as unknown as Record<
+      string,
+      jest.Mock
+    >);
 
     await expect(call(host)).rejects.toBeInstanceOf(EngineTransportError);
     expect(timeout).toHaveBeenCalledTimes(1);

@@ -114,7 +114,12 @@ export interface IncomingMessage {
    *  in the raw payload. 0 or undefined = no disappearing timer.
    *  Known values: 86400 (24h), 604800 (7d), 7776000 (90d). */
   ephemeralDuration?: number;
-  /** For group, status and broadcast-list messages, the WID of the sender (`from` is the group or `@broadcast` id). */
+  /**
+   * For group, status and broadcast-list messages, the WID of the sender, where `from` is the group or
+   * `status@broadcast`. A broadcast-list message the account received is filed under the sender's own
+   * chat on Baileys, as WhatsApp lists it, so there `chatId` and `from` name the sender and `author`
+   * repeats it.
+   */
   author?: string;
   /** WIDs @mentioned in the message (empty/absent when none). Surfaced for command targeting. */
   mentionedIds?: string[];
@@ -1133,9 +1138,11 @@ export interface ContactCapability {
   getNumberId(number: string): Promise<string | null>;
 
   /**
-   * Best-effort resolution of a contact id to a phone number (MSISDN digits), or `null` when the
-   * engine cannot map it (e.g. a privacy `@lid` the account has never seen). The contact id is the
-   * engine's native scheme; the adapter decides how to resolve it.
+   * Best-effort resolution of a contact id to a phone number (MSISDN digits). `null` is a definitive
+   * "no phone for this id"; a lookup that could not decide (a failed page read, or a lid no cache,
+   * table or key store maps) rejects instead, so a caller that stores the answer never overwrites a
+   * known mapping with a null. The contact id is the engine's native scheme; the adapter decides how
+   * to resolve it.
    */
   resolveContactPhone(contactId: string): Promise<string | null>;
 

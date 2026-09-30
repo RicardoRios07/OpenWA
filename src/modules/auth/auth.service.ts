@@ -1,7 +1,9 @@
 import {
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
   UnauthorizedException,
   OnModuleInit,
   OnModuleDestroy,
@@ -15,17 +17,19 @@ import { hashApiKey } from './api-key-hash';
 import { ApiKey, ApiKeyRole } from './entities/api-key.entity';
 import { CreateApiKeyDto, UpdateApiKeyDto } from './dto';
 import { createLogger } from '../../common/services/logger.service';
+import { setRequestActor } from '../../common/services/request-context';
 import { readBootstrapKey, removeBootstrapKey, writeBootstrapKey } from './bootstrap-key-file';
 import { ApiKeyUsageTracker } from './api-key-usage-tracker.service';
+import { ActiveKeyIndex } from './active-key-index';
 import { apiKeyAuthorizationFingerprint, normalizeScopeList } from './api-key-authorization';
 import { normalizeChatAllowList } from '../../common/security/chat-scope';
 import { EventsGateway, type ApiKeyEvictionReason } from '../events/events.gateway';
 
 /**
  * A 401 that names no stored key: the credential was missing or matched no row. Producing one costs
- * the caller nothing, so its audit row is bounded per client IP. Every other 401 (revoked, expired,
- * IP or session refused) required a real key and is audited on every attempt. The name stays
- * `UnauthorizedException` because MCP tool errors carry it on the wire.
+ * the caller nothing, so its audit row is bounded per client IP. Every other rejection (a revoked or
+ * expired key's 401, an IP or session refusal's 403) required a real key and is audited on every
+ * attempt. The name stays `UnauthorizedException` because MCP tool errors carry it on the wire.
  */
 export class UnresolvedApiKeyException extends UnauthorizedException {
   constructor(message: string) {
@@ -76,6 +80,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     private readonly apiKeyRepository: Repository<ApiKey>,
     private readonly usageTracker: ApiKeyUsageTracker,
     private readonly moduleRef: ModuleRef,
+    @Optional() private readonly keyIndex?: ActiveKeyIndex,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -207,6 +212,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     });
 
     const saved = await this.apiKeyRepository.save(apiKey);
+    this.keyIndex?.refreshSoon();
     this.logger.log(`API key created: ${saved.name}`, {
       keyId: saved.id,
       role: saved.role,
@@ -279,6 +285,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
       // The row's post-write state, for the eviction comparison below.
       saved = await this.findOne(id);
     }
+    this.keyIndex?.refreshSoon();
 
     // One fingerprint definition, two callers: this immediate eviction and the gateway's periodic
     // re-validation sweep. Sharing it keeps the two from disagreeing about what an authorization
@@ -305,6 +312,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     this.usageTracker.forget(id);
     this.removeBootstrapKeyFileIfMatching(apiKey);
     this.evictActiveSockets(id, 'deleted');
+    this.keyIndex?.refreshSoon();
     this.logger.log(`API key deleted: ${apiKey.name}`, {
       keyId: id,
       action: 'api_key_deleted',
@@ -333,6 +341,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     // Kick any WebSocket connections already authenticated with this key: without this, a revoked
     // key keeps receiving events on already-subscribed sockets until they happen to disconnect.
     this.evictActiveSockets(id, 'revoked');
+    this.keyIndex?.refreshSoon();
     return saved;
   }
 
@@ -452,7 +461,12 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     return this.apiKeyRepository.findBy({ id: In(ids) });
   }
 
-  async validateApiKey(rawKey: string, clientIp?: string, sessionId?: string): Promise<ApiKey> {
+  async validateApiKey(
+    rawKey: string,
+    clientIp?: string,
+    sessionId?: string,
+    { recordUsage = true }: { recordUsage?: boolean } = {},
+  ): Promise<ApiKey> {
     // Trim before hashing so every surface agrees on what the credential is. HTTP already strips
     // surrounding whitespace from header values, so a pasted key with a stray space/newline
     // authenticates over REST but fails on the WebSocket handshake (the CONNECT payload carries the
@@ -465,6 +479,11 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
       throw new UnresolvedApiKeyException('Invalid API key');
     }
 
+    // Name the key before any check below can refuse it, so the audit row every caller writes for a
+    // revoked, expired, IP- or session-refused key says which key to revoke or re-scope. No-op
+    // outside a request scope (WebSocket frames, workers).
+    setRequestActor({ apiKeyId: apiKey.id, apiKeyName: apiKey.name });
+
     if (!apiKey.isActive) {
       throw new UnauthorizedException('API key is revoked');
     }
@@ -473,30 +492,34 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
       throw new UnauthorizedException('API key has expired');
     }
 
+    // A live key refused by its own IP or session restriction answers 403, like every other scope
+    // refusal (role, chats): the key is valid, so a client must not read it as one to discard.
+
     // Check IP whitelist (fail closed: if a whitelist is configured but the client
     // IP could not be determined, reject rather than silently skipping the check)
     if (apiKey.allowedIps && apiKey.allowedIps.length > 0) {
       if (!clientIp) {
-        throw new UnauthorizedException('Client IP could not be determined');
+        throw new ForbiddenException('Client IP could not be determined');
       }
       if (!this.isIpAllowed(clientIp, apiKey.allowedIps)) {
         this.logger.warn(`IP not allowed: ${clientIp}`, {
           keyId: apiKey.id,
           action: 'ip_rejected',
         });
-        throw new UnauthorizedException('IP address not allowed');
+        throw new ForbiddenException('IP address not allowed');
       }
     }
 
     // Check session restriction
     if (apiKey.allowedSessions && apiKey.allowedSessions.length > 0 && sessionId) {
       if (!apiKey.allowedSessions.includes(sessionId)) {
-        throw new UnauthorizedException('API key not authorized for this session');
+        throw new ForbiddenException('API key not authorized for this session');
       }
     }
 
-    // Advisory stats only; the tracker coalesces the write and never throws.
-    await this.usageTracker.record(apiKey);
+    // Advisory stats only; the tracker coalesces the write and never throws. A caller that validates
+    // the same key again later in the request (the MCP mount gate) opts out, so a request counts once.
+    if (recordUsage) await this.usageTracker.record(apiKey);
 
     return apiKey;
   }

@@ -950,11 +950,37 @@ export interface BaileysIncomingFields {
 }
 
 /**
- * Build a neutral {@link IncomingMessage} from extracted Baileys fields. The chat is always
- * `remoteJid` (Baileys reports the conversation directly); `fromMe` only flips from/to. The group
- * sender, the poster of a status broadcast and the sender of a broadcast-list message all live in
- * `participant` (exposed as `author`), matching the wwjs convention where `from` is the group JID or
- * the broadcast id.
+ * The chat a message belongs to, from its raw key: `remoteJid`, except for a broadcast-list message
+ * the account received, which belongs to the 1:1 chat with its sender (`participant`). Mirrors
+ * Baileys' own `getChatId` (Utils/process-message.js), which files the chat list the same way, but
+ * falls back to the list instead of throwing when the key names no participant.
+ */
+export function baileysChatJid(remoteJid: string, participant: string | null | undefined, fromMe: boolean): string {
+  const isList = remoteJid.endsWith('@broadcast') && remoteJid !== 'status@broadcast';
+  return isList && !fromMe && participant ? participant : remoteJid;
+}
+
+/**
+ * Whether a stored key belongs to the chat `chatId` names: the chat the message is reported under
+ * ({@link baileysChatJid}), or the raw `remoteJid`, which a client may still hold for a list message.
+ * Both sides go through `neutral`, so the dialects of one chat compare equal.
+ */
+export function storedKeyInChat(
+  key: { remoteJid?: string | null; participant?: string | null; fromMe?: boolean | null },
+  chatId: string,
+  neutral: (jid: string) => string,
+): boolean {
+  const raw = key.remoteJid ?? '';
+  const want = neutral(chatId);
+  return neutral(raw) === want || neutral(baileysChatJid(raw, key.participant, key.fromMe === true)) === want;
+}
+
+/**
+ * Build a neutral {@link IncomingMessage} from extracted Baileys fields. The chat is `remoteJid`
+ * (Baileys reports the conversation directly), except that a received broadcast-list message is filed
+ * under its sender's chat (see {@link baileysChatJid}); `fromMe` only flips from/to. The group sender,
+ * the poster of a status broadcast and the sender of a broadcast-list message all live in
+ * `participant` (exposed as `author`).
  */
 export function buildIncomingMessageFromBaileys(
   fields: BaileysIncomingFields,
@@ -966,7 +992,7 @@ export function buildIncomingMessageFromBaileys(
   const rawChatId = fields.remoteJid;
   const isGroup = rawChatId.endsWith('@g.us');
   const isStatusBroadcast = rawChatId === 'status@broadcast';
-  const chatId = normalizeJid(rawChatId);
+  const chatId = normalizeJid(baileysChatJid(rawChatId, fields.participant, fields.fromMe));
   const self = normalizeJid(fields.selfJid ?? '');
 
   const incoming: IncomingMessage = {
@@ -986,10 +1012,10 @@ export function buildIncomingMessageFromBaileys(
   };
 
   // The sender behind a group message, the poster behind a status broadcast and the sender behind a
-  // broadcast-list message all live in `participant` (exposed as `author`), matching the wwjs
-  // convention where `from` is the group JID or the `@broadcast` id. Without the status arm,
+  // broadcast-list message all live in `participant` (exposed as `author`). Without the status arm,
   // buildIncomingStatus can only resolve the poster to the pseudo-JID itself and drops every Baileys
-  // status; without the list arm, a list message names only the list and loses its sender.
+  // status; the list arm keeps `author` on a list message too, where it repeats the chat's sender
+  // (or names the account, for a list message it sent).
   if ((isGroup || rawChatId.endsWith('@broadcast')) && fields.participant) {
     incoming.author = normalizeJid(fields.participant);
   }

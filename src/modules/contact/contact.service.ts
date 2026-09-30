@@ -21,12 +21,15 @@ export class ContactService {
     return this.engines.require(sessionId);
   }
 
+  /** Every contact WITHOUT the response window, for callers that filter before paging. */
+  listContacts(sessionId: string) {
+    // getEngine throws synchronously (keeps the "session not started" guard a sync 400).
+    return this.getEngine(sessionId).getContacts();
+  }
+
   getContacts(sessionId: string, opts: ListOptions = {}) {
-    // getEngine throws synchronously (keeps the "session not started" guard a sync 400); the
-    // engine returns the full set and we bound the HTTP response window via paginate().
-    return this.getEngine(sessionId)
-      .getContacts()
-      .then(contacts => paginate(contacts, opts.limit, opts.offset));
+    // The engine returns the full set and we bound the HTTP response window via paginate().
+    return this.listContacts(sessionId).then(contacts => paginate(contacts, opts.limit, opts.offset));
   }
 
   async getContactById(sessionId: string, contactId: string) {

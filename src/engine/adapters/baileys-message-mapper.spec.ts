@@ -1,5 +1,6 @@
 import {
   BaileysIncomingFields,
+  baileysChatJid,
   buildIncomingMessageFromBaileys,
   extractBaileysBody,
   extractBaileysButtonReply,
@@ -361,17 +362,41 @@ describe('buildIncomingMessageFromBaileys', () => {
     expect(r.author).toBe('628111@s.whatsapp.net');
   });
 
-  it('exposes the sender of a received broadcast-list message as author and keeps the list as the chat', () => {
+  it("files a received broadcast-list message under the sender's chat, as Baileys does", () => {
     const normalize = (jid: string) => jid.replace('@s.whatsapp.net', '@c.us');
     const r = buildIncomingMessageFromBaileys(
       { ...base, remoteJid: '1700000000@broadcast', participant: '628222@s.whatsapp.net' },
       normalize,
     );
-    expect(r.chatId).toBe('1700000000@broadcast');
-    expect(r.from).toBe('1700000000@broadcast');
+    expect(r.chatId).toBe('628222@c.us');
+    expect(r.from).toBe('628222@c.us');
+    expect(r.to).toBe('628999@c.us');
+    expect(r.kind).toBe('individual');
     expect(r.isStatusBroadcast).toBe(false);
     expect(r.isGroup).toBe(false);
     expect(r.author).toBe('628222@c.us');
+  });
+
+  it('keeps the list as the chat for a received list message with no participant', () => {
+    const r = buildIncomingMessageFromBaileys({ ...base, remoteJid: '1700000000@broadcast' });
+    expect(r.chatId).toBe('1700000000@broadcast');
+    expect(r.kind).toBe('broadcast');
+  });
+
+  it('flags a lid sender of a received list message and files it under the lid', () => {
+    const r = buildIncomingMessageFromBaileys({ ...base, remoteJid: '1700000000@broadcast', participant: '222@lid' });
+    expect(r.chatId).toBe('222@lid');
+    expect(r.isLidSender).toBe(true);
+  });
+
+  it('baileysChatJid mirrors Baileys getChatId without throwing', () => {
+    const list = '1700000000@broadcast';
+    const sender = '628222@s.whatsapp.net';
+    expect(baileysChatJid(list, sender, false)).toBe(sender);
+    expect(baileysChatJid(list, sender, true)).toBe(list);
+    expect(baileysChatJid(list, undefined, false)).toBe(list);
+    expect(baileysChatJid('status@broadcast', sender, false)).toBe('status@broadcast');
+    expect(baileysChatJid('120363@g.us', sender, false)).toBe('120363@g.us');
   });
 
   it('keeps the list as the chat for a broadcast-list message the account sent', () => {

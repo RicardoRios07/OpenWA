@@ -1,4 +1,5 @@
-import { BadRequestException, Injectable, Logger, NotImplementedException, OnModuleInit } from '@nestjs/common';
+import { BadRequestException, Injectable, NotImplementedException, OnModuleInit } from '@nestjs/common';
+import { createLogger } from '../../../common/services/logger.service';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import type { MessageType } from '../../../engine/interfaces/whatsapp-engine.interface';
@@ -38,7 +39,7 @@ type PlaceholderFn = () => string;
 export class BuiltInFtsProvider implements SearchProvider, OnModuleInit {
   readonly id = 'builtin-fts';
   readonly label = 'Built-in database full-text search';
-  private readonly logger = new Logger('BuiltInFtsProvider');
+  private readonly logger = createLogger('BuiltInFtsProvider');
 
   // OpenWA has two TypeORM connections (main: auth/audit SQLite, data: messages). Bind explicitly to
   // 'data' so the provider queries the connection that owns the `messages` table + the FTS migration,

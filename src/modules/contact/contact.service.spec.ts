@@ -26,6 +26,13 @@ describe('ContactService', () => {
     expect(() => makeService(undefined).getBlockedContacts('s1')).toThrow(BadRequestException);
   });
 
+  it('listContacts returns the whole set, unwindowed', async () => {
+    const big = Array.from({ length: 1500 }, (_, i) => ({ id: `${i}@c.us` }));
+    const getContacts = jest.fn().mockResolvedValue(big);
+    await expect(makeService({ getContacts }).listContacts('s1')).resolves.toHaveLength(1500);
+    expect(() => makeService(undefined).listContacts('s1')).toThrow(BadRequestException);
+  });
+
   it('caps an unbounded contacts list at the default limit (1000)', async () => {
     const big = Array.from({ length: 1500 }, (_, i) => ({ id: `${i}@c.us` }));
     const getContacts = jest.fn().mockResolvedValue(big);

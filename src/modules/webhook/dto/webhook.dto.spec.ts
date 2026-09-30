@@ -52,6 +52,18 @@ describe('webhook DTO event validation', () => {
     expect(await errorsFor(UpdateWebhookDto, {})).toHaveLength(0);
     expect(await errorsFor(UpdateWebhookDto, { filters: null })).toHaveLength(0);
   });
+
+  // WebhookService.update applies filters only when the field is present, so an update that omits it
+  // keeps the stored filter. The published schema must not offer omission as a way to clear one.
+  it('UpdateWebhookDto: documents that an omitted filters keeps the stored one', () => {
+    const descriptionOf = (target: object): string | undefined =>
+      (Reflect.getMetadata('swagger/apiModelProperties', target, 'filters') as { description?: string } | undefined)
+        ?.description;
+
+    expect(descriptionOf(UpdateWebhookDto.prototype)).toContain('Omit to keep the stored filters');
+    expect(descriptionOf(UpdateWebhookDto.prototype)).not.toContain('Omit or null to fire');
+    expect(descriptionOf(CreateWebhookDto.prototype)).toContain('Omit or null to fire');
+  });
 });
 
 describe('webhook DTO custom-header validation', () => {
@@ -85,6 +97,17 @@ describe('webhook DTO custom-header validation', () => {
       headers: { 'Bad Header!': 'v' },
     });
     expect(errs.some(e => e.property === 'headers')).toBe(true);
+  });
+
+  // The HTTP client joins case-variant names into one comma-separated value, so neither value is
+  // sent as written and a receiver checking one credential sees both.
+  it('rejects two header names that differ only in case, on create and update', async () => {
+    const headers = { Authorization: 'Bearer a', authorization: 'Bearer b' };
+    const create = await errorsFor(CreateWebhookDto, { url: 'https://x.example/hook', headers });
+    expect(create.some(e => e.property === 'headers')).toBe(true);
+    const update = await errorsFor(UpdateWebhookDto, { headers });
+    expect(update.some(e => e.property === 'headers')).toBe(true);
+    expect(await errorsFor(UpdateWebhookDto, { headers: { 'X-A': '1', 'X-B': '2' } })).toHaveLength(0);
   });
 
   it('UpdateWebhookDto applies the same header validation', async () => {

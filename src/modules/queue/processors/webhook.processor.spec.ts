@@ -1,4 +1,4 @@
-import { Job } from 'bullmq';
+import { DelayedError, Job } from 'bullmq';
 import { FindOperator, Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { WebhookProcessor } from './webhook.processor';
@@ -467,6 +467,133 @@ describe('WebhookProcessor', () => {
 
       expect(failureRepo.insert).not.toHaveBeenCalled();
       expect(hookManager.execute).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('failing-receiver gate', () => {
+    // One slot per session for failing receivers, so the arithmetic below stays small.
+    const gatedProcessor = (retryDelay = 1000): WebhookProcessor => {
+      configService.get.mockImplementation((key: string, def?: unknown) => {
+        if (key === 'webhook.degradedSessionConcurrency') return 1;
+        if (key === 'webhook.retryDelay') return retryDelay;
+        return key === 'webhook.timeout' ? 25000 : def;
+      });
+      return new WebhookProcessor(
+        repo as unknown as Repository<Webhook>,
+        failureRepo as unknown as Repository<WebhookDeliveryFailure>,
+        hookManager as unknown as HookManager,
+        configService as unknown as ConfigService,
+      );
+    };
+    const withMoveToDelayed = (job: Job<WebhookJobData>): jest.Mock => {
+      const move = jest.fn().mockResolvedValue(undefined);
+      (job as unknown as { moveToDelayed: jest.Mock }).moveToDelayed = move;
+      return move;
+    };
+    const hang = (): { release: () => void } => {
+      const handle = { release: () => undefined as void };
+      mockFetch.mockImplementationOnce(
+        () => new Promise(resolve => (handle.release = () => resolve({ ok: true, status: 200 }))),
+      );
+      return handle;
+    };
+
+    it('delays a job for a failing webhook past the session cap without spending an attempt or failing it', async () => {
+      const gp = gatedProcessor();
+      mockFetch.mockResolvedValueOnce({ ok: false, status: 500, statusText: 'Server Error' });
+      await expect(gp.process(makeJob())).rejects.toThrow('HTTP 500');
+      const first = hang();
+      mockFetch.mockClear();
+      const inFlight = gp.process(makeJob(), 'tok-1');
+      await new Promise(resolve => setImmediate(resolve));
+      repo.findOne.mockClear();
+      failureRepo.insert.mockClear();
+
+      // The last attempt of its job: a gate bounce must still not dead-letter it.
+      const job = makeJob({}, 2);
+      const move = withMoveToDelayed(job);
+      const before = Date.now();
+      await expect(gp.process(job, 'tok-2')).rejects.toBeInstanceOf(DelayedError);
+
+      expect(move).toHaveBeenCalledWith(expect.any(Number), 'tok-2');
+      expect((move.mock.calls[0] as [number])[0]).toBeGreaterThanOrEqual(before + 1000);
+      expect(repo.findOne).not.toHaveBeenCalled();
+      expect(mockFetch).toHaveBeenCalledTimes(1); // only the in-flight job's POST
+      expect(failureRepo.insert).not.toHaveBeenCalled();
+
+      first.release();
+      await inFlight;
+    });
+
+    // BullMQ promotes a job delayed to "now" straight back to wait, so a zero delay would spin it.
+    it('waits at least a second before a bounced job returns, even with WEBHOOK_RETRY_DELAY=0', async () => {
+      const gp = gatedProcessor(0);
+      mockFetch.mockResolvedValueOnce({ ok: false, status: 500, statusText: 'Server Error' });
+      await expect(gp.process(makeJob())).rejects.toThrow('HTTP 500');
+      const first = hang();
+      const inFlight = gp.process(makeJob(), 'tok-1');
+      await new Promise(resolve => setImmediate(resolve));
+
+      const job = makeJob();
+      const move = withMoveToDelayed(job);
+      const before = Date.now();
+      await expect(gp.process(job, 'tok-2')).rejects.toBeInstanceOf(DelayedError);
+
+      expect((move.mock.calls[0] as [number])[0]).toBeGreaterThanOrEqual(before + 1000);
+      first.release();
+      await inFlight;
+    });
+
+    it('never holds back a healthy webhook, however many of its jobs run at once', async () => {
+      const gp = gatedProcessor();
+      const a = hang();
+      const b = hang();
+      const jobs = [gp.process(makeJob()), gp.process(makeJob())];
+      await new Promise(resolve => setImmediate(resolve));
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      a.release();
+      b.release();
+      await Promise.all(jobs);
+    });
+
+    it('lifts the gate when a job finds its failing webhook gone', async () => {
+      const gp = gatedProcessor();
+      mockFetch.mockResolvedValueOnce({ ok: false, status: 500, statusText: 'Server Error' });
+      await expect(gp.process(makeJob())).rejects.toThrow('HTTP 500');
+      repo.findOne.mockResolvedValueOnce(null);
+      await expect(gp.process(makeJob())).resolves.toMatchObject({ success: false });
+
+      // Re-created or re-enabled under the same id: its jobs are no longer held to one slot.
+      const a = hang();
+      const b = hang();
+      const jobs = [gp.process(makeJob()), gp.process(makeJob())];
+      await new Promise(resolve => setImmediate(resolve));
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+      a.release();
+      b.release();
+      await Promise.all(jobs);
+    });
+
+    it('lifts the gate once the webhook answers 2xx again, and frees the slot on success and on failure', async () => {
+      const gp = gatedProcessor();
+      mockFetch.mockResolvedValueOnce({ ok: false, status: 500, statusText: 'Server Error' });
+      await expect(gp.process(makeJob())).rejects.toThrow('HTTP 500');
+      // Gated now, with a free slot: a failing job takes it and gives it back when it throws.
+      mockFetch.mockResolvedValueOnce({ ok: false, status: 500, statusText: 'Server Error' });
+      await expect(gp.process(makeJob())).rejects.toThrow('HTTP 500');
+      // ...and a succeeding job takes it, gives it back, and clears the failing mark.
+      mockFetch.mockResolvedValueOnce({ ok: true, status: 200 });
+      await expect(gp.process(makeJob())).resolves.toMatchObject({ success: true });
+
+      const a = hang();
+      const b = hang();
+      const jobs = [gp.process(makeJob()), gp.process(makeJob())];
+      await new Promise(resolve => setImmediate(resolve));
+      expect(mockFetch).toHaveBeenCalledTimes(5);
+      a.release();
+      b.release();
+      await Promise.all(jobs);
     });
   });
 });

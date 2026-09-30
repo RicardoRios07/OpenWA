@@ -556,6 +556,48 @@ test('the pending-restart note survives a successful save', async () => {
   assert.ok(screen.queryByText(PENDING_RESTART_NOTE), 'the pending-restart note must not vanish once a save succeeds');
 });
 
+/** The pin note rendered inside a text field's form group, or null. */
+function fieldPinNote(container: HTMLElement, labelText: string): string | null {
+  return fieldInput(container, labelText).closest('.form-group')?.querySelector('.env-pin-note')?.textContent ?? null;
+}
+
+test('fields the Quick Start stack pins show the env-pin note naming their variable', async () => {
+  const { screen, waitFor } = rtl;
+  resetFetchCalls();
+  overrides = { status: { ...INFRA_STATUS, envPinned: ['SESSION_DATA_PATH', 'STORAGE_LOCAL_PATH'] } };
+  const { container } = renderInfrastructure();
+
+  await screen.findByText('Database Configuration');
+  await awaitConfigHydrated(container);
+  await waitFor(() => {
+    assert.match(fieldPinNote(container, 'Session Data Path') ?? '', /SESSION_DATA_PATH/);
+    assert.match(fieldPinNote(container, 'Storage Path') ?? '', /STORAGE_LOCAL_PATH/);
+  });
+  assert.equal(fieldPinNote(container, 'Browser Arguments'), null, 'an unpinned field must carry no note');
+  const notes = Array.from(container.querySelectorAll('.env-pin-note')).map(note => note.textContent ?? '');
+  assert.ok(!notes.some(note => note.includes('PUPPETEER_ARGS') || note.includes('PUPPETEER_HEADLESS')));
+});
+
+test('without a reported pin those fields show no note, even when running and saved values differ', async () => {
+  const { screen } = rtl;
+  resetFetchCalls();
+  // The stock fixtures disagree on headless (running true, saved false): a pin-only note must not
+  // read that as a pin or as a pending restart.
+  overrides = { status: { ...INFRA_STATUS, envPinned: [] } };
+  const { container } = renderInfrastructure();
+
+  await screen.findByText('Database Configuration');
+  await awaitConfigHydrated(container);
+  for (const label of ['Session Data Path', 'Browser Arguments', 'Storage Path']) {
+    assert.equal(fieldPinNote(container, label), null, `unexpected note under ${label}`);
+  }
+  const headlessRow = toggleInput(container, 'Headless Mode').closest('.toggle-row');
+  assert.ok(
+    !headlessRow?.nextElementSibling?.classList.contains('env-pin-note'),
+    'unexpected note under Headless Mode',
+  );
+});
+
 test('the engine radio seeds from the effective engine when ENGINE_TYPE is pinned', async () => {
   const { screen, waitFor } = rtl;
   resetFetchCalls();
@@ -738,7 +780,7 @@ test(
       fireEvent.click(within(dialog).getByRole('button', { name: 'Restart Now' }));
 
       await within(dialog).findByText(
-        'The proxy timed out before the server answered. The restart may still be in progress; reload in a minute to check.',
+        'The proxy returned an error before the server answered, so it is not known whether the restart is in progress. Reload in a minute to check.',
       );
       assert.equal(within(dialog).queryByText('Restart failed'), null);
       assert.equal(within(dialog).queryByText('HTTP 504'), null);
@@ -777,7 +819,7 @@ test('a proxy 502 without a gateway code on the restart request reports an unkno
   const dialog = await clickRestartNow();
 
   await within(dialog).findByText(
-    'The proxy timed out before the server answered. The restart may still be in progress; reload in a minute to check.',
+    'The proxy returned an error before the server answered, so it is not known whether the restart is in progress. Reload in a minute to check.',
   );
   assert.equal(within(dialog).queryByText('Restart failed'), null);
 });

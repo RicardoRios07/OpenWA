@@ -10,6 +10,7 @@ import { createLogger } from '../../common/services/logger.service';
 import { resolveSessionScope } from '../../common/security/session-scope';
 import { ListOptions, resolveListWindow } from '../../common/utils/paginate';
 import { generateDeliveryId } from './utils/idempotency.util';
+import { buildDeliveryHeaders } from './utils/deliver-once';
 import {
   assertSafeFetchUrl,
   withSafeFetch,
@@ -261,20 +262,8 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
     };
 
     const body = JSON.stringify(testPayload);
-    const headers: Record<string, string> = {
-      // Custom headers FIRST so the system headers below always win.
-      ...this.delivery.sanitizeCustomHeaders(webhook.headers),
-      'Content-Type': 'application/json',
-      'User-Agent': 'OpenWA-Webhook/1.0.0',
-      'X-OpenWA-Event': 'test',
-      'X-OpenWA-Idempotency-Key': testPayload.idempotencyKey,
-      'X-OpenWA-Delivery-Id': testPayload.deliveryId,
-      'X-OpenWA-Retry-Count': '0',
-    };
-
-    if (webhook.secret) {
-      headers['X-OpenWA-Signature'] = this.delivery.generateSignature(body, webhook.secret);
-    }
+    // The same header builder as a real delivery, so the probe tests what the receiver will get.
+    const headers = buildDeliveryHeaders(webhook, 'test', testPayload.idempotencyKey, deliveryId, body);
 
     try {
       return await withSafeFetch(

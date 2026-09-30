@@ -28,6 +28,7 @@ jobs:
   # id-token: write. This is PyPA's documented layout for trusted publishing.
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -100,6 +101,7 @@ jobs:
     # Runs only after the guards, the tests and the build above all passed.
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       # Mints the OIDC token PyPI exchanges for its short-lived upload credential. Without this the
