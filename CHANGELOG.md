@@ -404,6 +404,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The compose `minio` service no longer starts when no S3 secret is set, instead of starting with the server's default credentials.
 - The MinIO container that Dashboard > Infrastructure creates for built-in storage no longer publishes ports 9000 and 9001 on the host's `127.0.0.1`; OpenWA reaches it over the Docker network.
 - Release images on GHCR and Docker Hub carry a signed build provenance attestation from the release workflow; verify one with `gh attestation verify oci://ghcr.io/rmyndharis/openwa:<version> --repo rmyndharis/OpenWA --signer-workflow rmyndharis/OpenWA/.github/workflows/release.yml --source-ref refs/tags/v<version>`.
+- `linux/arm64` image: the release image scan no longer fails on 14 Chromium CVEs fixed upstream in 154.0.8037.57, which the image already runs as Debian's `154.0.8037.57-1~deb12u1` rebuild that the scanner ranks below the recorded fix. They are listed in `.trivyignore` until bookworm-security publishes a newer build.
+- `linux/amd64` image: 6 `libexpat1` CVEs are accepted in the release image scan until bookworm-security publishes the fixed `2.5.0-1+deb12u4` for amd64, as it has for arm64.
 - whatsapp-web.js: a session whose stored proxy URL is not a supported `http`, `https`, `socks4` or `socks5` URL ends `failed` with the fix named, instead of starting without the proxy.
 - Baileys: unlinking a session no longer lets an in-flight chat-state write list the old account's chats, with their pin, mute or archive state, under the next linked account.
 - Deleting a session while one of its bulk batches runs no longer brings the batch row, with its recipients and texts, back as `CANCELLED`.
