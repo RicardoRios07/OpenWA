@@ -23,6 +23,7 @@
   <img src="https://img.shields.io/github/package-json/dependency-version/rmyndharis/OpenWA/@nestjs/core?label=NestJS&color=red" alt="NestJS"/>
   <img src="https://img.shields.io/badge/docker-ready-blue.svg" alt="Docker"/>
   <img src="https://img.shields.io/github/package-json/dependency-version/rmyndharis/OpenWA/dev/typescript?label=TypeScript&color=3178C6" alt="TypeScript"/>
+  <a href="https://buymeacoffee.com/rmyndharis"><img src="https://img.shields.io/badge/Buy_Me_a_Coffee-support-FFDD00?logo=buymeacoffee&logoColor=black" alt="Buy Me a Coffee"/></a>
 </p>
 
 ---
@@ -520,6 +521,14 @@ We welcome contributions! Here's how to get started:
 5. **Open** a Pull Request
 
 Please read our [Development Guidelines](./docs/08-development-guidelines.md) for coding standards and best practices.
+
+---
+
+## ☕ Support
+
+OpenWA is free and open source. If it saves you time or helps your business, you can support its development by buying me a coffee.
+
+<a href="https://buymeacoffee.com/rmyndharis"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" height="50"/></a>
 
 ---
 

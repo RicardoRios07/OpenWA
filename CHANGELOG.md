@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.24.0] - 2026-09-30
+## [0.24.0] - 2026-10-01
 
 ### Added
 
@@ -56,6 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The container no longer crash-loops at start when `/app/data` is a bind mount that refuses to change a symlink's owner, such as Docker Desktop file sharing: the entrypoint re-owns `/app/data` without touching or following symlinks, so a Chromium lock left by an unclean stop, under any session path, no longer stops it. Thanks @Nexiler for the report.
 - whatsapp-web.js: `GET /api/sessions/:sessionId/contacts`, `GET /api/sessions/:sessionId/chats` and `GET /api/sessions/:sessionId/groups` answer `503` instead of `500` when the read outruns the Puppeteer protocol timeout.
 - whatsapp-web.js: a forward no longer reports the id of another message sent to the same chat in the same second.
+- whatsapp-web.js: inbound media downloads work again on current WhatsApp Web builds, where media the page had not downloaded before arrived as the `omitted` marker and the media route answered `404` ([#1739](https://github.com/rmyndharis/OpenWA/issues/1739)). Thanks @orezraey for the report.
 - whatsapp-web.js: an inbound media download whose caller already gave up is skipped, so messages that arrive after a burst keep their media.
 - whatsapp-web.js: a document sent from a URL without a filename is named after the percent-decoded URL basename.
 - whatsapp-web.js: listing chats or groups on a large account no longer blocks the page long enough for the liveness watchdog to disconnect a healthy session ([#1501](https://github.com/rmyndharis/OpenWA/issues/1501)).
@@ -308,6 +309,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Dependencies
 
 - `engine.io` 6.6.9 to 6.6.11, closing a high-severity denial-of-service advisory in the Socket.IO transport. It ships in the runtime tree.
+- `@grpc/grpc-js` 1.14.4 to 1.14.5, closing a high-severity advisory in which `getAuthContext` could report an unauthorized certificate as authorized. It reaches the runtime tree through `dockerode`.
 - `brace-expansion` 5.0.9 to 5.0.12 via the overrides in both trees, with the root tree's `minimatch` 3, 5 and 9 copies pinned to the patched 1.1.21 and 2.1.7 lines, closing two high-severity and one moderate-severity denial-of-service advisories. The root copies ship in the runtime tree.
 - `multer` 2.3.0 to 2.4.0 via an override, closing a denial-of-service advisory in which aborted uploads leave orphaned disk writes. It ships in the runtime tree.
 - `qs` 6.15.2 to 6.16.0, closing two moderate-severity advisories, an array-limit bypass and a denial of service. It ships in the runtime tree.
