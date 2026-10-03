@@ -17,26 +17,15 @@ Java 17+, one runtime dependency ([Gson](https://github.com/google/gson)).
 <dependency>
   <groupId>com.rmyndharis</groupId>
   <artifactId>openwa</artifactId>
-  <version>0.5.0</version>
+  <version>0.5.1</version>
 </dependency>
 ```
 
 **Gradle**
 
 ```groovy
-implementation 'com.rmyndharis:openwa:0.5.0'
+implementation 'com.rmyndharis:openwa:0.5.1'
 ```
-
-This README describes `main`. The 0.5.0 release lacks, among other additions,
-`sessions.getProxy`, `sessions.updateProxy`, `messages.clickButton`, the `name`
-filter of `ListSessionsQuery`, the `after` and `inlineMedia` filters of
-`ListMessagesQuery`, the `archived`, `pinned`, `muted` and `muteExpiration`
-fields of `ChatSummary`, the `order` and `product` fields of
-`ChatHistoryMessage`, `WebhookSignature.verify`, the `WebhookDelivery` types, the
-`code()`, `retryAfterSeconds()` and `headers()` error accessors, the `UNKNOWN`
-enum fallback, the refusal of an empty, `.` or `..` id or path segment and the
-refusal of a raw request path that does not begin with `/`; they ship with the
-next SDK release. See [the SDK overview](../README.md#coverage).
 
 ## Quickstart
 
@@ -220,7 +209,7 @@ before tagging rather than tagging to see what happens.
 Cutting a release:
 
 1. Bump `<version>` in `pom.xml` and land it on `main`.
-2. Tag that commit `java-sdk-v<version>` (e.g. `java-sdk-v0.5.0`) and push the
+2. Tag that commit `java-sdk-v<version>` (e.g. `java-sdk-v0.5.1`) and push the
    tag. The SDK has its own version line — the monorepo's `v*` tags are the app
    version and never trigger an SDK publish.
 3. The workflow builds, signs, and publishes; Central syncs within a few hours.

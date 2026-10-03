@@ -13,17 +13,6 @@ go get github.com/rmyndharis/OpenWA/sdk/go
 
 Requires Go 1.22+.
 
-This README describes `main`. The v0.5.0 release lacks, among other additions,
-`Sessions.GetProxy`, `Sessions.UpdateProxy`, `Messages.ClickButton`,
-`VerifyWebhookSignature`, the `WebhookDelivery` type, the `ListSessionsQuery.Name`
-filter, the `After` and `InlineMedia` fields of `ListMessagesQuery`, the
-`Archived`, `Pinned`, `Muted` and `MuteExpiration` fields of `ChatSummary`, the
-`Order` and `Product` fields of `ChatHistoryMessage`, the `APIError` fields
-`Code`, `RetryAfter` and `Header`, the refusal of empty and dot ids and the
-refusal of a `Do` path that does not begin with `/`; they ship with the next SDK
-release. See
-[the SDK overview](../README.md#coverage).
-
 ## Quick start
 
 ```go
@@ -264,10 +253,10 @@ subdirectory rather than at the repository root:
 
 ```bash
 # Correct — `sdk/go/` prefix, matching `module github.com/rmyndharis/OpenWA/sdk/go`
-git tag sdk/go/v0.5.0 && git push origin sdk/go/v0.5.0
+git tag sdk/go/v0.5.1 && git push origin sdk/go/v0.5.1
 ```
 
-A bare `v0.5.0` tag is the _app_ version and does nothing for this module.
+A bare `v0.5.1` tag is the _app_ version and does nothing for this module.
 Without a prefixed tag, `go get` resolves a pseudo-version
 (`v0.0.0-<date>-<commit>`) — usable, but callers cannot pin a release.
 

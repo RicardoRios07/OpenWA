@@ -12,16 +12,6 @@ pip install rmyndharis-openwa
 
 Requires Python 3.9+. The importable module is `openwa`.
 
-This README describes `main`. The 0.5.0 release lacks, among other additions, `sessions.get_proxy`,
-`sessions.update_proxy`, `messages.click_button`, `verify_webhook_signature`, the `WebhookDelivery`
-type, the `.code`, `.retry_after_seconds` and `.headers` error attributes, the `name` key of
-`ListSessionsQuery`, the `after` and `inlineMedia` keys of `ListMessagesQuery`, the `archived`,
-`pinned`, `muted` and `muteExpiration` keys of `ChatSummary`, the `order` and `product` keys of
-`ChatHistoryMessage`, the refusal of an empty, `.` or `..` id and the `ValueError` that
-`client.request` raises for a path that does not begin with `/` (0.5.0 resolves `api/health`
-against the base URL); they ship with the next SDK release. See
-[the SDK overview](../README.md#coverage).
-
 ## Usage
 
 ```python
@@ -166,7 +156,7 @@ rejects the upload, so configure it first.
 Cutting a release:
 
 1. Bump `version` in `pyproject.toml` and land it on `main`.
-2. Tag that commit `py-sdk-v<version>` (e.g. `py-sdk-v0.5.0`) and push the tag.
+2. Tag that commit `py-sdk-v<version>` (e.g. `py-sdk-v0.5.1`) and push the tag.
    The SDK has its own version line — the monorepo's `v*` tags are the app
    version and never trigger an SDK publish.
 3. The workflow re-runs the test suite, builds the sdist and wheel, and

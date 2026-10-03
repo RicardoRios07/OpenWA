@@ -4,7 +4,7 @@
 services:
   # ===== CORE: Docker Socket Proxy (sole container with /var/run/docker.sock access) =====
   docker-proxy:
-    image: tecnativa/docker-socket-proxy:v0.4.2
+    image: tecnativa/docker-socket-proxy:v0.5.0
     container_name: openwa-docker-proxy
     restart: unless-stopped
     # Only on the isolated internal network, reachable solely by openwa-api (including any
@@ -19,7 +19,7 @@ services:
       # PING (health), INFO (getSystemInfo), CONTAINERS (list/inspect/create/start/stop),
       # IMAGES (pull), VOLUMES (createVolume). POST is the proxy's single all-or-nothing
       # method gate for non-GET requests (haproxy.cfg: `deny unless METH_GET || env(POST)`).
-      # Two consequences of the pinned v0.4.2 config, accepted and documented in SECURITY.md:
+      # Two consequences of the pinned proxy config, accepted and documented in SECURITY.md:
       #  - its `DELETE` env flag is dead config (never read), so it is not set here; DELETE is
       #    admitted to enabled paths as a side effect of POST — OpenWA itself never issues
       #    deletes (profile teardown is stop-only, see DockerService.stopManagedService).

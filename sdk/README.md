@@ -44,31 +44,6 @@ All five SDKs expose the same fluent resource surface:
 | `health`    | check, live, ready                                                                                                                                                                                                                                                                         |
 | `auth`      | validate (`client.auth()`; `client.Auth.Validate` in Go)                                                                                                                                                                                                                                   |
 
-The table describes `main`. The 0.5.0 registry builds do not include
-`sessions.getProxy`, `sessions.updateProxy` or `messages.clickButton`
-(`get_proxy`, `update_proxy` and `click_button` in Python; `GetProxy`,
-`UpdateProxy` and `ClickButton` in Go); they ship with the next SDK release.
-The webhook signature helpers (`verifyWebhookSignature`,
-`verify_webhook_signature`, `VerifyWebhookSignature`, `WebhookSignature.verify`,
-`WebhookSignature::verify`), the `WebhookDelivery` types and the API error code,
-retry-delay and headers accessors are not in 0.5.0 either; they also ship with
-the next SDK release.
-Nor is the Java fallback to `UNKNOWN`: 0.5.0 decodes a response enum value it
-does not recognise to `null` (`MessageType` and `ChatKind` included), and
-`SessionStatus`, `DeliveryStatus` and the other response enums that lack an
-`unknown` wire value have no `UNKNOWN` constant there.
-The refusal of an empty, `.` or `..` id (and, in the JavaScript, Go and Java
-raw-request methods, of a `.` or `..` path segment), the refusal by all five
-raw-request methods of a path that does not begin with `/`, the PHP
-`sessions->create()` fix that sends an empty `config` as `{}`, the PHP
-`allowInsecureHttp` option (0.5.0 always raises an `E_USER_WARNING` for a
-non-local `http://` `baseUrl`) and the `null` return of PHP `catalog->info()`
-and `catalog->product()` for a missing catalog or product (0.5.0 throws a
-`TypeError`) are not in 0.5.0 either; they ship with the next SDK release.
-Nor is the `name` filter on `sessions.list` (`ListSessionsQuery.Name` in Go,
-the `name` field of `ListSessionsQuery` in Java, JavaScript and Python); it
-ships with the next SDK release.
-
 > ⚠️ Endpoints requiring an `OPERATOR`-level API key are noted in the inline
 > docs. Deliberately **not** exposed, matching `docs/18-sdk-design.md` exactly:
 > `auth/api-keys` (key validation itself is the `auth` row above), `audit`,
@@ -199,7 +174,7 @@ handler is a `MockHandler` — no global state, no network.
 <dependency>
   <groupId>com.rmyndharis</groupId>
   <artifactId>openwa</artifactId>
-  <version>0.5.0</version>
+  <version>0.5.1</version>
 </dependency>
 ```
 
