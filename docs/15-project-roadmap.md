@@ -40,7 +40,7 @@ timeline
                  : Bundled Traefik removed
                  : Bring-your-own reverse proxy
 
-    section v0.5.0-v0.23.x - Incremental Releases (Released)
+    section v0.5.0-v0.24.x - Incremental Releases (Released)
         Jun-Sep 2026 : Integration Fabric provisioning
                      : Java & Go SDKs
                      : Live message edits
@@ -82,7 +82,7 @@ timeline
 | v0.10.x | Chat `kind` discriminator, 24-hour status store, Docker Hub dual-publish                             | ✅ Released |
 | v0.11.0 | SDK poll / profile-picture / status-media coverage, security & reliability hardening                 | ✅ Released |
 | v0.12.x | Session/engine decomposition (`EngineRegistry`), plugin lifecycle and configuration-precedence fixes | ✅ Released |
-| v0.13+  | Incremental releases through v0.23.x; see `CHANGELOG.md`                                             | ✅ Released |
+| v0.13+  | Incremental releases through v0.24.x; see `CHANGELOG.md`                                             | ✅ Released |
 | v1.0.0  | Enterprise Ready (K8s Operator, multi-tenant)                                                        | 📋 Planned  |
 
 > SDK / docs-site / observability features are delivered **incrementally** as they're additive — they no
@@ -529,10 +529,10 @@ flowchart LR
         V020[v0.2.0 - i18n, Real-time Chats,<br/>Webhook Delivery-state & Hardening]
     end
 
-    subgraph v0.x["✅ Released (v0.3-v0.23.x)"]
+    subgraph v0.x["✅ Released (v0.3-v0.24.x)"]
         V030[v0.3.0 - Engine Pluggability<br/>Baileys engine + plugin layer]
         V040[v0.4.0 - Single-Port Deployment<br/>Dashboard on API port, no bundled Traefik]
-        V011[v0.5.0-v0.23.x - Incremental releases<br/>see the CHANGELOG]
+        V011[v0.5.0-v0.24.x - Incremental releases<br/>see the CHANGELOG]
     end
 
     subgraph v1.x["v1.x Series - Enterprise"]
@@ -693,14 +693,17 @@ degrades the release notes to a bare `Release v<version>`.
 
 ### Verify, commit, tag
 
-Run the same gates the tag will run, so a failure costs a local minute rather than a released tag:
+Run the same gates the tag will run, so a failure costs a local minute rather than a released tag. The
+queue-on and throttler-redis e2e suites skip when no Redis is reachable, while the tag runs them against a
+Redis service, so start one first (`docker run --rm -d -p 6379:6379 redis:7-alpine`, or set `REDIS_HOST`
+and `REDIS_PORT`, which both suites read) and check that jest reports no skipped suites:
 
 ```bash
 npm run check:versions && npm run openapi:check && npm run lint && npm run format:check
 npx tsc --noEmit -p tsconfig.json && npm run check:dockerignore
 npm run check:sdk-routes && npm run check:sdk-coverage && npm run check:sdk-events && npm run check:sdk-docs
 npm run check:contract-shapes
-npm run check:audit && (cd dashboard && npm audit --audit-level=high)
+CHECK_AUDIT_REQUIRED=1 npm run check:audit && (cd dashboard && npm audit --audit-level=high)
 npm run test:cov && npm run test:scripts && npm run test:docs && npm run test:e2e && npm run build && npm run test:engine-real
 cd dashboard && npm run lint && npm run format:check && npm run typecheck && npm run i18n:check && npm run build && npm run test:unit
 ```
@@ -729,9 +732,11 @@ the tag string and `package.json` disagree.
 
 ```mermaid
 flowchart TB
-    A[push tag v*] --> B[lint / test / test-postgres / dashboard / scripts-smoke / chart]
+    A[push tag v*] --> B[lint / test / dashboard / scripts-smoke / chart]
+    A --> T[test-postgres]
     B --> C[build]
     C --> D[docker: multi-arch build, staging tag only]
+    T --> D
     D --> E[boot-smoke: run the image on amd64 + arm64]
     D --> F[image-scan: Trivy, CRITICAL/HIGH, fixable only]
     E --> G[promote: apply X.Y.Z, X.Y, latest to GHCR + Docker Hub]

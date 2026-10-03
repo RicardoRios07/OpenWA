@@ -6,6 +6,8 @@ jest.mock('../../adapters/baileys.adapter', () => ({
 
 import { BaileysPlugin } from './index';
 import { BaileysAdapter } from '../../adapters/baileys.adapter';
+import type { LidMappingStore } from '../../identity/lid-mapping-store.service';
+import type { ChatStateStore } from '../../adapters/baileys-chat-state-store.service';
 
 describe('BaileysPlugin.createEngine (opaque config)', () => {
   beforeEach(() => jest.clearAllMocks());
@@ -72,6 +74,15 @@ describe('BaileysPlugin.createEngine (opaque config)', () => {
     const plugin = new BaileysPlugin(store);
     plugin.createEngine({ sessionId: 'sess-1' });
     expect(BaileysAdapter).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'sess-1', messageStore: store }));
+  });
+
+  // Both stores are optional in the adapter, so a dropped hop would silently stop persisting learned
+  // lid pairs and chat state across restarts instead of failing anything.
+  it('passes the lid-mapping and chat-state stores to the adapter', () => {
+    const lidMappingStore = {} as LidMappingStore;
+    const chatStateStore = {} as ChatStateStore;
+    new BaileysPlugin(undefined, undefined, lidMappingStore, chatStateStore).createEngine({ sessionId: 'sess-1' });
+    expect(BaileysAdapter).toHaveBeenCalledWith(expect.objectContaining({ lidMappingStore, chatStateStore }));
   });
 
   it('Uses the constructor-supplied engine config when onLoad never ran (enable-failure path)', () => {

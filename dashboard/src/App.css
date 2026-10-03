@@ -47,8 +47,9 @@
   --border: #334155; /* Slate 700 */
   --info: #60a5fa; /* Blue 400 — lighter so it reads over the dark translucent-blue tints */
   /* On the dark surfaces success and warning already clear AA (6.42:1 and 6.81:1), so they
-     keep their base value; error is 4.06:1 there and is lightened instead. */
-  --error-text: #f15e5e;
+     keep their base value; error is 3.89:1 on Slate 800 and is lightened instead, to a value that still
+     clears 4.65:1 on the darkest error tint behind it (20 percent over Slate 800). */
+  --error-text: #f77b7b;
   --success-text: var(--success);
   --warning-text: var(--warning);
 
@@ -82,8 +83,9 @@
     --border: #334155;
     --info: #60a5fa;
     /* On the dark surfaces success and warning already clear AA (6.42:1 and 6.81:1), so they
-       keep their base value; error is 4.06:1 there and is lightened instead. */
-    --error-text: #f15e5e;
+       keep their base value; error is 3.89:1 on Slate 800 and is lightened instead, to a value that still
+       clears 4.65:1 on the darkest error tint behind it (20 percent over Slate 800). */
+    --error-text: #f77b7b;
     --success-text: var(--success);
     --warning-text: var(--warning);
     --primary-soft: color-mix(in srgb, var(--primary) 18%, transparent);

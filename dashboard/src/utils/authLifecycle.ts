@@ -34,7 +34,7 @@ export function isKeyUnusable(status: number, message: unknown): boolean {
 }
 
 export type StartupValidation =
-  { action: 'role'; role: UserRole; engineType?: string } | { action: 'logout' } | { action: 'keep' };
+  { action: 'role'; role: UserRole; scoped: boolean; engineType?: string } | { action: 'logout' } | { action: 'keep' };
 
 /**
  * Fold the startup /auth/validate answer into an auth decision:
@@ -43,21 +43,22 @@ export type StartupValidation =
  * - any other non-ok status (429 rate limit, 5xx, a proxy error page) → keep the cached role:
  *   a transient failure proves nothing about the key, so it must not eject the user.
  * - ok + role → refresh the cached role from the server (a demoted key must lose its old powers),
- *   along with the engine it reports.
+ *   along with its session scope and the engine it reports.
  * - anything else (unexpected body shape) → keep the cached role.
  * A network throw never reaches this function; the caller keeps the cached role for that case
  * so a transient outage at page load doesn't eject the user.
  */
 export function resolveStartupValidation(
   status: number,
-  body: { valid?: boolean; role?: string; engineType?: string } | null,
+  body: { valid?: boolean; role?: string; engineType?: string; scoped?: unknown } | null,
 ): StartupValidation {
   if (status === 401 || status === 403) return { action: 'logout' };
   if (status < 200 || status >= 300) return { action: 'keep' };
   if (body?.valid && isUserRole(body.role)) {
+    const scoped = body.scoped === true;
     return typeof body.engineType === 'string'
-      ? { action: 'role', role: body.role, engineType: body.engineType }
-      : { action: 'role', role: body.role };
+      ? { action: 'role', role: body.role, scoped, engineType: body.engineType }
+      : { action: 'role', role: body.role, scoped };
   }
   return { action: 'keep' };
 }

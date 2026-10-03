@@ -87,6 +87,7 @@ describe('createBootDataSource (postgres boot migrations)', () => {
     expect(calls).toEqual([
       'initialize',
       'connect',
+      'SET idle_session_timeout = 0',
       'SELECT pg_advisory_lock($1, $2)',
       'runMigrations',
       'SELECT pg_advisory_unlock($1, $2)',
@@ -95,10 +96,10 @@ describe('createBootDataSource (postgres boot migrations)', () => {
       'initialize',
     ]);
     // Same key for acquire and release, in the (key1, key2) form.
-    expect(lockClient.query).toHaveBeenNthCalledWith(1, 'SELECT pg_advisory_lock($1, $2)', [
+    expect(lockClient.query).toHaveBeenNthCalledWith(2, 'SELECT pg_advisory_lock($1, $2)', [
       ...POSTGRES_BOOT_MIGRATION_LOCK_KEYS,
     ]);
-    expect(lockClient.query).toHaveBeenNthCalledWith(2, 'SELECT pg_advisory_unlock($1, $2)', [
+    expect(lockClient.query).toHaveBeenNthCalledWith(3, 'SELECT pg_advisory_unlock($1, $2)', [
       ...POSTGRES_BOOT_MIGRATION_LOCK_KEYS,
     ]);
     // Migration execution preserves the built-in migrationsRun transaction mode, and only the
@@ -148,6 +149,7 @@ describe('createBootDataSource (postgres boot migrations)', () => {
     expect(migrator.calls).toEqual([
       'initialize',
       'connect',
+      'SET idle_session_timeout = 0',
       'SELECT pg_advisory_lock($1, $2)',
       'runMigrations',
       'SELECT pg_advisory_unlock($1, $2)',
@@ -198,6 +200,29 @@ describe('createBootDataSource (postgres boot migrations)', () => {
     );
   });
 
+  // The holder sits idle on its lock connection for the whole chain, so a role- or database-level
+  // idle_session_timeout (PostgreSQL 14+) would end the session mid-migration on every boot retry.
+  // PostgreSQL 12 and 13 do not know the setting, which is why it is not in the startup packet.
+  it('turns idle_session_timeout off on the lock session before taking the lock, tolerating old servers', async () => {
+    const { calls, dataSource, lockClient, deps } = makeFakes();
+    (lockClient.query as jest.Mock).mockImplementation((text: string) => {
+      calls.push(text);
+      return text.includes('idle_session_timeout')
+        ? Promise.reject(new Error('unrecognized configuration parameter "idle_session_timeout"'))
+        : Promise.resolve();
+    });
+
+    const returned = await createBootDataSource(PG_OPTIONS, deps);
+
+    expect(returned).toBe(dataSource);
+    expect(calls.slice(1, 5)).toEqual([
+      'connect',
+      'SET idle_session_timeout = 0',
+      'SELECT pg_advisory_lock($1, $2)',
+      'runMigrations',
+    ]);
+  });
+
   it('releases the lock and surfaces the error when a migration fails', async () => {
     const failure = new Error('duplicate table: messages');
     const { calls, lockClient, deps } = makeFakes(jest.fn(() => Promise.reject(failure)));
@@ -210,6 +235,7 @@ describe('createBootDataSource (postgres boot migrations)', () => {
     expect(calls).toEqual([
       'initialize',
       'connect',
+      'SET idle_session_timeout = 0',
       'SELECT pg_advisory_lock($1, $2)',
       'runMigrations',
       'SELECT pg_advisory_unlock($1, $2)',
@@ -267,6 +293,7 @@ describe('createBootDataSource (postgres boot migrations)', () => {
     expect(calls).toEqual([
       'initialize',
       'connect',
+      'SET idle_session_timeout = 0',
       'SELECT pg_advisory_lock($1, $2)',
       'runMigrations',
       'SELECT pg_advisory_unlock($1, $2)',
@@ -290,6 +317,7 @@ describe('createBootDataSource (postgres boot migrations)', () => {
     expect(calls).toEqual([
       'initialize',
       'connect',
+      'SET idle_session_timeout = 0',
       'SELECT pg_advisory_lock($1, $2)',
       'runMigrations',
       'SELECT pg_advisory_unlock($1, $2)',
@@ -315,6 +343,7 @@ describe('createBootDataSource (postgres boot migrations)', () => {
     expect(calls).toEqual([
       'initialize',
       'connect',
+      'SET idle_session_timeout = 0',
       'SELECT pg_advisory_lock($1, $2)',
       'runMigrations',
       'SELECT pg_advisory_unlock($1, $2)',
@@ -382,10 +411,10 @@ describe('createBootDataSource (postgres boot migrations)', () => {
           options: '-c statement_timeout=0',
         }),
       );
-      expect(lockClient.query).toHaveBeenNthCalledWith(1, 'SELECT pg_advisory_lock($1, $2)', [
+      expect(lockClient.query).toHaveBeenNthCalledWith(2, 'SELECT pg_advisory_lock($1, $2)', [
         ...POSTGRES_BOOT_MIGRATION_LOCK_KEYS,
       ]);
-      expect(lockClient.query).toHaveBeenNthCalledWith(2, 'SELECT pg_advisory_unlock($1, $2)', [
+      expect(lockClient.query).toHaveBeenNthCalledWith(3, 'SELECT pg_advisory_unlock($1, $2)', [
         ...POSTGRES_BOOT_MIGRATION_LOCK_KEYS,
       ]);
       expect(runMigrations).toHaveBeenCalledWith({ transaction: 'all' });

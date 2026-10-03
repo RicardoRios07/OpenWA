@@ -132,9 +132,9 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # Mirrors ci.yml's test job. The queue-on e2e suite needs this service: under GitHub Actions it
-    # fails rather than skipping when Redis is unreachable, so the tag is never verified less than the
-    # branch it came from.
+    # Mirrors ci.yml's test job. The queue-on and throttler-redis e2e suites need this service: under
+    # GitHub Actions they fail rather than skipping when Redis is unreachable, so the tag is never
+    # verified less than the branch it came from.
     services:
       redis:
         image: redis:7-alpine
@@ -807,7 +807,7 @@ jobs:
             grep -q "$want" /tmp/inspect.txt || { echo "MISSING PLATFORM: $want"; exit 1; }
           done
 
-  # ──── Staging tag cleanup (happy path AND failure path) ───────────
+  # ──── Staging tag cleanup (only when promote never ran) ───────────
   # Best-effort tidy-up of the staging tag, and it MUST refuse to act unless that tag is the only
   # one on its version.
   #
@@ -821,8 +821,11 @@ jobs:
   # This lives in its own `if: always()` job — not inside promote — because the failure path is
   # exactly when cleanup matters most: when boot-smoke or image-scan fails, promote is skipped and
   # the staging tag would otherwise leak. On the happy path the release tags share the staging
-  # version, so the step below keeps it (the deliberate retention documented above); on a failed
-  # run the staging tag is alone and gets removed.
+  # version, so the step below does not run at all (the deliberate retention documented above): the
+  # package-versions API is eventually consistent, and a read that does not list the new release
+  # tags yet would count the staging tag alone and delete the version just published. The same
+  # holds for a promote that failed after re-pointing some tags, so the step runs only when promote
+  # never ran, which is the one case where the staging tag is alone and gets removed.
   cleanup-staging:
     name: Clean up the staging tag
     runs-on: ubuntu-latest
@@ -833,6 +836,10 @@ jobs:
     needs: [docker, boot-smoke, image-scan, promote]
     steps:
       - name: Remove the staging tag (only when it is alone on its version)
+        # Only when promote never ran: once it has started re-pointing tags, the version can carry
+        # release tags that a stale read does not list yet. A failed or cancelled promote leaves the
+        # stray staging tag behind, the same retention as the happy path.
+        if: needs.promote.result == 'skipped'
         # Best-effort: a failed tidy-up must not turn an otherwise successful release red.
         continue-on-error: true
         env:
@@ -875,10 +882,9 @@ jobs:
     name: Verify published tags (anonymous)
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # After cleanup-staging, not beside it: GHCR's package-versions API is eventually consistent, so
-    # that job can read a version whose release tags are not listed yet and delete the version the
-    # release just published. This check is the net for exactly that, so it has to run last. It is a
-    # best-effort job, so gate on promote rather than on its result.
+    # After cleanup-staging, not beside it: that job deletes registry versions, so this check has to
+    # see the registry after it, and run last. It is a best-effort job, so gate on promote rather
+    # than on its result.
     needs: [docker, promote, cleanup-staging]
     if: always() && needs.promote.result == 'success'
     # attestations: read for `gh attestation verify` below. GH_TOKEN is an API credential for the

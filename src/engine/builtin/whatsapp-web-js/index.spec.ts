@@ -5,6 +5,7 @@ jest.mock('../../adapters/whatsapp-web-js.adapter', () => ({
 import { WhatsAppWebJsPlugin } from './index';
 import { WhatsAppWebJsAdapter } from '../../adapters/whatsapp-web-js.adapter';
 import { PluginContext } from '../../../core/plugins';
+import type { LidMappingStore } from '../../identity/lid-mapping-store.service';
 
 describe('WhatsAppWebJsPlugin.createEngine (opaque config)', () => {
   beforeEach(() => {
@@ -45,6 +46,14 @@ describe('WhatsAppWebJsPlugin.createEngine (opaque config)', () => {
         proxy: { url: 'http://p', type: 'http' },
       }),
     );
+  });
+
+  it('threads the shared lid mapping store to the adapter', () => {
+    const lidMappingStore = {} as LidMappingStore;
+
+    new WhatsAppWebJsPlugin(undefined, lidMappingStore).createEngine({ sessionId: 's' });
+
+    expect(WhatsAppWebJsAdapter).toHaveBeenCalledWith(expect.objectContaining({ lidMappingStore }));
   });
 
   it('falls back to safe defaults when context has no config, leaving the flag list to the adapter', () => {

@@ -27,8 +27,9 @@ export enum AuditAction {
   SESSION_QR_GENERATED = 'session_qr_generated',
   SESSION_CONNECTED = 'session_connected',
   SESSION_DISCONNECTED = 'session_disconnected',
-  // WhatsApp's own judgement of the account, not our connection to it. Unlike the two above these
-  // ARE audited: they are rare, they are not reconnect noise, and the in-memory store that serves
+  // WhatsApp's own judgement of the account, not our connection to it. Unlike SESSION_CONNECTED (never
+  // emitted) and SESSION_DISCONNECTED (emitted only for a terminal unlink), these are always audited:
+  // they are rare, they are not reconnect noise, and the in-memory store that serves
   // them to the API does not survive a restart — so the audit log is the only durable record of when
   // an account was restricted and for how long.
   SESSION_RESTRICTED = 'session_restricted',

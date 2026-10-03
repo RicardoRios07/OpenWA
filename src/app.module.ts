@@ -10,7 +10,7 @@ import { createThrottlerRedisClient } from './common/throttler/throttler-redis.c
 import configuration from './config/configuration';
 import { validateEnv } from './config/env.validation';
 import { createBootDataSource } from './database/pg-boot-migrations';
-import { createMainDataSource, mainConnectionOptions } from './database/main-connection';
+import { createMainDataSource, mainConnectionOptions, SQLITE_BUSY_TIMEOUT_MS } from './database/main-connection';
 import { SessionModule } from './modules/session/session.module';
 import { MessageModule } from './modules/message/message.module';
 import { TemplateModule } from './modules/template/template.module';
@@ -223,6 +223,7 @@ if (dashboardServingEnabled && dashboardBuildPresent) {
           name: 'data',
           type: 'better-sqlite3' as const,
           database: configService.get<string>('dataDatabase.database', './data/openwa.sqlite'),
+          timeout: SQLITE_BUSY_TIMEOUT_MS,
           synchronize,
           migrationsRun: !synchronize,
         };

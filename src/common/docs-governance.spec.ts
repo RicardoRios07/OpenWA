@@ -174,6 +174,10 @@ describe('governance docs match the repository', () => {
         /^Official .+ SDK for OpenWA, the open-source WhatsApp API Gateway \(not affiliated with WhatsApp or Meta\)$/,
       );
     }
+    // Go has no registry manifest: pkg.go.dev shows the package comment's first sentence instead.
+    expect(read('sdk/go/client.go')).toMatch(
+      /^\/\/ Package openwa is the official Go client for OpenWA, the open-source WhatsApp API Gateway \(not\n\/\/ affiliated with WhatsApp or Meta\)\./,
+    );
   });
 
   // The risk guide counts this published notice as the legal risk's mitigation.

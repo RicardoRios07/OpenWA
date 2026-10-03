@@ -88,6 +88,8 @@ afterEach(() => {
   queryClient?.clear();
   queryClient = undefined;
   sessionsStatus = 200;
+  templatesStatus = 200;
+  templates = [];
   extraSessions = [];
   firstSessionGone = false;
 });
@@ -130,8 +132,8 @@ test('a write key can delete a template from its row, and a read-only key cannot
 
   const readOnlyRow = (await screen.findByText('invoice-reminder')).closest('.template-list-row') as HTMLElement;
   assert.equal(
-    within(readOnlyRow).queryByRole('button', { name: 'Delete' }),
-    null,
+    within(readOnlyRow).queryByRole('button', { name: 'Delete' }) === null,
+    true,
     'a read-only key was offered the row delete',
   );
 });
@@ -152,9 +154,31 @@ test('any other failed read shows the error, not an empty library', async () => 
 });
 
 test('a successful empty read still shows the empty state', async () => {
-  templatesStatus = 200;
   renderTemplates();
+  // Before a session is selected the templates read has not started and the list is briefly empty, so
+  // only the settled read can tell an empty library from a loaded one.
+  await rtl.waitFor(() =>
+    assert.equal(queryClient!.getQueryState(['sessions', 'sess-1', 'templates'])?.status, 'success'),
+  );
   await rtl.screen.findByText('No templates saved');
+});
+
+// Between the sessions read and the effect that selects the first session, no templates read has
+// started yet; that frame must show the loading state, not claim the library is empty.
+test('a library with templates never flashes the empty state while the first session is selected', async () => {
+  templates = [{ id: 'tpl-1', name: 'invoice-reminder', body: 'Hi {{name}}' }];
+  let sawEmpty = false;
+  const observer = new MutationObserver(() => {
+    if (document.body.textContent?.includes('No templates saved')) sawEmpty = true;
+  });
+  observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+  try {
+    renderTemplates();
+    await rtl.screen.findByText('invoice-reminder');
+  } finally {
+    observer.disconnect();
+  }
+  assert.equal(sawEmpty, false, 'the empty state rendered before the templates read started');
 });
 
 test('a failed sessions read shows the error, not "no sessions available"', async () => {
@@ -163,8 +187,8 @@ test('a failed sessions read shows the error, not "no sessions available"', asyn
   const alert = await rtl.screen.findByRole('alert');
   rtl.within(alert).getByText('Failed to load data');
   rtl.within(alert).getByText('gateway restarting');
-  assert.equal(rtl.screen.queryByText('No sessions available'), null);
-  assert.equal(rtl.screen.queryByRole('option', { name: 'No sessions' }), null);
+  assert.equal(rtl.screen.queryByText('No sessions available') === null, true);
+  assert.equal(rtl.screen.queryByRole('option', { name: 'No sessions' }) === null, true);
 });
 
 // The full-page loader puts both classes on the page root itself, so its rule must be a compound
@@ -209,7 +233,7 @@ test('a selected session that disappears from the list is replaced by the first 
 
   await screen.findByText('support-greeting');
   assert.equal(select.value, 'sess-2');
-  assert.equal(screen.queryByText('invoice-reminder'), null);
+  assert.equal(screen.queryByText('invoice-reminder') === null, true);
   screen.getByText('Saved under support-bot');
   window.sessionStorage.setItem('openwa_user_role', 'viewer');
 });
@@ -225,5 +249,13 @@ test('a search with no match says so instead of reporting an empty library', asy
   await screen.findByText('invoice-reminder');
   fireEvent.change(screen.getByPlaceholderText('Search'), { target: { value: 'no-such-template' } });
   await screen.findByText('No templates match your search.');
-  assert.equal(screen.queryByText('No templates saved'), null);
+  assert.equal(screen.queryByText('No templates saved') === null, true);
+});
+
+// Hebrew and Arabic flip the three-column grid. A physical left or right edge then lands on the
+// workspace's outer border instead of between the columns, and left-aligned text reads backwards.
+test('the workspace columns and list rows follow the text direction', () => {
+  const css = readFileSync(new URL('./Templates.css', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.doesNotMatch(css, /border-(left|right)\s*:/, 'a column divider uses a physical side');
+  assert.doesNotMatch(css, /text-align\s*:\s*(left|right)\b/, 'text is aligned to a physical side');
 });

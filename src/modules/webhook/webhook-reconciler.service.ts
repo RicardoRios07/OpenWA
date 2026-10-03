@@ -71,7 +71,7 @@ export class WebhookReconcilerService implements OnModuleInit, OnModuleDestroy {
   onModuleInit(): void {
     const opts = resolveWebhookReconcilerOptions();
     if (opts.intervalMs <= 0) {
-      this.logger.log('Webhook delivery reconciler disabled (WEBHOOK_RECONCILE_INTERVAL_MS <= 0)');
+      this.logger.log('Webhook delivery reconciler disabled (WEBHOOK_RECONCILE_INTERVAL_MS=0)');
       return;
     }
     this.timer = setInterval(() => {

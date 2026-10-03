@@ -144,18 +144,26 @@ function groupJsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
-function stubGroupGateway(groups: { id: string; name?: string }[], refuseFirstWith?: number): { textSends: string[] } {
+function stubGroupGateway(
+  groups: { id: string; name?: string }[],
+  refuseFirstWith?: number,
+): { textSends: string[]; imageBodies: { chatId: string; url?: string; caption?: string }[] } {
   const previousFetch = globalThis.fetch;
   restoreFetch = () => {
     globalThis.fetch = previousFetch;
   };
   const textSends: string[] = [];
+  const imageBodies: { chatId: string; url?: string; caption?: string }[] = [];
   globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     if (url.endsWith('/sessions')) {
       return Promise.resolve(groupJsonResponse([{ id: 's1', name: 'Main', status: 'ready', phone: '15550000000' }]));
     }
     if (url.endsWith('/sessions/s1/groups')) return Promise.resolve(groupJsonResponse(groups));
+    if (url.endsWith('/messages/send-image')) {
+      imageBodies.push(JSON.parse(String(init?.body)) as { chatId: string; url?: string; caption?: string });
+      return Promise.resolve(groupJsonResponse({ messageId: 'img1', timestamp: 1 }, 201));
+    }
     if (url.endsWith('/messages/send-text')) {
       const { chatId } = JSON.parse(String(init?.body)) as { chatId: string };
       textSends.push(chatId);
@@ -166,7 +174,7 @@ function stubGroupGateway(groups: { id: string; name?: string }[], refuseFirstWi
     }
     return Promise.resolve(groupJsonResponse([]));
   }) as typeof fetch;
-  return { textSends };
+  return { textSends, imageBodies };
 }
 
 async function renderGroupsAsWriter(): Promise<void> {
@@ -217,7 +225,7 @@ test('cancelling a group send stops the groups still waiting', async () => {
   assert.ok(rtl.screen.getByText('1/2 sent'));
   // One of two groups sent is not a success.
   assert.ok(rtl.screen.getByText('Failed'));
-  assert.equal(rtl.screen.queryByText('Success'), null);
+  assert.equal(rtl.screen.queryByText('Success') === null, true);
   assert.equal(window.document.getElementById('mt-2')?.matches(':disabled'), false);
 });
 
@@ -269,6 +277,115 @@ test('an empty message or a media type with no file or URL keeps Send disabled',
 
   rtl.fireEvent.click(rtl.screen.getByRole('button', { name: 'Image' }));
   assert.equal(sendMessageButton().disabled, true);
+});
+
+test('a group media send holds a URL or caption the gateway would refuse, and sends the URL trimmed', async () => {
+  const gateway = stubGroupGateway([{ id: 'g1@g.us', name: 'Family' }]);
+  await renderGroupsAsWriter();
+  rtl.fireEvent.click(await rtl.screen.findByRole('checkbox', { name: 'Family' }));
+  rtl.fireEvent.click(rtl.screen.getByRole('button', { name: 'Image' }));
+  const mediaUrl = window.document.getElementById('mt-3')!;
+  const caption = window.document.getElementById('mt-14')!;
+
+  // Without a scheme the gateway reads the string as base64 and refuses it, once per group.
+  rtl.fireEvent.change(mediaUrl, { target: { value: 'cdn.example.com/a.jpg' } });
+  await rtl.screen.findByText('Use a full http:// or https:// address, like https://example.com/file.pdf.');
+  assert.equal(sendMessageButton().disabled, true);
+
+  rtl.fireEvent.change(mediaUrl, { target: { value: ' https://cdn.example.com/a.jpg' } });
+  rtl.fireEvent.change(caption, { target: { value: 'x'.repeat(1025) } });
+  assert.equal(sendMessageButton().disabled, true);
+  rtl.fireEvent.change(caption, { target: { value: 'x'.repeat(1024) } });
+  await rtl.waitFor(() => assert.equal(sendMessageButton().disabled, false));
+
+  rtl.fireEvent.click(sendMessageButton());
+  await rtl.waitFor(() => assert.equal(gateway.imageBodies.length, 1));
+  assert.equal(gateway.imageBodies[0].url, 'https://cdn.example.com/a.jpg');
+});
+
+/** Render a group send to one group and switch to `type`. */
+async function renderGroupSendOf(type: string): Promise<void> {
+  stubGroupGateway([{ id: 'g1@g.us', name: 'Family' }]);
+  await renderGroupsAsWriter();
+  rtl.fireEvent.click(await rtl.screen.findByRole('checkbox', { name: 'Family' }));
+  rtl.fireEvent.click(rtl.screen.getByRole('button', { name: type }));
+}
+
+function byId(id: string): HTMLElement {
+  const element = window.document.getElementById(id);
+  assert.ok(element, `expected #${id}`);
+  return element;
+}
+
+function setValue(element: HTMLElement, value: string): void {
+  rtl.fireEvent.change(element, { target: { value } });
+}
+
+/** Exactly `max` characters in `element` lets Send through; one more holds it and says why. */
+async function assertLengthBound(element: HTMLElement, max: number, char = 'x'): Promise<void> {
+  const reason = `Limited to ${max} characters (${max + 1} now).`;
+  setValue(element, char.repeat(max));
+  await rtl.waitFor(() => assert.equal(sendMessageButton().disabled, false));
+  assert.equal(rtl.screen.queryByText(reason), null);
+  setValue(element, char.repeat(max + 1));
+  assert.equal(sendMessageButton().disabled, true);
+  rtl.screen.getByText(reason);
+  setValue(element, char.repeat(max));
+}
+
+test('a group text send holds a message over 4096 characters', async () => {
+  await renderGroupSendOf('Text');
+  await assertLengthBound(byId('mt-2'), 4096);
+});
+
+test('a group document send holds a filename over 255 characters', async () => {
+  await renderGroupSendOf('Document');
+  setValue(byId('mt-3'), 'https://cdn.example.com/a.pdf');
+  await assertLengthBound(byId('mt-14'), 255);
+});
+
+test('a group location send holds a description or address over 1024 characters', async () => {
+  await renderGroupSendOf('Location');
+  setValue(byId('mt-4'), '-6.2');
+  setValue(byId('mt-5'), '106.8');
+  await assertLengthBound(byId('mt-15'), 1024);
+  await assertLengthBound(byId('mt-16'), 1024);
+});
+
+test('a group contact send holds a name over 255 or a number over 30 characters', async () => {
+  await renderGroupSendOf('Contact');
+  setValue(byId('mt-6'), 'Ann');
+  setValue(byId('mt-7'), '15550000000');
+  await assertLengthBound(byId('mt-6'), 255);
+  await assertLengthBound(byId('mt-7'), 30, '1');
+});
+
+test('a group poll send holds a question over 255 or an option over 100 characters', async () => {
+  await renderGroupSendOf('Poll');
+  setValue(rtl.screen.getByPlaceholderText('Option 1'), 'a');
+  setValue(rtl.screen.getByPlaceholderText('Option 2'), 'b');
+  await assertLengthBound(byId('mt-8'), 255);
+  await assertLengthBound(rtl.screen.getByPlaceholderText('Option 1'), 100);
+});
+
+test('no single-send field truncates input by UTF-16 units', async () => {
+  // A native maxlength counts a surrogate pair as two and cuts pasted text the gateway would accept;
+  // Send alone holds an over-limit field, counting characters the way the gateway does.
+  const capped = (element: HTMLElement): boolean => element.hasAttribute('maxlength');
+  await renderGroupSendOf('Text');
+  assert.equal(capped(byId('mt-2')), false);
+  await assertLengthBound(byId('mt-2'), 4096, '\u{1F600}');
+  rtl.fireEvent.click(rtl.screen.getByRole('button', { name: 'Image' }));
+  assert.equal(capped(byId('mt-14')), false);
+  rtl.fireEvent.click(rtl.screen.getByRole('button', { name: 'Location' }));
+  assert.equal(capped(byId('mt-15')), false);
+  assert.equal(capped(byId('mt-16')), false);
+  rtl.fireEvent.click(rtl.screen.getByRole('button', { name: 'Contact' }));
+  assert.equal(capped(byId('mt-6')), false);
+  assert.equal(capped(byId('mt-7')), false);
+  rtl.fireEvent.click(rtl.screen.getByRole('button', { name: 'Poll' }));
+  assert.equal(capped(byId('mt-8')), false);
+  assert.equal(capped(rtl.screen.getByPlaceholderText('Option 1')), false);
 });
 
 test('a session that stops being ready is replaced by what the selector shows', async () => {
@@ -361,6 +478,17 @@ test('a bulk send with a picked image carries it in every item', async () => {
     assert.equal(item.content.image?.mimetype, 'image/png');
     assert.ok(item.content.image?.base64, 'expected the file inline');
   }
+});
+
+test('a bulk text over 4096 characters with no attachment keeps Send disabled and says why', async () => {
+  stubGateway();
+  const container = await renderBulkAsWriter();
+  type(container, '#mt-11', '15550000001');
+  type(container, '#mt-12', 'x'.repeat(4096));
+  await rtl.waitFor(() => assert.equal(sendButton().disabled, false));
+  type(container, '#mt-12', 'x'.repeat(4097));
+  assert.equal(sendButton().disabled, true);
+  rtl.screen.getByText('Limited to 4096 characters (4097 now).');
 });
 
 test('a bulk send that resolves after the page is left starts no progress polling', async () => {
@@ -661,7 +789,7 @@ test('a media file that cannot be read is reported and not attached', async () =
     pickMedia(container, new window.File(['x'], 'broken.png', { type: 'image/png' }));
 
     await rtl.screen.findByText('File read failed');
-    assert.equal(rtl.screen.queryByText('broken.png'), null);
+    assert.equal(rtl.screen.queryByText('broken.png') === null, true);
   } finally {
     globalThis.FileReader.prototype.readAsDataURL = readAsDataURL;
   }
@@ -683,7 +811,7 @@ test('a failed sessions read is reported, not shown as "no ready sessions"', asy
   const alert = await rtl.screen.findByRole('alert');
   rtl.within(alert).getByText(/Failed to load data/);
   rtl.within(alert).getByText(/gateway restarting/);
-  assert.equal(rtl.screen.queryByRole('option', { name: 'No ready sessions' }), null);
+  assert.equal(rtl.screen.queryByRole('option', { name: 'No ready sessions' }) === null, true);
 });
 
 test('a failed groups read is reported, not shown as "no groups found"', async () => {
@@ -701,7 +829,7 @@ test('a failed groups read is reported, not shown as "no groups found"', async (
 
   const alert = await rtl.screen.findByRole('alert');
   rtl.within(alert).getByText(/Failed to load data/);
-  assert.equal(rtl.screen.queryByText('No groups found'), null);
+  assert.equal(rtl.screen.queryByText('No groups found') === null, true);
 });
 
 test('Send stays disabled while a batch cancel is in flight, so its answer cannot land on a newer batch', async () => {

@@ -221,14 +221,23 @@ describe('InfraDataService.exportData validates the registry against live entity
 });
 
 describe('the import clears every re-inserted table that DELETE FROM sessions cannot cascade', () => {
-  it('clears the (sessionId, *) provenance tables (lid_mappings, chat_states) before the sessions delete', () => {
-    const src = readFileSync(join(__dirname, 'infra-data.service.ts'), 'utf8');
-    const cleared = new Set([...src.matchAll(/clearTable\('([a-z_]+)'\)/g)].map(m => m[1]));
-    // These tables carry no FK to sessions (the sessionId is provenance, not a foreign key), so the
-    // import's `DELETE FROM sessions` never reaches them. They are re-inserted from the archive, so
-    // without an explicit clear a restore onto an instance that already holds their rows collides on
-    // PK and the all-or-nothing gate rolls the whole import back (the exact restore-onto-self flow).
-    expect(cleared).toContain('lid_mappings');
-    expect(cleared).toContain('chat_states');
+  const src = readFileSync(join(__dirname, 'infra-data.service.ts'), 'utf8');
+  const sessionsDelete = src.indexOf("'DELETE FROM sessions'");
+  // These tables carry no FK to sessions (a sessionId, where present, is provenance, not a foreign
+  // key), so the import's `DELETE FROM sessions` never reaches them. They are re-inserted from the
+  // archive, so without an explicit clear a restore onto an instance that already holds their rows
+  // collides on PK and the all-or-nothing gate rolls the whole import back (the exact restore-onto-self
+  // flow). The set is derived from the registry, so a new table is covered without editing this spec.
+  const uncascaded = EXPORT_TABLES.filter(entry => !entry.sessionFk && entry.table !== 'sessions').map(e => e.table);
+
+  it('finds the sessions delete and at least one uncascaded table', () => {
+    expect(sessionsDelete).toBeGreaterThan(-1);
+    expect(uncascaded).toContain('lid_mappings');
+  });
+
+  it.each(uncascaded)('clears %s before the sessions delete', table => {
+    const clear = src.indexOf(`clearTable('${table}')`);
+    expect(clear).toBeGreaterThan(-1);
+    expect(clear).toBeLessThan(sessionsDelete);
   });
 });

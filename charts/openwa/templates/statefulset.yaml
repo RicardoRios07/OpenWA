@@ -28,6 +28,9 @@ spec:
       serviceAccountName: {{ include "openwa.serviceAccountName" . }}
       # The app never calls the Kubernetes API — don't mount a token it can't use.
       automountServiceAccountToken: false
+      # The app reads no Docker-link variables, and a Service named redis or database in the namespace
+      # would otherwise set REDIS_PORT or DATABASE_PORT to tcp://<ip>:<port> and fail boot validation.
+      enableServiceLinks: false
       {{- with .Values.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}

@@ -47,6 +47,21 @@ describe('invokeTool', () => {
     );
   });
 
+  // PostgreSQL rejects U+0000 in every text parameter, so an argument holding one failed the tool's
+  // query or write as an internal error.
+  it('refuses a NUL character anywhere in the input before the handler runs', async () => {
+    const handler = jest.fn();
+    const tool: ToolDescriptor = {
+      ...readTool,
+      inputSchema: z.object({ chatId: z.string(), vars: z.record(z.string(), z.string()) }),
+      handler,
+    };
+    await expect(
+      invokeTool(tool, { chatId: 'a@c.us', vars: { name: 'x\u0000' } }, 'rawkey', auth() as unknown as AuthService),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
   it('passes sessionId from input to validateApiKey when sessionScoped', async () => {
     const a = auth();
     const scoped: ToolDescriptor = {

@@ -9,9 +9,7 @@ import { REQUIRED_ROLE_KEY } from '../auth/decorators/auth.decorators';
 import { ApiKeyRole } from '../auth/entities/api-key.entity';
 
 /**
- * Regression locks for the secret/headers leak and read authorization.
- * e2e coverage is deferred (the e2e harness is currently broken),
- * so these controller-level unit tests are the regression gate.
+ * Regression locks for the secret/headers leak and read authorization at the controller level.
  */
 
 function createSecretWebhook(overrides: Partial<Webhook> = {}): Webhook {

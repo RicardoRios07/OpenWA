@@ -183,13 +183,13 @@ const (
 	ProxySOCKS5 ProxyType = "socks5"
 )
 
-// CreateSessionRequest is the body for creating a session. ProxyType is one of:
-// http, https, socks4, socks5.
+// CreateSessionRequest is the body for creating a session.
 type CreateSessionRequest struct {
-	Name      string         `json:"name"`
-	Config    map[string]any `json:"config,omitempty"`
-	ProxyURL  string         `json:"proxyUrl,omitempty"`
-	ProxyType ProxyType      `json:"proxyType,omitempty"`
+	Name     string         `json:"name"`
+	Config   map[string]any `json:"config,omitempty"`
+	ProxyURL string         `json:"proxyUrl,omitempty"`
+	// Deprecated: ignored by the server; the ProxyURL scheme selects the proxy protocol.
+	ProxyType ProxyType `json:"proxyType,omitempty"`
 }
 
 // SessionProxy is the masked per-session proxy configuration returned by GET/PATCH /proxy.

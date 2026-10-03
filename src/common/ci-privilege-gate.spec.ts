@@ -184,13 +184,29 @@ describe('a job that can mint a publish credential pins global npm installs and 
   type OidcJob = { permissions?: Permissions; steps?: Step[] };
   type OidcWorkflow = { permissions?: Permissions; jobs?: Record<string, OidcJob> };
   const workflows = fs.readdirSync(workflowDir).filter(f => f.endsWith('.yml') || f.endsWith('.yaml'));
+  // Options before a subcommand, each optionally followed by one value (`--prefix /usr/local`).
+  const OPTS = String.raw`(?:[ \t]+-\S+(?:[ \t]+[^\s-]\S*)?)*`;
   // Options may sit before the subcommand or anywhere after it: group 1 holds the leading ones, group 2
   // the rest of the command, and the global flag may be in either.
-  const NPM_INSTALL = /\bnpm((?:[ \t]+-\S+)*)[ \t]+(?:install|i|add)\b([^\n;&|]*)/g;
-  const GLOBAL_FLAG = /(?:^|\s)(?:-g|--global|--location=global)(?=\s|$)/;
-  // `pip`, `pip3`, `python -m pip` and `uv pip` all contain `pip install`, with options allowed between.
-  const PYTHON_INSTALL =
-    /\bpip[\d.]*(?:[ \t]+-\S+)*[ \t]+(?:install|wheel|download)\b|\bpython[\d.]*\s+-m\s+build\b|\bpyproject-build\b|\bpipx\s+(?:install|run)\b|\buvx\b|\buv\s+(?:sync|build|run|add|tool)\b|\bpoetry\s+(?:install|sync|update|lock|build|add|publish)\b|\bpdm\s+(?:install|sync|update|add|build|publish)\b|\bhatch\s+(?:build|publish|run|env)\b|\bflit\s+(?:build|publish|install)\b/g;
+  const NPM_INSTALL = new RegExp(String.raw`\bnpm(${OPTS})[ \t]+(?:install|i|add)\b([^\n;&|]*)`, 'g');
+  const GLOBAL_FLAG = /(?:^|\s)(?:-g|--global|--location[= \t]global)(?=\s|$)/;
+  // `pip`, `pip3`, `python -m pip` and `uv pip` all contain `pip install`; every tool may take options
+  // before its subcommand (`uv --directory sdk/python build`).
+  const PYTHON_INSTALL = new RegExp(
+    [
+      String.raw`\bpip[\d.]*${OPTS}[ \t]+(?:install|wheel|download)\b`,
+      String.raw`\bpython[\d.]*${OPTS}[ \t]+-m[ \t]*build\b`,
+      String.raw`\bpyproject-build\b`,
+      String.raw`\buvx\b`,
+      String.raw`\bpipx${OPTS}[ \t]+(?:install|run)\b`,
+      String.raw`\buv${OPTS}[ \t]+(?:sync|build|run|add|tool)\b`,
+      String.raw`\bpoetry${OPTS}[ \t]+(?:install|sync|update|lock|build|add|publish)\b`,
+      String.raw`\bpdm${OPTS}[ \t]+(?:install|sync|update|add|build|publish)\b`,
+      String.raw`\bhatch${OPTS}[ \t]+(?:build|publish|run|env)\b`,
+      String.raw`\bflit${OPTS}[ \t]+(?:build|publish|install)\b`,
+    ].join('|'),
+    'g',
+  );
 
   // A job without its own `permissions` inherits the workflow-level block; `write-all` grants id-token too.
   const grantsIdToken = (perms: Permissions): boolean =>
@@ -212,6 +228,8 @@ describe('a job that can mint a publish credential pins global npm installs and 
         .filter(match => GLOBAL_FLAG.test(`${match[1]} ${match[2]}`))
         .flatMap(match =>
           match[2]
+            // `--location global` carries its value as a separate word, which is not a package spec.
+            .replace(/--location[ \t]+global\b/g, '--location=global')
             .trim()
             .split(/\s+/)
             .filter(arg => !arg.startsWith('-'))
@@ -247,6 +265,9 @@ describe('a job that can mint a publish credential pins global npm installs and 
       'npm install --no-fund -g npm@latest',
       'npm i npm@11 -g',
       'npm add --location=global npm@latest',
+      'npm --prefix /usr/local install -g npm@latest',
+      'npm --location global install npm@latest',
+      'npm install --location global npm@11.2.0',
     ];
     const job: OidcWorkflow = {
       jobs: { publish: { permissions: { 'id-token': 'write' }, steps: commands.map(run => ({ run })) } },
@@ -257,6 +278,9 @@ describe('a job that can mint a publish credential pins global npm installs and 
       'npm@latest',
       'npm@11',
       'npm@latest',
+      'npm@latest',
+      'npm@latest',
+      'npm@11.2.0',
     ]);
     // A local install and a clean install grant nothing global.
     const local: OidcWorkflow = {
@@ -314,6 +338,16 @@ describe('a job that can mint a publish credential pins global npm installs and 
       'python -m pip wheel .',
       'pip -q install twine',
       'python -m pip --quiet install build',
+      'poetry --no-interaction publish --build',
+      'poetry -C sdk/python build',
+      'uv --directory sdk/python build',
+      'uv -q sync',
+      'pdm -p sdk/python build',
+      'hatch -e default build',
+      'pipx --verbose run build',
+      'python -I -m build',
+      'python -W ignore -m build',
+      'pip --cache-dir /tmp/x install twine',
     ];
     const job: OidcWorkflow = {
       jobs: { publish: { permissions: { 'id-token': 'write' }, steps: commands.map(run => ({ run })) } },

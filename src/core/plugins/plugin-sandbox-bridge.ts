@@ -576,15 +576,30 @@ export class PluginSandboxBridge {
         state.dropped++;
         return;
       }
-      const bounded =
-        typeof message === 'string' && message.length > SANDBOX_LOG_MAX_MESSAGE_LENGTH
-          ? `${message.slice(0, SANDBOX_LOG_MAX_MESSAGE_LENGTH)}…[truncated]`
-          : message;
+      // Like the level below, the message and meta come off the wire unchecked: a non-string message is coerced
+      // before the length check, and a meta whose JSON form exceeds the same cap is replaced by a size
+      // marker (not a truncated string, which would hide its keys from the logger's secret redaction).
+      // logger.error's reason travels as a string meta.error, so that one key survives the replacement.
+      const truncate = (value: string): string =>
+        value.length > SANDBOX_LOG_MAX_MESSAGE_LENGTH
+          ? `${value.slice(0, SANDBOX_LOG_MAX_MESSAGE_LENGTH)}…[truncated]`
+          : value;
+      const bounded = truncate(typeof message === 'string' ? message : String(message));
+      let boundedMeta = meta;
+      if (meta !== undefined) {
+        const reason = typeof meta?.error === 'string' ? { error: truncate(meta.error) } : undefined;
+        try {
+          const metaLength = JSON.stringify(meta).length;
+          if (metaLength > SANDBOX_LOG_MAX_MESSAGE_LENGTH) boundedMeta = { ...reason, metaTruncated: true, metaLength };
+        } catch {
+          boundedMeta = reason; // not serializable (circular or BigInt), so it cannot be logged as JSON anyway
+        }
+      }
       // The level comes off the wire unchecked (plugin code can post to parentPort directly), and the
       // plugin logger has no method for anything outside PluginLogLevel.
-      if (level === 'error') context.logger.error(bounded, undefined, meta);
-      else if (level === 'debug' || level === 'warn') context.logger[level](bounded, meta);
-      else context.logger.log(bounded, meta);
+      if (level === 'error') context.logger.error(bounded, undefined, boundedMeta);
+      else if (level === 'debug' || level === 'warn') context.logger[level](bounded, boundedMeta);
+      else context.logger.log(bounded, boundedMeta);
     };
   }
 

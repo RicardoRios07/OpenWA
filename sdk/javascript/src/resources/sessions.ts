@@ -127,7 +127,13 @@ export class SessionsResource {
     return this.client.request<SessionResponse>({ method: 'POST', path: `/api/sessions/${encodeSegment(id)}/logout` });
   }
 
-  /** Force-kill a stuck session (SIGKILL + teardown). */
+  /**
+   * Force-kill a stuck session (SIGKILL + teardown). Rejects with HTTP `502` and
+   * `code: 'SESSION_FORCE_KILL_INCOMPLETE'` when the session was stopped locally but the
+   * force-destroy threw or timed out, so the engine process may still be running; the status is
+   * settled to `disconnected`, no success audit is written, and a retry answers `400` because no
+   * engine is left to kill. Restart the node to reap a leaked process.
+   */
   forceKill(id: string): Promise<SessionResponse> {
     return this.client.request<SessionResponse>({
       method: 'POST',

@@ -48,7 +48,7 @@ export function wsRedisOptions(): RedisOptions {
  *
  * Failure posture: if the pub/sub clients cannot be created the server falls back to the in-memory
  * adapter — the local node keeps working, only cross-node fan-out is lost — rather than refusing to
- * boot. A Redis outage after boot is ioredis's problem to retry; the adapter recovers on reconnect.
+ * boot. A Redis outage, at boot or after it, is ioredis's problem to retry; the adapter recovers on reconnect.
  */
 export class RedisIoAdapter extends IoAdapter {
   private pubClient?: Redis;
@@ -64,7 +64,11 @@ export class RedisIoAdapter extends IoAdapter {
 
     try {
       const pubClient = new Redis(wsRedisOptions());
-      const subClient = pubClient.duplicate();
+      // The adapter issues its SUBSCRIBE/PSUBSCRIBE once, at construction. With a bounded per-request
+      // retry, an outage at boot flushes them before Redis is ever reached, and ioredis only replays
+      // subscriptions the server confirmed, so the replica would never subscribe. This connection
+      // carries nothing else, so keep its commands queued until the first connect.
+      const subClient = pubClient.duplicate({ maxRetriesPerRequest: null });
       for (const [name, client] of [
         ['pub', pubClient],
         ['sub', subClient],

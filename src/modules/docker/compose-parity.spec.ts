@@ -359,7 +359,7 @@ describe('DockerService managed specs ↔ docker-compose.yml parity', () => {
   // A compose `environment:` entry overrides the image ENV even when it renders BLANK, and the blank
   // is then cleared by load-env, so a `- PUPPETEER_EXECUTABLE_PATH=${PUPPETEER_EXECUTABLE_PATH:-}`
   // forward deletes the Dockerfile's path inside the container and puppeteer falls back to a
-  // bundled Chromium the image deliberately does not ship (PUPPETEER_SKIP_CHROMIUM_DOWNLOAD). The
+  // bundled Chromium the image deliberately does not ship (PUPPETEER_SKIP_DOWNLOAD). The
   // forward must therefore carry the image's own value as its default, kept in sync by this test.
   it('forwards PUPPETEER_EXECUTABLE_PATH with the Dockerfile default, not blank', () => {
     const imageValue = /^ENV PUPPETEER_EXECUTABLE_PATH=(\S+)$/m.exec(
@@ -372,6 +372,21 @@ describe('DockerService managed specs ↔ docker-compose.yml parity', () => {
         .find(l => l.trim().startsWith('- PUPPETEER_EXECUTABLE_PATH='));
       expect(line?.trim()).toBe(`- PUPPETEER_EXECUTABLE_PATH=\${PUPPETEER_EXECUTABLE_PATH:-${imageValue}}`);
     }
+  });
+
+  // puppeteer ignores an env var it does not know, so a misspelled or retired name in the image is
+  // dead config whose comment still claims the effect.
+  it('sets only PUPPETEER_* image ENV names the installed puppeteer reads', () => {
+    const names = [
+      ...readFileSync(join(__dirname, '../../../Dockerfile'), 'utf8').matchAll(/^ENV (PUPPETEER_\w+)=/gm),
+    ].map(match => match[1]);
+    expect(names.length).toBeGreaterThan(0);
+    // A file path, not require.resolve: jest maps `puppeteer` to a mock.
+    const config = readFileSync(
+      join(__dirname, '../../../node_modules/puppeteer/lib/cjs/puppeteer/getConfiguration.js'),
+      'utf8',
+    );
+    expect(names.filter(name => !config.includes(`'${name}'`))).toEqual([]);
   });
 
   // .env.example documents API_PORT as the host port Docker Compose publishes, and the README quick

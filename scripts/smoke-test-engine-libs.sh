@@ -27,8 +27,9 @@ docker run --rm "$@" -e ENGINE_TYPE=baileys "$IMAGE" node -e "
 import('@whiskeysockets/baileys')
   .then(m => {
     const used = ['default', 'initAuthCreds', 'makeCacheableSignalKeyStore', 'fetchLatestBaileysVersion',
-      'fetchLatestWaWebVersion', 'normalizeMessageContent', 'getContentType', 'downloadMediaMessage', 'BufferJSON',
-      'proto', 'DisconnectReason', 'S_WHATSAPP_NET', 'ALL_WA_PATCH_NAMES', 'CALL_VIDEO_PREFIX', 'CALL_AUDIO_PREFIX'];
+      'fetchLatestWaWebVersion', 'normalizeMessageContent', 'extractMessageContent', 'getContentType',
+      'downloadMediaMessage', 'BufferJSON', 'proto', 'DisconnectReason', 'S_WHATSAPP_NET', 'ALL_WA_PATCH_NAMES',
+      'CALL_VIDEO_PREFIX', 'CALL_AUDIO_PREFIX'];
     const missing = used.filter(name => m[name] === undefined);
     if (missing.length > 0 || typeof m.default !== 'function') throw new Error('missing exports: ' + missing.join(', '));
     console.log('PASS: Baileys loaded with every export the adapter uses');

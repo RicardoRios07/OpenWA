@@ -129,6 +129,45 @@ describe('validateIngressManifest', () => {
     expect(() => validateIngressManifest(m as never)).not.toThrow();
   });
 
+  // An unknown scheme used to load and then fail every delivery as a signature mismatch, with nothing
+  // pointing at the manifest; a missing signature object failed the load with a bare TypeError.
+  it.each(['hmac_sha256', 'HMAC-SHA256', 'standard-webhook', undefined])(
+    'rejects signature.scheme %p, naming the route',
+    scheme => {
+      const m = baseManifest();
+      (m.ingress[0].signature as { scheme?: string }).scheme = scheme;
+      expect(() => validateIngressManifest(m as never)).toThrow(/route 'chatwoot' signature\.scheme must be one of/);
+    },
+  );
+
+  it('rejects a route with no signature object as a manifest error', () => {
+    const m = baseManifest();
+    delete (m.ingress[0] as { signature?: unknown }).signature;
+    expect(() => validateIngressManifest(m as never)).toThrow(/route 'chatwoot' signature\.scheme must be one of/);
+  });
+
+  it('rejects an hmac-sha256 signature.encoding other than hex or base64', () => {
+    const m = baseManifest();
+    (m.ingress[0].signature as { encoding?: string }).encoding = 'b64';
+    expect(() => validateIngressManifest(m as never)).toThrow(/route 'chatwoot' signature\.encoding must be/);
+  });
+
+  // Only hmac-sha256 reads `encoding`, so a stray value on another scheme must not fail the plugin's load.
+  it.each(['shared-secret', 'standard-webhooks'])('ignores signature.encoding on a %s route', scheme => {
+    const m = baseManifest();
+    m.ingress[0].signature.scheme = scheme;
+    (m.ingress[0].signature as { encoding?: string }).encoding = 'b64';
+    expect(() => validateIngressManifest(m as never)).not.toThrow();
+  });
+
+  it('accepts every declared scheme', () => {
+    for (const scheme of ['hmac-sha256', 'shared-secret', 'standard-webhooks', 'none']) {
+      const m = baseManifest();
+      m.ingress[0].signature.scheme = scheme;
+      expect(() => validateIngressManifest(m as never, true)).not.toThrow();
+    }
+  });
+
   it('rejects a duplicate route within one manifest', () => {
     const m = baseManifest();
     m.ingress.push({ ...m.ingress[0] });

@@ -66,7 +66,12 @@ export class OpenWAApiError extends OpenWAError {
       );
     }
     let body: unknown = undefined;
-    const text = await res.text().catch(() => '');
+    // An unreadable body leaves only the status to report, but an abort is the client timeout
+    // firing mid-read: rethrow it so the caller sees OpenWATimeoutError, not this status.
+    const text = await res.text().catch((err: unknown) => {
+      if (err instanceof Error && err.name === 'AbortError') throw err;
+      return '';
+    });
     if (text) {
       try {
         body = JSON.parse(text);
@@ -96,8 +101,10 @@ export class OpenWAConflictError extends OpenWAApiError {}
  * 429 Too Many Requests: rate limited. The global rate limiter's 429 lifts when its window
  * expires (seconds for the per-second tier, up to an hour for the hourly tier by default), and
  * `retryAfterSeconds` carries its `Retry-After` header. A 429 with `code: 'SEND_PACING_LIMITED'` is
- * not transient: do not retry it before `retryAfterSeconds`, which then comes from the body and can
- * be hours.
+ * usually not transient: do not retry it before `retryAfterSeconds`, which then comes from the body:
+ * a few seconds when only sends still in flight caused it, the rest of the failure breaker's cooldown
+ * (`SEND_PACING_BREAKER_COOLDOWN_MS`, 15 minutes by default) after a run of send failures, otherwise
+ * up to the next UTC day.
  */
 export class OpenWARateLimitError extends OpenWAApiError {}
 /** 501 Not Implemented — the active engine does not support this operation. */

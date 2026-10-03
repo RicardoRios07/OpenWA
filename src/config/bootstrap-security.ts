@@ -128,8 +128,8 @@ const FORBIDDEN_PROD_SECRETS = new Set([
 
 /**
  * Whether to warn that API_KEY_PEPPER is unset in production. Without a pepper, stored API-key hashes
- * fall back to plain SHA-256 (still functional). Advisory only — enabling a pepper re-hashes keys and
- * invalidates existing ones (see api-key-hash.ts), so it stays opt-in and must never be enforced.
+ * fall back to plain SHA-256 (still functional). Advisory only: enabling a pepper on an install with keys
+ * locks every key out (see api-key-hash.ts), so it stays opt-in and must never be enforced.
  */
 export function isApiKeyPepperMissingInProduction(nodeEnv?: string, apiKeyPepper?: string): boolean {
   return nodeEnv === 'production' && !apiKeyPepper?.trim();
@@ -196,8 +196,8 @@ export interface SecretCheckEnv {
  * whenever it is set. Throws with the offending var names so the operator can fix them.
  */
 export function assertNoDefaultSecretsInProduction(env: SecretCheckEnv): void {
-  // Deny-list, not an allow-list: main.ts calls this BEFORE NestFactory.create, so NODE_ENV has not
-  // been through boot validation yet and is still an arbitrary string here. Recognising only
+  // Deny-list, not an allow-list: main.ts runs validateEnv first, which already rejects an unknown
+  // NODE_ENV, but this guard must not depend on that ordering. Recognising only
   // 'production' meant every unrecognised value — a `prod` typo, a `staging` deployment — skipped the
   // guard silently, including the ALLOW_DEV_API_KEY rejection below. Only the two values that are
   // deliberately not production (and an unset or blank variable, the standard Node default for local

@@ -12,11 +12,15 @@ npm install @rmyndharis/openwa
 
 Requires Node.js >= 18 (relies on the global `fetch`).
 
-This README describes `main`. The 0.5.0 release lacks `sessions.getProxy`,
-`sessions.updateProxy`, `messages.clickButton`, the `name` filter on
-`sessions.list`, `verifyWebhookSignature`, the `WebhookDelivery` types, the
-`code`, `retryAfterSeconds` and `headers` error fields and the refusal of an
-empty, `.` or `..` id or path segment; they ship with the next SDK release. See
+This README describes `main`. The 0.5.0 release lacks, among other additions,
+`sessions.getProxy`, `sessions.updateProxy`, `messages.clickButton`, the `name`
+filter on `sessions.list`, the `after` and `inlineMedia` keys of the
+`messages.list` query, the `archived`, `pinned`, `muted` and `muteExpiration`
+fields of `ChatSummary`, the `order` and `product` fields of
+`ChatHistoryMessage`, `verifyWebhookSignature`, the `WebhookDelivery` types, the
+`code`, `retryAfterSeconds` and `headers` error fields, the refusal of an
+empty, `.` or `..` id or path segment and the refusal of a raw request path
+that does not begin with `/`; they ship with the next SDK release. See
 [the SDK overview](../README.md#coverage).
 
 ## Usage
@@ -34,6 +38,8 @@ const client = new OpenWAClient({
 const session = await client.sessions.create({ name: 'my-session' });
 await client.sessions.start(session.id);
 
+// Link the account before sending: scan sessions.getQrCode or use sessions.requestPairingCode,
+// then wait for status 'ready'. An unlinked session answers the send with 409.
 const result = await client.messages.sendText(session.id, {
   chatId: '628123456789@c.us',
   text: 'Hello from the OpenWA SDK!',
@@ -59,10 +65,13 @@ catalog 503 can persist because WhatsApp may never answer that query, so bound
 any retry. A 429 from the global rate limiter lifts when its window expires
 (seconds for the per-second tier, up to an hour for the hourly tier by
 default), and `.retryAfterSeconds` carries its `Retry-After` header. A 429 whose
-`.code` is `"SEND_PACING_LIMITED"` is not transient: do not retry it before
-`.retryAfterSeconds`, which then comes from the body and can be hours. Every API
-error also exposes the response `.headers`. A 503 does not prove a write was
-never carried out: the engine answers it when WhatsApp did not confirm in time,
+`.code` is `"SEND_PACING_LIMITED"` is usually not transient: do not retry it
+before `.retryAfterSeconds`, which then comes from the body: a few seconds when
+only sends still in flight caused it, the rest of the failure breaker's cooldown
+(`SEND_PACING_BREAKER_COOLDOWN_MS`, 15 minutes by default) after a run of send
+failures, otherwise up to the next UTC day. Every API error also exposes the
+response `.headers`. A 503 does not prove a write was never carried out: the
+engine answers it when WhatsApp did not confirm in time,
 and the change may still have been applied, so re-read the state before
 repeating it. In a routed deployment a forward that fails before reaching the
 owner node answers 503, one that fails after the request reached it answers 502

@@ -1,4 +1,5 @@
-// Package openwa is the official Go client for the OpenWA WhatsApp API Gateway.
+// Package openwa is the official Go client for OpenWA, the open-source WhatsApp API Gateway (not
+// affiliated with WhatsApp or Meta).
 //
 // The single entry point is New, which returns a *Client whose exported fields
 // are the domain services:
@@ -17,6 +18,8 @@
 //	if _, err := client.Sessions.Start(ctx, session.ID); err != nil {
 //	    log.Fatal(err)
 //	}
+//	// Link the account before sending: scan Sessions.QRCode or use Sessions.RequestPairingCode,
+//	// then wait for status "ready". An unlinked session answers the send with 409.
 //	res, err := client.Messages.SendText(ctx, session.ID, openwa.SendTextRequest{
 //	    ChatID: "628123456789@c.us",
 //	    Text:   "Hello from the OpenWA Go SDK!",
@@ -258,7 +261,11 @@ func (c *Client) doRaw(ctx context.Context, method, path string, query url.Value
 
 	rawURL := c.baseURL + path
 	if len(query) > 0 {
-		rawURL += "?" + query.Encode()
+		sep := "?"
+		if strings.Contains(path, "?") {
+			sep = "&"
+		}
+		rawURL += sep + query.Encode()
 	}
 
 	req, err := http.NewRequestWithContext(ctx, method, rawURL, reader)

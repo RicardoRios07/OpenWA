@@ -35,14 +35,14 @@ interface WireLabel {
 
 /**
  * `Status` — `timestamp`/`expiresAt` are `Date` on the server and ISO strings once serialized.
- * `mediaUrl`/`backgroundColor`/`font` are declared by the engine interface but no adapter populates
- * them yet (wwjs `collectStatuses()` sets neither; Baileys throws `unsupported`), so they are
- * optional here for forward-compatibility rather than because a response carries them today.
+ * Reads come from the status store: `mediaUrl` is set only when the status media was stored (it
+ * points at `/api/sessions/:id/status/:statusId/media`), and `backgroundColor`/`font` only when the
+ * stored row carries them, so all three are optional.
  */
 interface WireStatus {
   id: string;
   contact: { id: string; name?: string; pushName?: string };
-  type: 'text' | 'image' | 'video';
+  type: 'text' | 'image' | 'video' | 'voice';
   caption?: string;
   mediaUrl?: string;
   backgroundColor?: string;
@@ -76,7 +76,7 @@ interface WireChannelMessage {
  * `IncomingMessage` — `messages.history()` hands back the engine array verbatim, so the wire shape is
  * that interface serialized. `backgroundColor`/`font` are set by the Baileys extended-text mapper but
  * are not reachable through this route (Baileys answers `getChatHistory` with `unsupported`); they are
- * declared for the same forward-compatibility reason as on `WireStatus`.
+ * declared for forward-compatibility.
  *
  * Scope, so nobody reads more into a green build than it carries: `Mirrors` compares TOP-LEVEL keys,
  * so drift inside `contact`, `call`, `media`, `quotedMessage` or `location` compiles clean. And like

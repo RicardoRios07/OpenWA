@@ -210,3 +210,15 @@ describe('MessageController - caller-supplied batch ids', () => {
     expect(res.statusUrl).toBe('/api/sessions/s1/messages/batch/run%2F1%3Fx');
   });
 });
+
+// MessageService.getEngine() answers 400 for a session with no live engine; clients generated from
+// the OpenAPI contract need it declared on the read routes too.
+describe('MessageController OpenAPI error responses', () => {
+  it.each(['getChatHistory', 'getReactions'])('%s declares 400', method => {
+    const responses = Reflect.getMetadata(
+      'swagger/apiResponse',
+      Object.getOwnPropertyDescriptor(MessageController.prototype, method)!.value as object,
+    ) as Record<string, unknown>;
+    expect(Object.keys(responses)).toContain('400');
+  });
+});

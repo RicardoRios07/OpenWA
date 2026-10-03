@@ -606,3 +606,15 @@ describe('SessionController OpenAPI error responses', () => {
     expect(Object.keys(responses)).toContain(status);
   });
 });
+
+// getPresence answers a normal 200 with a JSON null body when nothing was reported, so the published
+// schema must admit null or a generated client rejects that answer.
+describe('SessionController.getPresence() OpenAPI response', () => {
+  it('declares the 200 body nullable', () => {
+    const responses = Reflect.getMetadata(
+      'swagger/apiResponse',
+      Object.getOwnPropertyDescriptor(SessionControllerClass.prototype, 'getPresence')!.value as object,
+    ) as Record<string, { schema?: { nullable?: boolean } }>;
+    expect(responses['200'].schema?.nullable).toBe(true);
+  });
+});

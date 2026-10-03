@@ -130,6 +130,11 @@ class HttpExecutor
      */
     private function send(string $method, string $path, array $query, $body): ResponseInterface
     {
+        // The path is appended to the base URL, so one without a leading "/" could move the host
+        // (".example.net/x", "@example.net/x") and send the API key there.
+        if (!str_starts_with($path, '/')) {
+            throw new \InvalidArgumentException('OpenWA: path must begin with "/": ' . $path);
+        }
         // Auth/JSON headers are applied per-request so they are correct whether
         // a default or injected client is used (and never leak Guzzle exceptions:
         // http_errors disabled so we translate status into typed SDK exceptions).
@@ -153,17 +158,19 @@ class HttpExecutor
                 'Accept' => 'application/json',
             ]),
         ];
-        // Build query string, skipping null values (so absent optionals aren't sent).
+        // Build query string, skipping null values (so absent optionals aren't sent). Guzzle's
+        // 'query' option would replace a query already in a raw path, so extend the URL instead.
+        $url = $this->baseUrl . $path;
         $query = array_filter($query, fn ($v) => $v !== null);
         if ($query !== []) {
-            $options['query'] = $query;
+            $url .= (str_contains($path, '?') ? '&' : '?') . http_build_query($query, '', '&', PHP_QUERY_RFC3986);
         }
         if ($body !== null) {
             $options['json'] = $body;
         }
 
         try {
-            $response = $this->http->request($method, $this->baseUrl . $path, $options);
+            $response = $this->http->request($method, $url, $options);
         } catch (ConnectException $e) {
             // cURL error 28 (CURLE_OPERATION_TIMEDOUT) is the canonical timeout
             // signal, surfaced via the handler context. We check errno first

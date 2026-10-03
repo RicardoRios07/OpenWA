@@ -66,7 +66,6 @@ services:
     # the openwa user the node/Chromium process keeps NO effective capabilities.
     # read_only rootfs (Chromium's profile lives on the writable /app/data volume;
     # HOME=/tmp + tmpfs absorb stray writes). no-new-privileges blocks setuid escalation.
-    # NOTE: requires a live single-session smoke (Chromium must launch) before merge.
     security_opt:
       - 'no-new-privileges:true'
     cap_drop:
@@ -434,7 +433,7 @@ services:
       - 'no-new-privileges:true'
     environment:
       POSTGRES_USER: ${DATABASE_USERNAME:-openwa}
-      # M16: no committed default secret. Empty unless the operator sets it; the postgres
+      # No committed default secret. Empty unless the operator sets it; the postgres
       # image refuses to initialize with an empty password (clear fail-fast), and the app's
       # production boot guard rejects empty/placeholder secrets before startup.
       POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-}

@@ -18,7 +18,12 @@ import { MessageNotFoundError } from '../../common/errors/message-not-found.erro
 import { EngineRefusedError } from '../../common/errors/engine-refused.error';
 import { loadRemoteMediaBuffer } from '../../common/media/load-remote-media';
 import { chatKind, userPart } from '../identity/wa-id';
-import { chatHistoryMediaBudgetBytes, coerceDeclaredSize, ingestMediaBudgetBytes } from './inbound-media-cap';
+import {
+  chatHistoryMediaBudgetBytes,
+  coerceDeclaredSize,
+  inboundMediaMaxBytes,
+  ingestMediaBudgetBytes,
+} from './inbound-media-cap';
 import { buildIncomingMessageBase, mapContactFields } from './message-mapper';
 import { buildVCard } from './vcard';
 import { EngineNotSupportedError } from '../../common/errors/engine-not-supported.error';
@@ -703,7 +708,7 @@ export class WwebjsMessaging {
     await this.withPage('reactToMessage', async () => {
       // NOTE: do NOT resolve chatId to @lid here — whatsapp-web.js reacts using the found message's own
       // id, not this chatId, so LID-resolving the lookup gives no send benefit and would miss a message
-      // stored under the pre-migration @c.us chat (#583 R1 review).
+      // stored under the pre-migration @c.us chat (#583).
       const chat = await this.client().getChatById(chatId);
       // getChatById RESOLVES undefined for an unknown chat (wwebjs does not throw); guard it so the
       // caller gets the 404 editMessage returns rather than a TypeError surfacing as an opaque 500.
@@ -785,12 +790,13 @@ export class WwebjsMessaging {
     // into a store instead (mediaMaxBytes — the status seed): two ~10 MiB videos are ~28 MiB of
     // base64 and would strip every later status. Such a caller gets a budget derived from its own
     // per-item cap rather than an exemption — unbounded here would mean a 50-item seed could stack
-    // ~650 MiB of base64 on the heap at connect time.
+    // ~650 MiB of base64 on the heap at connect time. The cap is clamped to MEDIA_DOWNLOAD_MAX_BYTES
+    // first, as capInboundMediaFor clamps each item, so an override above it cannot inflate the budget.
     let mediaBudget = !includeMedia
       ? Number.POSITIVE_INFINITY
       : mediaMaxBytes === undefined
         ? chatHistoryMediaBudgetBytes()
-        : ingestMediaBudgetBytes(mediaMaxBytes);
+        : ingestMediaBudgetBytes(Math.min(mediaMaxBytes, inboundMediaMaxBytes()));
     // Sender contacts resolved so far, keyed like Message.getContact() (`author || from`). Each lookup
     // is a page round trip and a history page repeats the same few senders, so resolve each once; a
     // failed lookup is remembered as undefined rather than retried for every later message.
@@ -882,7 +888,7 @@ export class WwebjsMessaging {
     this.host.ensureReady();
     // NOTE: do NOT resolve chatId to @lid here — delete operates on the found message's own key, not
     // this chatId, so LID-resolving the lookup gives no benefit and would miss a message stored under
-    // the pre-migration @c.us chat (#583 R1 review).
+    // the pre-migration @c.us chat (#583).
     await this.withPage('deleteMessage', async () => {
       const chat = await this.client().getChatById(chatId);
       if (!chat) {
@@ -903,7 +909,7 @@ export class WwebjsMessaging {
     // Same lookup window as react/delete: fetchMessages sees only the 100 most recent messages.
     // NOTE: do NOT resolve chatId to @lid here — edit operates on the found message's own key, not
     // this chatId, so LID-resolving the lookup would miss a message stored under the pre-migration
-    // @c.us chat (#583 R1 review).
+    // @c.us chat (#583).
     const edited = await this.withPage('editMessage', async () => {
       const chat = await this.client().getChatById(chatId);
       // getChatById RESOLVES undefined for an unknown chat (wwebjs does not throw) — that is the same

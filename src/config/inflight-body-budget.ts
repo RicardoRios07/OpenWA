@@ -75,10 +75,11 @@ const STALL_POLL_MS = 5_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 300_000;
 
 /**
- * What a chunked (undeclared-length) body reserves before any of it has arrived. The same poll that
- * watches for a stall also reconciles this against `socket.bytesRead`, so the reservation converges
- * on the real size within one interval — this only has to be big enough that admission control is
- * not a free-for-all, not big enough to price a small upload out of the budget.
+ * What a chunked (undeclared-length) body reserves at admission. It is a floor: the same poll that
+ * watches for a stall raises the reservation to the bytes received (`socket.bytesRead`) once they
+ * exceed it, and a smaller body keeps this placeholder until the request is released. It only has to
+ * be big enough that admission control is not a free-for-all, not big enough to price a small upload
+ * out of the budget.
  */
 const UNDECLARED_OPENING_RESERVATION_BYTES = 1024 * 1024;
 

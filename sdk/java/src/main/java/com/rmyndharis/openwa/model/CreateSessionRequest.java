@@ -34,7 +34,8 @@ public record CreateSessionRequest(String name, Map<String, Object> config, Stri
             return this;
         }
 
-        /** One of {@code http}, {@code https}, {@code socks4}, {@code socks5}. */
+        /** Deprecated and ignored by the server: the proxyUrl scheme selects the proxy protocol. */
+        @Deprecated
         public Builder proxyType(ProxyType v) {
             this.proxyType = v;
             return this;

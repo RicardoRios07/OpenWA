@@ -67,10 +67,12 @@ export class PluginUninstaller {
     if (dir && fs.existsSync(dir)) {
       fs.rmSync(dir, { recursive: true, force: true });
     }
-    // No recorded directory also covers a plugin that failed to load: its registry entry survives
-    // the boot scan but no runtime record does. Its package may sit in the legacy tree, which the
-    // scan would load again (as a new plugin, config lost) once the failure cause goes away.
-    if (!recordedDir && this.legacyPluginsDir) {
+    // The legacy tree can still hold a copy the scan would load again on the next boot (as a new
+    // plugin, config lost): the package of a plugin that failed to load (its registry entry survives
+    // the boot scan but no runtime record does), or a copy the scan skipped as a duplicate because
+    // the same id loaded from the configured tree. When the recorded dir was the legacy copy it is
+    // already gone above, and this is a no-op.
+    if (this.legacyPluginsDir) {
       const legacyDir = this.resolveUninstallDir(this.legacyPluginsDir, pluginId);
       if (legacyDir && fs.existsSync(path.join(legacyDir, 'manifest.json'))) {
         fs.rmSync(legacyDir, { recursive: true, force: true });

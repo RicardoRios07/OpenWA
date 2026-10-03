@@ -1358,6 +1358,48 @@ describe('MessageSendService', () => {
     });
   });
 
+  // ── pacing admission release ──────────────────────────────────────
+
+  // A send that fails before its PENDING row exists never counts into the daily caps, so its pacing
+  // admission must go back at once; one that fails after keeps its row as FAILED, which is counted.
+  describe('pacing admission release', () => {
+    let release: jest.Mock;
+    beforeEach(() => {
+      release = jest.fn();
+      const { assertSendAllowed } = (service as unknown as { pacing: { assertSendAllowed: jest.Mock } }).pacing;
+      assertSendAllowed.mockResolvedValue(release);
+    });
+
+    it.each([
+      [
+        'a plugin blocks it',
+        () => {
+          (hookManager.execute as jest.Mock).mockResolvedValueOnce({ continue: false });
+          return service.sendText('sess-1', { chatId: 'test@c.us', text: 'hi' });
+        },
+      ],
+      [
+        'the session has no engine',
+        () => service.sendLocation('no-engine', { chatId: 'test@c.us', latitude: 1, longitude: 2 }),
+      ],
+      ['its media is invalid', () => service.sendImage('sess-1', { chatId: 'test@c.us', url: '/files/x.png' })],
+      ['its audio is invalid', () => service.sendAudio('sess-1', { chatId: 'test@c.us', ptt: true })],
+    ])('releases it when %s', async (_label, send) => {
+      await expect(send()).rejects.toThrow();
+
+      expect(release).toHaveBeenCalledTimes(1);
+      expect(repository.save).not.toHaveBeenCalled();
+    });
+
+    it('keeps it when the engine fails after the row was written', async () => {
+      mockEngine.sendTextMessage.mockRejectedValueOnce(new BadRequestException('refused'));
+
+      await expect(service.sendText('sess-1', { chatId: 'test@c.us', text: 'hi' })).rejects.toThrow('refused');
+
+      expect(release).not.toHaveBeenCalled();
+    });
+  });
+
   // ── buildMediaInput (via sendImage) ───────────────────────────────
 
   describe('buildMediaInput validation', () => {

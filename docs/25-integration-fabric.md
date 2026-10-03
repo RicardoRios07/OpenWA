@@ -31,8 +31,9 @@ The overriding goal is to preserve the sandboxed-worker safety invariants _by co
 plugins reach the host through a capability-gated worker bridge; the worker is fault containment, not a
 security boundary against a malicious plugin (see [30 - Plugin Sandboxing](./30-plugin-sandboxing.md)).
 Every host↔worker message is a serializable POJO across a `structuredClone` boundary; host-initiated
-calls fail open on a timeout and drain on a worker crash; permissions are manifest-static and cannot be
-widened by configuration; session scope is enforced host-side.
+calls are bounded by a timeout and drain on a worker crash (a hook fails open; an ingress dispatch fails
+the delivery); permissions are manifest-static and cannot be widened by configuration; session scope is
+enforced host-side.
 
 Rather than invent new machinery that would have to re-earn those properties, the Integration Fabric is
 **~90% a faithful clone of seams OpenWA already ships**:
@@ -119,14 +120,19 @@ Alongside this async pipeline, a route may additionally declare a `response` con
   into the plugin's **base** config with last-write-wins merging, so a sparse wildcard instance
   inherits keys a sibling projected, and hook dispatch resolves config without per-instance
   scoping. Run one enabled wildcard instance per plugin, or scope instances concretely, until the
-  projection is re-keyed per instance.
+  projection is re-keyed per instance. Capability calls are not confined to the dispatching instance's
+  scope either: separating tenants across instances of one plugin relies on the handler using the
+  delivery's `sessionId`.
 - **`conversation.send` capability** — a normalized outbound send authored by the plugin and translated
   host-side to the message service, so persistence and the message hook chain are preserved. It is gated
-  by a `conversation:send` permission and the instance's session scope.
+  by a `conversation:send` permission, the manifest's session scope and, for a session-scoped plugin, its
+  activated sessions.
 - **Identity, dedup, and DLQ tables** — see §25.5.
 - **Ingress queue** — a durable BullMQ queue that is a _sibling_ of the outbound webhook queue (its own
   worker, not the reordering webhook worker), with exponential-backoff retries and a dead-letter row on
-  the final attempt.
+  the final attempt. When that row cannot be written (a data-database outage), the delivery is re-queued
+  under a new job id and runs again after 60s with the same retries; a re-queued copy that fails again
+  adds no second row while one is open.
 
 ## 25.5 Data model
 
@@ -144,15 +150,16 @@ Four tables live on the data connection, each created by a hand-authored dual-di
   markers the reconciler sweeps on: `dispatchState` (`pending | dispatched | failed`, `NULL` on rows
   that predate the columns on a synchronize-bootstrapped DB — "not watched"), `dispatchAttempts`, and
   `lastDispatchAt`. New rows are `pending`; a recorded enqueue outcome flips them to `dispatched`;
-  `failed` is terminal (recovery continues via the DLQ row + redrive). The row carries the **full
-  request payload only while it is the sole durability handle** — from the persist until the dispatch
-  outcome is recorded. Once the dispatch tier owns the delivery (the BullMQ job data, or the DLQ row
-  on failure), the payload is retired to `NULL` and the row slims to its dedup marker plus
-  `payloadHash` (a sha256 of the raw body kept for operator correlation). This keeps steady-state
-  growth at a few hundred bytes per delivery instead of up to 2× `maxBodyBytes`; dedup rows are
-  pruned on their own short window (`INGRESS_DEDUP_RETENTION_DAYS`, default 7 — a dedup oracle is not
-  an audit log, and `<= 0` falls back to the default rather than disabling the prune into unbounded
-  growth).
+  `failed` is terminal (recovery continues via the DLQ row + redrive), except that a re-queued copy
+  (see §25.4) that delivers moves the event to `dispatched` and retires the delivery's open DLQ row.
+  The row carries the **full request payload only while it is the sole durability handle** — from the
+  persist until the dispatch outcome is recorded. Once the dispatch tier owns the delivery (the BullMQ
+  job data, or the DLQ row on failure), the payload is retired to `NULL` and the row slims to its
+  dedup marker plus `payloadHash` (a sha256 of the raw body kept for operator correlation). This keeps
+  steady-state growth at a few hundred bytes per delivery instead of up to 2× `maxBodyBytes`; dedup
+  rows are pruned on their own short window (`INGRESS_DEDUP_RETENTION_DAYS`, default 7 — a dedup
+  oracle is not an audit log, and `<= 0` falls back to the default rather than disabling the prune
+  into unbounded growth).
 - **`integration_delivery_failures`** — a dead-letter record of last resort for both directions, with a
   redrive path (added in P1).
 
@@ -195,8 +202,10 @@ Four tables live on the data connection, each created by a hand-authored dual-di
   persisted and enqueued payload, like the well-known signature headers, so the plugin's handler sees
   `[redacted]` in its place.
 - **Tenancy scoping.** Every durable ingress artifact — secret, dedup store, and dead-letter row — is
-  partitioned by instance, and downstream capability calls carry the instance's resolved session scope, so
-  a cross-tenant send is blocked host-side.
+  partitioned by instance. Downstream capability calls are limited to the sessions the plugin's manifest
+  allows and, for a session-scoped plugin (the default), to the sessions it is activated for (the union of
+  its instances' scopes plus any operator activation); they are not checked against the dispatching
+  instance's scope.
 - **Fail-closed by construction.** No request — including an empty-body request — is accepted by an
   authenticating scheme without the correct per-instance secret. HMAC and Standard Webhooks bind body
   integrity; `shared-secret` authenticates only the caller header and does not bind the body.
@@ -233,22 +242,25 @@ route so the lane is one conversation; without it the lane is the whole instance
 Persist-before-acknowledge alone is not delivery: a crash between the persist and the enqueue, or a
 fire-and-forget enqueue on a `response` route whose outcome is never recorded, would strand the row
 with the provider already acknowledged. The **ingress reconciler** closes that window: every
-`INGRESS_RECONCILE_INTERVAL_MS` (default 60s, `0` disables; a blank or unparseable value falls
-back to the default rather than disabling the sweep) it re-dispatches a bounded batch
+`INGRESS_RECONCILE_INTERVAL_MS` (default 60s, `0` disables; a blank value falls back to the
+default, and a negative or unparseable value fails the boot) it re-dispatches a bounded batch
 (`INGRESS_RECONCILE_BATCH_SIZE`, default 50) of `pending` rows whose last activity is older than a
 grace period (`INGRESS_RECONCILE_GRACE_MS`, default 60s), through the same queue-or-inline enqueue the
 live path uses and with the original delivery id as job id, so a replay is idempotent against a job
 the crashed live path may have enqueued. The stored row is sufficient for re-dispatch — while
 `pending` it is the full verified request (headers/query/body/rawBody) plus the route and session
 provenance; the conversation lane is re-derived from the current manifest. After
-`INGRESS_RECONCILE_MAX_ATTEMPTS` (default 5) the row goes `failed` (terminal) and a dead-letter row
-is guaranteed to exist **before** the row's payload is retired, so recovery continues through the
+`INGRESS_RECONCILE_MAX_ATTEMPTS` (default 5) the row goes `failed` and a dead-letter row is
+guaranteed to exist **before** the row's payload is retired, so recovery continues through the
 bounded redrive path instead of an infinite replay loop; a successful replay likewise retires the
 row's payload with the `dispatched` mark and retires any live-path dead-letter row for the same
-delivery so a later redrive never double-delivers. A `pending` row found without a payload (only
-possible for imported/corrupt history — payloads are retired only with a recorded outcome) is
-excluded from the sweep and never replayed empty; nothing logs it, and it stays `pending` until
-`INGRESS_DEDUP_RETENTION_DAYS` prunes it.
+delivery so a later redrive never double-delivers. The replay looks the queue job up first: a job
+still in the queue or completed, or a live or completed re-queued copy of it, takes the `dispatched`
+mark without a second enqueue, and a job that failed with no such copy is not replayed: the row goes
+`failed` with a dead-letter row guaranteed as above, so none is written while a copy can still
+deliver. A `pending` row found without a payload (only possible for imported/corrupt history —
+payloads are retired only with a recorded outcome) is excluded from the sweep and never replayed
+empty; nothing logs it, and it stays `pending` until `INGRESS_DEDUP_RETENTION_DAYS` prunes it.
 
 Table growth is bounded by construction rather than by operator hygiene: the per-instance ingress
 throttle caps the row-creation rate, dispatched rows slim to a marker + hash, and the two retention

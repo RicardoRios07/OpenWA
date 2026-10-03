@@ -80,6 +80,10 @@ describe('docs/06 matches the published contract', () => {
     return [...body.matchAll(/\/api\/[A-Za-z0-9:{}_\-/]+/g)].some(match => shape(normalise(match[0])) === wanted);
   };
 
+  /** Contract operations with neither a docs/06 heading nor an allowlist entry. */
+  const undocumentedOf = (operations: Set<string>, headings: Set<string>): string[] =>
+    [...operations].filter(operation => !headings.has(operation) && !DOCUMENTED_ELSEWHERE.has(operation)).sort();
+
   it('documents every contract operation, or allowlists it to a file that really documents it', () => {
     const operations = contractOperations();
     const headings = documentedHeadings();
@@ -87,10 +91,7 @@ describe('docs/06 matches the published contract', () => {
     expect(operations.size).toBeGreaterThan(150);
     expect(headings.size).toBeGreaterThan(150);
 
-    const undocumented = [...operations]
-      .filter(operation => !headings.has(operation) && !DOCUMENTED_ELSEWHERE.has(operation))
-      .sort();
-    expect(undocumented).toEqual([]);
+    expect(undocumentedOf(operations, headings)).toEqual([]);
   });
 
   it('every allowlisted operation is really documented in the file it names', () => {
@@ -217,12 +218,11 @@ describe('docs/06 matches the published contract', () => {
   // indistinguishable from a document that is correct.
   describe('the checks themselves can fail', () => {
     it('reports an operation with neither a heading nor an allowlist entry', () => {
-      const operations = new Set(['GET /api/widgets']);
-      const headings = new Set<string>();
-      const undocumented = [...operations].filter(
-        operation => !headings.has(operation) && !DOCUMENTED_ELSEWHERE.has(operation),
-      );
-      expect(undocumented).toEqual(['GET /api/widgets']);
+      const operations = contractOperations();
+      const headings = documentedHeadings();
+      const [victim] = [...operations];
+      headings.delete(victim);
+      expect(undocumentedOf(operations, headings)).toEqual([victim]);
     });
 
     it('reports an allowlist entry whose file does not contain the path', () => {

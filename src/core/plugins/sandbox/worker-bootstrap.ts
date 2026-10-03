@@ -43,12 +43,14 @@ const webhookRegistry = new WebhookRegistry(send);
 const searchRegistry = new WorkerSearchRegistry(send);
 
 // A meta the structured clone cannot copy (a function, a fetch Response) makes postMessage throw. From
-// a timer that throw is uncaught and kills the worker, so the line goes out again without its meta.
+// a timer that throw is uncaught and kills the worker, so the line goes out again without its meta,
+// keeping only logger.error's reason, which is always a string.
 const sendLog = (level: PluginLogLevel, message: string, meta?: Record<string, unknown>): void => {
   try {
     send({ kind: 'log', level, message, meta });
   } catch {
-    send({ kind: 'log', level, message: String(message) });
+    const error = meta?.error;
+    send({ kind: 'log', level, message: String(message), meta: typeof error === 'string' ? { error } : undefined });
   }
 };
 
@@ -135,10 +137,12 @@ async function handle(message: HostToWorkerMessage): Promise<void> {
   if (message.kind === 'config-change') {
     // Refresh the base config so later (non-hook) reads of ctx.config see the new value, then notify
     // the plugin (fire-and-forget — onConfigChange returns void, and an ack would race the next op).
+    // Called inside the chain so a synchronous throw is caught too: escaping here, it would reject the
+    // discarded handle() promise and the unhandled rejection would kill the worker.
     baseConfig = message.config;
-    void Promise.resolve(plugin?.onConfigChange?.(context, message.config)).catch(error =>
-      logger.error('onConfigChange threw', error),
-    );
+    void Promise.resolve()
+      .then(() => plugin?.onConfigChange?.(context, message.config))
+      .catch(error => logger.error('onConfigChange threw', error));
     return;
   }
 

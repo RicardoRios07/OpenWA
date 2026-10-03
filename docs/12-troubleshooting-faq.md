@@ -247,9 +247,10 @@ docker compose restart openwa-api
 > this document assume a source install (`npm run start:dev`) or that dev bind mount.
 
 Proxy egress (if WhatsApp is blocked on your network) is configured **per session** via the
-`proxyUrl` field on `POST /api/sessions` — it is **not** an environment variable, and an
-unreachable proxy silently blocks the WhatsApp WebSocket (see the _No QR code appears, or `/start`
-returns `504`_ entry below).
+`proxyUrl` field on `POST /api/sessions` or with `PATCH /api/sessions/:sessionId/proxy`, both of
+which need an ADMIN key. It is **not** an environment variable, and an unreachable proxy silently
+blocks the WhatsApp WebSocket on either engine (see the _No QR code appears, or `/start` returns `504`_
+entry below: on whatsapp-web.js `/start` returns `504`, on Baileys it succeeds and no QR arrives).
 
 ### Issue: Linking asks for a passkey and never completes (both engines)
 
@@ -290,27 +291,33 @@ phone-number pairing example in `docs/examples/session-phone-number-pairing.md`.
 
 **Symptoms:**
 
-- `POST /api/sessions/:sessionId/start` returns `504 Gateway Timeout`
+- On whatsapp-web.js, `POST /api/sessions/:sessionId/start` returns `504 Gateway Timeout`
   (`WhatsApp Web authentication timed out...`)
+- On Baileys, `POST /api/sessions/:sessionId/start` succeeds and the session keeps retrying the connection
 - No QR code is ever produced — `GET /api/sessions/:sessionId/qr` never has one
-- Engine log shows `Session engine failed: auth timeout` after ~30s
+- On whatsapp-web.js, the engine log shows `Session engine failed: auth timeout` after ~30s
 
 **Cause:** The session was created with a `proxyUrl` that doesn't resolve to a real, reachable proxy
-(e.g. the `http://proxy.example.com:8080` placeholder copied from an example). The engine launches
-Chromium pinned to that proxy, the WhatsApp WebSocket can never connect, no QR is produced, and the
-auth poll times out.
+(e.g. the `http://proxy.example.com:8080` placeholder copied from an example). The engine sends its
+WhatsApp WebSocket through that proxy, so it can never connect and no QR is produced. On
+whatsapp-web.js, which launches Chromium pinned to the proxy, the auth poll then times out; Baileys
+keeps retrying the connection instead.
 
-**Fix:** Don't set a proxy unless your network actually requires one. Recreate the session without
-`proxyUrl`, or set it to a real, reachable proxy server:
+**Fix:** Don't set a proxy unless your network actually requires one. Clear `proxyUrl` in place, or
+set it to a real, reachable proxy server the same way, with an ADMIN key. The change applies on the
+next start, so stop and start the session afterwards:
 
 ```bash
 # No proxy needed (the common case):
-curl -X POST "$BASE/api/sessions" -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  -d '{ "name": "my-bot" }'
+curl -X PATCH "$BASE/api/sessions/{sessionId}/proxy" -H "X-API-Key: $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" -d '{ "proxyUrl": null }'
+curl -X POST "$BASE/api/sessions/{sessionId}/stop" -H "X-API-Key: $API_KEY"
+curl -X POST "$BASE/api/sessions/{sessionId}/start" -H "X-API-Key: $API_KEY"
 ```
 
-> ℹ️ Proxy egress for the `whatsapp-web.js` engine is configured **per session** via the
-> `proxyUrl` field on `POST /api/sessions` — not via environment variables.
+> ℹ️ Proxy egress, on either engine, is configured **per session** via the
+> `proxyUrl` field on `POST /api/sessions` or `PATCH /api/sessions/:sessionId/proxy` (ADMIN key for
+> both), not via environment variables.
 
 > ℹ️ A `504` whose body starts with `Engine initialization timed out after ...` is a **different**
 > failure with a different fix: initialization never finished at all. That happens when WhatsApp Web,
@@ -657,15 +664,15 @@ The reconnect backoff is configured **per session**, not by environment variable
 }
 ```
 
-`reconnectBaseDelay` is the exponential-backoff base in milliseconds (clamped to 1000–300000,
-default 5000). `maxReconnectAttempts` is clamped to 0–20 — `0` disables auto-reconnect entirely, and
-leaving it unset means unlimited retries with the delay parking at a 5-minute cap. Both keys bound
-the gateway's own reconnect, whose attempt count restarts only once the session has stayed READY for
-5 minutes, so a session that keeps dropping sooner than that spends a finite cap and ends FAILED. On
-Baileys that is only the reconnect after a logged-out close: every other drop is retried inside the
-engine, with a fixed 1s to 60s backoff and no attempt cap, so a session behind an unreachable network
-keeps retrying there whatever these keys say. Subscribe to the `session.reconnect_loop` webhook to be
-alerted on every 5th consecutive attempt.
+`reconnectBaseDelay` is the exponential-backoff base in milliseconds (1000–300000, default 5000).
+`maxReconnectAttempts` accepts 0–20 (a value outside the range is refused with a 400) — `0` disables
+auto-reconnect entirely, and leaving it unset means unlimited retries with the delay parking at a
+5-minute cap. Both keys bound the gateway's own reconnect, whose attempt count restarts only once
+the session has stayed READY for 5 minutes, so a session that keeps dropping sooner than that spends
+a finite cap and ends FAILED. On Baileys that is only the reconnect after a logged-out close: every
+other drop is retried inside the engine, with a fixed 1s to 60s backoff and no attempt cap, so a
+session behind an unreachable network keeps retrying there whatever these keys say. Subscribe to the
+`session.reconnect_loop` webhook to be alerted on every 5th consecutive attempt.
 
 On a slow host, raise the first-boot init wait with `WWEBJS_AUTH_TIMEOUT_MS` (see _QR generation
 times out on slow first boot_ above).
@@ -696,13 +703,13 @@ curl -H "X-API-Key: $API_KEY" \
 
 **Common Causes:**
 
-| Cause                            | Symptom                      | Solution                       |
-| -------------------------------- | ---------------------------- | ------------------------------ |
-| Invalid phone number             | 400 error                    | Format: `628123456789@c.us`    |
-| Rate limited                     | 429 error                    | Reduce sending rate            |
-| Session not started or not ready | 400 (`is not active`) or 409 | Start or reconnect the session |
-| Media too large                  | 413 error                    | Compress or reduce size        |
-| Number not on WhatsApp           | Message fails silently       | Verify number first            |
+| Cause                            | Symptom                                                         | Solution                                                                          |
+| -------------------------------- | --------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Invalid phone number             | 400 error                                                       | Format: `628123456789@c.us`                                                       |
+| Rate limited                     | 429 error                                                       | Reduce sending rate                                                               |
+| Session not started or not ready | 400 (`is not active`) or 409                                    | Start or reconnect the session                                                    |
+| Media too large                  | 413 error                                                       | Compress or reduce size                                                           |
+| Number not on WhatsApp           | 400 on whatsapp-web.js; Baileys may accept it and never deliver | Verify the number first (`GET /api/sessions/{sessionId}/contacts/check/{number}`) |
 
 **Phone Number Validation:**
 
@@ -1013,18 +1020,16 @@ services:
   openwa-api:
     # The shipped compose already exposes this as mem_limit: ${OPENWA_MEM_LIMIT:-2g}
     mem_limit: 2g
-    environment:
-      # Optimize Puppeteer (whatsapp-web.js engine only)
-      - PUPPETEER_ARGS=--disable-dev-shm-usage,--disable-gpu,--no-sandbox
+    # Chromium already starts with --disable-dev-shm-usage and --disable-gpu by default, and
+    # PUPPETEER_ARGS replaces that list rather than adding to it.
 ```
 
 **Memory Optimization Tips:**
 
-| Optimization              | Impact                 | Trade-off               |
-| ------------------------- | ---------------------- | ----------------------- |
-| Reduce message history    | -20% RAM               | Less searchable history |
-| Headless Chrome flags     | -15% RAM (wwebjs only) | None                    |
-| Limit concurrent sessions | Linear                 | Fewer sessions          |
+| Optimization              | Impact   | Trade-off               |
+| ------------------------- | -------- | ----------------------- |
+| Reduce message history    | -20% RAM | Less searchable history |
+| Limit concurrent sessions | Linear   | Fewer sessions          |
 
 ### Issue: Slow API Response
 
@@ -1100,8 +1105,11 @@ sqlite3 ./data/openwa.sqlite "PRAGMA journal_mode;"
 sqlite3 ./data/openwa.sqlite "PRAGMA journal_mode=WAL;"
 ```
 
-There is no `DATABASE_SQLITE_BUSY_TIMEOUT`-style env knob — busy handling comes from the
-`better-sqlite3` driver defaults. If locks persist under concurrent sessions, migrate to PostgreSQL.
+There is no `DATABASE_SQLITE_BUSY_TIMEOUT`-style env knob — both SQLite connections wait a
+fixed 30 s on a lock (`SQLITE_BUSY_TIMEOUT_MS`, matching `scripts/backup.sh`'s `.timeout 30000`)
+before failing with `SQLITE_BUSY`, and `better-sqlite3` waits synchronously, so the whole gateway
+stalls for as long as a write waits. If locks persist under concurrent sessions, migrate to
+PostgreSQL.
 
 **When to Migrate to PostgreSQL:**
 
@@ -1139,6 +1147,7 @@ npm run migration:revert
 # Schema is managed by migrations (there is no schema:sync)
 # The auth/audit DB has parallel :main variants, e.g.:
 npm run migration:run:main
+npm run migration:run:main:prod   # inside the released image
 ```
 
 **PostgreSQL crash-loop on boot after upgrade** — if logs show `column "id" is of type uuid but default expression is of type character varying` or `foreign key constraint ... cannot be implemented ... incompatible types: character varying and uuid`, the deployment was previously bootstrapped with `DATABASE_SYNCHRONIZE=true` (native `uuid` columns vs the migrations' `varchar`). A guard migration converts the columns automatically on the next boot; for large `messages` tables, run the migration against the stopped app (`npm run migration:run`) during a maintenance window. See [14.5 / 14.9 — PostgreSQL crash-loop after upgrading a `DATABASE_SYNCHRONIZE=true` deployment](./14-migration-guide.md). `DATABASE_SYNCHRONIZE=true` is unsupported on PostgreSQL for production.
@@ -1466,17 +1475,17 @@ A media message also carries `media: { mimetype, filename?, data?, omitted?, siz
 
 ### HTTP Error Codes
 
-| Code | Meaning             | Common Cause                                                                               | Solution                                        |
-| ---- | ------------------- | ------------------------------------------------------------------------------------------ | ----------------------------------------------- |
-| 400  | Bad Request         | Invalid parameters, or the session is not started                                          | Check request body/params; start the session    |
-| 401  | Unauthorized        | Missing/invalid API key                                                                    | Add X-API-Key header                            |
-| 403  | Forbidden           | Insufficient permissions                                                                   | Check API key permissions                       |
-| 404  | Not Found           | Invalid session/endpoint                                                                   | Verify session exists                           |
-| 409  | Conflict            | Session already exists, or the session is not ready (retryable)                            | Use a different session ID, or wait for `ready` |
-| 413  | Payload Too Large   | File too large                                                                             | Reduce file size                                |
-| 429  | Too Many Requests   | Rate limited                                                                               | Reduce request rate                             |
-| 500  | Internal Error      | Server error                                                                               | Check logs                                      |
-| 503  | Service Unavailable | The engine transport died during a read, or a media fetch through the session proxy failed | Retry; restart the session if it persists       |
+| Code | Meaning             | Common Cause                                                                               | Solution                                          |
+| ---- | ------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------- |
+| 400  | Bad Request         | Invalid parameters, or the session is not started                                          | Check request body/params; start the session      |
+| 401  | Unauthorized        | Missing/invalid API key                                                                    | Add X-API-Key header                              |
+| 403  | Forbidden           | Insufficient permissions                                                                   | Check API key permissions                         |
+| 404  | Not Found           | Invalid session/endpoint                                                                   | Verify session exists                             |
+| 409  | Conflict            | Session name already exists, or the session is not ready (retryable)                       | Use a different session name, or wait for `ready` |
+| 413  | Payload Too Large   | File too large                                                                             | Reduce file size                                  |
+| 429  | Too Many Requests   | Rate limited                                                                               | Reduce request rate                               |
+| 500  | Internal Error      | Server error                                                                               | Check logs                                        |
+| 503  | Service Unavailable | The engine transport died during a read, or a media fetch through the session proxy failed | Retry; restart the session if it persists         |
 
 ### Error Body Shape
 

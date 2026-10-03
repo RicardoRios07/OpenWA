@@ -171,8 +171,9 @@ http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.l
     && apt-get update && apt-get install -y --no-install-recommends postgresql-client-17 \
     && rm -rf /var/lib/apt/lists/*
 
-# Set Puppeteer to skip automatic download during npm install (we download it explicitly below)
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+# Keep puppeteer's postinstall from downloading a browser (the --ignore-scripts install below
+# already skips it; amd64 downloads its pinned build explicitly further down)
+ENV PUPPETEER_SKIP_DOWNLOAD=true
 
 # Create app user for security. The ids are pinned (997 is what `-r` assigned on both arches) so a
 # Kubernetes runAsUser/fsGroup or a `docker run --user` can name the runtime user; the root start

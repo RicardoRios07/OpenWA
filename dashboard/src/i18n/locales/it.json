@@ -38,6 +38,7 @@
     "hoursAgo_other": "{{count}} ore fa",
     "hoursAgo_many": "{{count}} ore fa",
     "optional": "opzionale",
+    "fieldTooLong": "Limitato a {{max}} caratteri (ora {{count}}).",
     "language": "Lingua",
     "back": "Indietro",
     "next": "Avanti",
@@ -125,7 +126,6 @@
       "unknownType": "Tipo sconosciuto"
     },
     "you": "Tu",
-    "youPrefix": "Tu: ",
     "yesterday": "Ieri",
     "attachTitle": "Invia file / immagine",
     "emojiTitle": "Scegli emoji",
@@ -353,7 +353,7 @@
       "configured": "{{host}} ({{type}})",
       "noProxy": "Nessun proxy configurato",
       "hasCredentials": "Le credenziali sono memorizzate ma non vengono mostrate. Inserisci un URL completo per modificarle.",
-      "hint": "Le modifiche verranno applicate al successivo avvio della sessione, non a una connessione già in corso. Il proxy deve essere reale e raggiungibile — un valore non raggiungibile blocca la consegna del QR e l'avvio restituirà l'errore 504.",
+      "hint": "Le modifiche verranno applicate al successivo avvio della sessione, non a una connessione già in corso. Il proxy deve essere reale e raggiungibile — un valore non raggiungibile blocca la consegna del QR: con whatsapp-web.js l'avvio restituirà l'errore 504; con Baileys l'avvio riesce e la sessione continua a riprovare.",
       "createHint": "Necessario solo quando la tua rete non riesce a raggiungere direttamente WhatsApp. Deve essere un proxy reale e raggiungibile.",
       "invalidUrl": "Inserisci un URL del proxy valido http, https, socks4 o socks5.",
       "saveSuccessTitle": "Proxy salvato",
@@ -493,11 +493,9 @@
       "valueLabel": "Valore filtro"
     },
     "columns": {
-      "url": "URL",
       "events": "Eventi",
       "session": "Sessione",
-      "status": "Stato",
-      "actions": "Azioni"
+      "status": "Stato"
     },
     "empty": {
       "title": "Nessun webhook configurato",
@@ -677,7 +675,6 @@
       "revoke": "Revoca"
     },
     "actions": {
-      "copy": "Copia",
       "revoke": "Revoca",
       "delete": "Elimina",
       "edit": "Modifica accesso"
@@ -892,7 +889,7 @@
       "sslRejectUnauthorized": "Verifica Certificato SSL",
       "sslRejectUnauthorizedDesc": "Rifiuta i certificati auto-firmati o non validi. Disabilita per Postgres gestiti con certificati auto-firmati (Supabase, Heroku, Render, Railway).",
       "migrationsTitle": "Migrazioni Database",
-      "migrationsStatus": "Lo schema è sincronizzato automaticamente con TypeORM",
+      "migrationsStatus": "Le migrazioni in sospeso vengono applicate automaticamente all'avvio",
       "migrationsHint": "Le migrazioni sono gestite automaticamente. Usa la CLI per le migrazioni manuali."
     },
     "engine": {
@@ -915,7 +912,7 @@
     "redis": {
       "title": "Redis",
       "enable": "Abilita Redis",
-      "enableDesc": "Richiesto per la memorizzazione della cache, dello storage di sessione e delle code BullMQ",
+      "enableDesc": "Usato per la cache, le code BullMQ, i contatori di rate limiting e la distribuzione WebSocket multi-nodo",
       "useBuiltIn": "Usa Container Redis Integrato",
       "builtInDesc": "OpenWA gestirà un container Redis per te",
       "queueTitle": "Abilita Sistema di Code BullMQ",
@@ -927,7 +924,7 @@
       "failed": "Falliti",
       "viewBullMq": "Visualizza Dashboard BullMQ",
       "disabledTitle": "Redis è Disabilitato",
-      "disabledDesc": "Abilita Redis per la cache, lo storage delle sessioni e le code di messaggi BullMQ.",
+      "disabledDesc": "Abilita Redis per la cache, le code di messaggi BullMQ, i contatori di rate limiting e la distribuzione WebSocket multi-nodo.",
       "passwordOptional": "(opzionale)",
       "bullMqUrlCopied": "URL della dashboard Bull MQ copiato",
       "bullMqUrlHint": "Aprilo con una chiave API ADMIN: una scheda del browser non può autenticarsi."
@@ -1061,7 +1058,7 @@
       "healthFail": "Controllo dello Stato Fallito",
       "healthError": "Errore nel Controllo dello Stato",
       "savedTitle": "Configurazione Salvata",
-      "savedDesc": "È richiesto il riavvio del server per applicare le modifiche.",
+      "savedDesc": "Le modifiche hanno effetto senza riavviare il server.",
       "saveFailed": "Salvataggio non riuscito",
       "installed": "Plugin installato",
       "installFailed": "Installazione non riuscita",

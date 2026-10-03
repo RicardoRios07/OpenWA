@@ -30,3 +30,24 @@ describe('LabelController - GET :labelId/chats for a chat-restricted key', () =>
     );
   });
 });
+
+// Every label route reaches the engine through EngineRegistry.require(), which answers 400 for a
+// session with no live engine; clients generated from the OpenAPI contract need it declared.
+describe('LabelController OpenAPI error responses', () => {
+  it.each([
+    'findAll',
+    'findOne',
+    'getChatsByLabel',
+    'upsertLabel',
+    'deleteLabel',
+    'getChatLabels',
+    'addLabelToChat',
+    'removeLabelFromChat',
+  ])('%s declares 400', method => {
+    const responses = Reflect.getMetadata(
+      'swagger/apiResponse',
+      Object.getOwnPropertyDescriptor(LabelController.prototype, method)!.value as object,
+    ) as Record<string, unknown>;
+    expect(Object.keys(responses)).toContain('400');
+  });
+});

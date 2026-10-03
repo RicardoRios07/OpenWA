@@ -76,8 +76,10 @@ export interface Session {
   lastActive?: string | null;
   createdAt: string;
   updatedAt: string;
-  /** Human-readable reason carried while the status is 'failed' (terminal failure) or
-   * 'action_required' (operator must intervene, e.g. acknowledge an onboarding modal). */
+  /** Human-readable reason carried while the status is 'failed' (terminal failure),
+   * 'action_required' (operator must intervene, e.g. acknowledge an onboarding modal), or
+   * 'initializing' during an engine-internal reconnect (from the fifth consecutive attempt, or while a
+   * retry waits after a failed relaunch). */
   lastError?: string | null;
   /**
    * A limit WhatsApp itself has placed on the account, or null when there is none. Distinct from
@@ -536,7 +538,7 @@ export interface BatchMessageResult {
   sentAt?: string;
 }
 
-/** GET batch/:batchId shape; the cancel endpoint returns the same minus results/timestamps. */
+/** GET batch/:batchId shape. */
 export interface BatchStatusResponse {
   batchId: string;
   status: BatchStatus;
@@ -545,6 +547,13 @@ export interface BatchStatusResponse {
   results: BatchMessageResult[];
   startedAt?: string | null;
   completedAt?: string | null;
+}
+
+/** POST batch/:batchId/cancel shape: the batch state without per-recipient results or timestamps. */
+export interface BatchCancelResponse {
+  batchId: string;
+  status: BatchStatus;
+  progress: BatchProgress;
 }
 
 export interface HealthStatus {
@@ -970,17 +979,27 @@ export interface ProfilePictureResponse {
 
 export const contactApi = {
   // The route caps a response at 1000 contacts; walk the pages so an address book past that is complete.
-  list: async (sessionId: string) =>
-    (
-      await fetchAllPages(
-        async (limit, offset) => {
+  // No item cap: the status recipient picker needs every contact, and the server's short page ends the walk.
+  list: async (sessionId: string) => {
+    let lastError: unknown;
+    const { items, throttled } = await fetchAllPages(
+      async (limit, offset) => {
+        try {
           const data = await request<Contact[]>(`/sessions/${sessionId}/contacts?limit=${limit}&offset=${offset}`);
           // The route answers a bare array with no total: a short page is the last one.
           return { data, total: data.length < limit ? offset + data.length : Infinity };
-        },
-        { pageSize: 1000 },
-      )
-    ).items,
+        } catch (err) {
+          lastError = err;
+          throw err;
+        }
+      },
+      { pageSize: 1000, maxItems: Infinity },
+    );
+    // A page still throttled after the retries would leave the picker silently short; fail the whole
+    // load with that page's 429, as a throttled first page already does.
+    if (throttled) throw lastError;
+    return items;
+  },
   checkNumber: (sessionId: string, number: string) =>
     request<CheckNumberResponse>(`/sessions/${sessionId}/contacts/check/${encodeURIComponent(number)}`),
   // Returns the contact/group profile picture URL. Both engines return null when the user hid their
@@ -1115,7 +1134,7 @@ export const messageApi = {
   getBatchStatus: (sessionId: string, batchId: string) =>
     request<BatchStatusResponse>(`/sessions/${sessionId}/messages/batch/${encodeURIComponent(batchId)}`),
   cancelBatch: (sessionId: string, batchId: string) =>
-    request<BatchStatusResponse>(`/sessions/${sessionId}/messages/batch/${encodeURIComponent(batchId)}/cancel`, {
+    request<BatchCancelResponse>(`/sessions/${sessionId}/messages/batch/${encodeURIComponent(batchId)}/cancel`, {
       method: 'POST',
     }),
   reply: (sessionId: string, data: { chatId: string; quotedMessageId: string; text: string }) =>

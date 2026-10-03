@@ -114,6 +114,8 @@ export class IntegrationInstanceController {
   ): Promise<InstanceView> {
     await this.resolveVisible(pluginId, instanceId, apiKey);
     const inst = await this.instances.regenerateSecret(pluginId, instanceId);
+    // regenerateSecret() answers null when the row was deleted after resolveVisible read it.
+    if (!inst) throw new NotFoundException('instance not found');
     void this.audit.logInfo(AuditAction.INTEGRATION_INSTANCE_SECRET_REGENERATED, {
       metadata: { pluginId, instanceId },
     });
@@ -143,8 +145,10 @@ export class IntegrationInstanceController {
         { enabled: dto.enabled, sessionScope: dto.sessionScope, config: dto.config },
         this.schemaFor(pluginId),
       );
+      // update() answers null when the row was deleted after resolveVisible read it.
+      if (!inst) throw new NotFoundException('instance not found');
     }
-    const updated = inst as PluginInstance;
+    const updated = inst;
     // If the bound session changed, tear down the OLD scope (incl. a wildcard/null scope) so it stops
     // firing with stale config. The new scope is (re)bound right after; teardown runs first with the new
     // scope already persisted, so the wildcard retirement check sees the current state correctly.

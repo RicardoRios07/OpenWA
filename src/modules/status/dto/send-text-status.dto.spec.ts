@@ -56,10 +56,10 @@ describe('SendTextStatusDto recipients validation', () => {
     expect(errors).toHaveLength(0);
   });
 
-  it('rejects malformed JIDs', async () => {
-    const errors = await validate(
-      plainToInstance(SendTextStatusDto, { text: 'hi', recipients: ['not-a-jid', '123@g.us', '@c.us', 'abc@lid'] }),
-    );
+  // One entry per validate call: any single bad entry fails the whole array, so a combined list
+  // would still fail if one of the others (a group JID, say) were wrongly accepted.
+  it.each(['not-a-jid', '123@g.us', '@c.us', 'abc@lid'])('rejects the malformed JID %s', async jid => {
+    const errors = await validate(plainToInstance(SendTextStatusDto, { text: 'hi', recipients: [jid] }));
     expect(errors.some(e => e.property === 'recipients')).toBe(true);
   });
 

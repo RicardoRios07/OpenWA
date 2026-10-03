@@ -58,8 +58,9 @@ backed by `localStorage` — there is no Zustand store.
    the originals measure 1.98:1, 3.76:1, 2.28:1 and 2.15:1 on white. Each twin is set from the
    darkest surface it actually lands on, which is the 10 to 20 percent tint of its own hue that the
    badges and callouts paint behind it, not white. Dark restates primary, success and warning as the
-   originals, which are 6:1 or better on the dark surfaces, and lightens error to `#f15e5e` because
-   the original measures 4.06:1 there.
+   originals, which are 6:1 or better on the dark surfaces, and lightens error to `#f77b7b`, which
+   clears 4.65:1 on the 20 percent error tint over Slate 800, because the original measures 3.89:1
+   on Slate 800 (`#1e293b`), the dark card surface.
    Known gap: the exclusive button groups report `aria-pressed` without arrow-key roving focus. Every
    page has a render test, but only Infrastructure's resolves the caption references
    against a real DOM; elsewhere they are checked structurally. Treat the claim as directional, not
@@ -99,7 +100,10 @@ flowchart TB
 
 The route table lives in `src/App.tsx`; the sidebar items in `src/components/Layout.tsx`. Routes
 guarded by `role === 'admin'` are only mounted (and only shown in the sidebar) for an admin key —
-a non-admin hitting the path falls through to the `*` redirect.
+a non-admin hitting the path falls through to the `*` redirect. API Keys, Infrastructure and Plugins
+also need a key not restricted to selected sessions (`role === 'admin' && !scoped`, with `scoped`
+from `POST /api/auth/validate`), because their routes refuse a session-scoped key; `/logs` is
+mounted for any admin key.
 
 ```
 /                  → Dashboard (overview + charts)
@@ -111,9 +115,9 @@ a non-admin hitting the path falls through to the `*` redirect.
 /templates         → Message Templates
 /message-tester    → Message Tester (ad-hoc send-* + check-number)
 /logs              → Activity / Audit Logs            [admin only]
-/api-keys          → API Keys Management              [admin only]
-/infrastructure    → Infrastructure status & config   [admin only]
-/plugins           → Plugins (install / enable / configure) [admin only]
+/api-keys          → API Keys Management              [admin, unscoped key only]
+/infrastructure    → Infrastructure status & config   [admin, unscoped key only]
+/plugins           → Plugins (install / enable / configure) [admin, unscoped key only]
 *                  → redirect to /
 ```
 

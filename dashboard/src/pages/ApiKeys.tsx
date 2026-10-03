@@ -36,6 +36,7 @@ import { Modal } from '../components/Modal';
 import { SessionScopePicker } from '../components/SessionScopePicker';
 import { useToast } from '../hooks/useToast';
 import { copyToClipboard } from '../utils/clipboard';
+import { captionLength } from '../utils/bulkMedia';
 import {
   apiKeyDraft,
   apiKeyPatch,
@@ -312,9 +313,13 @@ export function ApiKeys() {
   const newErrors = limitErrors(newKey.role, newKey.ips, newKey.chats);
   const editErrors =
     editDraft && editingKey ? limitErrors(editDraft.role, editDraft.ips, editDraft.chats, editingKey) : null;
-  // The gateway requires a name of at least 3 characters; the input stops at its 100-character limit.
+  // The gateway takes a name of 3 to 100 characters, counted the way its validators count them (an
+  // emoji is one); Create is held outside that range.
+  const nameTooShort = captionLength(newKey.name.trim()) < 3;
+  const nameLength = [...newKey.name].length;
+  const nameTooLong = nameLength > 100;
   const canCreate =
-    !createMutation.isPending && newKey.name.trim().length >= 3 && newErrors.ip === null && newErrors.chat === null;
+    !createMutation.isPending && !nameTooShort && !nameTooLong && newErrors.ip === null && newErrors.chat === null;
   const canSave = !updateMutation.isPending && editErrors?.ip === null && editErrors.chat === null;
 
   const handleRevoke = async (id: string) => {
@@ -522,13 +527,16 @@ export function ApiKeys() {
       {showModal && (
         <Modal
           open
-          onClose={closeCreateModal}
+          // The key exists once the request lands, and its secret is shown only here, so the modal
+          // cannot be dismissed until the request settles.
+          onClose={createMutation.isPending ? () => {} : closeCreateModal}
+          hideCloseButton={createMutation.isPending}
           title={createdKey ? t('apiKeys.createdTitle') : t('apiKeys.modalTitle')}
           closeLabel={t('common.close')}
           footer={
             !createdKey ? (
               <>
-                <button className="btn-secondary" onClick={closeCreateModal}>
+                <button className="btn-secondary" onClick={closeCreateModal} disabled={createMutation.isPending}>
                   {t('common.cancel')}
                 </button>
                 <button className="btn-primary" onClick={handleCreate} disabled={!canCreate}>
@@ -564,14 +572,17 @@ export function ApiKeys() {
               <input
                 id="ak-1"
                 type="text"
-                maxLength={100}
                 placeholder={t('apiKeys.namePlaceholder')}
                 value={newKey.name}
                 onChange={e => setNewKey({ ...newKey, name: e.target.value })}
               />
-              {newKey.name.length > 0 && newKey.name.trim().length < 3 && (
+              {newKey.name.length > 0 && nameTooShort && (
                 <span className="key-field-hint">{t('apiKeys.nameTooShort')}</span>
               )}
+              {/* Kept mounted, unstyled while empty: a live region inserted with its text is often not announced. */}
+              <span className={nameTooLong ? 'key-field-hint' : undefined} role="status">
+                {nameTooLong ? t('common.fieldTooLong', { max: 100, count: nameLength }) : ''}
+              </span>
               <label htmlFor="ak-2">{t('common.role')}</label>
               <select
                 id="ak-2"

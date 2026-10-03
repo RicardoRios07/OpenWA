@@ -109,7 +109,8 @@ curl -X POST "$BASE/api/sessions" \
 
 With an optional per-session egress proxy — only if your network can't reach WhatsApp directly. The
 proxy **must be a real, reachable host**; an unreachable value silently blocks the WhatsApp WebSocket
-(no QR is ever delivered) and `POST /api/sessions/:sessionId/start` returns `504` after ~30s.
+(no QR is ever delivered): on whatsapp-web.js `POST /api/sessions/:sessionId/start` returns `504`
+after ~30s; on Baileys the start succeeds and the session keeps retrying.
 
 Setting `proxyUrl` requires an unscoped ADMIN key; any other key gets `403`.
 
@@ -1141,9 +1142,11 @@ curl -X GET "$BASE/api/webhooks?limit=100&offset=0" \
 
 #### GET /api/webhooks/delivery-failures
 
-List webhook deliveries that failed or were not sent (attempts 0, pending replay), most recent first
-(ADMIN; results stay confined to the key's allowed sessions). `lastStatusCode` is `null` when the
-failure was a network/timeout/SSRF error rather than a non-2xx response.
+List webhook deliveries that failed or were not sent (attempts 0), most recent first (ADMIN; results
+stay confined to the key's allowed sessions). A shed or shutdown-refused delivery is replayed by the
+outbox until its replay budget runs out; an oversize payload or a preflight failure on first dispatch
+is not replayed. `lastStatusCode` is `null` when the failure was a network/timeout/SSRF error rather
+than a non-2xx response.
 
 ```bash
 curl -X GET "$BASE/api/webhooks/delivery-failures?limit=100&offset=0" \
@@ -1608,7 +1611,7 @@ curl -X PUT "$BASE/api/plugins/chat-flow/config" \
 
 #### PUT /api/plugins/:id/config/:sessionId
 
-Set (or clear with `{}`) a per-session plugin config override. The override is stored under the session UUID and resolved against the UUID carried by each event, so an id that is not a live session's UUID never takes effect.
+Set a per-session plugin config override, or clear it by sending `{ "config": {} }`. The override is stored under the session UUID and resolved against the UUID carried by each event, so an id that is not a live session's UUID never takes effect.
 
 ```bash
 curl -X PUT "$BASE/api/plugins/chat-flow/config/$SESSION_ID" \
@@ -1747,8 +1750,8 @@ curl -X GET "$BASE/api/search?q=invoice&direction=incoming&limit=20" \
 
 Server-side transcoding into the shapes WhatsApp clients actually play. Disabled by default; set
 `MEDIA_CONVERSION_ENABLED=true`, and `ffmpeg` must be runnable (the official Docker image ships it)
-or the routes answer `503`. Nothing is converted implicitly — run media through here first, then
-post the result.
+or the routes answer `503`; video conversion needs ffmpeg 4.4 or newer. Nothing is converted
+implicitly — run media through here first, then post the result.
 
 #### GET /api/sessions/:sessionId/media/convert
 

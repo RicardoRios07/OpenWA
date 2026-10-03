@@ -58,7 +58,7 @@ export class MessageListItemDto {
     type: String,
     nullable: true,
     description:
-      'Push name of the message sender as the engine reported it; in a group this is the member who posted, not the group subject. Null when no contact name was known.',
+      "Sender's push name, or their saved contact name when the engine reported no push name; in a group this is the member who posted, not the group subject. Null when neither was known.",
     example: 'Alice',
   })
   chatName?: string | null;

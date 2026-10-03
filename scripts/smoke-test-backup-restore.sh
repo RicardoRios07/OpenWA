@@ -45,7 +45,11 @@
 #   (ac) a missing Baileys auth dir is reported when data/.env.generated selects the Baileys engine
 #   (ad) a file an engine deletes during the sessions/ or baileys/ copy is noted instead of failing the
 #       backup, a file the app deletes during the media or plugin copies is logged, and any other cp
-#       error still fails it
+#       error still fails it, however long its output and whatever the host's locale
+#   (ae) the min-content check passes an archive whose listing outgrows a pipe buffer
+#   (af) the online SQLite backup waits out a writer holding the database lock (skipped without sqlite3)
+#   (ag) quoted values, inline comments and `KEY=""` in ./.env resolve as dotenv reads them, and a line
+#       the scripts cannot parse ends the lookup at the default instead of reading data/.env.generated
 #
 # Usage: ./scripts/smoke-test-backup-restore.sh
 # Requires: bash, tar, node (restore.sh path resolution). sqlite3 is optional (see (c) and (k)).
@@ -1280,11 +1284,24 @@ printf 'profile\n' >"$AD/data/sessions/session-s1/Preferences"
 printf '{}' >"$AD/data/baileys/s1/creds.json"
 printf 'jpeg\n' >"$AD/data/media/status.jpg"
 printf '{}' >"$AD/data/plugins/registry.json"
+# SHIM_CP_LINES repeats the error past a pipe buffer, the size of a real tree's worth of failures. Without
+# LC_ALL=C the vanished-file text comes out translated, as cp prints it on a localized host.
 cat >"$AD/shim/cp" <<SHIM
 #!/bin/sh
 $(command -v cp) "\$@" || exit
+msg="\$SHIM_CP_ERROR"
+if [ "\${LC_ALL:-}" != C ] && [ "\$msg" = 'No such file or directory' ]; then
+  msg='Datei oder Verzeichnis nicht gefunden'
+fi
 case "\$3" in
-  */sessions | */baileys | */media | */plugin-*) echo "cp: cannot stat '\$2/gone': \$SHIM_CP_ERROR" >&2; exit 1 ;;
+  */sessions | */baileys | */media | */plugin-*)
+    i=0
+    while [ "\$i" -lt "\${SHIM_CP_LINES:-1}" ]; do
+      echo "cp: cannot stat '\$2/gone\$i': \$msg" >&2
+      i=\$((i + 1))
+    done
+    exit 1
+    ;;
 esac
 SHIM
 chmod +x "$AD/shim/cp"
@@ -1306,14 +1323,122 @@ for tree in media plugins; do
   fi
 done
 set +e
-OUT_AD="$(cd "$AD" && SHIM_CP_ERROR='Permission denied' PATH="$AD/shim:$PATH" BACKUP_DIR="$AD/out2" "$BACKUP" 2>&1)"
+OUT_AD="$(cd "$AD" && SHIM_CP_ERROR='Permission denied' SHIM_CP_LINES=20000 PATH="$AD/shim:$PATH" \
+  BACKUP_DIR="$AD/out2" "$BACKUP" 2>&1)"
 RC_AD=$?
 set -e
-if [ "$RC_AD" -eq 0 ] || ! printf '%s' "$OUT_AD" | grep -q 'Permission denied' ||
+if [ "$RC_AD" -eq 0 ] || ! grep -q 'Permission denied' <<<"$OUT_AD" ||
   [ -n "$(ls "$AD"/out2/openwa-backup-*.tar.gz 2>/dev/null)" ]; then
-  fail "(ad) a cp error other than a vanished file did not fail the backup: $OUT_AD"
+  fail "(ad) a cp error other than a vanished file did not fail the backup: $(tail -n 5 <<<"$OUT_AD")"
 fi
 pass "(ad) a vanished engine file is noted, a vanished media or plugin file logged, other cp errors fatal"
+
+echo ""
+echo "==> (ae) the min-content check passes an archive whose listing outgrows a pipe buffer"
+# A whatsapp-web.js profile alone lists thousands of members. A grep -q that matched a required member
+# early and stopped reading broke the pipe feeding it, and pipefail turned the match into "missing", so a
+# good archive was deleted. The shim tar pads the listing after the real members, past a pipe buffer.
+AE="$WORK/ae"
+mkdir -p "$AE/data" "$AE/shim"
+make_fixture "$AE/data/main.sqlite" "echo2-main"
+make_fixture "$AE/data/openwa.sqlite" "echo2-data"
+cat >"$AE/shim/tar" <<SHIM
+#!/bin/sh
+$(command -v tar) "\$@" || exit
+if [ "\$1" = -tzf ]; then
+  i=0
+  while [ "\$i" -lt 20000 ]; do
+    echo "./sessions/session-s1/Default/Cache/Cache_Data/padding-\$i"
+    i=\$((i + 1))
+  done
+fi
+SHIM
+chmod +x "$AE/shim/tar"
+set +e
+OUT_AE="$(cd "$AE" && PATH="$AE/shim:$PATH" BACKUP_DIR="$AE/out" "$BACKUP" 2>&1)"
+RC_AE=$?
+set -e
+if [ "$RC_AE" -ne 0 ] || [ -z "$(ls "$AE"/out/openwa-backup-*.tar.gz 2>/dev/null)" ]; then
+  fail "(ae) a long archive listing failed the min-content check: $(grep -v padding- <<<"$OUT_AE")"
+fi
+pass "(ae) the min-content check reads the whole listing"
+
+echo ""
+if [ "$HAS_SQLITE3" -eq 1 ]; then
+  echo "==> (af) the online SQLite backup waits out a writer holding the database lock"
+  # The app writes several times a second in rollback-journal mode. A bare .backup gave up on the first
+  # lock it met with 'database is locked', so on a busy gateway no online backup completed.
+  AF="$WORK/af"
+  mkdir -p "$AF/data"
+  make_fixture "$AF/data/main.sqlite" "foxtrot2-main"
+  make_fixture "$AF/data/openwa.sqlite" "foxtrot2-data"
+  {
+    echo 'BEGIN EXCLUSIVE;'
+    echo "INSERT INTO sentinel VALUES('foxtrot2-late');"
+    echo ".system touch '$AF/locked'"
+    sleep 2
+    echo 'COMMIT;'
+  } | sqlite3 "$AF/data/main.sqlite" &
+  WRITER_AF=$!
+  for _ in $(seq 1 100); do
+    [ -f "$AF/locked" ] && break
+    sleep 0.1
+  done
+  [ -f "$AF/locked" ] || fail "(af) the writer never took the database lock"
+  set +e
+  OUT_AF="$(cd "$AF" && BACKUP_DIR="$AF/out" "$BACKUP" 2>&1)"
+  RC_AF=$?
+  set -e
+  wait "$WRITER_AF"
+  if [ "$RC_AF" -ne 0 ]; then
+    fail "(af) the backup failed while a writer held the database lock: $OUT_AF"
+  fi
+  mkdir -p "$AF/extract"
+  tar -xzf "$(ls "$AF"/out/openwa-backup-*.tar.gz)" -C "$AF/extract"
+  if [ "$(sqlite3 "$AF/extract/main.sqlite" 'PRAGMA integrity_check;')" != ok ]; then
+    fail "(af) the snapshot taken after the writer let go is not a sound database"
+  fi
+  pass "(af) the online backup waits for the lock instead of failing"
+else
+  echo "SKIP: (af) sqlite3 not found on this host, so there is no database lock to wait on"
+fi
+
+echo ""
+echo "==> (ag) quoted, commented and empty-quoted ./.env values resolve as the app reads them"
+# dotenv strips a value's quotes and an unquoted value's comment, and a key it has set keeps
+# data/.env.generated from supplying it. The scripts skipped every such line and read the next layer,
+# so .env.example's commented PLUGINS_DIR line and a `DATABASE_NAME=""` resolved to values the app
+# never uses.
+AG="$WORK/ag"
+mkdir -p "$AG/data"
+cat >"$AG/.env" <<'ENV'
+PLUGINS_DIR=./data/plugins          # Plugin directory (default: ./data/plugins)
+DATABASE_NAME=""
+MAIN_DATABASE_NAME='./data/quoted main.sqlite'
+BAILEYS_AUTH_DIR=./data/bl#inline
+SESSION_DATA_PATH="./data/sess" # quoted, then a comment
+STORAGE_LOCAL_PATH="./data/media" # see "docs"
+PLUGIN_STATE_DIR='./data/state' # it'
+ENV
+printf 'DATABASE_NAME=./elsewhere/openwa.sqlite\nSESSION_DATA_PATH=./elsewhere/sess\n' >"$AG/data/.env.generated"
+resolve_ag() {
+  (cd "$AG" && DATA_DIR=./data && . "$REPO_ROOT/scripts/lib-env.sh" && openwa_resolve "$1" "$2") 2>>"$AG/err"
+}
+# A blank value and an unparsed line both resolve to the default, never to data/.env.generated.
+for check in 'PLUGINS_DIR|./data/plugins' 'DATABASE_NAME|DEFAULT' 'MAIN_DATABASE_NAME|./data/quoted main.sqlite' \
+  'BAILEYS_AUTH_DIR|./data/bl' 'SESSION_DATA_PATH|DEFAULT' 'STORAGE_LOCAL_PATH|DEFAULT' 'PLUGIN_STATE_DIR|DEFAULT'; do
+  key="${check%%|*}"
+  got="$(resolve_ag "$key" DEFAULT)"
+  if [ "$got" != "${check#*|}" ]; then
+    fail "(ag) $key resolved to '$got', expected '${check#*|}'"
+  fi
+done
+# A comment ending in the value's own quote must not pass for the closing quote.
+if [ "$(grep -c 'do not parse' "$AG/err")" -ne 3 ] || ! grep -q 'sets SESSION_DATA_PATH in a form' "$AG/err" ||
+  ! grep -q 'sets STORAGE_LOCAL_PATH in a form' "$AG/err" || ! grep -q 'sets PLUGIN_STATE_DIR in a form' "$AG/err"; then
+  fail "(ag) the parse warning did not name exactly the three unparsed lines: $(cat "$AG/err")"
+fi
+pass "(ag) dotenv's quoted, commented and empty forms resolve like the app, and an unparsed line stops the lookup"
 
 echo ""
 echo "All smoke tests passed!"

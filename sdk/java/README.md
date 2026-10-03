@@ -27,12 +27,16 @@ Java 17+, one runtime dependency ([Gson](https://github.com/google/gson)).
 implementation 'com.rmyndharis:openwa:0.5.0'
 ```
 
-This README describes `main`. The 0.5.0 release lacks `sessions.getProxy`,
-`sessions.updateProxy`, `messages.clickButton`, the `name` filter of
-`ListSessionsQuery`, `WebhookSignature.verify`, the `WebhookDelivery` types, the
+This README describes `main`. The 0.5.0 release lacks, among other additions,
+`sessions.getProxy`, `sessions.updateProxy`, `messages.clickButton`, the `name`
+filter of `ListSessionsQuery`, the `after` and `inlineMedia` filters of
+`ListMessagesQuery`, the `archived`, `pinned`, `muted` and `muteExpiration`
+fields of `ChatSummary`, the `order` and `product` fields of
+`ChatHistoryMessage`, `WebhookSignature.verify`, the `WebhookDelivery` types, the
 `code()`, `retryAfterSeconds()` and `headers()` error accessors, the `UNKNOWN`
-enum fallback and the refusal of an empty, `.` or `..` id or path segment; they
-ship with the next SDK release. See [the SDK overview](../README.md#coverage).
+enum fallback, the refusal of an empty, `.` or `..` id or path segment and the
+refusal of a raw request path that does not begin with `/`; they ship with the
+next SDK release. See [the SDK overview](../README.md#coverage).
 
 ## Quickstart
 
@@ -50,6 +54,8 @@ OpenWAClient client = new OpenWAClient("http://localhost:2785", "owa_k1_…");
 SessionResponse session = client.sessions.create(CreateSessionRequest.builder().name("my-session").build());
 client.sessions.start(session.id());
 
+// Link the account before sending: scan sessions.getQrCode or use sessions.requestPairingCode,
+// then wait for status READY. An unlinked session answers the send with 409.
 MessageResponse result = client.messages.sendText(session.id(),
     SendTextRequest.builder()
         .chatId("628123456789@c.us")
@@ -83,8 +89,11 @@ and PHP SDKs:
 `profile` · `calls` · `media`,
 plus `client.auth()`.
 
-Operator-only modules (`docker`, `metrics`, `infra`, `plugins`, `mcp`) are
-intentionally not exposed; all user-facing resources are.
+Deliberately not exposed, matching `docs/18-sdk-design.md`: `auth`/api-keys,
+`audit`, `settings`, `stats`, `automation`, `infra`, `plugins`, the
+`integration` management routes, `metrics`, `mcp`, `ingress` and `docker`.
+Everything else the gateway publishes is exposed; see
+[the SDK overview](../README.md#coverage).
 
 `UpdateWebhookRequest` omits null fields, so `filters(null)` leaves a
 webhook's filters unchanged. To remove every filter, pass
@@ -126,7 +135,7 @@ try {
 | `OpenWAApiError`                | —    | Any other non-2xx (carries `.status()`)                     |
 | `OpenWATimeoutError`            | —    | Request exceeded the configured timeout                     |
 
-All extend `OpenWAError` (a `RuntimeException`). 503 is transient, but a catalog 503 can persist because WhatsApp may never answer that query, so bound any retry. A 429 from the global rate limiter lifts when its window expires (seconds for the per-second tier, up to an hour for the hourly tier by default), and `retryAfterSeconds()` carries its `Retry-After` header. A 429 whose `code()` is `"SEND_PACING_LIMITED"` is not transient: do not retry it before `retryAfterSeconds()`, which then comes from the body and can be hours. `headers()` returns the response headers. A 503 does not prove a write was never carried out: the engine answers it when WhatsApp did not confirm in time, and the change may still have been applied, so re-read the state before repeating it. In a routed deployment a forward that fails before reaching the owner node answers 503, one that fails after the request reached it answers 502 or 504, and a 503 from the owner itself is relayed unchanged.
+All extend `OpenWAError` (a `RuntimeException`). 503 is transient, but a catalog 503 can persist because WhatsApp may never answer that query, so bound any retry. A 429 from the global rate limiter lifts when its window expires (seconds for the per-second tier, up to an hour for the hourly tier by default), and `retryAfterSeconds()` carries its `Retry-After` header. A 429 whose `code()` is `"SEND_PACING_LIMITED"` is usually not transient: do not retry it before `retryAfterSeconds()`, which then comes from the body: a few seconds when only sends still in flight caused it, the rest of the failure breaker's cooldown (`SEND_PACING_BREAKER_COOLDOWN_MS`, 15 minutes by default) after a run of send failures, otherwise up to the next UTC day. `headers()` returns the response headers. A 503 does not prove a write was never carried out: the engine answers it when WhatsApp did not confirm in time, and the change may still have been applied, so re-read the state before repeating it. In a routed deployment a forward that fails before reaching the owner node answers 503, one that fails after the request reached it answers 502 or 504, and a 503 from the owner itself is relayed unchanged.
 
 ## Receiving webhooks
 
@@ -172,8 +181,9 @@ WebhookDelivery delivery =
 - **Empty and dot ids are refused.** An empty, `.` or `..` id throws
   `IllegalArgumentException` and nothing is sent, so a proxy that resolves dot
   segments cannot turn the call into one on the parent resource. The raw
-  `request*` methods refuse a `.` or `..` segment the same way but send an
-  empty one (a trailing slash) as written.
+  `request*` methods refuse a `.` or `..` segment the same way, and a path
+  that does not begin with `/`, but send an empty one (a trailing slash) as
+  written.
 
 ## Development
 

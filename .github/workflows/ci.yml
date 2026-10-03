@@ -145,9 +145,9 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # Real Redis for the queue-on e2e suite (test/queue-on.e2e-spec.ts); the rest of the e2e family
-    # boots QUEUE_ENABLED=false and never connects. Mirrors the test-postgres job's service pattern;
-    # the image pin matches docker-compose.yml.
+    # Real Redis for the queue-on and throttler-redis e2e suites (test/queue-on.e2e-spec.ts,
+    # test/throttler-redis.e2e-spec.ts); the rest of the e2e family boots QUEUE_ENABLED=false and never
+    # connects. Mirrors the test-postgres job's service pattern; the image pin matches docker-compose.yml.
     services:
       redis:
         image: redis:7-alpine
@@ -189,9 +189,9 @@ jobs:
 
       - name: Run e2e smoke tests
         run: npm run test:e2e
-        # Point the queue-on suite at the service container (under GitHub Actions the suite fails
-        # without one; a local run without Redis skips). Every other suite keeps QUEUE_ENABLED=false
-        # via setup-e2e.ts and never touches Redis.
+        # Point the queue-on and throttler-redis suites at the service container (under GitHub Actions
+        # they fail without one; a local run without Redis skips). Every other suite keeps
+        # QUEUE_ENABLED=false via setup-e2e.ts and never touches Redis.
         env:
           REDIS_HOST: localhost
           REDIS_PORT: '6379'

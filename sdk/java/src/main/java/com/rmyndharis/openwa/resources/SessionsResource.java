@@ -117,7 +117,13 @@ public final class SessionsResource {
         return client.request(HttpMethod.POST, "/api/sessions/" + encodeSegment(id) + "/logout", null, null, SessionResponse.class);
     }
 
-    /** Force-kill a stuck session (SIGKILL + teardown). */
+    /**
+     * Force-kill a stuck session (SIGKILL + teardown). Throws with HTTP 502 and {@code code()}
+     * {@code SESSION_FORCE_KILL_INCOMPLETE} when the session was stopped locally but the
+     * force-destroy threw or timed out, so the engine process may still be running; the status is
+     * settled to {@code disconnected} and a retry answers 400 because no engine is left to kill.
+     * Restart the node to reap a leaked process.
+     */
     public SessionResponse forceKill(String id) {
         return client.request(HttpMethod.POST, "/api/sessions/" + encodeSegment(id) + "/force-kill", null, null, SessionResponse.class);
     }

@@ -292,7 +292,7 @@ route instead. The volume and its media are kept either way.
 
 ### Redis Migration (Cache)
 
-Redis in OpenWA holds only **ephemeral** state: TTL-based cache entries, BullMQ jobs (see below), and — when `REDIS_ENABLED` — the rate-limit hit counters. Cache data automatically regenerates from the database.
+Redis in OpenWA holds only **ephemeral** state: TTL-based cache entries, BullMQ jobs (see below), and — when `REDIS_ENABLED` — the rate-limit hit counters. No request reads the cache, so there is nothing to migrate.
 
 **No migration API needed** - just change configuration:
 
@@ -304,6 +304,7 @@ REDIS_HOST=your-redis-host.com
 REDIS_PORT=6379
 REDIS_USERNAME=optional
 REDIS_PASSWORD=optional
+REDIS_TLS=false          # true for a managed Redis that requires TLS
 ```
 
 > Setting `REDIS_BUILTIN` in `.env` **pins** it: the env value wins, so the dashboard's built-in
@@ -315,18 +316,16 @@ REDIS_PASSWORD=optional
 > This applies to a bare-metal install that reads the project `.env`. Compose does not forward
 > `REDIS_BUILTIN` (nor `POSTGRES_BUILTIN` or `MINIO_BUILTIN`), so on compose clear "Use Built-in Redis
 > Container" in Dashboard > Infrastructure (or set `REDIS_BUILTIN=false` in `data/.env.generated`), and
-> put only the forwarded `REDIS_ENABLED`, `REDIS_HOST`, `REDIS_PORT`, `REDIS_USERNAME` and
-> `REDIS_PASSWORD` in the `.env` next to `docker-compose.yml`.
+> put only the forwarded `REDIS_ENABLED`, `REDIS_HOST`, `REDIS_PORT`, `REDIS_USERNAME`,
+> `REDIS_PASSWORD`, `REDIS_TLS`, `REDIS_CONNECT_TIMEOUT_MS` and `REDIS_CACHE_DB` in the `.env` next
+> to `docker-compose.yml`.
 
-| Scenario                  | Support | Notes                                      |
-| ------------------------- | ------- | ------------------------------------------ |
-| Built-in → External Redis | ✅      | Config change only                         |
-| External → Built-in Redis | ✅      | Config change only                         |
-| Enable → Disable Redis    | ✅      | Cache no-ops; reads fall through to the DB |
-| Disable → Enable Redis    | ✅      | Cache rebuilds automatically               |
-
-> [!TIP]
-> **Cache Warm-up**: After switching Redis instances, the cache will automatically rebuild as requests come in. No data migration is necessary.
+| Scenario                  | Support | Notes                              |
+| ------------------------- | ------- | ---------------------------------- |
+| Built-in → External Redis | ✅      | Config change only                 |
+| External → Built-in Redis | ✅      | Config change only                 |
+| Enable → Disable Redis    | ✅      | Cache no-ops (no request reads it) |
+| Disable → Enable Redis    | ✅      | Config change only                 |
 
 ### BullMQ Migration (Queue System)
 
@@ -370,7 +369,7 @@ docker compose up -d
 | ------------ | -------------------- | -------------------------------------------------------- |
 | **Database** | Export/Import JSON   | `/api/infra/export-data`, `/api/infra/import-data`       |
 | **Storage**  | Export/Import tar.gz | `/api/infra/storage/export`, `/api/infra/storage/import` |
-| **Redis**    | Config change only   | N/A (cache auto-rebuilds)                                |
+| **Redis**    | Config change only   | N/A (no request reads the cache)                         |
 | **BullMQ**   | Drain then config    | N/A (wait for empty queues)                              |
 
 ### Migration Script (Legacy)
@@ -781,7 +780,8 @@ them on PostgreSQL, and on SQLite unless `DATABASE_SYNCHRONIZE=true` puts the da
 mode. The Main (auth/audit) connection runs its own `migrations-main/` chain at every boot. The chain is
 idempotent, so a `main.sqlite` that an earlier release built with synchronize is adopted in place (rows
 kept, missing columns added, the ledger written). `MAIN_DATABASE_SYNCHRONIZE=true` only adds a
-synchronize pass after the chain. Run the main chain by hand with `npm run migration:run:main`.
+synchronize pass after the chain. Run the main chain by hand with `npm run migration:run:main` on a
+source checkout, or `docker compose run --rm openwa-api npm run migration:run:main:prod` in the image.
 
 ### Upgrade Steps
 
@@ -846,7 +846,8 @@ docker compose run --rm openwa-api npm run migration:run:prod
 
 > [!WARNING]
 > Use `migration:run:prod` inside the production image. Plain `npm run migration:run` needs `ts-node` and
-> the TypeScript sources, both stripped by `npm ci --omit=dev` in the released image.
+> the TypeScript sources, both stripped by `npm ci --omit=dev` in the released image. The same holds for
+> the main chain: use `migration:run:main:prod`, not `migration:run:main`.
 
 ### Known Upgrade Hazards
 
@@ -860,6 +861,7 @@ docker compose run --rm openwa-api npm run migration:run:prod
 | `0.24.0` | `main.sqlite` (API keys and audit log) runs its `migrations-main/` chain at every boot instead of defaulting to synchronize, adopting an older file in place; boot stops with a `MainSchemaMismatchError` when the ledger records a migration this release does not ship, or an entity column is still missing after the chain | Back up `main.sqlite` before upgrading. The refusal names the migration or column; [05 - Database Design, section 5.6](./05-database-design.md#56-migration-strategy) gives the recovery for each                                                                                                                                                                                                                                                                              |
 | `0.24.0` | The built-in storage runs `pgsty/silo` in place of the withdrawn `minio/minio` image; the compose `minio` service no longer starts without `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY`, and a recreated dashboard built-in `openwa-minio` publishes no host ports                                                            | Recreate the container and set the credentials as the Storage Migration part of section 14.3 describes                                                                                                                                                                                                                                                                                                                                                                         |
 | `0.24.0` | `POST /api/sessions/:sessionId/messages/send-product` passes the `message:sending` plugin gate (type `product`, input `{ chatId, productId, body }`); a rewritten `chatId` is ignored                                                                                                                                          | Branch on `source`/`type` before reading send-DTO fields; a veto now answers `400`                                                                                                                                                                                                                                                                                                                                                                                             |
+| `0.24.0` | Typed SDK clients: batch cancel (JavaScript `cancelBatch`, Go `CancelBatch`, Java `cancelBatch`, Python `cancel_batch`) returns `BatchCancelResponse` (`batchId`, `status`, `progress`) instead of `BatchStatusResponse`, whose `results` and timestamps the route never sent                                                  | TypeScript, Go and Java: change the declared result type to `BatchCancelResponse`. Typed Python: update annotations. Read per-recipient results from `batchStatus` / `BatchStatus` / `batch_status`. PHP needs no change; the wire response is unchanged                                                                                                                                                                                                                       |
 | `0.23.6` | A media URL passed to a send route or to `POST /media/convert/voice` or `.../convert/video`, and the link preview of a text send, are fetched through the egress proxy of the session named in the request instead of leaving from the gateway's own address                                                                   | Set `SESSION_PROXY_URL_FETCH=false` if a session proxy is a WhatsApp-only route that cannot reach arbitrary media hosts                                                                                                                                                                                                                                                                                                                                                        |
 | `0.23.0` | Typed SDK clients: `markRead` and `subscribePresence` each take their own request type instead of the shared `MarkChatRequest`, which now serves `markUnread` alone                                                                                                                                                            | Go and Java: swap the type at both call sites. Typed Python: only at `markRead`, its `subscribePresence` body being structurally identical. JavaScript and PHP need no change; the wire body is unchanged                                                                                                                                                                                                                                                                      |
 | `0.22.0` | Baileys refuses a reply whose quoted id, or a forward whose `fromChatId`, does not name the addressed chat, with the `404` whatsapp-web.js already answered; leaving a group, unsubscribing from a channel and labelling a channel surface WhatsApp's refusal; membership requests for an id that is not a group are refused   | Handle a refusal on those six calls, which previously answered `200` whatever happened                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -929,11 +931,20 @@ if [ -f "$BACKUP_DIR/database.sql" ]; then
     # statements fail and its rows mix with theirs. This is the built-in PostgreSQL (the compose
     # `postgres` service, or the openwa-postgres container Dashboard > Infrastructure created, which
     # carries no compose labels, so step 1 left it running). docker start covers a leftover or
-    # dashboard-created container; compose creates the service only when none exists. For an external
-    # server, rename the database and load the dump as step 3 of 11 - Runbook: Restore from Backup
-    # shows. The upgraded database is kept under a _pre_restore_ name, and sed drops the pg_dump 17
-    # line PostgreSQL 16 rejects.
-    docker start openwa-postgres 2>/dev/null || docker compose --profile postgres up -d postgres
+    # dashboard-created container; compose creates the service only when none exists and .env points
+    # at it. For an external server the script stops: rename the database and load the dump as step 3
+    # of 11 - Runbook: Restore from Backup shows, then run steps 2-6 below by hand without this
+    # PostgreSQL block: nothing after step 1 is restored yet. The upgraded database is kept under a
+    # _pre_restore_ name, and sed drops the pg_dump 17 line PostgreSQL 16 rejects.
+    if ! docker start openwa-postgres 2>/dev/null; then
+        grep -qE '^DATABASE_HOST=(postgres|openwa-postgres)$' .env || {
+            echo "External PostgreSQL: rollback INCOMPLETE, nothing after step 1 has been restored."
+            echo "Load $BACKUP_DIR/database.sql by hand (11 - Runbook: Restore from Backup, step 3),"
+            echo "then run steps 2-6 of this script by hand without the PostgreSQL block."
+            exit 1
+        }
+        docker compose --profile postgres up -d postgres
+    fi
     docker exec openwa-postgres sh -c 'until pg_isready -q -U "$POSTGRES_USER"; do sleep 1; done'
     docker exec openwa-postgres sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres \
       -c "ALTER DATABASE \"$POSTGRES_DB\" RENAME TO \"${POSTGRES_DB}_pre_restore_$(date +%Y%m%d%H%M%S)\"" \

@@ -127,7 +127,7 @@ POSTGRES_SCHEMA=public   # Default behavior (historical)
 
 **Validation:**
 
-- Schema name is validated at boot as a legal Postgres identifier (letters, digits, underscores, max 63 chars)
+- Schema name is validated at boot as a lower-case Postgres identifier (a lower-case letter or underscore, then lower-case letters, digits or underscores, max 63 chars)
 - Reserved `pg_` prefix is rejected to prevent conflicts with system schemas
 - Invalid values cause fast boot failure rather than migration-time errors
 
@@ -160,6 +160,9 @@ curl -X POST 'http://localhost:2785/api/infra/import-data' \
   -H 'Content-Type: application/json' \
   -d @backup.json
 ```
+
+> [!IMPORTANT]
+> The export leaves out webhook `secret` and custom `headers` and the `user:pass` of a session `proxyUrl`. Set them again after the import with `PUT /api/sessions/:sessionId/webhooks/:id` and `PATCH /api/sessions/:sessionId/proxy`, or webhooks deliver unsigned and an authenticated proxy fails the session's next start. The import is one request bounded by `BODY_SIZE_LIMIT` (`413` above it). Plugin instance secrets travel in plaintext, so treat the file as a secret. See [14 - Migration Guide: API-Based Migration](./14-migration-guide.md#api-based-migration-recommended-for-v02) for the full procedure.
 
 #### Cross-Database Date Portability
 
@@ -302,7 +305,7 @@ erDiagram
     }
 ```
 
-`messages` and `message_batches` reference `sessions.id` through a plain `sessionId` (`session_id` on `message_batches`) with no foreign key. Deleting a session through the API removes their rows explicitly; a raw `DELETE FROM sessions` leaves them behind.
+Only `webhooks`, `templates`, `automation_rules` and `baileys_stored_messages` declare an `ON DELETE CASCADE` foreign key to `sessions.id`. `messages`, `message_batches`, `chat_states`, `status_updates`, `webhook_outbox_events`, `webhook_delivery_failures` and `integration_delivery_failures` reference it through a plain `sessionId` (`session_id` on `message_batches`) with no foreign key. Deleting a session through the API removes their rows explicitly; a raw `DELETE FROM sessions` leaves them behind.
 
 ## 5.3 Table Specifications
 
@@ -704,7 +707,7 @@ The data connection also owns:
 
 - **`templates`** — reusable message templates (`src/modules/template/entities/template.entity.ts`), with a unique constraint on `(sessionId, name)` — one template name per session.
 - **`status_updates`** — inbound status/story broadcasts with a 24-hour TTL (`src/modules/status-store/entities/status-update.entity.ts`); unique on `(sessionId, waStatusId)`. Attached media is stored via `StorageService`, not in the row.
-- **`webhook_delivery_failures`** — durable record of a webhook delivery that exhausted its retries, or was not sent (attempts 0: shed, refused at shutdown, oversize or a preflight failure) and is pending replay (`src/modules/webhook/entities/webhook-delivery-failure.entity.ts`), surfaced via the ADMIN `GET /webhooks/delivery-failures`. A later successful delivery removes the row.
+- **`webhook_delivery_failures`** — durable record of a webhook delivery that exhausted its retries, or was not sent (attempts 0) (`src/modules/webhook/entities/webhook-delivery-failure.entity.ts`), surfaced via the ADMIN `GET /webhooks/delivery-failures`. A shed or shutdown-refused delivery is replayed by the outbox until its replay budget runs out; an oversize payload or a preflight failure on first dispatch is not replayed. A later successful delivery removes the row.
 - **`webhook_outbox_events`**: the outbound webhook delivery record (`src/modules/webhook/entities/webhook-outbox-event.entity.ts`): a row is written `pending` before the delivery attempt, so a delivery lost to a crash is replayed by the reconciler. It settles as `dispatched` once a durable owner (the BullMQ queue, or the inline POST in direct mode) holds it, or as `failed` when the replays run out or the reconciler finds the webhook removed, disabled or unsubscribed from the event (no failure row is written then). Settled rows drop their payload and are pruned on age (§5.7).
 - **`plugin_instances`** — one configured instance of an adapter plugin, keyed `${pluginId}:${instanceId}` (`src/modules/integration/entities/plugin-instance.entity.ts`); holds the host-minted ingress HMAC secret, masked on API reads.
 - **`ingress_events`** — persist-before-ack durable row and inbound dedup oracle, unique on `(pluginId, instanceId, providerDeliveryId)` (`src/modules/integration/entities/ingress-event.entity.ts`). The full payload is retired to `NULL` once dispatch is settled, leaving a slim dedup marker.
@@ -895,7 +898,7 @@ src/database/migrations/           # data connection (pluggable)
 ├── 1785600000000-SlimIngressEventPayload.ts
 ├── 1785700000000-AddMessageMediaArchive.ts
 ├── 1785800000000-AddSessionOwnership.ts
-├── 1785900000000-AddAutomationRules.ts            # 14th migration table; FKs sessions ON DELETE CASCADE
+├── 1785900000000-AddAutomationRules.ts            # FKs sessions ON DELETE CASCADE
 ├── 1786000000000-AddSessionNodeUrl.ts
 ├── 1786100000000-AddMessageMediaPathIndex.ts   # partial index on messages.mediaPath (orphan sweep)
 ├── 1786200000000-AddWebhookOutboxEvents.ts   # webhook_outbox_events (durable outbound delivery record)

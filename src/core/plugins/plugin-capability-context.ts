@@ -340,7 +340,7 @@ export class PluginCapabilityContext {
     return {
       fetch: async (url, init) => {
         // Two gates: the declared permission, then the effective host allowlist = manifest net.allow
-        // UNION the hosts of net.allowConfigHosts keys across the base config AND every per-session
+        // UNION the https origins of net.allowConfigHosts keys across the base config AND every per-session
         // override. The host gate has no firing-session context for a sandboxed plugin's cap round-trip,
         // so admit every operator-configured tenant host (all public + still SSRF-guarded at connect)
         // rather than resolving a single, possibly wrong (base-only), one. The SSRF guard inside

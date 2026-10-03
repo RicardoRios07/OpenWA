@@ -102,9 +102,11 @@ export function parsePluginPackage(buffer: Buffer, limits: PackageLimits = DEFAU
   if (declared > limits.maxTotalBytes) throw new BadRequestException('The archive contents exceed the size limit');
 
   const entries: { relPath: string; data: Buffer }[] = [];
-  // Normalized paths already taken, lowercased because a case-insensitive filesystem writes
-  // `Manifest.json` and `manifest.json` to one file. Entries are written in order, so a repeat would
-  // let a later `z/../manifest.json` replace the manifest validated above.
+  // Normalized paths already taken, NFC-normalized and case-folded because a case- or
+  // normalization-insensitive filesystem (APFS, NTFS) writes `Manifest.json` and `manifest.json`, or
+  // an NFC and an NFD spelling, to one file. Upper-then-lower also folds characters such as the long
+  // s that toLowerCase() leaves alone. Entries are written in order, so a repeat would let a later
+  // `z/../manifest.json` replace the manifest validated above.
   const seen = new Set<string>();
   let actualBytes = 0;
   for (const e of packaged) {
@@ -114,7 +116,7 @@ export function parsePluginPackage(buffer: Buffer, limits: PackageLimits = DEFAU
     if (relPath.includes('\\') || norm.startsWith('..') || norm === '..' || path.posix.isAbsolute(norm)) {
       throw new BadRequestException(`Unsafe path in archive: ${e.entryName}`);
     }
-    const key = norm.toLowerCase();
+    const key = norm.normalize('NFC').toUpperCase().toLowerCase();
     if (seen.has(key)) throw new BadRequestException(`Duplicate path in archive: ${e.entryName}`);
     seen.add(key);
     let data: Buffer;

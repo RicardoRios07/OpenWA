@@ -363,10 +363,9 @@ test('capMediaPayloads: under the limit the list is returned untouched (stable r
   assert.equal(capMediaPayloads(list), list);
 });
 
-test('the media cap covers the whole fetch window (no dead-end placeholder inside it)', () => {
-  // useChatMessages fetches a 100-message slice WITH media and caches it at staleTime: Infinity.
-  // A cap below the window strips payloads the user can scroll to, with no refetch path — the
-  // stripped rows render the 📎 placeholder forever even though the payload was fetched.
+test('the media cap is at least one fetched page (MESSAGE_PAGE_SIZE 100)', () => {
+  // A cap below one page would strip payloads from the first page a chat opens with; past one page the
+  // cap bounds the rendered set (see the MEDIA_PAYLOAD_CACHE_LIMIT doc).
   assert.ok(MEDIA_PAYLOAD_CACHE_LIMIT >= 100);
 });
 

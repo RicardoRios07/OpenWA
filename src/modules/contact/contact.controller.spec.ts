@@ -52,14 +52,14 @@ describe('ContactController', () => {
   });
 
   it('getProfilePictures splits, trims and drops empty ids', async () => {
-    service.getProfilePictures.mockResolvedValue([null, 'https://pps/2.jpg']);
+    service.getProfilePictures.mockResolvedValue({ 'a@c.us': null, 'b@c.us': 'https://pps/2.jpg' });
     const out = await controller.getProfilePictures('s1', ' a@c.us , ,b@c.us ');
     expect(service.getProfilePictures).toHaveBeenCalledWith('s1', ['a@c.us', 'b@c.us']);
-    expect(out).toEqual({ pictures: [null, 'https://pps/2.jpg'] });
+    expect(out).toEqual({ pictures: { 'a@c.us': null, 'b@c.us': 'https://pps/2.jpg' } });
   });
 
   it('getProfilePictures defaults a missing ids param to an empty list', async () => {
-    service.getProfilePictures.mockResolvedValue([]);
+    service.getProfilePictures.mockResolvedValue({});
     await controller.getProfilePictures('s1');
     expect(service.getProfilePictures).toHaveBeenCalledWith('s1', []);
   });
@@ -124,5 +124,32 @@ describe('ContactController', () => {
     service[method].mockResolvedValue(undefined);
     await expect(controller[method]('s1', 'c1')).resolves.toEqual(body);
     expect(service[method]).toHaveBeenCalledWith('s1', 'c1');
+  });
+});
+
+// Every route resolves the session's engine first, which answers 400 "Session is not started" for a
+// session with no running engine; clients generated from the OpenAPI contract need it declared.
+describe('ContactController OpenAPI error responses', () => {
+  const handler = (name: string) => Object.getOwnPropertyDescriptor(ContactController.prototype, name)?.value as object;
+  const routes = Object.getOwnPropertyNames(ContactController.prototype).filter(
+    name => name !== 'constructor' && Reflect.getMetadata('path', handler(name)) !== undefined,
+  );
+
+  it('covers every route', () => {
+    expect(routes).toHaveLength(11);
+  });
+
+  it.each(routes)('%s declares 400', method => {
+    const responses = Reflect.getMetadata('swagger/apiResponse', handler(method)) as Record<string, unknown>;
+    expect(Object.keys(responses)).toContain('400');
+  });
+
+  // A started session that is not ready answers 409, so the 400 must not describe it as "not ready".
+  it.each(routes)('%s describes its 400 as a session that is not started', method => {
+    const responses = Reflect.getMetadata('swagger/apiResponse', handler(method)) as Record<
+      string,
+      { description?: string }
+    >;
+    expect(responses['400']?.description).toMatch(/^Session is not started/);
   });
 });

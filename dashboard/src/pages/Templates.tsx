@@ -251,7 +251,8 @@ export function Templates() {
               />
             </div>
 
-            {loadingTemplates ? (
+            {/* No session selected yet means the first-session effect has not run: the read is still to start. */}
+            {loadingTemplates || !selectedSessionId ? (
               <div className="templates-loading-inline">
                 <Loader2 className="animate-spin" size={24} />
               </div>

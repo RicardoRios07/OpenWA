@@ -126,6 +126,34 @@ describe('PluginUninstaller — uninstall', () => {
     expect(fs.existsSync(stray)).toBe(true);
   });
 
+  it('also removes a legacy copy of a plugin that loaded from the configured tree', async () => {
+    // The boot scan skips the legacy copy as a duplicate, so the runtime record points at the configured
+    // copy. Left behind, the legacy copy would load again on the next boot as a new plugin.
+    const dir = writeUserPlugin('dup-plg');
+    const legacyDir = path.join(tmpDir, 'legacy-plugins');
+    const legacyPkg = path.join(legacyDir, 'dup-plg');
+    fs.mkdirSync(legacyPkg, { recursive: true });
+    fs.writeFileSync(path.join(legacyPkg, 'manifest.json'), '{}');
+    plugins.set('dup-plg', loadedUserPlugin('dup-plg', dir));
+    seedEntry(storage, 'dup-plg');
+    const withLegacy = new PluginUninstaller(
+      createLogger('PluginLoaderService'),
+      plugins,
+      storage,
+      pluginsDir,
+      pluginId => {
+        plugins.delete(pluginId);
+        return Promise.resolve();
+      },
+      legacyDir,
+    );
+
+    await withLegacy.uninstallPlugin('dup-plg');
+
+    expect(fs.existsSync(dir)).toBe(false);
+    expect(fs.existsSync(legacyPkg)).toBe(false);
+  });
+
   it('refuses to uninstall a built-in plugin', async () => {
     plugins.set('core-engine', { ...loadedUserPlugin('core-engine', pluginsDir), builtIn: true });
     seedEntry(storage, 'core-engine', true);

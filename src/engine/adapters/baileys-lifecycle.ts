@@ -154,6 +154,8 @@ export interface BaileysLifecycleHost {
   handleGroupJoinRequest: BaileysEvents['handleGroupJoinRequest'];
   handleCallEvents: BaileysEvents['handleCallEvents'];
   handlePresenceUpdate: BaileysEvents['handlePresenceUpdate'];
+  /** Drop the store writes of messages still being processed; called before an unlink wipes the store. */
+  fenceStoredWrites: BaileysEvents['fenceStoredWrites'];
   captureHistoryMessages: BaileysHistory['captureHistoryMessages'];
   /** Backfill names the initial sync skipped (runs on connection 'open'). */
   hydrateNames: BaileysHistory['hydrateNames'];
@@ -890,6 +892,7 @@ export class BaileysLifecycle {
       // Acknowledged. End/null the captured socket, clear live call handles, and drop to
       // DISCONNECTED before the awaited cleanup so no send/path observes a half-torn-down socket.
       this.localSocketShutdown(sourceSock);
+      this.host.fenceStoredWrites();
       await this.host.config.messageStore?.clearSession(this.host.config.dbSessionId).catch(() => undefined);
       await this.host.config.chatStateStore?.clearSession(this.host.config.sessionId).catch(() => undefined);
       // Wipe the multi-file auth dir so a fresh link starts clean — stale creds would otherwise be
@@ -955,6 +958,8 @@ export class BaileysLifecycle {
     // Cached call handles die with the connection — drop them so a later rejectCall() reports
     // not-found (404) instead of acting on a dead socket (mirrors disconnect/logout/destroy).
     this.host.liveCalls.clear();
+    // A message still being processed must not recreate a row of the unlinked account after the wipe below.
+    this.host.fenceStoredWrites();
     void dead?.end(undefined);
 
     const cleanup = (async (): Promise<void> => {

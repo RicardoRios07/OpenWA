@@ -31,8 +31,8 @@ export interface SafeUrlInfo {
  * be used to reach the loopback interface, the rebinding window that a validate-then-hand-off
  * approach would leave open. Behind an HTTP/HTTPS session proxy the proxy resolves the name itself,
  * so that window stays open there (SESSION_PROXY_URL_FETCH=false or a SOCKS proxy closes it).
- * It also honours the deployment's own `WEBHOOK_SSRF_PROTECT` / `SSRF_ALLOWED_HOSTS` settings,
- * so an operator who intentionally allows an internal host keeps that behaviour here too.
+ * Like media-by-URL fetches, it is always guarded: `WEBHOOK_SSRF_PROTECT` does not turn it off, and
+ * an operator who intentionally allows an internal host lists it in `SSRF_ALLOWED_HOSTS`.
  *
  * Returns undefined rather than throwing on any failure: a preview is decoration, and a site that is
  * slow, unreachable, or refused must never turn into a failed message send. That includes an

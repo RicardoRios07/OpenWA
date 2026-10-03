@@ -15,7 +15,7 @@ authors = [
 keywords = ["whatsapp", "api", "sdk", "openwa", "gateway"]
 
 dependencies = [
-    "httpx>=0.25.0,<1.0",
+    "httpx>=0.27.1,<1.0",
     "typing_extensions>=4.0; python_version < '3.11'",
 ]
 

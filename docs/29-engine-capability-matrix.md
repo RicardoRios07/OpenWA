@@ -21,7 +21,8 @@ Statuses used in the tables:
 - **OpenWA REST** column — what a caller of the REST API gets: **✅** on any engine session,
   **⚠️ `<engine>` only** when the answer depends on the session's engine (the other engine
   answers HTTP 501), **❌ 501** on both engines, and **⚙️ internal** for a method the REST surface
-  never exposes because the gateway calls it itself (`probeLiveness`).
+  never exposes: the gateway calls it itself (`probeLiveness`), or no route calls it (`getPhoneNumber`,
+  `getPushName`; a caller reads the session's `phone` and `pushName`, stored from the ready event).
 
 Two complementary views:
 
@@ -304,8 +305,8 @@ socket is caught by the transport instead. No REST route: the session watchdog p
 | `getBlockedContacts`  | ✅                  | ✅               | ✅          |
 | `checkNumberExists`   | ✅                  | ✅               | ✅          |
 | `getNumberId`         | ✅                  | ✅               | ✅          |
-| `getPhoneNumber`      | ✅                  | ✅               | ✅          |
-| `getPushName`         | ✅                  | ✅               | ✅          |
+| `getPhoneNumber`      | ✅                  | ✅               | ⚙️ internal |
+| `getPushName`         | ✅                  | ✅               | ⚙️ internal |
 | `resolveContactPhone` | ✅                  | ✅               | ✅          |
 | `getProfilePicture`   | ✅                  | ✅               | ✅          |
 
@@ -412,7 +413,8 @@ answers 501.
 library-limitations, 0 uncertain) across 26 methods. From the REST caller's side: **89** methods
 work on any engine (87 fully supported + 2 store-backed status reads), **14** are Baileys-only,
 **9** are wwjs-only (the 2 store-backed rows excluded); `sendCatalog`, unavailable on both engines,
-is not exposed.
+is not exposed. Three of the 89 (`probeLiveness`, `getPhoneNumber`, `getPushName`) are ⚙️ internal and
+have no route.
 
 ## 29.5 Full engine method inventory — every library method, mapped to OpenWA
 
@@ -1014,7 +1016,8 @@ adapter sources — re-derive the same way when anything changes:
   depends on 🔧¹, the whole Baileys column on 🔧⁵ — so every row rests on a patch on each side,
   even though no row carries a row-level mark on both.
 - REST caller's view: **89** engine-neutral (87 + 2 store-backed status reads), **14** Baileys-only,
-  **9** wwjs-only; `sendCatalog` (unavailable on both engines) is not exposed.
+  **9** wwjs-only; `sendCatalog` (unavailable on both engines) is not exposed; three of the 89
+  (`probeLiveness`, `getPhoneNumber`, `getPushName`) are ⚙️ internal and have no route.
 - Full engine inventory (29.5), split by the exposure legend rather than lumped: Baileys **152**
   socket methods — 48 wired into interface methods, 5 internal wiring, 29 plumbing, **70 ❌ not
   exposed** (incl. the whole 23-method community cluster); wwjs **81** Client methods — 41 wired,

@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { OpenWAClient } from '../src';
+import { describe, expect, expectTypeOf, it } from 'vitest';
+import { OpenWAClient, type BatchCancelResponse } from '../src';
 import { MockTransport } from './helpers';
 
 function client(t: MockTransport): OpenWAClient {
@@ -238,6 +238,8 @@ describe('MessagesResource — exact paths', () => {
     expect(status.progress?.sent).toBe(1);
     expect(t.lastCall!.url).toContain('/messages/batch/b');
     const cancelled = await c.messages.cancelBatch('s', 'b');
+    // The cancel route answers without the per-recipient `results` the status route carries.
+    expectTypeOf(cancelled).toEqualTypeOf<BatchCancelResponse>();
     expect(cancelled.status).toBe('cancelled');
     expect(t.lastCall!.url).toContain('/messages/batch/b/cancel');
     expect(t.lastCall!.method).toBe('POST');

@@ -51,7 +51,7 @@ export class ChannelMessageDto {
   @ApiProperty({ description: 'Whether the post carries media.', example: false })
   hasMedia!: boolean;
 
-  @ApiPropertyOptional({ description: 'Media URL, when the engine resolved one.' })
+  @ApiPropertyOptional({ description: 'Media URL. Neither engine populates it today; use hasMedia.' })
   mediaUrl?: string;
 }
 

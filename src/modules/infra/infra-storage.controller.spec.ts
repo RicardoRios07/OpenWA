@@ -336,6 +336,36 @@ describe('InfraStorageController audit trail (light-dependency handlers)', () =>
     }
   });
 
+  it('importStorage records how many entries an aborted import had already written', async () => {
+    const audit = { logInfo: jest.fn().mockResolvedValue(null), logWarn: jest.fn().mockResolvedValue(null) };
+    const cwdSpy = jest.spyOn(process, 'cwd').mockReturnValue('/srv/openwa');
+    (fs.existsSync as jest.Mock).mockImplementation((p: string) => p === '/srv/openwa/data/exports/x.tar.gz');
+    try {
+      const abort = Object.assign(new Error('archive exceeds 100000 entries'), { imported: 100000, failed: 2 });
+      const storageService = {
+        importFromStream: jest.fn().mockRejectedValue(abort),
+        getCurrentStorageType: () => 'local',
+      };
+      await expect(
+        new InfraStorageController(storageService as never, audit as never).importStorage({
+          filePath: 'data/exports/x.tar.gz',
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(audit.logWarn).toHaveBeenCalledWith(AuditAction.INFRA_STORAGE_IMPORTED, {
+        metadata: {
+          aborted: true,
+          error: 'archive exceeds 100000 entries',
+          storageType: 'local',
+          count: 100000,
+          failed: 2,
+        },
+      });
+    } finally {
+      cwdSpy.mockRestore();
+      (fs.existsSync as jest.Mock).mockReturnValue(false);
+    }
+  });
+
   it('importStorage records an aborted import as a warning, since the entries before the abort were kept', async () => {
     const audit = { logInfo: jest.fn().mockResolvedValue(null), logWarn: jest.fn().mockResolvedValue(null) };
     const cwdSpy = jest.spyOn(process, 'cwd').mockReturnValue('/srv/openwa');

@@ -48,6 +48,7 @@ export class LabelController {
   @ApiParam({ name: 'sessionId', description: 'Session ID' })
   @ApiParam({ name: 'labelId', description: 'Label ID' })
   @ApiResponse({ status: 200, description: 'Label details', type: LabelDto })
+  @ApiResponse({ status: 400, description: 'Session not started' })
   @ApiResponse({ status: 404, description: 'Label not found' })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   @ApiResponse({ status: 501, description: ENGINE_NOT_SUPPORTED_501 })
@@ -161,6 +162,7 @@ export class LabelController {
   @ApiParam({ name: 'sessionId', description: 'Session ID' })
   @ApiParam({ name: 'chatId', description: 'Chat ID' })
   @ApiResponse({ status: 200, description: 'List of labels for the chat', type: [LabelDto] })
+  @ApiResponse({ status: 400, description: 'Session not started' })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   @ApiResponse({ status: 501, description: ENGINE_NOT_SUPPORTED_501 })
   @ApiResponse({
@@ -190,6 +192,7 @@ export class LabelController {
     },
   })
   @ApiResponse({ status: 200, description: 'Label added to chat', type: LabelAckResponseDto })
+  @ApiResponse({ status: 400, description: 'Session not started, or validation failed' })
   @ApiResponse({
     status: 404,
     description:
@@ -224,6 +227,7 @@ export class LabelController {
   @ApiParam({ name: 'chatId', description: 'Chat ID' })
   @ApiParam({ name: 'labelId', description: 'Label ID to remove' })
   @ApiResponse({ status: 200, description: 'Label removed from chat', type: LabelAckResponseDto })
+  @ApiResponse({ status: 400, description: 'Session not started' })
   @ApiResponse({
     status: 404,
     description: 'The chat does not exist on this session, so nothing was written (whatsapp-web.js)',

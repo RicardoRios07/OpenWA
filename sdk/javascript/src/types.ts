@@ -66,9 +66,9 @@ export interface SessionResponse {
   createdAt: string;
   updatedAt: string;
   /**
-   * Human-readable reason while `status` is `'failed'` or `'action_required'`, or `'initializing'` during
-   * a prolonged automatic reconnect (fifth attempt onward, or while a failed relaunch waits to retry);
-   * `null` otherwise.
+   * Human-readable reason while `status` is `'failed'` or `'action_required'`, or `'initializing'` from the
+   * fifth attempt of a reconnect the engine runs itself (Baileys), or while a reconnect waits to retry after a
+   * failed relaunch (either engine); `null` otherwise.
    */
   lastError?: string | null;
   /**
@@ -205,6 +205,7 @@ export interface CreateSessionRequest {
   name: string;
   config?: Record<string, unknown>;
   proxyUrl?: string;
+  /** @deprecated Ignored by the gateway; the `proxyUrl` scheme selects the protocol. */
   proxyType?: 'http' | 'https' | 'socks4' | 'socks5';
 }
 
@@ -276,7 +277,10 @@ export interface SendMediaRequest {
   /** Requires `mimetype`. */
   base64?: string;
   mimetype?: string;
-  /** Required for documents; max 255 chars. */
+  /**
+   * Shown only on document sends; defaults to `file` when omitted (whatsapp-web.js first tries the URL basename).
+   * Max 255 chars.
+   */
   filename?: string;
   /** Max 1024 chars. */
   caption?: string;
@@ -516,9 +520,16 @@ export interface MessageRecord {
   body?: string | null;
   type: string;
   direction: MessageDirection;
-  /** Chat display name, when the session resolves one for the chat. */
+  /**
+   * Push name of the sender as the engine reported it (their saved contact name when it reported no push
+   * name); in a group this is the member who posted, not the group subject. Null when no name was known.
+   */
   chatName?: string | null;
-  /** Author display name for an inbound group message. */
+  /**
+   * JID of the sender of a group, status or broadcast-list message (`from` is the group, `status@broadcast`
+   * or the list id there; on Baileys a received list message is filed under the sender, so `from` is the
+   * sender too). Null on 1:1 messages and outgoing echoes.
+   */
   author?: string | null;
   /** Storage key of the archived media copy, when chat-media archiving wrote one. */
   mediaPath?: string | null;
@@ -703,9 +714,8 @@ export interface BatchMessageResult {
 export type BatchMessageStatus = 'pending' | 'sent' | 'failed' | 'cancelled';
 
 /**
- * Response from `GET /messages/batch/:batchId` (batch status polling) and
- * `POST /messages/batch/:batchId/cancel`. Distinct from
- * {@link BulkMessageResponse} (the send-bulk acknowledgement).
+ * Response from `GET /messages/batch/:batchId` (batch status polling). Distinct from
+ * {@link BulkMessageResponse} (the send-bulk acknowledgement) and {@link BatchCancelResponse}.
  */
 export interface BatchStatusResponse {
   batchId: string;
@@ -714,6 +724,13 @@ export interface BatchStatusResponse {
   results: BatchMessageResult[];
   startedAt?: string | null;
   completedAt?: string | null;
+}
+
+/** Response from `POST /messages/batch/:batchId/cancel`: the batch state without per-recipient `results`. */
+export interface BatchCancelResponse {
+  batchId: string;
+  status: BatchLifecycleStatus;
+  progress: BatchProgress;
 }
 
 /** Lifecycle of a whole batch — the `status` of {@link BatchStatusResponse}. */
@@ -768,11 +785,13 @@ export interface GroupParticipant {
   isSuperAdmin: boolean;
 }
 
-/** Item returned by `GET /sessions/:id/groups` (the slim list shape). */
+/** Item returned by `GET /sessions/:id/groups` (the slim list shape), and the `groups.create` response. */
 export interface GroupSummary {
   id: Jid;
   name: string;
+  /** Only in a `groups.create` response, never in `groups.list`; `groups.get` carries the participants. */
   participantsCount?: number;
+  /** Only in a `groups.create` response, never in `groups.list`; `groups.get` carries each participant's role. */
   isAdmin?: boolean;
   /** JID of the parent community, or null if standalone. */
   linkedParentJID?: string | null;
@@ -960,7 +979,10 @@ export interface CreateWebhookRequest {
   secret?: string;
   headers?: Record<string, string>;
   filters?: WebhookFilters | null;
-  /** 0–5; default 3. Server DTO field is `retryCount`. */
+  /**
+   * Total delivery attempts per event including the first, 0 to 5 (0 and 1 both mean one attempt); default 3 on
+   * create, while an update that omits it keeps the current value. Server DTO field is `retryCount`.
+   */
   retryCount?: number;
 }
 
@@ -1153,7 +1175,11 @@ export interface SendTextStatusRequest {
 export interface StatusMediaInput {
   url?: string;
   base64?: string;
-  /** Optional explicit mimetype (inferred from URL/bytes when omitted). */
+  /**
+   * MIME type of the media. When omitted the server uses the route's default (`image/jpeg`, `video/mp4` or
+   * `audio/ogg; codecs=opus`), which also overrides a URL's Content-Type; the bytes are never inspected. Set
+   * it for base64 and for any media of another type.
+   */
   mimetype?: string;
 }
 
@@ -1215,6 +1241,7 @@ export interface AuthValidateResponse {
   valid: boolean;
   role?: string;
   engineType?: string;
+  scoped?: boolean;
 }
 
 // ── Template ──────────────────────────────────────────────────────

@@ -1,5 +1,6 @@
 import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn, UpdateDateColumn } from 'typeorm';
 import { DateTransformer } from '../../../common/transformers/date.transformer';
+import { NulFreeTransformer } from '../../../common/transformers/nul-free.transformer';
 import { jsonColumnType, dateColumnType } from '../../../common/utils/column-types';
 import type { AccountRestriction } from '../../../engine/interfaces/whatsapp-engine.interface';
 
@@ -32,7 +33,7 @@ export class Session {
   @Column({ type: 'varchar', length: 20, nullable: true })
   phone!: string | null;
 
-  @Column({ type: 'varchar', length: 100, nullable: true })
+  @Column({ type: 'varchar', length: 100, nullable: true, transformer: NulFreeTransformer })
   pushName!: string | null;
 
   @Column({ type: jsonColumnType(), default: '{}' })

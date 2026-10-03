@@ -68,6 +68,13 @@ describe('ActiveKeyIndex', () => {
     expect(index.recognise({ 'x-api-key': 'fenced' }, '10.1.2.3')).toBe(sha('fenced'));
   });
 
+  it('treats a stored expiry that reads back as an invalid date as expired, as validateApiKey does', async () => {
+    const { index } = indexOver([row('garbled', { expiresAt: new Date('2020-W01-1') })]);
+    await index.onApplicationBootstrap();
+    index.onModuleDestroy();
+    expect(index.recognise({ 'x-api-key': 'garbled' }, '192.0.2.1')).toBeUndefined();
+  });
+
   it('keeps the previous view when a refresh fails', async () => {
     let fail = false;
     const { index } = indexOver(() => (fail ? Promise.reject(new Error('db down')) : Promise.resolve([row('k1')])));

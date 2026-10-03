@@ -206,8 +206,13 @@ export class PluginLifecycle {
 
     plugin.config = { ...plugin.config, ...config };
 
-    // Persist config
-    this.pluginStorage.setPluginConfig(pluginId, plugin.config);
+    // Persist only the operator's keys on top of what was persisted before, not the effective merge:
+    // a built-in's effective config carries its env-derived defaults, and storing those would freeze
+    // them over later .env changes (see registerBuiltInPlugin).
+    this.pluginStorage.setPluginConfig(pluginId, {
+      ...(this.pluginStorage.getPluginConfig(pluginId) ?? {}),
+      ...config,
+    });
 
     // Notify the running plugin of the config change (fire and forget). A sandboxed plugin's
     // onConfigChange lives in the worker (plugin.instance is null), so route it through the live worker

@@ -3,6 +3,7 @@ import { Expose, plainToInstance } from 'class-transformer';
 import { IsBoolean, IsInt, IsNotEmpty, IsOptional, IsString, Max, MaxLength, Min, ValidateIf } from 'class-validator';
 import { ToStrictBoolean, ToStrictNumber } from '../../../common/utils/strict-boolean';
 import { MaxCodePoints } from '../../../common/validation/max-code-points';
+import { NoNulCharacter } from '../../../common/validation/no-nul-character';
 import { MESSAGE_TEXT_MAX_LENGTH } from '../../message/dto/send-message.dto';
 import { WebhookFilters } from '../../webhook/filters/filter-types';
 import { IsValidWebhookFilters } from '../../webhook/filters/filter-validation';
@@ -29,6 +30,7 @@ export class CreateAutomationRuleDto {
   @IsString()
   @IsNotEmpty()
   @MaxCodePoints(100)
+  @NoNulCharacter()
   name!: string;
 
   @ApiProperty({
@@ -39,6 +41,7 @@ export class CreateAutomationRuleDto {
   @IsString()
   @IsNotEmpty()
   @MaxLength(MESSAGE_TEXT_MAX_LENGTH)
+  @NoNulCharacter()
   replyText!: string;
 
   @ApiPropertyOptional({ description: CONDITIONS_DESCRIPTION })
@@ -73,6 +76,7 @@ export class UpdateAutomationRuleDto {
   @IsString()
   @IsNotEmpty()
   @MaxCodePoints(100)
+  @NoNulCharacter()
   name?: string;
 
   @ApiPropertyOptional({
@@ -83,6 +87,7 @@ export class UpdateAutomationRuleDto {
   @IsString()
   @IsNotEmpty()
   @MaxLength(MESSAGE_TEXT_MAX_LENGTH)
+  @NoNulCharacter()
   replyText?: string;
 
   @ApiPropertyOptional({ description: CONDITIONS_DESCRIPTION })

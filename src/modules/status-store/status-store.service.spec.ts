@@ -200,6 +200,21 @@ describe('StatusStoreService (ingest / list / getMedia)', () => {
     expect(media?.path).toContain('statuses/sess/');
   });
 
+  // A status whose media arrived without a type still has its bytes stored and its mediaUrl
+  // advertised, so the URL has to resolve; the media endpoint serves an unknown type as inert bytes.
+  it('getMedia serves stored media that arrived without a mimetype as octet-stream', async () => {
+    await service.ingest('sess', {
+      waStatusId: 'untyped',
+      contactJid: '628111@c.us',
+      type: 'image',
+      media: { mimetype: '', data: Buffer.from('raw').toString('base64') },
+      postedAt: Date.now(),
+    });
+    const media = await service.getMedia('sess', 'untyped');
+    expect(media?.mimetype).toBe('application/octet-stream');
+    expect(media?.path).toContain('statuses/sess/');
+  });
+
   it('getMedia returns null for an omitted-media status', async () => {
     expect(await service.getMedia('sess', 'w3')).toBeNull();
   });

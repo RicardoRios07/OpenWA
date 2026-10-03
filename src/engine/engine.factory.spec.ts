@@ -1,3 +1,5 @@
+// A plain-object copy of fs, so a test can spy on existsSync (the real module's exports are not configurable).
+jest.mock('fs', () => ({ __esModule: true, ...jest.requireActual<typeof import('fs')>('fs') }));
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -72,27 +74,36 @@ describe('EngineFactory', () => {
     const pluginLoader = {
       getPlugin: jest.fn().mockReturnValue({ instance: pluginInstance }),
     } as unknown as PluginLoaderService;
+    // create() makes both auth dirs, so the bases live under a temp root rather than the default
+    // ./data/baileys of the checkout and a /var/data the suite may be able to write as root.
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'openwa-factory-neutral-'));
+    try {
+      const factory = new EngineFactory(
+        buildConfigService({
+          'engine.sessionDataPath': path.join(tmp, 'sessions'),
+          'engine.baileys.authDir': path.join(tmp, 'baileys'),
+        }),
+        pluginLoader,
+        buildMessageStore(),
+        buildLidStore(),
+        buildChatStateStore(),
+      );
+      factory.create({ sessionId: 'sess-1', dbSessionId: 'db-1', proxyUrl: 'http://p', proxyType: 'http' });
 
-    const factory = new EngineFactory(
-      buildConfigService(),
-      pluginLoader,
-      buildMessageStore(),
-      buildLidStore(),
-      buildChatStateStore(),
-    );
-    factory.create({ sessionId: 'sess-1', dbSessionId: 'db-1', proxyUrl: 'http://p', proxyType: 'http' });
-
-    // Plain-object (not objectContaining) assertion: any browser key (headless/puppeteerArgs/
-    // executablePath) leaking into the per-call config would fail this exact match. The auth-dir
-    // bases are the deliberate exception, pinned below.
-    expect(createEngine).toHaveBeenCalledWith({
-      sessionId: 'sess-1',
-      dbSessionId: 'db-1',
-      proxyUrl: 'http://p',
-      proxyType: 'http',
-      sessionDataPath: '/var/data/sessions',
-      authDir: './data/baileys',
-    });
+      // Plain-object (not objectContaining) assertion: any browser key (headless/puppeteerArgs/
+      // executablePath) leaking into the per-call config would fail this exact match. The auth-dir
+      // bases are the deliberate exception, pinned below.
+      expect(createEngine).toHaveBeenCalledWith({
+        sessionId: 'sess-1',
+        dbSessionId: 'db-1',
+        proxyUrl: 'http://p',
+        proxyType: 'http',
+        sessionDataPath: path.join(tmp, 'sessions'),
+        authDir: path.join(tmp, 'baileys'),
+      });
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   // The adapters used to read these bases from the plugin config, which a PUT /api/plugins/:id/config
@@ -361,14 +372,25 @@ describe('EngineFactory', () => {
 
     // Why the legacy purge matches a directory listing instead of asking existsSync: there, deleting
     // `Alice` would remove the directory holding `alice`'s login, which is #1597 through the delete
-    // path. The two only diverge on a case-insensitive filesystem, which is where the bug lives.
+    // path. The two only diverge on a case-insensitive filesystem, which is where the bug lives, so
+    // existsSync is made to answer as one does: CI runs on a case-sensitive one, where it never would.
     it('leaves a legacy directory whose stored name differs only in case alone', async () => {
       const { factory } = buildBothDirFactory('baileys');
       const otherSession = wwjsAuthDir(path.join(tmpRoot, 'sessions'), 'alice');
       fs.mkdirSync(otherSession, { recursive: true });
 
-      await factory.purgeSessionData(SESSION_ID, 'Alice');
+      const exists = jest.spyOn(fs, 'existsSync').mockReturnValue(true);
+      const rm = jest.spyOn(fs.promises, 'rm').mockResolvedValue(undefined);
+      try {
+        await factory.purgeSessionData(SESSION_ID, 'Alice');
+        expect(rm).not.toHaveBeenCalledWith(wwjsAuthDir(path.join(tmpRoot, 'sessions'), 'Alice'), expect.anything());
+        expect(rm).not.toHaveBeenCalledWith(baileysAuthDir(path.join(tmpRoot, 'baileys'), 'Alice'), expect.anything());
+      } finally {
+        exists.mockRestore();
+        rm.mockRestore();
+      }
 
+      await factory.purgeSessionData(SESSION_ID, 'Alice');
       expect(fs.existsSync(otherSession)).toBe(true);
     });
 

@@ -36,6 +36,18 @@ interface RejectionLogger extends FatalLogger {
 const PAGE_CONTEXT_LOST_REJECTION = /execution context was destroyed|window\.require is not a function/i;
 
 /**
+ * String() throws on a null-prototype object or one whose toString/valueOf throws. Inside a process
+ * listener that throw becomes a fresh uncaught exception, so fall back to the `[object Tag]` form.
+ */
+function safeString(value: unknown): string {
+  try {
+    return String(value);
+  } catch {
+    return Object.prototype.toString.call(value);
+  }
+}
+
+/**
  * Register an `uncaughtExceptionMonitor` that routes an otherwise-fatal uncaught exception through the
  * structured logger BEFORE Node's default handling.
  *
@@ -81,8 +93,8 @@ export function registerUncaughtExceptionMonitor(logger: FatalLogger): void {
  */
 export function registerUnhandledRejectionHandler(logger: RejectionLogger): void {
   process.on('unhandledRejection', (reason: unknown) => {
-    const message = reason instanceof Error ? reason.message : String(reason);
-    const detail = reason instanceof Error ? reason.stack : String(reason);
+    const message = reason instanceof Error ? reason.message : safeString(reason);
+    const detail = reason instanceof Error ? reason.stack : safeString(reason);
     const pageContextLost = PAGE_CONTEXT_LOST_REJECTION.test(message);
     incrementUnhandledRejections(pageContextLost ? 'page_context_lost' : 'other');
     if (pageContextLost) {

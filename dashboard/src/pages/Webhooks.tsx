@@ -416,15 +416,21 @@ export function Webhooks() {
         </div>
       )}
 
+      {/* Each modal stays open while its request is in flight: the success resets the modal's state, which
+          by then could hold another webhook opened after a close. */}
       {showCreateModal && (
         <Modal
           open
-          onClose={() => setShowCreateModal(false)}
+          onClose={() => !createMutation.isPending && setShowCreateModal(false)}
           title={t('webhooks.createTitle')}
           closeLabel={t('common.close')}
           footer={
             <>
-              <button className="btn-secondary" onClick={() => setShowCreateModal(false)}>
+              <button
+                className="btn-secondary"
+                onClick={() => setShowCreateModal(false)}
+                disabled={createMutation.isPending}
+              >
                 {t('common.cancel')}
               </button>
               <button className="btn-primary" onClick={handleCreate} disabled={!canCreate}>
@@ -517,12 +523,16 @@ export function Webhooks() {
       {showEditModal && editWebhook && (
         <Modal
           open
-          onClose={() => setShowEditModal(false)}
+          onClose={() => !updateMutation.isPending && setShowEditModal(false)}
           title={t('webhooks.editTitle')}
           closeLabel={t('common.close')}
           footer={
             <>
-              <button className="btn-secondary" onClick={() => setShowEditModal(false)}>
+              <button
+                className="btn-secondary"
+                onClick={() => setShowEditModal(false)}
+                disabled={updateMutation.isPending}
+              >
                 {t('common.cancel')}
               </button>
               <button className="btn-primary" onClick={handleEdit} disabled={!canSave}>
@@ -642,13 +652,17 @@ export function Webhooks() {
       {showDeleteModal && deleteTarget && (
         <Modal
           open
-          onClose={() => setShowDeleteModal(false)}
+          onClose={() => !deleteMutation.isPending && setShowDeleteModal(false)}
           title={t('webhooks.deleteTitle')}
           className="modal-sm"
           closeLabel={t('common.close')}
           footer={
             <>
-              <button className="btn-secondary" onClick={() => setShowDeleteModal(false)}>
+              <button
+                className="btn-secondary"
+                onClick={() => setShowDeleteModal(false)}
+                disabled={deleteMutation.isPending}
+              >
                 {t('common.cancel')}
               </button>
               <button className="btn-danger" onClick={handleDelete} disabled={deleteMutation.isPending}>

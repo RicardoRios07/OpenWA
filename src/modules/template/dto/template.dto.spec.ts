@@ -43,3 +43,22 @@ describe('template name length', () => {
     await expect(through('a'.repeat(101))).rejects.toBeInstanceOf(BadRequestException);
   });
 });
+
+// PostgreSQL text and varchar columns cannot hold U+0000, so a value carrying one passed validation and
+// then failed the INSERT or UPDATE as a 500.
+describe('template text fields', () => {
+  const pipe = new ValidationPipe(GLOBAL_VALIDATION_OPTIONS);
+  const valid = { name: 'welcome', body: 'hi', header: 'top', footer: 'bottom' };
+
+  it.each([
+    ['create', CreateTemplateDto],
+    ['update', UpdateTemplateDto],
+  ])('%s rejects a NUL character in any text field', async (_label, metatype) => {
+    for (const field of ['name', 'body', 'header', 'footer']) {
+      await expect(
+        pipe.transform({ ...valid, [field]: 'a\u0000b' }, { type: 'body', metatype }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    }
+    await expect(pipe.transform(valid, { type: 'body', metatype })).resolves.toMatchObject(valid);
+  });
+});

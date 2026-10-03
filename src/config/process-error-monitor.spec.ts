@@ -141,4 +141,12 @@ describe('registerUnhandledRejectionHandler', () => {
     expect(() => handler('a bare string')).not.toThrow();
     expect(errors[0][1]).toContain('a bare string');
   });
+
+  // String() throws on a null-prototype object; a throw inside this listener would become an uncaught
+  // exception and take the process down, which is exactly what the handler exists to prevent.
+  it('logs a rejection value that String() cannot convert instead of throwing', () => {
+    const { handler, errors } = register();
+    expect(() => handler(Object.create(null))).not.toThrow();
+    expect(errors).toEqual([['Unhandled promise rejection', '[object Object]']]);
+  });
 });

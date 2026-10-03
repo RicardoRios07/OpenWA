@@ -288,7 +288,9 @@ services:
       # node, which has to wait out its own previous lease). Defaults to the container hostname.
       - NODE_ID={{.Node.Hostname}}-{{.Task.Slot}}
     volumes:
-      - sessions:/app/data/sessions
+      # The whole data tree, not only sessions/: main.sqlite (API keys, audit log), baileys/,
+      # media and the generated secrets live there too, and a replaced task would lose them.
+      - openwa-data:/app/data
     networks:
       - openwa-net
     depends_on:
@@ -329,7 +331,7 @@ services:
 volumes:
   postgres-data:
   redis-data:
-  sessions:
+  openwa-data:
 
 networks:
   openwa-net:
@@ -350,7 +352,7 @@ docker service ls
 docker service ps openwa_openwa
 ```
 
-> **Do not scale the `openwa` service** (`docker service scale openwa_openwa=N`). The `sessions`
+> **Do not scale the `openwa` service** (`docker service scale openwa_openwa=N`). The `openwa-data`
 > volume above is declared with the default local driver (not `external`), so Swarm creates one per
 > node: replicas co-located on a single node share that directory and corrupt the WhatsApp auth
 > state, while replicas placed on other nodes each get a fresh empty volume and start an

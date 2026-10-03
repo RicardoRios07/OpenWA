@@ -5,6 +5,7 @@ import static com.rmyndharis.openwa.http.Http.encodeSegment;
 import com.rmyndharis.openwa.OpenWAClient;
 import com.rmyndharis.openwa.http.BinaryResponse;
 import com.rmyndharis.openwa.http.HttpMethod;
+import com.rmyndharis.openwa.model.BatchCancelResponse;
 import com.rmyndharis.openwa.model.BatchStatusResponse;
 import com.rmyndharis.openwa.model.BulkMessageResponse;
 import com.rmyndharis.openwa.model.ChatHistoryMessage;
@@ -310,14 +311,17 @@ public final class MessagesResource {
             BatchStatusResponse.class);
     }
 
-    /** Cancel a running batch. Requires an OPERATOR-level key. */
-    public BatchStatusResponse cancelBatch(String sessionId, String batchId) {
+    /**
+     * Cancel a running batch. Requires an OPERATOR-level key. The reply carries no per-item results;
+     * call {@link #batchStatus} for those.
+     */
+    public BatchCancelResponse cancelBatch(String sessionId, String batchId) {
         return client.request(
             HttpMethod.POST,
             "/api/sessions/" + encodeSegment(sessionId) + "/messages/batch/" + encodeSegment(batchId) + "/cancel",
             null,
             null,
-            BatchStatusResponse.class);
+            BatchCancelResponse.class);
     }
 
     // ── Internal ───────────────────────────────────────────────────────

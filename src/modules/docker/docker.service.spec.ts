@@ -238,14 +238,20 @@ describe('DockerService.onModuleInit', () => {
 
   it('logs a warning but still resolves when bootstrap orchestration fails', async () => {
     process.env.REDIS_BUILTIN = 'true';
-    DockerMock.mockImplementation(() => ({
+    const docker = {
       ...happyDocker(),
       pull: (_image: string, cb: (err: Error | null, stream: null) => void) => cb(new Error('pull denied'), null),
-    }));
+    };
+    DockerMock.mockImplementation(() => docker);
     const service = new DockerService();
+    const warn = jest
+      .spyOn((service as unknown as { logger: { warn: () => void } }).logger, 'warn')
+      .mockImplementation(() => undefined);
 
     await expect(service.onModuleInit()).resolves.toBeUndefined();
     expect(service.isDockerAvailable()).toBe(true);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('[Bootstrap Orchestration] Issues'));
+    expect(docker.createContainer).not.toHaveBeenCalled();
   });
 });
 

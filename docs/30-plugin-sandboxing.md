@@ -142,5 +142,6 @@ Built-in plugins were unaffected and still run in-process.
 | `SANDBOX_MAX_OLD_GEN_MB` (worker `maxOldGenerationSizeMb`) | 256     | per-plugin V8-heap cap; a heap OOM kills the worker, not the host (native/Buffer memory is outside it, see the memory-kind boundary above) |
 | `SANDBOX_HOOK_TIMEOUT_MS`                                  | 5000 ms | budget before a sandboxed hook handler is skipped                                                                                          |
 
-Both are hardcoded constants in the plugin loader — **neither is an environment variable**, so
-changing either requires a code change.
+Both are hardcoded constants (`SANDBOX_MAX_OLD_GEN_MB` in `plugin-loader.service.ts`, `SANDBOX_HOOK_TIMEOUT_MS`
+in `plugin-sandbox-bridge.ts`) — **neither is an environment variable**, so changing either requires a
+code change.

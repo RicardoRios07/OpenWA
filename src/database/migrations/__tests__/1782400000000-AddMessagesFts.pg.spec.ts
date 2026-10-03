@@ -92,6 +92,31 @@ const POSTGRES_ENABLED = process.env.DATABASE_TYPE === 'postgres';
     expect(one.hits.map(h => h.sessionId)).toEqual(['s2']);
   });
 
+  // Every row ties on score and timestamp, so only the id tiebreak gives the walk a total order. An
+  // offset past 0 also skips the short-page shortcut, so `total` comes from count() and its own
+  // `$n` numbering of the same filters.
+  it('pages a tie group one hit at a time without repeats, reporting the full total on every page', async () => {
+    await ds.query(`DELETE FROM "messages"`);
+    const ROWS = 12;
+    for (let i = 0; i < ROWS; i++) {
+      await ds.query(
+        `INSERT INTO "messages" ("id","sessionId","chatId","from","to","body","type","direction","timestamp") ` +
+          `VALUES ($1,'s1','s1-chat','s1-from','dest@c.us','paging probe','text','outgoing',1)`,
+        [`p${String(i).padStart(2, '0')}`],
+      );
+    }
+
+    const served: string[] = [];
+    for (let offset = 0; offset < ROWS; offset++) {
+      const page = await provider.search({ q: 'paging', sessionIds: ['s1'], limit: 1, offset });
+      expect(page.total).toBe(ROWS);
+      served.push(...page.hits.map(h => h.messageId));
+    }
+
+    expect(served).toHaveLength(ROWS);
+    expect(new Set(served).size).toBe(ROWS);
+  });
+
   it('returns empty (not error) for no matches', async () => {
     const res = await provider.search({ q: 'zzzznomatch' });
     expect(res.hits).toEqual([]);

@@ -37,10 +37,12 @@ export interface PluginNetResponse {
 }
 
 /**
- * The effective outbound-host allowlist for a plugin: its static manifest `net.allow` plus the host of
- * every `net.allowConfigHosts` config key that resolves to an https URL. Lets a marketplace adapter reach
- * an operator-configured host (e.g. a Chatwoot base URL) without `net.allow:['*']`. Credentialed or
- * non-https values are ignored; the SSRF guard still blocks private IPs at connect regardless.
+ * The effective outbound-host allowlist for a plugin: its static manifest `net.allow` plus the https
+ * origin of every `net.allowConfigHosts` config key that resolves to an https URL. Lets a marketplace
+ * adapter reach an operator-configured host (e.g. a Chatwoot base URL) without `net.allow:['*']`. The
+ * origin is pinned as `https://host:port`, so the grant covers that scheme and port only, never plain
+ * http or another port of the host. Credentialed or non-https values are ignored; the SSRF guard still
+ * blocks private IPs at connect regardless.
  */
 export function effectiveNetAllow(
   allow: string[] | undefined,
@@ -55,7 +57,7 @@ export function effectiveNetAllow(
       const u = new URL(raw);
       if (u.protocol !== 'https:' || u.username || u.password) continue;
       if (u.hostname.includes('*')) continue; // never let a config value inject the '*' wildcard sentinel
-      out.push(u.host); // host:port when a port is set, else bare host
+      out.push(`https://${u.hostname}:${u.port || '443'}`);
     } catch {
       // Not a URL — skip.
     }
@@ -64,9 +66,10 @@ export function effectiveNetAllow(
 }
 
 /**
- * Is `url` allowed by a plugin's manifest `net.allow` list? Deny-by-default. `'*'` allows any host
- * (the SSRF guard still blocks internal IPs at connect time); an entry may be `host:port` (exact) or
- * a bare `host` (any port). Only http(s) is ever allowed.
+ * Is `url` allowed by a plugin's effective allowlist? Deny-by-default. `'*'` allows any host (the SSRF
+ * guard still blocks internal IPs at connect time); an entry may be `scheme://host:port` (exact origin,
+ * as {@link effectiveNetAllow} emits for config hosts), `host:port` (exact) or a bare `host` (any port).
+ * Only http(s) is ever allowed.
  */
 export function isNetHostAllowed(allow: string[] | undefined, url: string): boolean {
   let parsed: URL;
@@ -81,7 +84,11 @@ export function isNetHostAllowed(allow: string[] | undefined, url: string): bool
   if (list.includes('*')) return true;
 
   const port = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');
-  return list.includes(`${parsed.hostname}:${port}`) || list.includes(parsed.hostname);
+  return (
+    list.includes(`${parsed.protocol}//${parsed.hostname}:${port}`) ||
+    list.includes(`${parsed.hostname}:${port}`) ||
+    list.includes(parsed.hostname)
+  );
 }
 
 /**

@@ -36,6 +36,7 @@
     "hoursAgo": "{{count}} jam lalu",
     "hoursAgo_other": "{{count}} jam lalu",
     "optional": "opsional",
+    "fieldTooLong": "Dibatasi {{max}} karakter (saat ini {{count}}).",
     "language": "Bahasa",
     "back": "Kembali",
     "next": "Selanjutnya",
@@ -122,7 +123,6 @@
       "unknownType": "Tipe tidak diketahui"
     },
     "you": "Anda",
-    "youPrefix": "Anda: ",
     "yesterday": "Kemarin",
     "attachTitle": "Kirim berkas / gambar",
     "emojiTitle": "Pilih emoji",
@@ -353,7 +353,7 @@
       "configured": "{{host}} ({{type}})",
       "noProxy": "Tidak ada proxy dikonfigurasi",
       "hasCredentials": "Kredensial tersimpan tetapi tidak ditampilkan. Masukkan URL lengkap untuk mengubahnya.",
-      "hint": "Perubahan berlaku saat sesi dimulai berikutnya, bukan pada koneksi yang sedang berjalan. Proxy harus nyata dan dapat dijangkau: nilai yang tidak dapat dijangkau akan memblokir pengiriman QR, dan permintaan mulai sesi mengembalikan 504.",
+      "hint": "Perubahan berlaku saat sesi dimulai berikutnya, bukan pada koneksi yang sedang berjalan. Proxy harus nyata dan dapat dijangkau: nilai yang tidak dapat dijangkau akan memblokir pengiriman QR. Di whatsapp-web.js permintaan mulai sesi mengembalikan 504, sedangkan di Baileys sesi berhasil dimulai dan terus mencoba ulang.",
       "createHint": "Hanya diperlukan jika jaringan Anda tidak dapat menjangkau WhatsApp secara langsung. Harus berupa proxy yang nyata dan dapat dijangkau.",
       "invalidUrl": "Masukkan URL proxy yang valid: http, https, socks4, atau socks5.",
       "saveSuccessTitle": "Proxy Disimpan",
@@ -487,11 +487,9 @@
       "valueLabel": "Nilai filter"
     },
     "columns": {
-      "url": "URL",
       "events": "Kejadian",
       "session": "Sesi",
-      "status": "Status",
-      "actions": "Aksi"
+      "status": "Status"
     },
     "empty": {
       "title": "Belum ada webhook dikonfigurasi",
@@ -671,7 +669,6 @@
       "revoke": "Cabut"
     },
     "actions": {
-      "copy": "Salin",
       "revoke": "Cabut",
       "delete": "Hapus",
       "edit": "Edit akses"
@@ -886,7 +883,7 @@
       "sslRejectUnauthorized": "Verifikasi Sertifikat SSL",
       "sslRejectUnauthorizedDesc": "Tolak sertifikat self-signed atau tidak valid. Nonaktifkan untuk Postgres terkelola dengan sertifikat self-signed (Supabase, Heroku, Render, Railway).",
       "migrationsTitle": "Migrasi Database",
-      "migrationsStatus": "Skema disinkronkan otomatis dengan TypeORM",
+      "migrationsStatus": "Migrasi yang tertunda diterapkan otomatis saat startup",
       "migrationsHint": "Migrasi dikelola otomatis. Gunakan CLI untuk migrasi manual."
     },
     "engine": {
@@ -909,7 +906,7 @@
     "redis": {
       "title": "Redis",
       "enable": "Aktifkan Redis",
-      "enableDesc": "Diperlukan untuk caching, penyimpanan sesi, dan antrian BullMQ",
+      "enableDesc": "Digunakan untuk caching, antrian BullMQ, penghitung rate limit, dan distribusi WebSocket multi-node",
       "useBuiltIn": "Gunakan Container Redis Bawaan",
       "builtInDesc": "OpenWA akan mengelola container Redis untuk Anda",
       "queueTitle": "Aktifkan Sistem Antrian BullMQ",
@@ -921,7 +918,7 @@
       "failed": "Gagal",
       "viewBullMq": "Lihat Dasbor Bull MQ",
       "disabledTitle": "Redis Dinonaktifkan",
-      "disabledDesc": "Aktifkan Redis untuk caching, penyimpanan sesi, dan antrian pesan BullMQ.",
+      "disabledDesc": "Aktifkan Redis untuk caching, antrian pesan BullMQ, penghitung rate limit, dan distribusi WebSocket multi-node.",
       "passwordOptional": "(opsional)",
       "bullMqUrlCopied": "URL dasbor Bull MQ disalin",
       "bullMqUrlHint": "Buka dengan kunci API ADMIN — tab browser tidak dapat mengautentikasi."
@@ -1055,7 +1052,7 @@
       "healthFail": "Cek Kesehatan Gagal",
       "healthError": "Kesalahan Cek Kesehatan",
       "savedTitle": "Konfigurasi Disimpan",
-      "savedDesc": "Restart server diperlukan untuk menerapkan perubahan.",
+      "savedDesc": "Perubahan berlaku tanpa restart server.",
       "saveFailed": "Gagal Menyimpan",
       "installed": "Plugin terpasang",
       "installFailed": "Gagal menginstal",

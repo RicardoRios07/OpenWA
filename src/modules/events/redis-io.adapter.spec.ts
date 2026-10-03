@@ -18,8 +18,9 @@ class FakeRedis {
   constructor(public readonly opts?: unknown) {
     redisInstances.push(this);
   }
-  duplicate(): FakeRedis {
-    return new FakeRedis(this.opts);
+  // Like ioredis, a duplicate inherits the options and takes overrides on top.
+  duplicate(override?: object): FakeRedis {
+    return new FakeRedis({ ...(this.opts as object), ...override });
   }
   on(event: string, handler: (err: Error) => void): this {
     this.handlers[event] = handler;
@@ -130,6 +131,21 @@ describe('RedisIoAdapter', () => {
         expect(adapterFn).toHaveBeenCalledWith(
           expect.objectContaining({ tag: 'redis-adapter-fn', pub: redisInstances[0], sub: redisInstances[1] }),
         );
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('keeps the subscriber commands queued for as long as Redis is down at boot', () => {
+      process.env.REDIS_ENABLED = 'true';
+      const spy = withBaseServer(fakeServer().server);
+      try {
+        new RedisIoAdapter({} as never).createIOServer(2785);
+        const [pub, sub] = redisInstances as [FakeRedis, FakeRedis];
+        // The adapter subscribes once; a flushed SUBSCRIBE is never sent again, so the sub client
+        // must not give up on it. The publisher stays bounded.
+        expect((sub.opts as { maxRetriesPerRequest?: unknown }).maxRetriesPerRequest).toBeNull();
+        expect((pub.opts as { maxRetriesPerRequest?: unknown }).maxRetriesPerRequest).toBeUndefined();
       } finally {
         spy.mockRestore();
       }

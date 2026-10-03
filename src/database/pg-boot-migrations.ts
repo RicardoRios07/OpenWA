@@ -90,6 +90,11 @@ export async function createBootDataSource(
     });
     try {
       await lockClient.connect();
+      // The holder sends nothing between lock and unlock, so a role- or database-level
+      // idle_session_timeout (PostgreSQL 14+) would end the session, and the boot, mid-chain. Set
+      // after connect rather than in the startup options: PostgreSQL 12 and 13 reject an unknown
+      // setting there as FATAL, while here the error is harmless and swallowed.
+      await lockClient.query('SET idle_session_timeout = 0').catch(() => undefined);
       await lockClient.query('SELECT pg_advisory_lock($1, $2)', [...POSTGRES_BOOT_MIGRATION_LOCK_KEYS]);
       holding = true;
       try {
@@ -159,7 +164,7 @@ function lockClientConfig(options: PostgresOptions): ClientConfig {
     // `statement_timeout: 0` would NOT do it: pg drops falsy values from the startup packet, so
     // disable it via the startup `options` string instead, which also overrides any role- or
     // database-level default the server may carry. (lock_timeout never applies to advisory locks,
-    // so it needs no override.)
+    // so it needs no override; idle_session_timeout is turned off by a SET after connect.)
     options: '-c statement_timeout=0',
   };
 }

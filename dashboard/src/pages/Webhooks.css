@@ -664,6 +664,11 @@
   transform: translateX(22px);
 }
 
+.webhooks-page .toggle-switch input:focus-visible + .toggle-slider {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
 .webhooks-page .toggle-status {
   font-size: 0.875rem;
   font-weight: 500;

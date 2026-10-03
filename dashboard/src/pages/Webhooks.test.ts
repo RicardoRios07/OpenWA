@@ -238,7 +238,7 @@ test('Create stays disabled with a hint while no event is selected', async () =>
   fireEvent.change(screen.getByLabelText('URL'), { target: { value: 'https://example.test/hook' } });
   const create = screen.getByRole<HTMLButtonElement>('button', { name: 'Create' });
   assert.equal(create.disabled, false);
-  assert.equal(screen.queryByText('Select at least one event.'), null);
+  assert.equal(screen.queryByText('Select at least one event.') === null, true);
 
   fireEvent.click(screen.getByRole('button', { name: 'message.received' }));
   assert.equal(create.disabled, true, 'no event selected');
@@ -550,5 +550,48 @@ test('a second click on the delete confirm while the first delete is in flight s
   assert.equal(deleteCalls.length, 1);
   releaseRequests();
   await screen.findByText('Webhook deleted successfully');
-  assert.equal(screen.queryByRole('alert'), null);
+  assert.equal(screen.queryByRole('alert') === null, true);
+});
+
+// A late success resets whichever modal is open by then, so a modal must not close and give way to
+// another while its own request is in flight.
+test('the edit modal stays open while its save is in flight', async () => {
+  const { screen, fireEvent, waitFor, within } = rtl;
+  const save = await openEditModal();
+  fireEvent.click(save);
+  await waitFor(() => assert.equal(updateCalls, 1));
+  const dialog = screen.getByRole('dialog');
+  const cancel = within(dialog).getByRole<HTMLButtonElement>('button', { name: 'Cancel' });
+  assert.equal(cancel.disabled, true);
+  fireEvent.keyDown(document, { key: 'Escape' });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+  assert.ok(screen.queryByRole('dialog'), 'the edit modal closed mid-save');
+});
+
+test('the create modal stays open while its create is in flight', async () => {
+  const { screen, fireEvent, waitFor, within } = rtl;
+  fireEvent.click(await openCreateModal());
+  await waitFor(() => assert.equal(createCalls, 1));
+  const dialog = screen.getByRole('dialog');
+  assert.equal(within(dialog).getByRole<HTMLButtonElement>('button', { name: 'Cancel' }).disabled, true);
+  fireEvent.keyDown(document, { key: 'Escape' });
+  assert.ok(screen.queryByRole('dialog'), 'the create modal closed mid-create');
+});
+
+test('the delete confirmation stays open while its delete is in flight', async () => {
+  const { screen, fireEvent, waitFor, within } = rtl;
+  webhooksStatus = 200;
+  webhookList = [{ id: 'w1', sessionId: 'sess-1', url: 'https://example.test/hook', events: [], active: true }];
+  window.sessionStorage.setItem('openwa_user_role', 'operator');
+  holdRequests();
+  renderWebhooks();
+  fireEvent.click(await screen.findByTitle('Delete'));
+  const dialog = screen.getByRole('dialog');
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
+  await waitFor(() => assert.equal(deleteCalls.length, 1));
+  assert.equal(within(dialog).getByRole<HTMLButtonElement>('button', { name: 'Cancel' }).disabled, true);
+  fireEvent.keyDown(document, { key: 'Escape' });
+  assert.ok(screen.queryByRole('dialog'), 'the delete confirmation closed mid-delete');
+  releaseRequests();
+  await screen.findByText('Webhook deleted successfully');
 });

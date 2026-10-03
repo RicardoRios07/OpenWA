@@ -91,7 +91,7 @@ it into Postgres). Concretely:
 
 ## 26.5 Configuration
 
-All search configuration lives in the environment (`.env` / Compose / dashboard Infrastructure form):
+All search configuration lives in the environment (`.env` / Compose):
 
 | Variable           | Default        | Meaning                                                                                                                                                                                                                                                                                                                                                                       |
 | ------------------ | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -137,9 +137,10 @@ GET /api/search?q=<term>&sessionId=<id>&chatId=<id>&direction=<incoming|outgoing
   are coerced and validated; a non-numeric `limit`/`offset`/`dateFrom`/`dateTo` surfaces as `400`,
   never as a `NaN` SQL parameter.
 - **Auth scoping is authoritative.** The caller's API-key `allowedSessions` is injected by
-  `SearchService` — **never** accepted from the query — so a scoped key cannot broaden its reach. An
-  ADMIN / null-allowlist key searches all sessions; a scoped key sees only its allowlist even if it
-  passes `sessionId`. The DTO carries no `sessionIds` field (it would be rejected as non-whitelisted).
+  `SearchService` — **never** accepted from the query — so a scoped key cannot broaden its reach. A
+  key with a non-empty `allowedSessions` searches only those sessions, whatever its role, even if it
+  passes `sessionId`; a key with a null or empty `allowedSessions` searches all sessions. The DTO
+  carries no `sessionIds` field (it would be rejected as non-whitelisted).
 - **Response** is a `SearchResults` object: `{ hits: SearchHit[], total, tookMs, provider }`. Each hit
   carries `messageId`, `waMessageId`, `sessionId`, `chatId`, `body`, `snippet`, `timestamp`, `type`,
   `direction`, `from`, and optional `score`. `total` is an exact count (bounded; computed lazily only

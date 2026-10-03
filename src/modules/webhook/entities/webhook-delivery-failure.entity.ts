@@ -1,4 +1,5 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, Index } from 'typeorm';
+import { NulFreeTransformer } from '../../../common/transformers/nul-free.transformer';
 
 /**
  * A durable record of a webhook delivery that exhausted all of its retries. The queued path (BullMQ)
@@ -46,7 +47,7 @@ export class WebhookDeliveryFailure {
   @Column({ type: 'int', nullable: true })
   lastStatusCode!: number | null;
 
-  @Column({ type: 'text' })
+  @Column({ type: 'text', transformer: NulFreeTransformer })
   lastError!: string;
 
   /** When the delivery was finally abandoned. */

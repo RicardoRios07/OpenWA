@@ -148,10 +148,20 @@ Backfilled items carry only the WhatsApp id (`id` there is the WhatsApp message 
 Keep a `waMessageId` lookup too, and when a later `message:persisted` arrives for a message you already
 backfilled, upsert onto that document instead of adding a second one.
 
-Start the backfill from `onEnable` without awaiting it: a sandboxed lifecycle call is cut off after 30 s,
-and walking every chat's history takes longer on a real deployment. Record a marker in `ctx.storage` (which
-needs the `storage:use` permission) when it finishes so a restart does not repeat it. The built-in DB-FTS
-provider is unaffected (its index is DB-synced via triggers on every insert, including backfill).
+Start the backfill per session from a `ctx.registerHook('session:ready', ...)` handler (the session is
+`hookCtx.sessionId`), without awaiting it: a sandboxed hook is cut off after 5 s and a lifecycle call
+after 30 s, and walking every chat's history takes longer on a real deployment. Do not rely on `onEnable`
+alone: it also runs at boot, when the host re-enables the plugin before any session engine is up, so an
+engine read there fails (no active engine, or one still initializing) and a session linked later is never
+covered. No `ctx` capability lists sessions or reports their status, so in `onEnable` try only the
+session ids the plugin already knows (its `manifest.sessions` list or its own config) and leave any whose
+engine read fails (no active engine, or one not yet ready) to its `session:ready` hook.
+Record a per-session marker in `ctx.storage` (which needs the `storage:use` permission) when that
+session's backfill finishes, and skip a session whose marker is set, so a restart resumes an interrupted
+backfill and does not repeat a finished one. Keep an in-memory set of sessions whose backfill is running
+too, so a repeated `session:ready` (a reconnect) does not start a second walk alongside the first. The
+built-in DB-FTS provider is unaffected (its index is DB-synced via triggers on every insert, including
+backfill).
 
 ## 27.4 Host-side guarantees (the plugin author doesn't handle these)
 

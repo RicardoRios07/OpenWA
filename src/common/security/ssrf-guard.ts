@@ -190,7 +190,17 @@ export function isBlockedAddress(ip: string): boolean {
       if (hextets[0] === 0x2002) {
         return isBlockedAddress(hextetsToV4(hextets[1], hextets[2])); // 6to4
       }
-      if (hextets[0] === 0x64 && hextets[1] === 0xff9b) {
+      // NAT64 /96: the well-known 64:ff9b::/96 and the local-use 64:ff9b:1::/96 (RFC 8215). Any other
+      // 64:ff9b layout (a /48 local-use prefix embeds the IPv4 in the middle hextets) falls through to
+      // the reserved-range check below and is blocked.
+      if (
+        hextets[0] === 0x64 &&
+        hextets[1] === 0xff9b &&
+        hextets[2] <= 1 &&
+        hextets[3] === 0 &&
+        hextets[4] === 0 &&
+        hextets[5] === 0
+      ) {
         return isBlockedAddress(hextetsToV4(hextets[6], hextets[7])); // NAT64
       }
       if (hextets.slice(0, 6).every(h => h === 0) && (hextets[6] | hextets[7]) !== 0) {
@@ -253,10 +263,13 @@ export function assertNoRedirect(response: { status: number; type?: string }, ur
 /** Default DNS resolution deadline (ms) — generous for healthy resolvers; bounds a hang. */
 const DEFAULT_DNS_TIMEOUT_MS = 10000;
 
+/** Node clamps a longer timer delay to 1 ms, which would fail every lookup at once. */
+const MAX_TIMER_MS = 2147483647;
+
 function resolveDnsTimeoutMs(): number {
   const raw = process.env.SSRF_DNS_TIMEOUT_MS;
   const n = raw !== undefined ? Number(raw) : NaN;
-  return Number.isInteger(n) && n > 0 ? n : DEFAULT_DNS_TIMEOUT_MS;
+  return Number.isInteger(n) && n > 0 && n <= MAX_TIMER_MS ? n : DEFAULT_DNS_TIMEOUT_MS;
 }
 
 /** Redirect hops followed on the guarded download path before the chain is refused. */

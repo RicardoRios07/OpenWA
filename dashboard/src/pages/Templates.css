@@ -42,7 +42,7 @@
 .templates-page .templates-library {
   display: flex;
   flex-direction: column;
-  border-right: 1px solid var(--border);
+  border-inline-end: 1px solid var(--border);
   background: var(--bg-light);
 }
 
@@ -157,7 +157,7 @@
   border-radius: 8px;
   background: transparent;
   color: inherit;
-  text-align: left;
+  text-align: start;
 }
 
 .templates-page .template-list-item:hover {
@@ -285,7 +285,7 @@
 .templates-page .template-preview {
   display: flex;
   flex-direction: column;
-  border-left: 1px solid var(--border);
+  border-inline-start: 1px solid var(--border);
   background: var(--bg-light);
 }
 
@@ -425,7 +425,7 @@
     display: grid;
     grid-template-columns: 1fr 320px;
     border-top: 1px solid var(--border);
-    border-left: 0;
+    border-inline-start: 0;
   }
 
   .templates-page .template-preview-header {
@@ -455,7 +455,7 @@
 
   .templates-page .templates-library {
     max-height: 360px;
-    border-right: 0;
+    border-inline-end: 0;
     border-bottom: 1px solid var(--border);
   }
 

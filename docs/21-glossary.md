@@ -19,7 +19,7 @@ An interface implementation that provides a specific capability. In OpenWA, adap
 
 - **Database Adapter**: SQLite, PostgreSQL
 - **Storage Adapter**: Local, S3
-- **Cache**: Redis (optional — `CacheService` is Redis-only; with Redis disabled it no-ops and callers fall through to the database)
+- **Cache**: Redis (optional — `CacheService` is Redis-only; with Redis disabled it no-ops)
 - **Engine Adapter**: whatsapp-web.js (default), Baileys
 
 ### API Key

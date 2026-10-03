@@ -88,8 +88,9 @@ export class ActiveKeyIndex implements OnApplicationBootstrap, OnModuleDestroy {
     const key = this.keys.get(keyHash);
     if (!key) return undefined;
     // Expiry is checked here rather than in the query: SQLite stores dates as strings, and a key
-    // that expires between two refreshes must stop counting at once.
-    if (key.expiresAt && key.expiresAt < new Date()) return undefined;
+    // that expires between two refreshes must stop counting at once. An expiry that reads back as an
+    // invalid date counts as expired, as it does in validateApiKey.
+    if (key.expiresAt && !(key.expiresAt >= new Date())) return undefined;
     if (key.allowedIps?.length && !key.allowedIps.some(entry => ipMatches(clientIp, entry))) return undefined;
     return keyHash;
   }

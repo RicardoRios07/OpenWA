@@ -285,6 +285,25 @@ describe('ChatStateStoreService', () => {
     });
   });
 
+  it('a reload that cannot read the table sends uncached chats back through the table', async () => {
+    const repo = makeRepo([{ sessionId: 's', chatId: 'a', archived: true }]);
+    const svc = svcWith(repo);
+    await svc.refreshSession('s'); // 's' is complete: a miss costs no query
+    svc.get('t', 'gone');
+    await tick(); // 't'/'gone' is now known to have no row
+    // A restore replaces the table, then the post-commit reload fails.
+    await repo.upsert({ sessionId: 's', chatId: 'b', pinned: true } as ChatState);
+    await repo.upsert({ sessionId: 't', chatId: 'gone', archived: true } as ChatState);
+    repo.find.mockRejectedValueOnce(new Error('SQLITE_BUSY'));
+    await expect(svc.reload()).resolves.toBeUndefined();
+    svc.get('s', 'b');
+    svc.get('t', 'gone');
+    await tick();
+    expect(svc.get('s', 'b')).toEqual(expect.objectContaining({ pinned: true }));
+    expect(svc.get('t', 'gone')).toEqual(expect.objectContaining({ archived: true }));
+    expect(svc.get('s', 'a')).toEqual(expect.objectContaining({ archived: true })); // cached rows are kept
+  });
+
   describe('a session whose rows all fit in the cache answers a miss without a query', () => {
     const seeded = () =>
       makeRepo([

@@ -46,6 +46,23 @@ export const DEFAULT_S3_REPROBE_INTERVAL_MS = 60_000;
  */
 export const S3_DELETE_TIMEOUT_MS = 30_000;
 
+/**
+ * Cap on one bucket probe request. The status endpoint and the storage migration routes await the
+ * probe, and every later re-probe waits on one already in flight, so it gets a tighter bound than
+ * the idle-socket timeout below, and one that also stops the SDK's retries.
+ */
+export const S3_PROBE_TIMEOUT_MS = 10_000;
+
+/**
+ * Connect and idle-socket bounds for every S3 request. Without them a store that accepts the
+ * connection and never answers (a paused container, a stuck proxy) leaves the request pending
+ * forever, holding its media buffer and the caller. The socket bound is an idle timeout, so a long
+ * upload or download that keeps moving bytes is not cut off. A bare requestTimeout would not do:
+ * the HTTP handler only logs a warning when it expires.
+ */
+export const S3_CONNECT_TIMEOUT_MS = 5_000;
+export const S3_SOCKET_TIMEOUT_MS = 30_000;
+
 function positiveIntFromEnv(name: string, fallback: number): number {
   const parsed = Number.parseInt(process.env[name] ?? '', 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
@@ -91,6 +108,7 @@ export class StorageService implements OnModuleDestroy {
             secretAccessKey,
           },
           ...(endpoint ? { forcePathStyle: true } : {}), // Required for path-style stores (MinIO)
+          requestHandler: { connectionTimeout: S3_CONNECT_TIMEOUT_MS, socketTimeout: S3_SOCKET_TIMEOUT_MS },
         });
         this.s3Bucket = process.env.S3_BUCKET || s3Config.bucket || 'openwa';
         const keyRoot = normalizeS3KeyPrefix(process.env.S3_KEY_PREFIX || s3Config.keyPrefix);
@@ -151,14 +169,18 @@ export class StorageService implements OnModuleDestroy {
    */
   private async ensureS3Bucket(): Promise<void> {
     try {
-      await this.s3Client!.send(new HeadBucketCommand({ Bucket: this.s3Bucket }));
+      await this.s3Client!.send(new HeadBucketCommand({ Bucket: this.s3Bucket }), {
+        abortSignal: AbortSignal.timeout(S3_PROBE_TIMEOUT_MS),
+      });
       return;
     } catch (error: unknown) {
       const name = (error as { name?: string }).name;
       if (name !== 'NotFound' && name !== 'NoSuchBucket') throw error;
     }
     try {
-      await this.s3Client!.send(new CreateBucketCommand({ Bucket: this.s3Bucket }));
+      await this.s3Client!.send(new CreateBucketCommand({ Bucket: this.s3Bucket }), {
+        abortSignal: AbortSignal.timeout(S3_PROBE_TIMEOUT_MS),
+      });
     } catch (error: unknown) {
       // Another replica (or an overlapping probe) created it first, and this deployment owns it.
       // BucketAlreadyExists means another account owns the name, so that one still throws.

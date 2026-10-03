@@ -15,6 +15,7 @@ from ..types import (
     StarMessageRequest,
     VotePollRequest,
     UnpinMessageRequest,
+    BatchCancelResponse,
     BatchStatusResponse,
     BulkMessageResponse,
     ChatHistoryMessage,
@@ -150,8 +151,8 @@ class MessagesResource:
     def batch_status(self, session_id: str, batch_id: str) -> BatchStatusResponse:
         return self._http.request("GET", f"/api/sessions/{quote_segment(session_id)}/messages/batch/{quote_segment(batch_id)}")
 
-    def cancel_batch(self, session_id: str, batch_id: str) -> BatchStatusResponse:
-        """Cancel a running batch. Requires an OPERATOR-level key."""
+    def cancel_batch(self, session_id: str, batch_id: str) -> BatchCancelResponse:
+        """Cancel a running batch. Requires an OPERATOR-level key. The reply carries no per-recipient results."""
         return self._http.request(
             "POST", f"/api/sessions/{quote_segment(session_id)}/messages/batch/{quote_segment(batch_id)}/cancel"
         )

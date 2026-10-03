@@ -32,8 +32,8 @@ function leaseParam(at: Date): string | Date {
  * running owner keeps extending it. That makes recovery automatic and bounded by the TTL instead of
  * conditional on a clean shutdown.
  *
- * NOTE: this establishes ownership. It does not yet route a request to the owning node, nor fence
- * every lifecycle path — see the horizontal-scaling documentation for what remains.
+ * NOTE: this establishes ownership. Forwarding a request to the owning node is SessionProxyInterceptor's
+ * job (opt-in via NODE_URL); see the horizontal-scaling documentation for what remains.
  */
 @Injectable()
 export class SessionOwnershipService {
@@ -41,8 +41,13 @@ export class SessionOwnershipService {
   private heartbeat?: ReturnType<typeof setInterval>;
   /** Sessions this process believes it owns, so the heartbeat knows what to renew. */
   private readonly owned = new Set<string>();
-  /** Bumped on every claim and release, so renew() can tell a claim it read from one replaced since. */
+  /**
+   * A fresh value from claimSeq on every claim, dropped when the claim ends, so renew() can tell a
+   * claim it read from one replaced since. One sequence for all sessions: a per-session counter
+   * restarting after a release could repeat the value a tick had read.
+   */
   private readonly claimGen = new Map<string, number>();
+  private claimSeq = 0;
   /** Notified when a renewal proves this process no longer holds sessions it thought it did. */
   private onLeaseLost?: (sessionIds: string[]) => Promise<void> | void;
   /** Notified when this process takes a session over from a node whose lease lapsed. See onAdoption. */
@@ -158,7 +163,7 @@ export class SessionOwnershipService {
     const claimed = (result.affected ?? 0) > 0;
     if (claimed) {
       this.owned.add(sessionId);
-      this.bumpClaimGen(sessionId);
+      this.claimGen.set(sessionId, ++this.claimSeq);
       this.lastSeenLease.set(sessionId, leaseExpiresAt.getTime());
       // A released row (nodeId NULL) is not an adoption: its holder may still be finishing its own
       // batches, and failing them under it would leave two writers on one batch row.
@@ -184,7 +189,7 @@ export class SessionOwnershipService {
   async release(sessionId: string): Promise<void> {
     const now = new Date();
     this.owned.delete(sessionId);
-    this.bumpClaimGen(sessionId);
+    this.claimGen.delete(sessionId);
     const cleared = { nodeId: null, claimedAt: null, leaseExpiresAt: null, nodeUrl: null };
     // Its own claim first, in one statement as before. Only when that matched nothing is a lapsed
     // claim of another node cleared, and that is a takeover like a claim: the dead holder's
@@ -210,14 +215,11 @@ export class SessionOwnershipService {
     if ((lapsed.affected ?? 0) > 0) this.followAdoption(sessionId);
   }
 
-  private bumpClaimGen(sessionId: string): void {
-    this.claimGen.set(sessionId, (this.claimGen.get(sessionId) ?? 0) + 1);
-  }
-
   /** Release everything this process holds, on the way down. */
   async releaseAll(): Promise<void> {
     const ids = [...this.owned];
     this.owned.clear();
+    this.claimGen.clear();
     if (ids.length === 0) return;
     await this.sessions
       .createQueryBuilder()
@@ -379,7 +381,10 @@ export class SessionOwnershipService {
     // in between: neither was taken by a peer.
     const lost = held.filter(id => !kept.has(id) && this.owned.has(id) && this.claimGen.get(id) === heldGen.get(id));
     if (lost.length === 0) return;
-    for (const id of lost) this.owned.delete(id);
+    for (const id of lost) {
+      this.owned.delete(id);
+      this.claimGen.delete(id);
+    }
     this.logger.warn(`Lost the claim on ${lost.length} session(s); another node now holds them`, {
       nodeId: this.nodeId,
       sessionIds: lost,
@@ -438,12 +443,6 @@ export class SessionOwnershipService {
       undefined,
       { action: 'duplicate_node_id', nodeId: this.nodeId, sessionIds: flagged },
     );
-  }
-
-  /** For the boot reset, which must run before anything is claimed. */
-  ownedByOtherLiveNode(session: Pick<Session, 'nodeId' | 'leaseExpiresAt'>, now = new Date()): boolean {
-    if (!session.nodeId || session.nodeId === this.nodeId) return false;
-    return session.leaseExpiresAt != null && session.leaseExpiresAt > now;
   }
 
   /**

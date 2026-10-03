@@ -36,6 +36,7 @@
     "hoursAgo_other": "Há {{count}} horas",
     "hoursAgo_many": "Há {{count}} horas",
     "optional": "opcional",
+    "fieldTooLong": "Limite de {{max}} caracteres (agora {{count}}).",
     "language": "Idioma",
     "back": "Voltar",
     "next": "Próximo",
@@ -125,7 +126,6 @@
       "unknownType": "Tipo desconhecido"
     },
     "you": "Você",
-    "youPrefix": "Você: ",
     "yesterday": "Ontem",
     "attachTitle": "Enviar arquivo / imagem",
     "emojiTitle": "Escolher emoji",
@@ -353,7 +353,7 @@
       "configured": "{{host}} ({{type}})",
       "noProxy": "Nenhum proxy configurado",
       "hasCredentials": "As credenciais estão armazenadas, mas não são exibidas. Digite uma URL completa para alterá-las.",
-      "hint": "As alterações se aplicam no próximo início da sessão, não a uma conexão em andamento. O proxy precisa ser real e acessível: um valor inacessível bloqueia a entrega do QR code e o início retorna 504.",
+      "hint": "As alterações se aplicam no próximo início da sessão, não a uma conexão em andamento. O proxy precisa ser real e acessível: um valor inacessível bloqueia a entrega do QR code. No whatsapp-web.js o início retorna 504; no Baileys o início é concluído e a sessão continua tentando reconectar.",
       "createHint": "Necessário apenas quando sua rede não consegue acessar o WhatsApp diretamente. Precisa ser um proxy real e acessível.",
       "invalidUrl": "Digite uma URL de proxy http, https, socks4 ou socks5 válida.",
       "saveSuccessTitle": "Proxy salvo",
@@ -493,11 +493,9 @@
       "valueLabel": "Valor do filtro"
     },
     "columns": {
-      "url": "URL",
       "events": "Eventos",
       "session": "Sessão",
-      "status": "Status",
-      "actions": "Ações"
+      "status": "Status"
     },
     "empty": {
       "title": "Nenhum webhook configurado",
@@ -627,7 +625,6 @@
       "revoke": "Revogar"
     },
     "actions": {
-      "copy": "Copiar",
       "revoke": "Revogar",
       "delete": "Excluir",
       "edit": "Editar acesso"
@@ -892,7 +889,7 @@
       "sslRejectUnauthorized": "Verificar certificado SSL",
       "sslRejectUnauthorizedDesc": "Rejeitar certificados autoassinados ou inválidos. Desative para Postgres gerenciado com certificados autoassinados (Supabase, Heroku, Render, Railway).",
       "migrationsTitle": "Migrações do banco de dados",
-      "migrationsStatus": "O esquema é sincronizado automaticamente com TypeORM",
+      "migrationsStatus": "Migrações pendentes são aplicadas automaticamente na inicialização",
       "migrationsHint": "As migrações são gerenciadas automaticamente. Use a CLI para migrações manuais."
     },
     "engine": {
@@ -915,7 +912,7 @@
     "redis": {
       "title": "Redis",
       "enable": "Habilitar Redis",
-      "enableDesc": "Necessário para cache, armazenamento de sessões e filas BullMQ",
+      "enableDesc": "Usado para cache, filas BullMQ, contadores de limite de taxa e distribuição de WebSocket entre vários nós",
       "useBuiltIn": "Usar contêiner Redis integrado",
       "builtInDesc": "OpenWA gerenciará um contêiner Redis para você",
       "queueTitle": "Habilitar sistema de filas BullMQ",
@@ -927,7 +924,7 @@
       "failed": "Falhou",
       "viewBullMq": "Ver painel BullMQ",
       "disabledTitle": "Redis está desabilitado",
-      "disabledDesc": "Habilite o Redis para cache, armazenamento de sessões e filas de mensagens BullMQ.",
+      "disabledDesc": "Habilite o Redis para cache, filas de mensagens BullMQ, contadores de limite de taxa e distribuição de WebSocket entre vários nós.",
       "passwordOptional": "(opcional)",
       "bullMqUrlCopied": "URL do painel do Bull MQ copiada",
       "bullMqUrlHint": "Abra com uma chave de API ADMIN — uma aba do navegador não consegue autenticar."
@@ -1061,7 +1058,7 @@
       "healthFail": "Verificação de saúde falhou",
       "healthError": "Erro na verificação de saúde",
       "savedTitle": "Configuração salva",
-      "savedDesc": "É necessário reiniciar o servidor para aplicar as alterações.",
+      "savedDesc": "As alterações entram em vigor sem reiniciar o servidor.",
       "saveFailed": "Erro ao salvar",
       "installed": "Plugin instalado",
       "installFailed": "Erro na instalação",

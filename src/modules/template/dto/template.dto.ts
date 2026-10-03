@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsString, IsNotEmpty, IsOptional, MaxLength, ValidateIf } from 'class-validator';
 import { MaxCodePoints } from '../../../common/validation/max-code-points';
+import { NoNulCharacter } from '../../../common/validation/no-nul-character';
 
 const NAME_MAX_LENGTH = 100;
 const BODY_MAX_LENGTH = 4096;
@@ -15,6 +16,7 @@ export class CreateTemplateDto {
   @IsString()
   @IsNotEmpty()
   @MaxCodePoints(NAME_MAX_LENGTH)
+  @NoNulCharacter()
   name!: string;
 
   @ApiProperty({
@@ -25,6 +27,7 @@ export class CreateTemplateDto {
   @IsString()
   @IsNotEmpty()
   @MaxLength(BODY_MAX_LENGTH)
+  @NoNulCharacter()
   body!: string;
 
   @ApiPropertyOptional({
@@ -35,6 +38,7 @@ export class CreateTemplateDto {
   @IsOptional()
   @IsString()
   @MaxLength(HEADER_FOOTER_MAX_LENGTH)
+  @NoNulCharacter()
   header?: string;
 
   @ApiPropertyOptional({
@@ -45,6 +49,7 @@ export class CreateTemplateDto {
   @IsOptional()
   @IsString()
   @MaxLength(HEADER_FOOTER_MAX_LENGTH)
+  @NoNulCharacter()
   footer?: string;
 }
 
@@ -55,6 +60,7 @@ export class UpdateTemplateDto {
   @IsString()
   @IsNotEmpty()
   @MaxCodePoints(NAME_MAX_LENGTH)
+  @NoNulCharacter()
   name?: string;
 
   @ApiPropertyOptional({ description: 'Template body with {{variable}} placeholders', maxLength: BODY_MAX_LENGTH })
@@ -62,18 +68,21 @@ export class UpdateTemplateDto {
   @IsString()
   @IsNotEmpty()
   @MaxLength(BODY_MAX_LENGTH)
+  @NoNulCharacter()
   body?: string;
 
   @ApiPropertyOptional({ description: 'Optional header text', maxLength: HEADER_FOOTER_MAX_LENGTH })
   @IsOptional()
   @IsString()
   @MaxLength(HEADER_FOOTER_MAX_LENGTH)
+  @NoNulCharacter()
   header?: string;
 
   @ApiPropertyOptional({ description: 'Optional footer text', maxLength: HEADER_FOOTER_MAX_LENGTH })
   @IsOptional()
   @IsString()
   @MaxLength(HEADER_FOOTER_MAX_LENGTH)
+  @NoNulCharacter()
   footer?: string;
 }
 

@@ -48,6 +48,8 @@ import java.util.Map;
  * // Sessions are addressed by the UUID that create() returns, not by name.
  * SessionResponse session = client.sessions.create(CreateSessionRequest.builder().name("my-session").build());
  * client.sessions.start(session.id());
+ * // Link the account before sending: scan sessions.getQrCode or use sessions.requestPairingCode,
+ * // then wait for status READY. An unlinked session answers the send with 409.
  * client.messages.sendText(session.id(),
  *     SendTextRequest.builder().chatId("628123456789@c.us").text("Hello!").build());
  * }</pre>

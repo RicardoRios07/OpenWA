@@ -592,6 +592,7 @@ export class MessageController {
     description: 'Chat history (most recent messages, oldest first)',
     type: [ChatHistoryMessageDto],
   })
+  @ApiResponse({ status: 400, description: 'Session not active' })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   @ApiResponse({ status: 501, description: ENGINE_NOT_SUPPORTED_501 })
   @ApiResponse({
@@ -637,6 +638,7 @@ export class MessageController {
     description: 'List of reactions with senders',
     type: [MessageReactionDto],
   })
+  @ApiResponse({ status: 400, description: 'Session not active' })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   @ApiResponse({ status: 404, description: MESSAGE_NOT_FOUND_404 })
   @ApiResponse({ status: 501, description: ENGINE_NOT_SUPPORTED_501 })

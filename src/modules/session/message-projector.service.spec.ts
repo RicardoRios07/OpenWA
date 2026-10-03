@@ -678,14 +678,14 @@ describe('MessageProjector (inbound projection)', () => {
       it('does not archive when the insert never landed', async () => {
         const engine = makeEngine();
         engines.set(SESSION_ID, engine);
-        // A transient non-unique failure: the row has no id, so there is nothing to point at a file.
+        // A non-transient, non-unique failure: the row has no id, so there is nothing to point at a file.
         messageRepository.insert.mockRejectedValueOnce(new Error('SQLITE_BUSY'));
 
         projector.handleInboundMessage(SESSION_ID, engine, makeIncoming());
         await new Promise(resolve => setImmediate(resolve));
 
         expect(chatMediaArchive.archive).not.toHaveBeenCalled();
-        // Fail-open is unchanged: a real message is still dispatched on a transient DB fault.
+        // Fail-open is unchanged: a real message is still dispatched when the insert fails.
         expect(webhookService.dispatch).toHaveBeenCalledWith(SESSION_ID, 'message.received', expect.anything());
       });
 
@@ -1151,6 +1151,7 @@ describe('MessageProjector (inbound projection)', () => {
       expect(messageRepository.insert).toHaveBeenCalledTimes(2);
       expect(persistedHooks()).toHaveLength(0);
       expect(received()).toHaveLength(1);
+      expect(chatMediaArchive.archive).not.toHaveBeenCalled();
     });
 
     it('does not retry a duplicate: a re-fire is still dropped', async () => {

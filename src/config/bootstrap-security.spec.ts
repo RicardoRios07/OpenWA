@@ -193,7 +193,7 @@ describe('assertNoDefaultSecretsInProduction', () => {
     ).toThrow(/DATABASE_PASSWORD/);
   });
 
-  it('allows the built-in Postgres/MinIO default credentials in prod (internal-only network) (#488 review)', () => {
+  it('allows the built-in Postgres/MinIO default credentials in prod (internal-only network) (#488)', () => {
     // The bundled containers are reachable only on the internal Docker network (not published), so the
     // known 'openwa'/'minioadmin' creds the built-in flow provisions must not crash-loop a prod boot.
     expect(() =>

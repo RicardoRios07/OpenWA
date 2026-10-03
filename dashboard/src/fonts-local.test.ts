@@ -10,10 +10,32 @@ import { dirname, join } from 'node:path';
 const SRC = dirname(fileURLToPath(import.meta.url));
 const cssFiles = (readdirSync(SRC, { recursive: true }) as string[]).filter(f => f.endsWith('.css'));
 
+// An absolute or protocol-relative @import or url() target, in any of the forms CSS accepts.
+const REMOTE_LOAD =
+  /fonts\.googleapis|fonts\.gstatic|@import\s+(url\()?\s*['"]?(https?:)?\/\/|url\(\s*['"]?(https?:)?\/\//i;
+
+test('the remote-load pattern recognises every absolute and protocol-relative form', () => {
+  for (const css of [
+    "@import 'https://cdn.example.com/x.css';",
+    '@import url(//cdn.example.com/x.css);',
+    '@import url("http://cdn.example.com/x.css");',
+    '@font-face { src: url(https://cdn.example.com/x.woff2) }',
+  ]) {
+    assert.match(css, REMOTE_LOAD);
+  }
+  for (const css of [
+    "@import './x.css';",
+    'src: url(/fonts/x.woff2)',
+    "url('data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27')",
+  ]) {
+    assert.doesNotMatch(css, REMOTE_LOAD);
+  }
+});
+
 test('no stylesheet loads a remote font or stylesheet', () => {
   for (const file of cssFiles) {
     const css = readFileSync(join(SRC, file), 'utf8');
-    assert.doesNotMatch(css, /fonts\.googleapis|fonts\.gstatic|@import\s+url\(\s*['"]?https?:/, file);
+    assert.doesNotMatch(css, REMOTE_LOAD, file);
   }
 });
 

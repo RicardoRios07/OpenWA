@@ -11,6 +11,7 @@ import { queueConnectionOptions } from './redis-connection';
 import { Webhook } from '../webhook/entities/webhook.entity';
 import { WebhookDeliveryFailure } from '../webhook/entities/webhook-delivery-failure.entity';
 import { IntegrationDeliveryFailure } from '../integration/entities/integration-delivery-failure.entity';
+import { IngressEvent } from '../integration/entities/ingress-event.entity';
 import { HooksModule } from '../../core/hooks/hooks.module';
 import { PluginsModule } from '../../core/plugins/plugins.module';
 
@@ -31,8 +32,9 @@ export const WEBHOOK_QUEUE_JOB_OPTIONS = {
 @Module({
   imports: [
     // Required for WebhookProcessor to inject Repository<Webhook> + Repository<WebhookDeliveryFailure>;
-    // IngressProcessor to inject Repository<IntegrationDeliveryFailure> (both on the 'data' connection).
-    TypeOrmModule.forFeature([Webhook, WebhookDeliveryFailure, IntegrationDeliveryFailure], 'data'),
+    // IngressProcessor to inject Repository<IntegrationDeliveryFailure> + Repository<IngressEvent> (all on
+    // the 'data' connection).
+    TypeOrmModule.forFeature([Webhook, WebhookDeliveryFailure, IntegrationDeliveryFailure, IngressEvent], 'data'),
     // Required for WebhookProcessor/IngressProcessor to inject HookManager
     HooksModule,
     // Required for IngressProcessor to inject PluginLoaderService (already @Global(), imported

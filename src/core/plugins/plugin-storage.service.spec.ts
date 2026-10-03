@@ -7,6 +7,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { ConfigService } from '@nestjs/config';
 import { PluginStorageService } from './plugin-storage.service';
+import { PluginStatus, PluginType } from './plugin.interfaces';
 
 describe('PluginStorageService sandboxed per-plugin storage containment', () => {
   let dataDir: string;
@@ -277,5 +278,50 @@ describe('PluginStorageService per-plugin storage quota', () => {
     const configService = { get: (k: string) => (k === 'dataDir' ? dataDir : undefined) } as unknown as ConfigService;
     const storage = new PluginStorageService(configService).createPluginStorage('default-quota');
     await expect(storage.set('state', 'x'.repeat(1000))).resolves.toBeUndefined();
+    // One byte over 50 MiB once JSON-quoted; refused before anything is written.
+    await expect(storage.set('big', 'x'.repeat(50 * 1024 * 1024 - 1))).rejects.toThrow(
+      /storage quota exceeded.*max 52428800\)/,
+    );
+  });
+});
+
+describe('PluginStorageService unreadable registry', () => {
+  let dataDir: string;
+  let configService: ConfigService;
+
+  beforeEach(() => {
+    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'owa-pluginreg-'));
+    fs.mkdirSync(path.join(dataDir, 'plugins'));
+    configService = { get: (k: string) => (k === 'dataDir' ? dataDir : undefined) } as unknown as ConfigService;
+  });
+
+  afterEach(() => {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  const writeEntry = (service: PluginStorageService): void =>
+    service.setPluginEntry({
+      id: 'other',
+      type: PluginType.EXTENSION,
+      name: 'Other',
+      version: '1.0.0',
+      status: PluginStatus.INSTALLED,
+      config: {},
+      builtIn: false,
+      installedAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+  it.each([
+    ['fails to parse', '[{"id":"p","config":{"apiKey":"SECRET"},"enabledByOperator":true},]'],
+    ['is not an array', '{"id":"p","config":{"apiKey":"SECRET"}}'],
+  ])('moves a registry that %s aside instead of overwriting it on the next save', (_label, content) => {
+    fs.writeFileSync(path.join(dataDir, 'plugins', 'registry.json'), content);
+
+    writeEntry(new PluginStorageService(configService));
+
+    const aside = fs.readdirSync(path.join(dataDir, 'plugins')).filter(f => f.startsWith('registry.json.corrupt-'));
+    expect(aside).toHaveLength(1);
+    expect(fs.readFileSync(path.join(dataDir, 'plugins', aside[0]), 'utf-8')).toBe(content);
   });
 });

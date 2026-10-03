@@ -164,7 +164,7 @@ row), and the SDK major by the check applied to a manifest that declares `ingres
 | `sessions`              | —        | Session ids this plugin may act on, or `['*']`. Absent = `['*']`. Static — editing config can't widen it                                                                                                                                                                                             |
 | `sessionScoped`         | —        | Default `true`. A scoped plugin only sees events for the sessions it's activated for; `false` = always runs                                                                                                                                                                                          |
 | `net.allow`             | —        | Outbound-HTTP host allowlist for `ctx.net.fetch` (`host`, `host:port`, or `'*'`). Absent = deny all, unless `net.allowConfigHosts` admits a host                                                                                                                                                     |
-| `net.allowConfigHosts`  | —        | Config keys holding an https URL; each URL's host is admitted at fetch time on top of `net.allow`, so an adapter can reach an operator-configured host without `net.allow: ['*']`. Credentialed or non-https values are ignored, and the SSRF guard still applies                                    |
+| `net.allowConfigHosts`  | —        | Config keys holding an https URL; each URL's https origin (scheme, host and port) is admitted at fetch time on top of `net.allow`, so an adapter can reach an operator-configured host without `net.allow: ['*']`. Credentialed or non-https values are ignored, and the SSRF guard still applies    |
 | `sdkVersion`            | —        | Integration SDK `major` (or `major.minor`) the plugin was authored against. Absent = `'1'`. Only enforced for a manifest declaring `ingress`: a major other than `1` is refused at load                                                                                                              |
 | `minOpenWAVersion`      | -        | Oldest OpenWA release the plugin runs on (`MAJOR.MINOR.PATCH`). Install answers 400 and boot load fails when the running host is older; a malformed value is rejected. Absent or `null` = no floor                                                                                                   |
 | `ingress`               | —        | Inbound webhook routes this plugin claims (requires the `webhook:ingress` permission). Validated at load — route uniqueness, signature scheme, ack contract; see [25 — Integration Fabric](./25-integration-fabric.md)                                                                               |
@@ -348,7 +348,7 @@ export interface PluginEngineReadCapability {
 }
 
 // ctx.net — requires 'net:fetch'. Always through the host SSRF guard, scoped to the effective host
-// allowlist (manifest net.allow + the hosts of the net.allowConfigHosts config keys).
+// allowlist (manifest net.allow + the https origins of the net.allowConfigHosts config keys).
 export interface PluginNetCapability {
   fetch(url: string, init?: PluginNetRequestInit): Promise<PluginNetResponse>;
 }
@@ -768,7 +768,7 @@ Two further checks apply on top of the permission:
   way an out-of-scope session is never reachable. The `sessionId` comes from the plugin, so this is the
   security boundary; the manifest half is static (editing config can't widen it).
 - **Network allowlist.** `ctx.net.fetch` additionally requires the target host to be on the plugin's
-  **effective** allowlist: `manifest.net.allow` plus the host of every `net.allowConfigHosts` config key
+  **effective** allowlist: `manifest.net.allow` plus the https origin of every `net.allowConfigHosts` config key
   that resolves to an https URL, taken across the base config **and** every per-session override. A host
   admitted only through `allowConfigHosts` is therefore allowed while absent from `net.allow`. The request
   always passes through the SSRF guard (which blocks internal IPs even for an allowlisted host).

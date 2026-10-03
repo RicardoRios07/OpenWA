@@ -36,6 +36,7 @@
     "hoursAgo": "{{count}}시간 전",
     "hoursAgo_other": "{{count}}시간 전",
     "optional": "선택 사항",
+    "fieldTooLong": "최대 {{max}}자입니다(현재 {{count}}자).",
     "language": "언어",
     "back": "뒤로",
     "next": "다음",
@@ -122,7 +123,6 @@
       "unknownType": "알 수 없는 유형"
     },
     "you": "나",
-    "youPrefix": "나: ",
     "yesterday": "어제",
     "attachTitle": "파일 / 이미지 보내기",
     "emojiTitle": "이모지 선택",
@@ -348,7 +348,7 @@
       "configured": "{{host}} ({{type}})",
       "noProxy": "구성된 프록시 없음",
       "hasCredentials": "자격 증명이 저장되어 있지만 표시되지 않습니다. 변경하려면 전체 URL을 입력하세요.",
-      "hint": "변경 사항은 실행 중인 연결이 아니라 다음 세션 시작 시 적용됩니다. 프록시는 실제로 존재하고 연결 가능해야 합니다. 연결할 수 없는 값이면 QR이 전달되지 않고 시작 요청이 504를 반환합니다.",
+      "hint": "변경 사항은 실행 중인 연결이 아니라 다음 세션 시작 시 적용됩니다. 프록시는 실제로 존재하고 연결 가능해야 합니다. 연결할 수 없는 값이면 QR이 전달되지 않습니다. whatsapp-web.js에서는 시작 요청이 504를 반환하고, Baileys에서는 시작은 성공하지만 세션이 계속 재시도합니다.",
       "createHint": "네트워크에서 WhatsApp에 직접 연결할 수 없을 때만 필요합니다. 실제로 연결 가능한 프록시여야 합니다.",
       "invalidUrl": "유효한 http, https, socks4 또는 socks5 프록시 URL을 입력하세요.",
       "saveSuccessTitle": "프록시 저장 완료",
@@ -487,11 +487,9 @@
       "valueLabel": "필터 값"
     },
     "columns": {
-      "url": "URL",
       "events": "이벤트",
       "session": "세션",
-      "status": "상태",
-      "actions": "작업"
+      "status": "상태"
     },
     "empty": {
       "title": "설정된 웹훅이 없습니다",
@@ -671,7 +669,6 @@
       "revoke": "폐기"
     },
     "actions": {
-      "copy": "복사",
       "revoke": "폐기",
       "delete": "삭제",
       "edit": "접근 편집"
@@ -886,7 +883,7 @@
       "sslRejectUnauthorized": "SSL 인증서 확인",
       "sslRejectUnauthorizedDesc": "자체 서명되었거나 유효하지 않은 인증서를 거부합니다. 자체 서명 인증서를 사용하는 관리형 Postgres(Supabase, Heroku, Render, Railway)에서는 꺼 두세요.",
       "migrationsTitle": "데이터베이스 마이그레이션",
-      "migrationsStatus": "스키마는 TypeORM으로 자동 동기화됩니다",
+      "migrationsStatus": "대기 중인 마이그레이션은 시작 시 자동으로 적용됩니다",
       "migrationsHint": "마이그레이션은 자동으로 관리됩니다. 수동 마이그레이션은 CLI를 사용하세요."
     },
     "engine": {
@@ -909,7 +906,7 @@
     "redis": {
       "title": "Redis",
       "enable": "Redis 사용",
-      "enableDesc": "캐싱, 세션 저장, BullMQ 큐에 필요합니다",
+      "enableDesc": "캐싱, BullMQ 큐, 속도 제한 카운터, 멀티 노드 WebSocket 팬아웃에 사용됩니다",
       "useBuiltIn": "내장 Redis 컨테이너 사용",
       "builtInDesc": "OpenWA가 Redis 컨테이너를 관리합니다",
       "queueTitle": "BullMQ 큐 시스템 사용",
@@ -921,7 +918,7 @@
       "failed": "실패",
       "viewBullMq": "Bull MQ 대시보드 보기",
       "disabledTitle": "Redis 사용 안 함",
-      "disabledDesc": "캐싱, 세션 저장, BullMQ 메시지 큐를 사용하려면 Redis를 활성화하세요.",
+      "disabledDesc": "캐싱, BullMQ 메시지 큐, 속도 제한 카운터, 멀티 노드 WebSocket 팬아웃을 사용하려면 Redis를 활성화하세요.",
       "passwordOptional": "(선택 사항)",
       "bullMqUrlCopied": "Bull MQ 대시보드 URL이 복사되었습니다",
       "bullMqUrlHint": "ADMIN API 키로 열어 주세요 — 브라우저 탭은 인증할 수 없습니다."
@@ -1055,7 +1052,7 @@
       "healthFail": "상태 확인 실패",
       "healthError": "상태 확인 오류",
       "savedTitle": "설정 저장 완료",
-      "savedDesc": "변경 사항을 적용하려면 서버를 재시작해야 합니다.",
+      "savedDesc": "변경 사항은 서버를 재시작하지 않아도 적용됩니다.",
       "saveFailed": "저장 실패",
       "installed": "플러그인이 설치되었습니다",
       "installFailed": "설치 실패",

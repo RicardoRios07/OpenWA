@@ -161,28 +161,30 @@ export class WwebjsStatus {
   }
 
   async postImageStatus(media: MediaInput, options: StatusPostOptions): Promise<StatusResult> {
-    return this.postMediaStatus(media, options);
+    return this.postMediaStatus(media, options, 'image/jpeg');
   }
 
   async postVideoStatus(media: MediaInput, options: StatusPostOptions): Promise<StatusResult> {
-    return this.postMediaStatus(media, options);
+    return this.postMediaStatus(media, options, 'video/mp4');
   }
 
   async postVoiceStatus(media: MediaInput, options: StatusPostOptions): Promise<StatusResult> {
     // `sendAudioAsVoice` is what makes the bubble a voice note rather than an audio file: it becomes
     // `isPtt` inside the page. The waveform is separate — whatsapp-web.js already generates one for
     // any audio going to status, so it appears either way, but only this flag changes the bubble.
-    return this.postMediaStatus(media, options, { sendAudioAsVoice: true });
+    return this.postMediaStatus(media, options, 'audio/ogg; codecs=opus', { sendAudioAsVoice: true });
   }
 
+  /** `fallbackType` labels a URL whose host serves a generic type, which WA Web would deliver as a document. */
   private async postMediaStatus(
     media: MediaInput,
     options: StatusPostOptions,
+    fallbackType: string,
     extra?: { sendAudioAsVoice: true },
   ): Promise<StatusResult> {
     this.host.ensureReady();
     this.warnStatusRecipientsOnce(options);
-    const messageMedia = await toMessageMedia(media, this.host.config.proxy?.url);
+    const messageMedia = await toMessageMedia(media, this.host.config.proxy?.url, { fallbackType });
     // Non-idempotent: a replayed post would publish the status twice. See reportPageDeath.
     const msg = await reportPageDeath(this.host, 'postMediaStatus', () =>
       this.client().sendMessage('status@broadcast', messageMedia, {

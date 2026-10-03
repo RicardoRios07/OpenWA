@@ -158,6 +158,9 @@ function ChatComposer({
       return;
     }
 
+    // The pick replaces any staged file now, so a send while it is read cannot send the one it replaced.
+    // Not handleRemoveAttachment: bumping the read sequence would discard this read too.
+    setAttachment(null);
     if (file.type.startsWith('image/')) {
       setPreviewUrl(URL.createObjectURL(file));
     } else {

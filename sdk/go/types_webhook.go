@@ -192,11 +192,13 @@ type WebhookDeliveryFailure struct {
 	// IdempotencyKey is the key the receiver would have deduped on.
 	IdempotencyKey *string `json:"idempotencyKey,omitempty"`
 	DeliveryID     *string `json:"deliveryId,omitempty"`
-	// Attempts is the number of attempts recorded; 0 when the delivery was
-	// shed, refused or failed before sending.
+	// Attempts is the number of attempts made before giving up; 0 when the
+	// delivery was not given up after retries (oversize or unserializable
+	// payload, capacity shed, or shutdown, possibly in a retry backoff after
+	// earlier attempts were sent).
 	Attempts int `json:"attempts"`
 	// LastStatusCode is the last HTTP status when the failure was a non-2xx
-	// response; nil for a network or timeout error.
+	// response; nil for a network or timeout error, or when Attempts is 0.
 	LastStatusCode *int   `json:"lastStatusCode,omitempty"`
 	LastError      string `json:"lastError"`
 	// CreatedAt is the ISO timestamp of when the failure was first recorded.

@@ -237,7 +237,6 @@ export class WwebjsChannels {
       body: String(msg.body || ''),
       timestamp: Number(msg.timestamp),
       hasMedia: Boolean(msg.hasMedia),
-      mediaUrl: msg.mediaUrl ? String(msg.mediaUrl) : undefined,
     }));
   }
 }

@@ -216,7 +216,7 @@ func retryMiddleware(p RetryPolicy, log Logger) Middleware {
 					// the request before acting on it. A 500/502/504 can arrive
 					// after the gateway already sent the message, so replaying
 					// a POST on those would double-send. A send-pacing 429 is
-					// not transient, so it goes back to the caller.
+					// usually not transient, so it goes back to the caller.
 					retryable = retryableForMethod(req.Method, resp.StatusCode) &&
 						attempt < p.MaxRetries && !isSendPacingRefusal(resp)
 				}

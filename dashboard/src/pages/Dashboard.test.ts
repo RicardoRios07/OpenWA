@@ -6,6 +6,7 @@
 import '../test-helpers/register-hooks.ts';
 import { test, before, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { createElement } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -15,6 +16,7 @@ let webhookList: unknown[] = [];
 let sessionList: unknown[] = [];
 let stopStatus = 200;
 let sessionsStatus = 200;
+let holdWebhooks = false;
 const requested: string[] = [];
 
 function jsonResponse(data: unknown, status = 200): Response {
@@ -48,6 +50,7 @@ function installFetchStub(): void {
       );
     }
     if (path === '/api/webhooks') {
+      if (holdWebhooks) return new Promise<Response>(() => {});
       return webhooksStatus === 200
         ? Promise.resolve(jsonResponse(webhookList))
         : Promise.resolve(jsonResponse({ message: 'Insufficient permissions. Required: operator' }, webhooksStatus));
@@ -92,8 +95,10 @@ afterEach(() => {
   sessionList = [];
   stopStatus = 200;
   sessionsStatus = 200;
+  holdWebhooks = false;
   requested.length = 0;
   window.sessionStorage.setItem('openwa_user_role', 'viewer');
+  window.sessionStorage.removeItem('openwa_key_scoped');
 });
 
 function renderDashboard(): void {
@@ -145,7 +150,18 @@ test('a successful empty webhook read still counts zero', async () => {
   window.sessionStorage.setItem('openwa_user_role', 'operator');
   renderDashboard();
   await rtl.screen.findByText('Webhooks Configured');
-  await rtl.waitFor(() => assert.equal(statValue('Webhooks Configured'), '0'));
+  await rtl.waitFor(() => assert.equal(queryClient!.getQueryState(['webhooks'])?.status, 'success'));
+  assert.equal(statValue('Webhooks Configured'), '0');
+});
+
+test('a webhook read still in flight shows the placeholder, not zero webhooks', async () => {
+  holdWebhooks = true;
+  window.sessionStorage.setItem('openwa_user_role', 'operator');
+  renderDashboard();
+  await rtl.screen.findByText('Webhooks Configured');
+  await rtl.waitFor(() => assert.ok(requested.includes('/api/webhooks')));
+  assert.equal(statValue('Webhooks Configured'), statValue('Messages Today'));
+  assert.notEqual(statValue('Webhooks Configured'), '0');
 });
 
 test('a read-only key is offered no Disconnect', async () => {
@@ -243,4 +259,29 @@ test('an admin key loads the chart section', async () => {
   window.sessionStorage.setItem('openwa_user_role', 'admin');
   renderDashboard();
   await rtl.waitFor(() => assert.ok(requested.some(p => p.startsWith('/api/stats/messages'))));
+});
+
+test('a session-scoped admin key never loads the cross-session statistics', async () => {
+  // GET /stats/overview and /stats/messages refuse a key restricted to selected sessions, whatever its role.
+  window.sessionStorage.setItem('openwa_user_role', 'admin');
+  window.sessionStorage.setItem('openwa_key_scoped', 'true');
+  renderDashboard();
+  await rtl.waitFor(() => assert.ok(requested.includes('/api/sessions')));
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.ok(!requested.includes('/api/stats/overview'), 'the overview was requested');
+  assert.ok(!requested.some(p => p.startsWith('/api/stats/messages')), 'the charts asked for /stats/messages');
+});
+
+// The session table renders `status-pill ${session.status}`, so every status needs its own colour.
+test('the status pill styles every session status and nothing else', () => {
+  const entity = readFileSync(
+    new URL('../../../src/modules/session/entities/session.entity.ts', import.meta.url),
+    'utf8',
+  );
+  const block = /export enum SessionStatus \{([^}]*)\}/.exec(entity)?.[1] ?? '';
+  const statuses = [...block.matchAll(/= '([a-z_]+)'/g)].map(m => m[1]).sort();
+  assert.ok(statuses.length > 0, 'SessionStatus was not found');
+  const css = readFileSync(new URL('./Dashboard.css', import.meta.url), 'utf8');
+  const styled = [...new Set([...css.matchAll(/\.dashboard \.status-pill\.([a-z_]+)/g)].map(m => m[1]))].sort();
+  assert.deepEqual(styled, statuses);
 });

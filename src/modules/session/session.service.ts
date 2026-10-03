@@ -22,6 +22,7 @@ import {
   DataSource,
   FindManyOptions,
   FindOptionsWhere,
+  Raw,
 } from 'typeorm';
 import { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity';
 import { setTimeout } from 'node:timers/promises';
@@ -41,7 +42,11 @@ import { SessionLivenessWatchdog } from './session-liveness-watchdog.service';
 import { SessionErrorStore } from './session-error-store.service';
 import { SessionRestrictionStore } from './session-restriction-store.service';
 import { PresenceStore, type ChatPresence } from './presence-store.service';
-import { SessionEngineLifecycle, resolveReconnectConfig } from './session-engine-lifecycle.service';
+import {
+  SessionEngineLifecycle,
+  resolveMaxConcurrentSessions,
+  resolveReconnectConfig,
+} from './session-engine-lifecycle.service';
 import { SessionOwnershipService } from './session-ownership.service';
 import { paginate, ListOptions, resolveListWindow } from '../../common/utils/paginate';
 import { isTransientDbError, isUniqueViolation } from '../../common/utils/db-errors';
@@ -128,6 +133,15 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
    * after it began from a mark left over by an earlier stop, which start() clears by design.
    */
   private readonly stopRequests = new Map<string, number>();
+  /**
+   * Starts past start()'s cap check, held until they return. That check counts them with the
+   * engine's slot holders, so two starts at the last free slot cannot both pass it while their claims
+   * are awaited. hasStartCapacity() does not: a held start whose claim then fails never used a slot.
+   * getActiveSessionIds() does, so the import pre-flight sees a start waiting on its claim or in its
+   * retry pause, when the engine holds no slot for it; every start is held for that reason, capped
+   * or not.
+   */
+  private readonly startReservations = new Map<string, number>();
 
   constructor(
     @InjectRepository(Session, 'data')
@@ -262,6 +276,15 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
         this.logger.log(`Auto-start stopped at ${i} of ${sessions.length} session(s): shutting down`, {
           action: 'auto_start_aborted',
         });
+        return;
+      }
+      // Every start past the cap is refused, so going on would only log one failure per row.
+      const max = resolveMaxConcurrentSessions(this.configService);
+      if (max !== null && !this.hasStartCapacity(max)) {
+        this.logger.log(
+          `Auto-start stopped at ${i} of ${sessions.length} session(s): MAX_CONCURRENT_SESSIONS reached`,
+          { action: 'auto_start_capacity_reached', max },
+        );
         return;
       }
       const session = sessions[i];
@@ -439,24 +462,45 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
    * on the DTO rather than papered over by forcing a reconnect nobody asked for.
    */
   async updateConfig(id: string, dto: UpdateSessionConfigDto): Promise<SessionConfigResponseDto> {
-    const session = await this.findOne(id);
-    const config = { ...(session.config ?? {}) };
+    // Compare-and-swap on the stored text: the write lands only while the column still holds the blob
+    // this request merged into, so two overlapping PATCHes cannot both start from the same blob and
+    // have the later write drop the earlier one's keys. A request that lost the race reads again.
+    for (let attempt = 1; ; attempt++) {
+      // The raw text rather than the parsed entity, so the comparison is exact whatever wrote the row.
+      const row = await this.sessionRepository
+        .createQueryBuilder('session')
+        .select('session.config', 'config')
+        .where('session.id = :id', { id })
+        .getRawOne<{ config: string | null }>();
+      if (!row) {
+        throw new NotFoundException(`Session with id '${id}' not found`);
+      }
+      const stored = row.config;
+      const config = { ...((stored ? JSON.parse(stored) : null) as Record<string, unknown> | null) };
 
-    for (const key of ['autoRejectCalls', 'maxReconnectAttempts', 'reconnectBaseDelay'] as const) {
-      const value = dto[key];
-      if (value === undefined) continue;
-      if (value === null) {
-        delete config[key];
-      } else {
-        config[key] = value;
+      for (const key of ['autoRejectCalls', 'maxReconnectAttempts', 'reconnectBaseDelay'] as const) {
+        const value = dto[key];
+        if (value === undefined) continue;
+        if (value === null) {
+          delete config[key];
+        } else {
+          config[key] = value;
+        }
+      }
+
+      // update() with an explicit object rather than save() on an entity: only the config column is
+      // written, never the rest of the row from a snapshot taken before this await.
+      const { affected } = await this.sessionRepository.update(
+        { id, config: Raw(column => (stored === null ? `${column} IS NULL` : `${column} = :stored`), { stored }) },
+        { config: config as QueryDeepPartialEntity<Record<string, unknown>> },
+      );
+      if (affected !== 0) {
+        return this.projectConfig(config);
+      }
+      if (attempt >= 5) {
+        throw new ConflictException('Session config is being changed by other requests; retry');
       }
     }
-
-    // update() with an explicit object rather than save() on the loaded entity: the entity carries
-    // runtime-attached fields (lastError, restriction) that no column backs, and save() would try to
-    // write the whole row back from a snapshot taken before this await.
-    await this.sessionRepository.update(id, { config: config as QueryDeepPartialEntity<Record<string, unknown>> });
-    return this.projectConfig(config);
   }
 
   async getProxy(id: string): Promise<SessionProxyResponseDto> {
@@ -494,7 +538,8 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
     this.markStopping(id);
     try {
       if (this.ownership) await this.assertNotHeldElsewhere(id);
-      await this.engineLifecycle.delete(id);
+      // A failed row read deleted nothing: the lifecycle drops the mark, and the count goes with it.
+      await this.engineLifecycle.delete(id, { onReadFailed: () => this.uncountStopRequest(id) });
       await this.ownership?.release(id);
       this.stopRequests.delete(id);
     } catch (error) {
@@ -557,6 +602,38 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
    * the engine start refuses them a row still marked stopped when it reads it.
    */
   async start(id: string, { explicit = false }: { explicit?: boolean } = {}): Promise<Session> {
+    // At the cap, refused before the claim: the engine's own cap check runs after it, and its
+    // refusal releases the claim to no node. A row nobody holds is never adopted by a peer, while a
+    // lapsed lease left where it is gets taken over by one with room. The engine check stays the
+    // authoritative one; this only keeps a refusal off the lease. A start that passes holds its slot
+    // until it returns, so a concurrent start cannot pass on the same free slot during the claim.
+    const max = resolveMaxConcurrentSessions(this.configService);
+    if (this.ownership && max !== null) {
+      const holders = this.startSlotsInUse();
+      holders.delete(id);
+      if (holders.size >= max) {
+        // Same answer the failed claim below would give, so the cap does not mask a 404 or a 409.
+        await this.findOne(id);
+        if (await this.ownership.isHeldByOtherNode(id)) {
+          throw new ConflictException(`Session ${id} is running on another node`);
+        }
+        throw new BadRequestException(`Maximum concurrent sessions reached (${max})`);
+      }
+    }
+    // Counted per start, so a duplicate start of the same id keeps the reservation after the first returns.
+    this.startReservations.set(id, (this.startReservations.get(id) ?? 0) + 1);
+    try {
+      return await this.claimAndStart(id, explicit);
+    } finally {
+      const left = (this.startReservations.get(id) ?? 1) - 1;
+      if (left > 0) this.startReservations.set(id, left);
+      else this.startReservations.delete(id);
+    }
+  }
+
+  private async claimAndStart(id: string, explicit: boolean): Promise<Session> {
+    // Read before the claim, so a stop that lands while the claim is pending counts against this start.
+    const stopRequestsBefore = this.stopRequests.get(id);
     // Claimed before the engine is launched, never after: launching first and discovering the
     // session belongs elsewhere would already have opened a second connection to the account.
     if (this.ownership && !(await this.ownership.claim(id))) {
@@ -565,7 +642,6 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
       await this.findOne(id);
       throw new ConflictException(`Session ${id} is running on another node`);
     }
-    const stopRequestsBefore = this.stopRequests.get(id);
     let session: Session;
     try {
       session = await this.startWithTransientRetry(id, explicit, stopRequestsBefore);
@@ -603,6 +679,11 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
     explicit: boolean,
     stopRequestsBefore: number | undefined,
   ): Promise<Session> {
+    // A stop that finished during the claim answered 200 and left the claim to this start; the engine's own
+    // stop-mark check cannot tell its mark from a stale one, so the start is refused here.
+    if (this.stopRequests.get(id) !== stopRequestsBefore) {
+      throw new SessionStoppedException(`Session ${id} was stopped`);
+    }
     try {
       return await this.engineLifecycle.start(id, { explicit });
     } catch (error) {
@@ -615,13 +696,21 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
       await setTimeout(SESSION_START_RETRY_DELAY_MS);
       // Retrying would bring back a session that a stop() issued since this start began just took
       // down. A mark alone does not prove that: an earlier stop's mark survives until start() clears
-      // it, and a first attempt failing before that point would otherwise lose its retry.
-      if (this.stopRequests.get(id) !== stopRequestsBefore) throw error;
+      // it, and a first attempt failing before that point would otherwise lose its retry. Answered
+      // as the stop it yielded to, like the check above: a 503 reads as retryable, and a client that
+      // replays the start would bring the session back.
+      if (this.stopRequests.get(id) !== stopRequestsBefore) {
+        throw new SessionStoppedException(`Session ${id} was stopped`);
+      }
       // The lease may have lapsed while the first attempt ran; the retry must keep holding the
       // claim, never 409 on the session it already owns.
       if (this.ownership && !(await this.ownership.claim(id))) {
         await this.findOne(id);
         throw new ConflictException(`Session ${id} is running on another node`);
+      }
+      // Checked again: a stop that landed during the re-claim leaves the claim for claimAndStart's catch to release.
+      if (this.stopRequests.get(id) !== stopRequestsBefore) {
+        throw new SessionStoppedException(`Session ${id} was stopped`);
       }
       return this.engineLifecycle.start(id, { explicit });
     }
@@ -633,31 +722,35 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
     let session: Session;
     try {
       if (this.ownership) await this.assertNotHeldElsewhere(id);
-      // Recorded BEFORE the teardown, so the 502 SESSION_STOP_INCOMPLETE path keeps it too: a
-      // stopped session stays down across restarts and takeover until an explicit start. A failed
-      // write took nothing down, so the mark and count are undone as for a failed ownership read.
-      await this.keepDown(id).catch((error: unknown) => {
-        this.engineLifecycle.clearStopping(id);
-        this.uncountStopRequest(id);
-        throw error;
+      // Recorded once the row read succeeds and BEFORE the teardown, so the 502
+      // SESSION_STOP_INCOMPLETE path keeps it too: a stopped session stays down across restarts and
+      // takeover until an explicit start. A failed write took nothing down, so the mark and count are
+      // undone as for a failed ownership read; a failed read took nothing down either, and the
+      // lifecycle has already dropped the mark, so only the count is undone.
+      session = await this.engineLifecycle.stop(id, {
+        afterRead: () =>
+          this.keepDown(id).catch((error: unknown) => {
+            this.engineLifecycle.clearStopping(id);
+            this.uncountStopRequest(id);
+            throw error;
+          }),
+        onReadFailed: () => this.uncountStopRequest(id),
       });
-      session = await this.engineLifecycle.stop(id);
     } catch (error) {
       // Only the local 502 (SESSION_STOP_INCOMPLETE) releases: it evicted the engine and wrote
       // DISCONNECTED, and a claim left to lapse still names this node, so a peer's takeover sweep
       // would adopt the row and start the session the operator just stopped. A released claim is
       // not adopted. The foreign-node 409 keeps its claim (it is the peer's), and so does a 404.
-      if (error instanceof BadGatewayException) await this.releaseUnlessEngineActive(id);
+      if (error instanceof BadGatewayException) await this.releaseAfterTeardown(id);
       this.discardStopMarkForMissingSession(id, error);
       throw error;
     }
     // Handed back on the way out so a peer can pick it up immediately rather than waiting for the
     // lease to lapse. Stop is the deliberate end of this process's ownership — but a start() that
-    // began before this stop and is still mid-launch owns the claim now, so the same
-    // engine-liveness guard the failure paths use applies here: releasing under an in-flight start
-    // would leave a live engine on an unclaimed row that no heartbeat renews and any peer may
-    // start a second time.
-    await this.releaseUnlessEngineActive(id);
+    // is still mid-launch or still waiting on its claim owns the claim now, so the same guard the
+    // failure paths use applies here: releasing under an in-flight start would leave a live engine
+    // on an unclaimed row that no heartbeat renews and any peer may start a second time.
+    await this.releaseAfterTeardown(id);
     return session;
   }
 
@@ -666,26 +759,44 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
     try {
       const session = await this.engineLifecycle.logout(id);
       // Torn down locally on the 200 path — hand the claim back the way stop() does.
-      await this.releaseUnlessEngineActive(id);
+      await this.releaseAfterTeardown(id);
       return session;
     } catch (error) {
       // The 502-incomplete path tears the engine down, so its claim must not survive the call. A 400
       // "not started" refusal changed nothing and keeps whatever claim there is: release() also
       // clears a LAPSED foreign claim, which would take a crashed node's session out of takeover.
-      if (!(error instanceof BadRequestException)) await this.releaseUnlessEngineActive(id);
+      if (!(error instanceof BadRequestException)) await this.releaseAfterTeardown(id);
       throw error;
     }
   }
 
   async forceKill(id: string): Promise<Session> {
+    // Counted like stop(), so a start still waiting on its claim yields rather than relaunching, but
+    // only while there is an engine to kill: at once if one runs, so a start sent after the kill keeps
+    // its place, otherwise once the kill finds one. A kill that took nothing down (a 400, a 404 or a
+    // failed row read) is uncounted, so it cannot retire a start that is still waiting on its claim.
+    let counted = false;
+    const count = (): void => {
+      if (counted) return;
+      counted = true;
+      this.countStopRequest(id);
+    };
+    const uncount = (): void => {
+      if (!counted) return;
+      counted = false;
+      this.uncountStopRequest(id);
+    };
+    if (this.engines.get(id)) count();
     try {
       // The engine kill records the stop itself, once it has an engine to kill.
-      const session = await this.engineLifecycle.forceKill(id);
-      await this.releaseUnlessEngineActive(id);
+      const session = await this.engineLifecycle.forceKill(id, { onReadFailed: uncount, onEngineFound: count });
+      await this.releaseAfterTeardown(id);
       return session;
     } catch (error) {
-      // Same 400 rule as logout(): a "not started" refusal took nothing down.
-      if (!(error instanceof BadRequestException)) await this.releaseUnlessEngineActive(id);
+      // The 400 "not started" also keeps its claim as in logout(). The 502 did evict the engine: it
+      // stays counted and releases.
+      if (error instanceof BadRequestException) uncount();
+      if (!(error instanceof BadRequestException)) await this.releaseAfterTeardown(id);
       throw error;
     }
   }
@@ -720,8 +831,12 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
   }
 
   private markStopping(id: string): void {
-    this.stopRequests.set(id, (this.stopRequests.get(id) ?? 0) + 1);
+    this.countStopRequest(id);
     this.engineLifecycle.markStopping(id);
+  }
+
+  private countStopRequest(id: string): void {
+    this.stopRequests.set(id, (this.stopRequests.get(id) ?? 0) + 1);
   }
 
   /**
@@ -734,6 +849,17 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
     const remaining = (this.stopRequests.get(id) ?? 0) - 1;
     if (remaining > 0) this.stopRequests.set(id, remaining);
     else this.stopRequests.delete(id);
+  }
+
+  /**
+   * The claim release for an operator teardown (stop, logout, force-kill). A start() of the same id
+   * that is still waiting on its claim owns it, though nothing runs here yet for the engine check to
+   * see: releasing would leave the engine it is about to launch on a row no node holds. That start
+   * hands the claim back itself if it yields or fails.
+   */
+  private async releaseAfterTeardown(id: string): Promise<void> {
+    if (this.startReservations.has(id)) return;
+    await this.releaseUnlessEngineActive(id);
   }
 
   /** Hand the claim back unless something still runs here (engine, in-flight start, pending reconnect). */
@@ -1069,20 +1195,34 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
 
   /**
    * Ids of every session with a live engine — including ones mid-initialization (their engine is not
-   * in `engines` yet but will register when start() completes). The infra import pre-flight uses this
-   * to refuse a full-replace restore that would orphan a running engine.
+   * in `engines` yet but will register when start() completes) and ones waiting to relaunch after a
+   * failed reconnect (their timer registers one), plus starts still waiting on their claim or in their
+   * transient retry pause. The infra import pre-flight uses this to refuse a full-replace restore that
+   * would orphan a running engine.
    */
   getActiveSessionIds(): string[] {
-    return this.engines.activeIds();
+    return [...this.startSlotsInUse()];
+  }
+
+  /** Whether this node has a MAX_CONCURRENT_SESSIONS slot free, counted exactly as the engine's cap check counts it. */
+  hasStartCapacity(max: number): boolean {
+    return this.engineLifecycle.startSlotHolders().size < max;
+  }
+
+  private startSlotsInUse(): Set<string> {
+    return new Set([...this.engineLifecycle.startSlotHolders(), ...this.startReservations.keys()]);
   }
 
   /**
    * Stop engines for session ids whose DB row is about to be replaced by an infra import.
-   * Owned by the lifecycle service; see SessionEngineLifecycle.stopOrphanEngines().
+   * Owned by the lifecycle service; see SessionEngineLifecycle.stopOrphanEngines(). Counted as a
+   * stop too, so a start waiting on its claim or in its retry pause launches nothing: the engine's
+   * stop mark alone reads as stale to the start that follows.
    */
   async stopOrphanEngines(
     sessionIds: string[],
   ): Promise<{ stopped: string[]; notRunning: string[]; failed: string[] }> {
+    for (const id of sessionIds) this.countStopRequest(id);
     return this.engineLifecycle.stopOrphanEngines(sessionIds);
   }
 

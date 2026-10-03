@@ -17,7 +17,11 @@ from typing import Any, Mapping
 
 
 class OpenWAError(Exception):
-    """Base class for every error raised by the SDK."""
+    """Base class for errors the SDK raises for an API response or a timeout.
+
+    Connection failures surface as ``httpx.TransportError``; an invalid argument (a missing
+    ``base_url`` or ``api_key``, an empty or dot path segment) raises ``ValueError``.
+    """
 
 
 class OpenWAApiError(OpenWAError):
@@ -101,8 +105,11 @@ class OpenWARateLimitError(OpenWAApiError):
     The global rate limiter's 429 lifts when its window expires (seconds for the
     per-second tier, up to an hour for the hourly tier by default), and
     ``retry_after_seconds`` carries its Retry-After header. A 429 with code
-    "SEND_PACING_LIMITED" is not transient: do not retry it before
-    ``retry_after_seconds``, which then comes from the body and can be hours.
+    "SEND_PACING_LIMITED" is usually not transient: do not retry it before
+    ``retry_after_seconds``, which then comes from the body: a few seconds
+    when only sends still in flight caused it, the rest of the failure
+    breaker's cooldown (SEND_PACING_BREAKER_COOLDOWN_MS, 15 minutes by
+    default) after a run of send failures, otherwise up to the next UTC day.
     """
 
 

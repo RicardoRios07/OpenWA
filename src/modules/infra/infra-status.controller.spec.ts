@@ -55,7 +55,9 @@ describe('InfraStatusController.getStatus DB health (active SELECT 1 probe, not 
 describe('InfraStatusController.getStatus queue job counts', () => {
   function buildStatusController(opts: { queueEnabled: boolean; queue?: { getJobCounts: jest.Mock } }) {
     const configService = {
-      get: (key: string, def?: unknown) => (key === 'queue.enabled' ? opts.queueEnabled : def),
+      // engine.type=baileys skips the wa-web-version registry fetch (no network in unit tests).
+      get: (key: string, def?: unknown) =>
+        key === 'queue.enabled' ? opts.queueEnabled : key === 'engine.type' ? 'baileys' : def,
     };
     const dataSource = { isInitialized: true, query: jest.fn().mockResolvedValue([{ '1': 1 }]) } as unknown;
     const engineFactory = { create: jest.fn() };

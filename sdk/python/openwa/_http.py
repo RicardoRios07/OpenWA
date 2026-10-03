@@ -35,7 +35,15 @@ def quote_segment(segment: Any) -> str:
 
 
 def build_url(base_url: str, path: str, query: Mapping[str, Any] | None = None) -> str:
-    """Build a URL, serializing query params and skipping ``None`` values."""
+    """Build a URL, serializing query params and skipping ``None`` values.
+
+    Raises :class:`ValueError` for a path that does not begin with ``/``, as the
+    JavaScript, Go and Java clients do: an absolute URL such as
+    ``https://example.net/x`` would replace the client's base host and carry the
+    API key there.
+    """
+    if not path.startswith("/"):
+        raise ValueError(f"OpenWA: path must begin with '/': {path!r}")
     url = f"{base_url.rstrip('/')}{path}"
     if not query:
         return url

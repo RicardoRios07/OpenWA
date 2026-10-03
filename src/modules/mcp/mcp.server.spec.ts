@@ -2,7 +2,14 @@ import { BadRequestException, ForbiddenException, UnauthorizedException } from '
 import { UnresolvedApiKeyException } from '../auth/auth.service';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
-import { auditMcpAuthFailure, createIpThrottle, createKeyGate, mountMcpServer, resolveMcpReadOnly } from './mcp.server';
+import {
+  auditMcpAuthFailure,
+  createIpThrottle,
+  createKeyGate,
+  mountMcpServer,
+  resolveMcpReadOnly,
+  type MountMcpServerOptions,
+} from './mcp.server';
 import { KeyRateLimiter } from './mcp-rate-limit';
 import { AuditAction } from '../audit/entities/audit-log.entity';
 import type { AnyToolDescriptor } from '../../core/agent-tools/tool-descriptor';
@@ -216,14 +223,6 @@ describe('auditMcpAuthFailure (MCP auth-failure audit trail, mirrors REST ApiKey
   it('does nothing when auditService is unavailable (mount without DI)', () => {
     expect(() => auditMcpAuthFailure(undefined, new UnauthorizedException('x'), reqContext)).not.toThrow();
   });
-
-  it('success path never reaches the catch (helper only invoked on thrown auth errors)', () => {
-    // Structural: auditMcpAuthFailure is only called from the tool handler's catch block, so a
-    // successful invokeTool returns a result without auditing. Assert the helper is a no-op on
-    // a non-401/403 throw to confirm the success-equivalent (no auth failure) is not audited.
-    auditMcpAuthFailure(auditService, new BadRequestException('not an auth failure'), reqContext);
-    expect(auditService.logWarn).not.toHaveBeenCalled();
-  });
 });
 
 describe('createKeyGate (every MCP request needs a valid key)', () => {
@@ -372,9 +371,10 @@ describe('mountMcpServer (raw-Express request-handling path)', () => {
     authService: { validateApiKey: jest.Mock; hasPermission: jest.Mock };
     auditService: { logWarn: jest.Mock };
     adapter: { post: jest.Mock; get: jest.Mock; delete: jest.Mock };
+    registry: { list: jest.Mock };
   }
 
-  const mount = (): Harness => {
+  const mount = (options: MountMcpServerOptions = { readOnly: false }): Harness => {
     const tool = {
       name: 'MessageSendText',
       description: 'Send a text message (session-scoped write tool)',
@@ -400,13 +400,13 @@ describe('mountMcpServer (raw-Express request-handling path)', () => {
       authService as unknown as AuthService,
       new KeyRateLimiter(1000, 60_000),
       new KeyRateLimiter(1000, 60_000),
-      { readOnly: false },
+      options,
       auditService as unknown as AuditService,
     );
     // adapter.post received [express.json(...), createIpThrottle(...), mcpHandler]; the tests drive
     // the terminal handler directly with a pre-parsed body, as the file's middleware harness does.
     const routeHandler = routeHandlers[routeHandlers.length - 1] as Harness['routeHandler'];
-    return { routeHandler, tool, authService, auditService, adapter };
+    return { routeHandler, tool, authService, auditService, adapter, registry };
   };
 
   type ResMock = { on: jest.Mock; status: jest.Mock; json: jest.Mock; headersSent: boolean };
@@ -512,6 +512,22 @@ describe('mountMcpServer (raw-Express request-handling path)', () => {
     expect(res.status).not.toHaveBeenCalled(); // no error fallback
   });
 
+  it('builds a read-only catalogue on every request when MCP_READONLY is unset', async () => {
+    const prev = process.env.MCP_READONLY;
+    delete process.env.MCP_READONLY;
+    try {
+      const h = mount({});
+      expect(h.registry.list).toHaveBeenCalledWith({ readOnly: true });
+      h.registry.list.mockClear();
+      await post(h, { jsonrpc: '2.0', id: 1, method: 'tools/list' }, { 'x-api-key': 'good-key' });
+      expect(h.registry.list).toHaveBeenCalledTimes(1);
+      expect(h.registry.list).toHaveBeenLastCalledWith({ readOnly: true });
+    } finally {
+      if (prev === undefined) delete process.env.MCP_READONLY;
+      else process.env.MCP_READONLY = prev;
+    }
+  });
+
   it('logs the tool count once at mount, not on every request', async () => {
     const info = jest.spyOn(LoggerService.prototype, 'log');
     try {
@@ -557,6 +573,21 @@ describe('mountMcpServer (raw-Express request-handling path)', () => {
     );
   });
 
+  it('runs the tool on a valid key without writing an auth-failure record', async () => {
+    const h = mount();
+    h.authService.validateApiKey.mockResolvedValue({ id: 'k1' });
+    await post(h, { jsonrpc: '2.0', id: 1 }, { 'x-api-key': 'good-key' });
+
+    const result = (await toolCallback()(
+      { sessionId: 's1', to: '123', text: 'hi' },
+      { requestInfo: { headers: { 'x-api-key': 'good-key' } } },
+    )) as { isError?: boolean };
+
+    expect(result.isError).toBeFalsy();
+    expect(h.tool.handler).toHaveBeenCalledTimes(1);
+    expect(h.auditService.logWarn).not.toHaveBeenCalled();
+  });
+
   // One parser for every surface that reads Authorization, so a header the REST guard accepts is
   // accepted here too and one it refuses is refused here too.
   it.each([
@@ -575,6 +606,39 @@ describe('mountMcpServer (raw-Express request-handling path)', () => {
 
     if (expected === undefined) expect(h.authService.validateApiKey).not.toHaveBeenCalled();
     else expect(h.authService.validateApiKey).toHaveBeenCalledWith(expected, undefined, 's1');
+  });
+
+  // Node keeps only the first of two Authorization headers, while the SDK's web Request joins them,
+  // so the tool call must reuse the key the gate validated rather than parse its own header copy.
+  it('uses the key the gate validated when the SDK headers carry a joined Authorization', async () => {
+    const h = mount();
+    h.authService.validateApiKey.mockResolvedValue({ id: 'k1' });
+    const gate = (h.adapter.post.mock.calls[0] as unknown[])[3] as (
+      req: Request,
+      res: Response,
+      next: () => void,
+    ) => Promise<void>;
+    const req = {
+      method: 'POST',
+      path: '/mcp',
+      headers: { authorization: 'Bearer good-key' },
+      body: { jsonrpc: '2.0', id: 1 },
+      socket: { remoteAddress: '203.0.113.7' },
+    } as unknown as Request & { auth?: unknown };
+    const next = jest.fn();
+    await gate(req, makeRes() as unknown as Response, next);
+    expect(next).toHaveBeenCalledTimes(1);
+    await h.routeHandler(req, makeRes() as unknown as Response);
+
+    const result = (await toolCallback()(
+      { sessionId: 's1', to: '123', text: 'hi' },
+      { authInfo: req.auth, requestInfo: { headers: { authorization: 'Bearer good-key, Bearer other-key' } } },
+    )) as { isError?: boolean };
+
+    expect(result.isError).toBeFalsy();
+    expect(h.authService.validateApiKey).toHaveBeenLastCalledWith('good-key', undefined, 's1');
+    expect(h.tool.handler).toHaveBeenCalledTimes(1);
+    expect(h.auditService.logWarn).not.toHaveBeenCalled();
   });
 
   it('fails closed on a session-scoped tool call without sessionId (guard fires before the auth lookup)', async () => {

@@ -52,7 +52,7 @@ describe('pickSettledWebVersion', () => {
 
   it('skips builds newer than the settle window even if currentVersion is fresh', () => {
     const versions = [entry('2.3000.FRESH-alpha', 60 * 60 * 1000, 60 * 86_400_000)]; // 1h old
-    expect(pickSettledWebVersion(versions, now, '2.3000.FRESH-alpha')).toBe('2.3000.FRESH-alpha'); // none settled → fallback
+    expect(pickSettledWebVersion(versions, now, '2.3000.FALLBACK-alpha')).toBe('2.3000.FALLBACK-alpha'); // none settled → fallback
   });
 
   it('picks the NEWEST qualifying (settled) build', () => {
@@ -61,7 +61,7 @@ describe('pickSettledWebVersion', () => {
       entry('2.3000.NEW-alpha', settled() + 60_000, 50 * 86_400_000), // just past settle, newest qualifying
       entry('2.3000.MID-alpha', 5 * 86_400_000, 50 * 86_400_000),
     ];
-    expect(pickSettledWebVersion(versions, now, '2.3000.NEW-alpha')).toBe('2.3000.NEW-alpha');
+    expect(pickSettledWebVersion(versions, now, '2.3000.FALLBACK-alpha')).toBe('2.3000.NEW-alpha');
   });
 
   it('skips beta builds', () => {

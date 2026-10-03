@@ -6,7 +6,7 @@ import { MessageProjector } from '../session/message-projector.service';
 import { SendTextMessageDto, SendMediaMessageDto, SendAudioMessageDto, MessageResponseDto } from './dto';
 import { SendTemplateMessageDto } from './dto/send-template.dto';
 import { ReplyMessageDto, ClickButtonDto } from './dto/message-actions.dto';
-import { Message, MessageDirection } from './entities/message.entity';
+import { Message } from './entities/message.entity';
 import { HookManager, applySendingGate } from '../../core/hooks';
 import { SendPacingService } from './send-pacing.service';
 import { createLogger } from '../../common/services/logger.service';
@@ -491,18 +491,6 @@ export class MessageService implements PluginMessagePort {
     return [...new Set([value, ...expanded])];
   }
 
-  /**
-   * Save incoming message (called from session webhook dispatch)
-   */
-  async saveIncomingMessage(sessionId: string, data: Partial<Message>): Promise<Message> {
-    const message = this.messageRepository.create({
-      ...data,
-      sessionId,
-      direction: MessageDirection.INCOMING,
-    });
-    return this.messageRepository.save(message);
-  }
-
   // ========== Phase 3: Reactions ==========
 
   async reactToMessage(sessionId: string, dto: { chatId: string; messageId: string; emoji: string }): Promise<void> {
@@ -518,11 +506,11 @@ export class MessageService implements PluginMessagePort {
   /**
    * Read a message's media: the archived file when one exists, else the inline copy persisted on
    * the message row. The fallback is what makes media sent BY the account retrievable here — the
-   * archive is written only on the inbound path, but outbound rows carry the payload inline: the
-   * REST send persists it, wwjs downloads it for the own-send echo, and Baileys downloads it for
-   * phone-composed fromMe messages (the Baileys API-send echo alone carries only a marker, which
-   * the REST-persisted copy covers) — #1165. It also serves an inbound message whose archived file
-   * was purged by retention while the inline copy lives on.
+   * archive covers outbound media only when CHAT_MEDIA_ARCHIVE_OUTBOUND=true, but outbound rows
+   * carry the payload inline: the REST send persists it, wwjs downloads it for the own-send echo, and
+   * Baileys downloads it for phone-composed fromMe messages (the Baileys API-send echo alone carries
+   * only a marker, which the REST-persisted copy covers) — #1165. It also serves an inbound message
+   * whose archived file was purged by retention while the inline copy lives on.
    *
    * Unlike status media (only ever an image, a video or a voice note), chat media includes documents
    * a sender chose the type of — so the declared mimetype is echoed back only when it is inert, and the caller
@@ -705,9 +693,10 @@ export class MessageService implements PluginMessagePort {
     // Every gated sender's DTO addresses its destination as `chatId` except forward, which uses
     // `toChatId` — without the fallback a forward skipped the cold-reachout gate entirely, while
     // its persisted row still drained the cold budget. Edit carries a chatId too; the edited
-    // message's own row already makes that chat warm, so the gate is a no-op there.
+    // message's own row already makes that chat warm, so the cold rule is a no-op there. An edit
+    // writes no row, so it is judged against the caps without being held as a new send.
     const target = input as { chatId?: string; toChatId?: string };
-    await this.pacing.assertSendAllowed(sessionId, target.chatId ?? target.toChatId);
+    await this.pacing.assertSendAllowed(sessionId, target.chatId ?? target.toChatId, { hold: false });
     return applySendingGate(this.hookManager, sessionId, type, input, 'MessageService');
   }
 

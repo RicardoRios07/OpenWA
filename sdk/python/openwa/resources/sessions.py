@@ -120,7 +120,13 @@ class SessionsResource:
         return self._http.request("POST", f"/api/sessions/{quote_segment(session_id)}/logout")
 
     def force_kill(self, session_id: str) -> SessionResponse:
-        """Terminate a stuck session immediately."""
+        """Terminate a stuck session immediately.
+
+        Raises with HTTP 502 and ``code`` ``SESSION_FORCE_KILL_INCOMPLETE`` when the session was
+        stopped locally but the force-destroy threw or timed out, so the engine process may still be
+        running; the status is settled to disconnected and a retry answers 400 because no engine is
+        left to kill. Restart the node to reap a leaked process.
+        """
         return self._http.request("POST", f"/api/sessions/{quote_segment(session_id)}/force-kill")
 
     def get_qr_code(self, session_id: str) -> QrCodeResponse:

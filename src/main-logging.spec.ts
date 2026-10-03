@@ -13,3 +13,15 @@ describe('bootstrap logging', () => {
     expect(source).not.toMatch(/\bconsole\.\w+\(/);
   });
 });
+
+describe('API_KEY_PEPPER advisory', () => {
+  // A pepper set on an install with keys locks every key out, the admin key included, so the advisory
+  // must not tell the operator to enable it and then re-issue keys through the API.
+  it('names the lockout and the recovery instead of a re-issue', () => {
+    const source = readFileSync(resolve(__dirname, 'main.ts'), 'utf8');
+
+    expect(source).not.toMatch(/re-issue keys|re-hashes keys/);
+    expect(source).toContain('before the first boot');
+    expect(source).toContain('until the previous pepper is restored');
+  });
+});

@@ -6,6 +6,7 @@ module.exports = class UncloneableLogPlugin {
     await new Promise(resolve =>
       setTimeout(() => {
         ctx.logger.warn('timer log', { body: () => 'not cloneable' });
+        ctx.logger.error('timer error', new Error('upstream down'), { body: () => 'not cloneable' });
         resolve();
       }, 0),
     );

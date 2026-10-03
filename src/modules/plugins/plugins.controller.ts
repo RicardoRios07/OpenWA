@@ -70,6 +70,7 @@ export class PluginsController {
   @ApiResponse({ status: 201, description: 'Plugin installed', type: PluginDto })
   @ApiResponse({ status: 400, description: 'Invalid package' })
   @ApiResponse({ status: 409, description: 'Plugin already installed' })
+  @ApiResponse({ status: 413, description: 'Package exceeds the 5 MB upload limit' })
   install(@UploadedFile() file: { buffer?: Buffer }): PluginDto {
     return this.pluginsService.install(file);
   }
@@ -133,6 +134,7 @@ export class PluginsController {
   @RequireUnscopedKey()
   @ApiOperation({ summary: 'Update plugin configuration' })
   @ApiResponse({ status: 200, description: 'Plugin configuration updated', type: PluginActionResponseDto })
+  @ApiResponse({ status: 400, description: 'Validation failed, or the body carries a field the DTO does not declare.' })
   @ApiResponse({ status: 404, description: 'Plugin not found' })
   updateConfig(@Param('id') id: string, @Body() configDto: PluginConfigDto): { success: boolean; message: string } {
     return this.pluginsService.updateConfig(id, configDto.config);
@@ -164,7 +166,7 @@ export class PluginsController {
   @RequireRole(ApiKeyRole.ADMIN)
   @ApiOperation({ summary: 'Set a plugin config override for a specific session (empty = clear it)' })
   @ApiResponse({ status: 200, description: 'Per-session plugin configuration updated', type: PluginActionResponseDto })
-  @ApiResponse({ status: 400, description: 'Plugin is global (not session-scoped)' })
+  @ApiResponse({ status: 400, description: 'Plugin is global (not session-scoped), or the body failed validation' })
   @ApiResponse({ status: 404, description: 'Plugin not found' })
   updateSessionConfig(
     @Param('id') id: string,
@@ -179,7 +181,7 @@ export class PluginsController {
   @RequireUnscopedKey()
   @ApiOperation({ summary: "Set which sessions a session-scoped plugin is activated for (['*'] = all)" })
   @ApiResponse({ status: 200, description: 'Plugin session activation updated', type: PluginDto })
-  @ApiResponse({ status: 400, description: 'Plugin is global (not session-scoped)' })
+  @ApiResponse({ status: 400, description: 'Plugin is global (not session-scoped), or the body failed validation' })
   @ApiResponse({
     status: 403,
     description:

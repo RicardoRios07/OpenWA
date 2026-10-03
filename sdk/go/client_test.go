@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1732,5 +1733,18 @@ func TestRequestLogRedactsBaseURLPassword(t *testing.T) {
 	_, _ = c.Health.Check(context.Background())
 	if got := lg.text.String(); !strings.Contains(got, "openwa retrying request") || strings.Contains(got, "s3cret") {
 		t.Errorf("retry log = %q, want the retry logged without the password", got)
+	}
+}
+
+// A Do path that already carries a query string keeps it; the query values are appended with "&"
+// rather than a second "?", which the server would read as part of the first value.
+func TestDoPathWithQueryAppendsQueryValues(t *testing.T) {
+	rt := &recordTransport{status: 200, body: `[]`}
+	c := newTestClient(t, rt)
+	if err := c.Do(context.Background(), "GET", "/api/sessions?limit=5", url.Values{"name": {"x"}}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := rt.lastReq.URL.RawQuery; got != "limit=5&name=x" {
+		t.Errorf("query = %q, want %q", got, "limit=5&name=x")
 	}
 }

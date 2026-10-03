@@ -32,7 +32,12 @@ import {
   HeadBucketCommand,
   ListObjectsV2Command,
 } from '@aws-sdk/client-s3';
-import { DEFAULT_S3_REPROBE_INTERVAL_MS, S3_DELETE_TIMEOUT_MS, StorageService } from './storage.service';
+import {
+  DEFAULT_S3_REPROBE_INTERVAL_MS,
+  S3_DELETE_TIMEOUT_MS,
+  S3_PROBE_TIMEOUT_MS,
+  StorageService,
+} from './storage.service';
 
 const ENV_KEYS = [
   'S3_ENDPOINT',
@@ -392,6 +397,49 @@ describe('StorageService S3 re-probe and recovery', () => {
     }
   });
 
+  it('settles a bucket probe that never answers, so a later re-probe can still recover', async () => {
+    // A probe that never settled stayed parked in the in-flight slot: every later re-probe and the
+    // status and migration endpoints awaited it, and S3 never came back without a restart.
+    let stalled: 'head' | 'create' | 'none' = 'head';
+    mockSend.mockImplementation((cmd: unknown, options?: { abortSignal?: AbortSignal }) => {
+      if (stalled === 'create' && cmd instanceof HeadBucketCommand) return Promise.reject(s3Error('NotFound'));
+      const stalls =
+        (stalled === 'head' && cmd instanceof HeadBucketCommand) ||
+        (stalled === 'create' && cmd instanceof CreateBucketCommand);
+      if (!stalls) return Promise.resolve({});
+      return new Promise((_resolve, reject) => {
+        options?.abortSignal?.addEventListener('abort', () => reject(s3Error('AbortError')));
+      });
+    });
+    // AbortSignal.timeout runs on Node's internal timers, which fake timers do not reach.
+    const timeout = jest.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), ms);
+      return controller.signal;
+    });
+    const settleWithin = async (probe: Promise<boolean>): Promise<boolean | 'pending'> => {
+      await jest.advanceTimersByTimeAsync(S3_PROBE_TIMEOUT_MS);
+      return Promise.race([probe, Promise.resolve('pending' as const)]);
+    };
+    try {
+      const svc = new StorageService(makeConfig());
+      warnSpyOf(svc);
+      await flush();
+      await jest.advanceTimersByTimeAsync(S3_PROBE_TIMEOUT_MS); // the boot probe gives up too
+      expect(svc.isS3Available()).toBe(false);
+
+      await expect(settleWithin(svc.refreshS3Availability())).resolves.toBe(false);
+
+      stalled = 'create';
+      await expect(settleWithin(svc.refreshS3Availability())).resolves.toBe(false);
+
+      stalled = 'none';
+      await expect(settleWithin(svc.refreshS3Availability())).resolves.toBe(true);
+    } finally {
+      timeout.mockRestore();
+    }
+  });
+
   it('listFiles unions S3 objects with the local fallback dir (each key once)', async () => {
     mockSend.mockImplementation((cmd: unknown) => {
       if (cmd instanceof ListObjectsV2Command) {
@@ -437,6 +485,8 @@ describe('StorageService S3 re-probe and recovery', () => {
       { Contents: [{ Key: 'media/p1.bin' }], NextContinuationToken: 'tok' },
       { Contents: [{ Key: 'media/p2.bin' }] },
     ];
+    const listCommand = ListObjectsV2Command as unknown as jest.Mock;
+    listCommand.mockClear();
     mockSend.mockImplementation((cmd: unknown) => {
       if (cmd instanceof ListObjectsV2Command) return Promise.resolve(pages.shift() ?? {});
       return Promise.resolve({});
@@ -445,10 +495,15 @@ describe('StorageService S3 re-probe and recovery', () => {
     await flush();
 
     fs.writeFileSync(path.join(localPath, 'local.bin'), 'x');
-    fs.writeFileSync(path.join(localPath, 'p2.bin'), 'stale-copy');
+    // The stale local copy shares a page-1 key, so p2.bin can only come from following the token.
+    fs.writeFileSync(path.join(localPath, 'p1.bin'), 'stale-copy');
 
     const seen: string[] = [];
     for await (const file of svc.iterateFiles()) seen.push(file);
     expect(seen.sort()).toEqual(['local.bin', 'p1.bin', 'p2.bin']);
+    expect(listCommand.mock.calls.map(([input]: [{ ContinuationToken?: string }]) => input.ContinuationToken)).toEqual([
+      undefined,
+      'tok',
+    ]);
   });
 });

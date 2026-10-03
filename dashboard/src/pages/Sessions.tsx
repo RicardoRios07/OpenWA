@@ -70,7 +70,10 @@ export function Sessions() {
   const { t } = useTranslation();
   useDocumentTitle(t('sessions.title'));
   const toast = useToast();
-  const { canWrite, isAdmin } = useRole();
+  const { canWrite, isAdmin, scoped } = useRole();
+  // Creating a session and changing its proxy are refused for any session-scoped key, whatever its role.
+  const canCreate = canWrite && !scoped;
+  const canEditProxy = isAdmin && !scoped;
   const queryClient = useQueryClient();
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
@@ -87,6 +90,8 @@ export function Sessions() {
   const [killConfirmId, setKillConfirmId] = useState<string | null>(null);
   const [unlinkConfirmId, setUnlinkConfirmId] = useState<string | null>(null);
   const [unlinkingId, setUnlinkingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [killingId, setKillingId] = useState<string | null>(null);
   // Sessions whose Start or Reconnect click is still being handled. A start can wait seconds before its
   // engine exists, and a second click in that window is refused as "already starting" while the first
   // one proceeds.
@@ -94,7 +99,9 @@ export function Sessions() {
   // Session config is not on the list payload — the API never returns the config column, so it is
   // fetched per session when the detail modal opens rather than N times to render the list.
   const [sessionConfig, setSessionConfig] = useState<SessionConfig | null>(null);
-  const [savingConfig, setSavingConfig] = useState(false);
+  // Ids of sessions with an auto-reject save in flight. Per session, because Close stays enabled while
+  // one saves: the modal reopened for that session must stay locked, and another session's must not.
+  const [savingConfigIds, setSavingConfigIds] = useState<ReadonlySet<string>>(new Set());
   const [proxySession, setProxySession] = useState<Session | null>(null);
   const [proxyInfo, setProxyInfo] = useState<SessionProxy | null>(null);
   const [proxyLoading, setProxyLoading] = useState(false);
@@ -220,9 +227,16 @@ export function Sessions() {
       // setState would otherwise drop a row). Then invalidate the prefix so stats/groups/chats refresh.
       rowWrites.current += 1;
       updateSessions(current => [...current, newSession]);
+      // A refused earlier attempt left its message in the banner; nothing re-reads the list after a
+      // create, so clear it here. A failed list read keeps its banner.
+      if (!listReadFailed.current) setError(null);
       void invalidateSessionQueries(queryClient, queryKeys.sessions);
     },
-    onFailed: msg => setError(msg),
+    // The hook's toast reports the refusal; a failed list read keeps the banner, since it still
+    // describes the list on screen.
+    onFailed: msg => {
+      if (!listReadFailed.current) setError(msg);
+    },
   });
 
   // Reconcile the LOCAL view with an authoritative Session response. The previous handlers discarded
@@ -347,6 +361,10 @@ export function Sessions() {
   }, [isConnected, error, fetchSessions]);
 
   const handleDelete = async (id: string) => {
+    // The confirm modal stays open until the request answers, so a double-click would delete twice and
+    // report the second, failed delete after the first one's success.
+    if (deletingId) return;
+    setDeletingId(id);
     const session = sessions.find(s => s.id === id);
     try {
       await sessionApi.delete(id);
@@ -365,6 +383,7 @@ export function Sessions() {
       console.error('Failed to delete:', err);
       toast.error(t('sessions.delete.errorTitle'), msg);
     } finally {
+      setDeletingId(null);
       setDeleteConfirmId(null);
     }
   };
@@ -380,6 +399,7 @@ export function Sessions() {
       // from before the start, which now includes `engineLoaded` and would leave the card offering
       // Start for a session that just acquired an engine.
       const started = await sessionApi.start(id);
+      rowWrites.current += 1;
       updateSessions(current => replaceSession(current, started));
       // A 200 does not promise the engine is still there when the list is read back: a concurrent stop
       // retires the start, and an engine can fail right after answering. Skip the modal when the re-read
@@ -456,7 +476,7 @@ export function Sessions() {
     const id = selectedSessionId;
     const previous = sessionConfig;
     setSessionConfig({ ...sessionConfig, autoRejectCalls: next });
-    setSavingConfig(true);
+    setSavingConfigIds(current => new Set(current).add(id));
     try {
       const saved = await sessionApi.updateConfig(id, { autoRejectCalls: next });
       if (configSessionId.current === id) setSessionConfig(saved);
@@ -466,7 +486,11 @@ export function Sessions() {
       if (configSessionId.current === id) setSessionConfig(previous);
       toast.error(t('sessions.details.autoRejectCalls'), err instanceof Error ? err.message : t('common.unknownError'));
     } finally {
-      setSavingConfig(false);
+      setSavingConfigIds(current => {
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
     }
   };
 
@@ -560,6 +584,9 @@ export function Sessions() {
   };
 
   const handleForceKill = async (id: string) => {
+    // Same double-click guard as handleDelete.
+    if (killingId) return;
+    setKillingId(id);
     try {
       const updated = await sessionApi.forceKill(id);
       await applySessionResponse(updated);
@@ -576,6 +603,7 @@ export function Sessions() {
       );
       await fetchSessions();
     } finally {
+      setKillingId(null);
       setKillConfirmId(null);
     }
   };
@@ -648,7 +676,7 @@ export function Sessions() {
         title={t('sessions.title')}
         subtitle={t('sessions.subtitle')}
         actions={
-          canWrite && (
+          canCreate && (
             <button className="btn-primary" onClick={() => setShowCreateModal(true)}>
               <Plus size={18} />
               {t('sessions.newSession')}
@@ -749,7 +777,7 @@ export function Sessions() {
           )}
           {nameIssues.includes('duplicate') && <p className="input-error">{t('sessions.create.duplicate')}</p>}
           {/* The API refuses proxyUrl from a key below ADMIN, so the section is not offered. */}
-          {isAdmin && (
+          {canEditProxy && (
             <div className="proxy-form-section">
               <label className="detail-toggle-row" htmlFor="create-use-proxy">
                 <span>{t('sessions.proxy.enabled')}</span>
@@ -979,7 +1007,7 @@ export function Sessions() {
                       type="checkbox"
                       aria-labelledby="auto-reject-calls-label"
                       checked={sessionConfig.autoRejectCalls}
-                      disabled={!canWrite || savingConfig}
+                      disabled={!canWrite || savingConfigIds.has(selectedSession.id)}
                       onChange={e => void handleAutoRejectToggle(e.target.checked)}
                     />
                     <span className="toggle-slider"></span>
@@ -1008,7 +1036,7 @@ export function Sessions() {
               <button className="btn-secondary" onClick={() => setProxySession(null)}>
                 {t('common.cancel')}
               </button>
-              {isAdmin && !proxyLoadFailed && (
+              {canEditProxy && !proxyLoadFailed && (
                 <button
                   className="btn-primary"
                   onClick={() => void handleProxySave()}
@@ -1058,7 +1086,7 @@ export function Sessions() {
                       type="checkbox"
                       aria-labelledby="proxy-enabled-label"
                       checked={proxyEnabled}
-                      disabled={!isAdmin || proxySaving}
+                      disabled={!canEditProxy || proxySaving}
                       onChange={e => setProxyEnabled(e.target.checked)}
                     />
                     <span className="toggle-slider"></span>
@@ -1080,7 +1108,7 @@ export function Sessions() {
                           : t('sessions.proxy.urlPlaceholder')
                       }
                       value={proxyUrl}
-                      disabled={!isAdmin || proxySaving}
+                      disabled={!canEditProxy || proxySaving}
                       onChange={e => {
                         setProxyUrl(e.target.value);
                         setProxyUrlError(null);
@@ -1108,7 +1136,11 @@ export function Sessions() {
               <button className="btn-secondary" onClick={() => setDeleteConfirmId(null)}>
                 {t('common.cancel')}
               </button>
-              <button className="btn-danger" onClick={() => handleDelete(deleteConfirmId)}>
+              <button
+                className="btn-danger"
+                onClick={() => handleDelete(deleteConfirmId)}
+                disabled={deletingId !== null}
+              >
                 {t('common.delete')}
               </button>
             </>
@@ -1137,7 +1169,11 @@ export function Sessions() {
               <button className="btn-secondary" onClick={() => setKillConfirmId(null)}>
                 {t('common.cancel')}
               </button>
-              <button className="btn-danger" onClick={() => handleForceKill(killConfirmId)}>
+              <button
+                className="btn-danger"
+                onClick={() => handleForceKill(killConfirmId)}
+                disabled={killingId !== null}
+              >
                 {t('sessions.forceKill.confirm')}
               </button>
             </>

@@ -135,6 +135,7 @@ jest.mock('@whiskeysockets/baileys', () => ({
   ),
   // Identity passthrough by default; individual tests may override to simulate unwrapping.
   normalizeMessageContent: jest.fn((c: unknown) => c),
+  extractMessageContent: jest.fn((c: unknown) => c),
   // The pinned protocol node targets this JID; exported from the real module's WABinary surface.
   S_WHATSAPP_NET: '@s.whatsapp.net',
   ALL_WA_PATCH_NAMES: ['critical_block', 'critical_unblock_low', 'regular_high', 'regular_low', 'regular'],
@@ -151,7 +152,7 @@ jest.mock('@whiskeysockets/baileys', () => ({
 }));
 
 import { HttpsProxyAgent } from 'https-proxy-agent';
-import { NotFoundException, BadRequestException } from '@nestjs/common';
+import { NotFoundException, BadRequestException, ForbiddenException, HttpException } from '@nestjs/common';
 import { SocksProxyAgent } from 'socks-proxy-agent';
 import { Dispatcher1Wrapper } from 'undici';
 import { BaileysAdapter, createProxyAgent } from './baileys.adapter';
@@ -175,6 +176,7 @@ import { ChatLabelsUnsupportedError } from '../../common/errors/chat-labels-unsu
 import { Boom } from '@hapi/boom';
 import { EngineTransportError } from '../../common/errors/engine-transport.error';
 import { LidNotMappedError } from '../../common/errors/lid-not-mapped.error';
+import { countsTowardSendBreaker, sentNothing } from '../../modules/message/send-pacing.service';
 import { loadRemoteMediaBuffer } from '../../common/media/load-remote-media';
 import * as safeLinkPreview from './safe-link-preview';
 
@@ -187,9 +189,16 @@ const fakeStore = {
 };
 
 // clearAllMocks keeps implementations: a store lookup one test taught to return a message must not
-// make a later fromMe delivery look like a re-delivered one (processInboundMessage drops those).
+// make a later fromMe delivery look like a re-delivered one (processInboundMessage drops those). The
+// same goes for the shared sock and library mocks: a lid mapping, a group listing or a content type one
+// describe set would otherwise leak into whichever describe runs next, so test order would decide results.
 beforeEach(() => {
   fakeStore.getMessage.mockReset();
+  fakeSock.signalRepository = undefined;
+  fakeSock.groupFetchAllParticipating.mockReset();
+  const baileys = jest.requireMock<Record<string, jest.Mock>>('@whiskeysockets/baileys');
+  baileys.getContentType.mockReset().mockReturnValue('conversation');
+  baileys.normalizeMessageContent.mockReset().mockImplementation((c: unknown) => c);
 });
 
 /** A fresh async-iterable stream of the given chunks (the shape `downloadMediaMessage('stream')` returns). */
@@ -1811,6 +1820,24 @@ describe('BaileysAdapter messaging', () => {
       safeSendOptions(),
     );
     expect(res).toEqual({ id: 'OUT1', timestamp: 1700000001 });
+  });
+
+  // The socket a send is handed to can be torn down while the library is still writing to it: a
+  // stop or logout then answers 409 like any other interrupted send, not a raw Connection Closed 500.
+  it('a send whose socket is torn down while it is in flight reads as not ready', async () => {
+    const adapter = await readyAdapter();
+    fakeSock.sendMessage.mockImplementation(() => {
+      (adapter as unknown as { sock: unknown }).sock = null;
+      return Promise.reject(new Error('Connection Closed'));
+    });
+    await expect(adapter.sendTextMessage('628111@s.whatsapp.net', 'hello')).rejects.toBeInstanceOf(EngineNotReadyError);
+  });
+
+  it('a send that fails on a socket still in place rethrows the failure as is', async () => {
+    const adapter = await readyAdapter();
+    const failure = new Error('not-acceptable');
+    fakeSock.sendMessage.mockRejectedValue(failure);
+    await expect(adapter.sendTextMessage('628111@s.whatsapp.net', 'hello')).rejects.toBe(failure);
   });
 
   /** An adapter for a session started behind a proxy, which every fetch it makes must leave through. */
@@ -6212,7 +6239,7 @@ describe('BaileysAdapter profile + block', () => {
     const adapter = await ready();
     expect(await adapter.getProfilePicture('628111@s.whatsapp.net')).toBe('https://pps/x.jpg');
     expect(fakeSock.profilePictureUrl).toHaveBeenCalledWith('628111@s.whatsapp.net', 'image');
-    fakeSock.profilePictureUrl.mockRejectedValueOnce(new Error('no picture'));
+    fakeSock.profilePictureUrl.mockRejectedValueOnce(new Boom('item-not-found', { data: 404 }));
     expect(await adapter.getProfilePicture('628222@s.whatsapp.net')).toBeNull();
   });
 
@@ -6343,7 +6370,7 @@ describe('BaileysAdapter contact + chat reads', () => {
 
     it("asks Baileys' own mapping when the table has none, and records what it learns", async () => {
       const lidStore = makeLidStore();
-      const getPNForLID = jest.fn().mockResolvedValue('628222@s.whatsapp.net');
+      const getPNForLID = jest.fn().mockResolvedValue('628222:0@s.whatsapp.net');
       fakeSock.signalRepository = { lidMapping: { getLIDForPN: jest.fn(), getPNForLID } };
       const adapter = await readyWith(lidStore);
       expect(await adapter.resolveContactPhone('111@lid')).toBe('628222');
@@ -6918,6 +6945,26 @@ describe('BaileysAdapter status posting', () => {
     );
   });
 
+  // A URL posted without a declared type carries the octet-stream placeholder, so the fetched
+  // Content-Type labels the bytes, and a host that serves a generic one falls back to the kind's default.
+  it.each([
+    ['image', 'image/png', 'image/png'],
+    ['image', 'application/octet-stream', 'image/jpeg'],
+    ['video', '', 'video/mp4'],
+  ] as const)('a %s status from a URL served as %j goes out as %s', async (kind, served, expected) => {
+    (loadRemoteMediaBuffer as jest.Mock).mockResolvedValue({ data: Buffer.from([9]), mimetype: served });
+    fakeSock.sendMessage.mockResolvedValue({ key: { id: 'URL1' }, messageTimestamp: 1719600000 });
+    const adapter = await ready();
+    const media = { mimetype: 'application/octet-stream', data: 'https://cdn.example/m' };
+    const options = { recipients: ['628111@c.us'] };
+    await (kind === 'image' ? adapter.postImageStatus(media, options) : adapter.postVideoStatus(media, options));
+    expect(fakeSock.sendMessage).toHaveBeenCalledWith(
+      'status@broadcast',
+      expect.objectContaining({ [kind]: Buffer.from([9]), mimetype: expected }),
+      expect.anything(),
+    );
+  });
+
   it('postStatus rejects an absent/empty recipients list with a 400 (Baileys posts to exactly the allow-list)', async () => {
     const adapter = await ready();
     await expect(adapter.postTextStatus('hello', {})).rejects.toBeInstanceOf(BadRequestException);
@@ -6943,6 +6990,30 @@ describe('BaileysAdapter status posting', () => {
       { statusJidList: ['628111@s.whatsapp.net'] },
     );
     expect(fakeStore.getMessage).not.toHaveBeenCalled();
+  });
+
+  // A status send torn down by a stop or logout while the library is still writing it answers 409,
+  // as a chat send does, rather than a raw Connection Closed 500 that the send breaker would count.
+  it('a status post or revoke whose socket is torn down in flight reads as not ready', async () => {
+    fakeSock.sendMessage.mockResolvedValueOnce({ key: { id: 'STATUS1' } });
+    const adapter = await ready();
+    await adapter.postTextStatus('hello', { recipients: ['628111@c.us'] });
+    fakeSock.sendMessage.mockImplementation(() => {
+      (adapter as unknown as { sock: unknown }).sock = null;
+      return Promise.reject(new Error('Connection Closed'));
+    });
+    await expect(adapter.deleteStatus('STATUS1')).rejects.toBeInstanceOf(EngineNotReadyError);
+    (adapter as unknown as { sock: unknown }).sock = fakeSock;
+    await expect(adapter.postTextStatus('hello', { recipients: ['628111@c.us'] })).rejects.toBeInstanceOf(
+      EngineNotReadyError,
+    );
+  });
+
+  it('a status post that fails on a socket still in place rethrows the failure as is', async () => {
+    const adapter = await ready();
+    const failure = new Error('not-acceptable');
+    fakeSock.sendMessage.mockRejectedValue(failure);
+    await expect(adapter.postTextStatus('hello', { recipients: ['628111@c.us'] })).rejects.toBe(failure);
   });
 });
 
@@ -7280,6 +7351,30 @@ describe('BaileysAdapter catalog (#905)', () => {
     fakeSock.getCatalog.mockResolvedValue({ products: [baileysProduct({ imageUrls: {} })], nextPageCursor: undefined });
 
     await expect(adapter.sendProduct('628111@s.whatsapp.net', 'p1')).rejects.toThrow(BadRequestException);
+    expect(fakeSock.sendMessage).not.toHaveBeenCalled();
+  });
+
+  // The breaker measures WhatsApp refusing this account's sends; a catalog read it refused is not one.
+  it('sendProduct answers 403 for a refused catalog lookup without feeding the send breaker', async () => {
+    const adapter = await ready();
+    fakeSock.getCatalog.mockRejectedValue(new Boom('refused', { data: 403 }));
+
+    const error: unknown = await adapter.sendProduct('628111@s.whatsapp.net', 'p1').catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ForbiddenException);
+    expect(countsTowardSendBreaker(error)).toBe(false);
+    expect(fakeSock.sendMessage).not.toHaveBeenCalled();
+  });
+
+  // The message was never handed to WhatsApp, so a paced send gives its admission back.
+  it('sendProduct answers 503 as nothing sent when the catalog lookup times out', async () => {
+    const adapter = await ready();
+    fakeSock.getCatalog.mockRejectedValue(new Boom('timed out', { data: 408 }));
+
+    const error: unknown = await adapter.sendProduct('628111@s.whatsapp.net', 'p1').catch((e: unknown) => e);
+
+    expect((error as HttpException).getStatus()).toBe(503);
+    expect(sentNothing(error)).toBe(true);
     expect(fakeSock.sendMessage).not.toHaveBeenCalled();
   });
 });

@@ -38,6 +38,7 @@
     "hoursAgo_other": "Il y a {{count}} heures",
     "hoursAgo_many": "Il y a {{count}} heures",
     "optional": "optionnel",
+    "fieldTooLong": "Limité à {{max}} caractères ({{count}} actuellement).",
     "language": "Langue",
     "back": "Retour",
     "next": "Suivant",
@@ -125,7 +126,6 @@
       "unknownType": "Type inconnu"
     },
     "you": "Vous",
-    "youPrefix": "Vous : ",
     "yesterday": "Hier",
     "attachTitle": "Envoyer un fichier / une image",
     "emojiTitle": "Choisir un emoji",
@@ -353,7 +353,7 @@
       "configured": "{{host}} ({{type}})",
       "noProxy": "Aucun proxy configuré",
       "hasCredentials": "Les identifiants sont enregistrés mais ne sont pas affichés. Saisissez une URL complète pour les modifier.",
-      "hint": "Les modifications s'appliquent au prochain démarrage de la session, pas à une connexion en cours. Le proxy doit être réel et joignable : une valeur injoignable bloque l'envoi du QR code et le démarrage renvoie 504.",
+      "hint": "Les modifications s'appliquent au prochain démarrage de la session, pas à une connexion en cours. Le proxy doit être réel et joignable : une valeur injoignable bloque l'envoi du QR code. Avec whatsapp-web.js, le démarrage renvoie 504 ; avec Baileys, le démarrage réussit et la session continue de réessayer.",
       "createHint": "Nécessaire uniquement si votre réseau ne peut pas joindre WhatsApp directement. Doit être un proxy réel et joignable.",
       "invalidUrl": "Saisissez une URL de proxy http, https, socks4 ou socks5 valide.",
       "saveSuccessTitle": "Proxy enregistré",
@@ -493,11 +493,9 @@
       "valueLabel": "Valeur de filtre"
     },
     "columns": {
-      "url": "URL",
       "events": "Événements",
       "session": "Session",
-      "status": "Statut",
-      "actions": "Actions"
+      "status": "Statut"
     },
     "empty": {
       "title": "Aucun webhook configuré",
@@ -677,7 +675,6 @@
       "revoke": "Révoquer"
     },
     "actions": {
-      "copy": "Copier",
       "revoke": "Révoquer",
       "delete": "Supprimer",
       "edit": "Modifier l'accès"
@@ -892,7 +889,7 @@
       "sslRejectUnauthorized": "Vérifier le certificat SSL",
       "sslRejectUnauthorizedDesc": "Rejeter les certificats auto-signés ou non valides. Désactivez cette option pour les bases Postgres gérées avec des certificats auto-signés (Supabase, Heroku, Render, Railway).",
       "migrationsTitle": "Migrations de base de données",
-      "migrationsStatus": "Le schéma est auto-synchronisé avec TypeORM",
+      "migrationsStatus": "Les migrations en attente sont appliquées automatiquement au démarrage",
       "migrationsHint": "Les migrations sont gérées automatiquement. Utilisez la CLI pour les migrations manuelles."
     },
     "engine": {
@@ -915,7 +912,7 @@
     "redis": {
       "title": "Redis",
       "enable": "Activer Redis",
-      "enableDesc": "Requis pour le cache, le stockage des sessions et les files d'attente BullMQ",
+      "enableDesc": "Utilisé pour le cache, les files d'attente BullMQ, les compteurs de limitation de débit et la diffusion WebSocket multi-nœuds",
       "useBuiltIn": "Utiliser le conteneur Redis intégré",
       "builtInDesc": "OpenWA gérera un conteneur Redis pour vous",
       "queueTitle": "Activer le système de file d'attente BullMQ",
@@ -927,7 +924,7 @@
       "failed": "Échoué",
       "viewBullMq": "Voir le tableau de bord Bull MQ",
       "disabledTitle": "Redis est désactivé",
-      "disabledDesc": "Activez Redis pour le cache, le stockage des sessions et les files d'attente de messages BullMQ.",
+      "disabledDesc": "Activez Redis pour le cache, les files d'attente de messages BullMQ, les compteurs de limitation de débit et la diffusion WebSocket multi-nœuds.",
       "passwordOptional": "(optionnel)",
       "bullMqUrlCopied": "URL du tableau de bord Bull MQ copiée",
       "bullMqUrlHint": "Ouvrez-le avec une clé d'API ADMIN — un onglet de navigateur ne peut pas s'authentifier."
@@ -1061,7 +1058,7 @@
       "healthFail": "Bilan de santé échoué",
       "healthError": "Erreur lors du bilan de santé",
       "savedTitle": "Configuration enregistrée",
-      "savedDesc": "Redémarrage du serveur requis pour appliquer les modifications.",
+      "savedDesc": "Les modifications prennent effet sans redémarrage du serveur.",
       "saveFailed": "Échec de l'enregistrement",
       "installed": "Plugin installé",
       "installFailed": "Échec de l'installation",

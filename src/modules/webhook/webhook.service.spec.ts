@@ -377,12 +377,38 @@ describe('WebhookService', () => {
     it('should update only provided fields', async () => {
       const webhook = createMockWebhook();
       (repository.findOne as jest.Mock).mockResolvedValue(webhook);
-      (repository.save as jest.Mock).mockImplementation(w => Promise.resolve(w));
+      (repository.update as jest.Mock).mockImplementation((_where, patch: Partial<Webhook>) => {
+        Object.assign(webhook, patch);
+        return Promise.resolve({ affected: 1 });
+      });
 
       const result = await service.update('sess-1', 'wh-uuid-1', { url: 'https://new-url.com/hook' });
 
       expect(result.url).toBe('https://new-url.com/hook');
       expect(result.events).toEqual(['message.received']); // unchanged
+    });
+
+    it('writes only the fields the request carries, scoped to the row as it exists now', async () => {
+      const webhook = createMockWebhook();
+      (repository.findOne as jest.Mock).mockResolvedValue(webhook);
+      (repository.update as jest.Mock).mockResolvedValue({ affected: 1 });
+
+      await service.update('sess-1', 'wh-uuid-1', { active: false, secret: '' });
+
+      expect(repository.update).toHaveBeenCalledWith(
+        { id: 'wh-uuid-1', sessionId: 'sess-1' },
+        { active: false, secret: null },
+      );
+      expect(repository.save).not.toHaveBeenCalled();
+    });
+
+    it('answers 404 instead of re-creating a webhook deleted while the update was in flight', async () => {
+      const webhook = createMockWebhook();
+      (repository.findOne as jest.Mock).mockResolvedValue(webhook);
+      (repository.update as jest.Mock).mockResolvedValue({ affected: 0 });
+
+      await expect(service.update('sess-1', 'wh-uuid-1', { active: false })).rejects.toThrow(NotFoundException);
+      expect(repository.save).not.toHaveBeenCalled();
     });
 
     it('rejects a URL carrying userinfo on update and leaves the stored URL unchanged', async () => {
@@ -393,7 +419,7 @@ describe('WebhookService', () => {
         service.update('sess-1', 'wh-uuid-1', { url: 'https://user:pass@evil.example/hook' }),
       ).rejects.toMatchObject({ status: 400 });
       expect(webhook.url).toBe('https://example.com/webhook');
-      expect(repository.save).not.toHaveBeenCalled();
+      expect(repository.update).not.toHaveBeenCalled();
     });
 
     describe('with the SSRF guard on', () => {
@@ -407,15 +433,14 @@ describe('WebhookService', () => {
       it('saves an edit that re-sends an unchanged URL the guard would now refuse', async () => {
         const webhook = createMockWebhook({ url: 'https://169.254.169.254/hook' });
         (repository.findOne as jest.Mock).mockResolvedValue(webhook);
-        (repository.save as jest.Mock).mockImplementation(w => Promise.resolve(w));
+        (repository.update as jest.Mock).mockResolvedValue({ affected: 1 });
 
-        const result = await service.update('sess-1', 'wh-uuid-1', {
+        await service.update('sess-1', 'wh-uuid-1', {
           url: 'https://169.254.169.254/hook',
           active: false,
         });
 
-        expect(result.active).toBe(false);
-        expect(repository.save).toHaveBeenCalledWith(expect.objectContaining({ active: false }));
+        expect(repository.update).toHaveBeenCalledWith({ id: 'wh-uuid-1', sessionId: 'sess-1' }, { active: false });
       });
 
       it('still refuses a changed URL the guard blocks', async () => {
@@ -426,7 +451,7 @@ describe('WebhookService', () => {
           service.update('sess-1', 'wh-uuid-1', { url: 'https://169.254.169.254/hook', active: false }),
         ).rejects.toMatchObject({ status: 400 });
         expect(webhook.url).toBe('https://example.com/webhook');
-        expect(repository.save).not.toHaveBeenCalled();
+        expect(repository.update).not.toHaveBeenCalled();
       });
     });
   });

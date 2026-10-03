@@ -212,9 +212,10 @@ func (s *MessagesService) BatchStatus(ctx context.Context, sessionID, batchID st
 	return &out, nil
 }
 
-// CancelBatch cancels a running batch. Requires an OPERATOR-level key.
-func (s *MessagesService) CancelBatch(ctx context.Context, sessionID, batchID string) (*BatchStatusResponse, error) {
-	var out BatchStatusResponse
+// CancelBatch cancels a running batch. Requires an OPERATOR-level key. The reply
+// carries no per-recipient results; call BatchStatus for those.
+func (s *MessagesService) CancelBatch(ctx context.Context, sessionID, batchID string) (*BatchCancelResponse, error) {
+	var out BatchCancelResponse
 	path := s.base(sessionID) + "/batch/" + pathEscape(batchID) + "/cancel"
 	err := s.client.do(ctx, "POST", path, nil, nil, &out)
 	if err != nil {

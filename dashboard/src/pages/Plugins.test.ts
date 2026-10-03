@@ -43,6 +43,9 @@ let putGate: Promise<void> | undefined;
 let pluginOverride: Record<string, unknown> = {};
 let catalogReply: () => Promise<Response> = () => Promise.resolve(jsonResponse([]));
 let catalogReads = 0;
+// Further installed plugins listed after PLUGIN, and a gate a POST /disable waits for before answering.
+let extraPlugins: Record<string, unknown>[] = [];
+let disableGate: Promise<void> | undefined;
 
 function installFetchStub(): void {
   globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -50,8 +53,12 @@ function installFetchStub(): void {
     const path = url.replace(/^https?:\/\/[^/]+/, '');
     const method = init?.method ?? 'GET';
     if (method === 'GET' && path === '/api/plugins') {
-      return Promise.resolve(jsonResponse([{ ...PLUGIN, sessionConfig, ...pluginOverride }]));
+      return Promise.resolve(jsonResponse([{ ...PLUGIN, sessionConfig, ...pluginOverride }, ...extraPlugins]));
     }
+    if (method === 'POST' && path.endsWith('/disable')) {
+      return (disableGate ?? Promise.resolve()).then(() => jsonResponse({ success: true, message: 'Disabled' }));
+    }
+    if (method === 'GET' && path.endsWith('/health')) return Promise.resolve(jsonResponse({ healthy: true }));
     if (method === 'GET' && path === '/api/plugins/catalog') {
       catalogReads++;
       return catalogReply();
@@ -114,6 +121,8 @@ afterEach(() => {
   pluginOverride = {};
   catalogReply = () => Promise.resolve(jsonResponse([]));
   catalogReads = 0;
+  extraPlugins = [];
+  disableGate = undefined;
   rtl.cleanup();
   queryClient?.clear();
   queryClient = undefined;
@@ -147,7 +156,7 @@ test('a per-session override the server rejects reports the failure, not "Saved"
   fireEvent.click(await screen.findByRole('button', { name: 'Save override' }));
 
   await screen.findByText(REJECTION);
-  assert.equal(screen.queryByText('Configuration Saved'), null);
+  assert.equal(screen.queryByText('Configuration Saved') === null, true);
 });
 
 test('clearing an override shows the Global values, so the next save does not pin the cleared ones back', async () => {
@@ -204,7 +213,7 @@ test('a catalog prefetch that fails after the Catalog tab opened shows the error
   failCatalog();
   const message = await screen.findByText(/catalog unreachable/);
   assert.ok(rtl.within(message).getByRole('button', { name: 'Refresh' }));
-  assert.equal(screen.queryByText('No plugins in the catalog.'), null);
+  assert.equal(screen.queryByText('No plugins in the catalog.') === null, true);
 });
 
 test('uninstalling a plugin reloads the catalog, whose installed flags it changed', async () => {
@@ -243,9 +252,46 @@ test('a config schema without properties opens the config modal and the Sessions
   pluginOverride = { configSchema: { type: 'object' } };
   renderPlugins();
   fireEvent.click(await screen.findByTitle('Configure'));
-  assert.equal(screen.queryByRole('button', { name: 'Save Configuration' }), null);
+  assert.equal(screen.queryByRole('button', { name: 'Save Configuration' }) === null, true);
   fireEvent.click(await screen.findByRole('button', { name: 'Sessions' }));
   // No declared field means nothing to override per session.
   await screen.findByText('Run for');
-  assert.equal(screen.queryByRole('combobox', { name: 'Select a session…' }), null);
+  assert.equal(screen.queryByRole('combobox', { name: 'Select a session…' }) === null, true);
+});
+
+test('a fractional value in a bounded number field does not block the override save', async () => {
+  const { screen, fireEvent, waitFor } = rtl;
+  pluginOverride = {
+    config: { threshold: 0.7 },
+    configSchema: { type: 'object', properties: { threshold: { type: 'number', title: 'Threshold', min: 0, max: 1 } } },
+  };
+  putReply = { success: true };
+  await openSessionOverride('Main');
+  const field = await screen.findByLabelText<HTMLInputElement>('Threshold');
+  assert.equal(field.value, '0.7');
+  fireEvent.change(field, { target: { value: '0.5' } });
+
+  fireEvent.click(screen.getByRole('button', { name: 'Save override' }));
+  await waitFor(() => assert.equal(putBodies.length, 1));
+  assert.deepEqual(putBodies, [{ config: { threshold: 0.5 } }]);
+});
+
+test("another plugin's action settling first keeps a pending plugin's buttons disabled", async () => {
+  const { screen, fireEvent, within } = rtl;
+  extraPlugins = [{ ...PLUGIN, id: 'echo', name: 'Echo', configSchema: undefined, sessionScoped: false }];
+  let releaseDisable!: () => void;
+  disableGate = new Promise(resolve => (releaseDisable = resolve));
+  renderPlugins();
+  await rtl.waitFor(() => assert.equal(document.querySelectorAll('.plugin-card').length, 2));
+  const [greeter, echo] = Array.from(document.querySelectorAll<HTMLElement>('.plugin-card'));
+  const greeterToggle = within(greeter).getByRole<HTMLButtonElement>('button', { name: 'Disable' });
+
+  fireEvent.click(greeterToggle);
+  assert.equal(greeterToggle.disabled, true);
+  fireEvent.click(within(echo).getByTitle('Health Check'));
+  await screen.findByText('Health Check Passed');
+  assert.equal(greeterToggle.disabled, true);
+  assert.equal(within(greeter).getByTitle<HTMLButtonElement>('Uninstall').disabled, true);
+
+  releaseDisable();
 });

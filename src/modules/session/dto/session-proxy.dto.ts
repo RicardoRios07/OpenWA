@@ -55,9 +55,11 @@ export class UpdateSessionProxyDto {
     description:
       'Per-session egress proxy URL (http/https/socks4/socks5; credentialed form allowed). Send ' +
       '`null` to clear the proxy. Must be a real, reachable proxy — an unreachable value blocks the ' +
-      'WhatsApp WebSocket and session start times out (~30s).',
+      'WhatsApp WebSocket (no QR is delivered). On whatsapp-web.js the session start then times out ' +
+      '(~30s); on Baileys the start succeeds and the session keeps retrying the connection.',
     type: String,
     nullable: true,
+    maxLength: 255,
     example: 'http://user:pass@proxy.example.com:8080',
   })
   @IsOptional()

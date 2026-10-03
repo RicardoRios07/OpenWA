@@ -17,7 +17,9 @@ import { executableLines } from './workflow-lines';
  * This locks the invariant structurally: every gate command (npm/npx lines) in ci.yml's lint and
  * test jobs must also run in release.yml's lint and test jobs (the workflow header and the check:audit step comment both state
  * the invariant; this spec makes it enforced). The release jobs may run MORE
- * (its lint also carries the audit gate); only the subset direction is asserted.
+ * (its lint also carries the audit gate); only the subset direction is asserted. The dashboard,
+ * scripts-smoke and chart jobs run `cd dashboard && …`, shellcheck, scripts and helm rather than
+ * bare npm/npx lines, so for them every whole `run` step is compared instead.
  */
 
 const workflowDir = path.join(__dirname, '..', '..', '.github', 'workflows');
@@ -25,17 +27,25 @@ const workflowDir = path.join(__dirname, '..', '..', '.github', 'workflows');
 type Step = { run?: string };
 type Workflow = { jobs?: Record<string, { steps?: Step[] }> };
 
-const gateCommands = (file: string, job: string): string[] => {
+const jobSteps = (file: string, job: string): Step[] => {
   const workflow = yaml.load(fs.readFileSync(path.join(workflowDir, file), 'utf8')) as Workflow;
   const steps = workflow.jobs?.[job]?.steps ?? [];
   if (steps.length === 0) throw new Error(`${file} has no "${job}" job: the parity spec drifted`);
-  return steps.flatMap(step =>
+  return steps;
+};
+
+const gateCommands = (file: string, job: string): string[] =>
+  jobSteps(file, job).flatMap(step =>
     executableLines(step.run ?? '')
       .split('\n')
       .map(line => line.trim())
       .filter(line => /^npx |^npm /.test(line)),
   );
-};
+
+const runSteps = (file: string, job: string): string[] =>
+  jobSteps(file, job)
+    .filter(step => step.run !== undefined)
+    .map(step => executableLines(step.run ?? '').trim());
 
 describe('release gate parity (the tag path runs every branch gate)', () => {
   it.each(['lint', 'test', 'test-postgres'])('%s: every ci.yml gate command also runs in release.yml', job => {
@@ -46,6 +56,14 @@ describe('release gate parity (the tag path runs every branch gate)', () => {
     expect(ci.length).toBeGreaterThanOrEqual(4);
     expect(release.length).toBeGreaterThanOrEqual(4);
     expect(ci.filter(command => !release.includes(command))).toEqual([]);
+  });
+
+  it.each(['dashboard', 'scripts-smoke', 'chart'])('%s: every ci.yml run step also runs in release.yml', job => {
+    const ci = runSteps('ci.yml', job);
+    const release = runSteps('release.yml', job);
+    expect(ci.length).toBeGreaterThanOrEqual(4);
+    expect(release.length).toBeGreaterThanOrEqual(4);
+    expect(ci.filter(step => !release.includes(step))).toEqual([]);
   });
 
   it('the two gates this spec was born from still run on the tag path', () => {

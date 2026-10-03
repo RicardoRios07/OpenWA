@@ -12,11 +12,15 @@ pip install rmyndharis-openwa
 
 Requires Python 3.9+. The importable module is `openwa`.
 
-This README describes `main`. The 0.5.0 release lacks `sessions.get_proxy`,
+This README describes `main`. The 0.5.0 release lacks, among other additions, `sessions.get_proxy`,
 `sessions.update_proxy`, `messages.click_button`, `verify_webhook_signature`, the `WebhookDelivery`
 type, the `.code`, `.retry_after_seconds` and `.headers` error attributes, the `name` key of
-`ListSessionsQuery` and the refusal of an empty, `.` or `..` id; they ship with the next SDK
-release. See [the SDK overview](../README.md#coverage).
+`ListSessionsQuery`, the `after` and `inlineMedia` keys of `ListMessagesQuery`, the `archived`,
+`pinned`, `muted` and `muteExpiration` keys of `ChatSummary`, the `order` and `product` keys of
+`ChatHistoryMessage`, the refusal of an empty, `.` or `..` id and the `ValueError` that
+`client.request` raises for a path that does not begin with `/` (0.5.0 resolves `api/health`
+against the base URL); they ship with the next SDK release. See
+[the SDK overview](../README.md#coverage).
 
 ## Usage
 
@@ -33,6 +37,8 @@ client = OpenWAClient(
 session = client.sessions.create({"name": "my-session"})
 client.sessions.start(session["id"])
 
+# Link the account before sending: scan sessions.get_qr_code or use sessions.request_pairing_code,
+# then wait for status "ready". An unlinked session answers the send with 409.
 result = client.messages.send_text(session["id"], {
     "chatId": "628123456789@c.us",
     "text": "Hello from the OpenWA Python SDK!",
@@ -82,13 +88,15 @@ timeout raises `OpenWATimeoutError`. 503 is transient, but a catalog 503 can per
 WhatsApp may never answer that query, so bound any retry. A 429 from the global rate limiter
 lifts when its window expires (seconds for the per-second tier, up to an hour for the hourly
 tier by default), and `.retry_after_seconds` carries its `Retry-After` header. A 429 whose
-`.code` is `"SEND_PACING_LIMITED"` is not transient: do not retry it before
-`.retry_after_seconds`, which then comes from the body and can be hours. Every API error also
-exposes the response `.headers`. A 503 does not prove a write was never carried out: the engine
-answers it when WhatsApp did not confirm in time, and the change may still have been applied, so
-re-read the state before repeating it. In a routed deployment a forward that fails before reaching
-the owner node answers 503, one that fails after the request reached it answers 502 or 504, and a
-503 from the owner itself is relayed unchanged.
+`.code` is `"SEND_PACING_LIMITED"` is usually not transient: do not retry it before
+`.retry_after_seconds`, which then comes from the body: a few seconds when only sends still in
+flight caused it, the rest of the failure breaker's cooldown (`SEND_PACING_BREAKER_COOLDOWN_MS`,
+15 minutes by default) after a run of send failures, otherwise up to the next UTC day. Every API
+error also exposes the response `.headers`. A 503 does not prove a write was never carried out: the
+engine answers it when WhatsApp did not confirm in time, and the change may still have been applied,
+so re-read the state before repeating it. In a routed deployment a forward that fails before
+reaching the owner node answers 503, one that fails after the request reached it answers 502 or 504,
+and a 503 from the owner itself is relayed unchanged.
 
 ```python
 from openwa import OpenWANotFoundError

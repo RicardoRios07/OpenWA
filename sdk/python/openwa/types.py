@@ -73,6 +73,15 @@ WebhookEvent = Literal[
     "call.accepted", "call.rejected", "call.missed",
     "*",
 ]
+# The events a delivery can carry: WebhookEvent without the "*" subscription wildcard.
+WebhookDeliveryEvent = Literal[
+    "message.received", "message.sent", "message.ack", "message.failed", "message.revoked",
+    "message.reaction", "message.edited", "session.status", "session.qr", "session.authenticated",
+    "session.disconnected", "session.reconnect_loop", "session.restriction", "presence.update",
+    "group.join", "group.leave", "group.update", "group.join_request",
+    "call.received", "status.received",
+    "call.accepted", "call.rejected", "call.missed",
+]
 
 
 class SetOwnPresenceRequest(TypedDict):
@@ -91,7 +100,7 @@ CallLinkType = Literal["audio", "video"]
 class CreateCallLinkRequest(TypedDict):
     """Body for :meth:`CallsResource.create_link`.
 
-    ``start_time`` is absolute epoch MILLISECONDS; a link for right now is the current timestamp
+    ``startTime`` is absolute epoch MILLISECONDS; a link for right now is the current timestamp
     rather than an omitted field.
     """
 
@@ -252,8 +261,8 @@ class SessionResponse(TypedDict):
     # node runs, those routes act only when request routing (NODE_URL on every node) forwards them;
     # without it, other nodes answer 409 to start and stop and 400 to logout and force-kill. Not
     # derivable from status: 'disconnected' covers both a session mid automatic-reconnect (engine
-    # present) and one stopped with no engine. Absent from a gateway that predates the field (the
-    # TypedDict is total=False).
+    # present) and one stopped with no engine. Always sent by current gateways; a gateway that
+    # predates the field omits it, so read it with .get("engineLoaded") against one.
     engineLoaded: bool
 
 
@@ -299,6 +308,7 @@ class CreateSessionRequest(TypedDict):
     name: str
     config: NotRequired[dict[str, Any]]
     proxyUrl: NotRequired[str]
+    # Deprecated and ignored by the server: the proxyUrl scheme selects the proxy protocol.
     proxyType: NotRequired[Literal['http', 'https', 'socks4', 'socks5']]
 
 
@@ -450,7 +460,6 @@ class EditMessageRequest(TypedDict):
 
 class SendTemplateRequest(TypedDict):
     # chatId required; provide exactly one of templateId / templateName.
-    # Modeled total=False (callers pass plain dicts); the backend validates.
     chatId: Jid
     templateId: NotRequired[str]
     templateName: NotRequired[str]
@@ -705,9 +714,9 @@ class BatchProgress(TypedDict):
 
 
 class BatchStatusResponse(TypedDict):
-    """Response from ``GET /messages/batch/:batchId`` and the cancel endpoint.
+    """Response from ``GET /messages/batch/:batchId``.
 
-    Distinct from :class:`BulkMessageResponse` (the send-bulk acknowledgement).
+    Distinct from :class:`BulkMessageResponse` (the send-bulk acknowledgement) and :class:`BatchCancelResponse`.
     """
 
     batchId: str
@@ -716,6 +725,14 @@ class BatchStatusResponse(TypedDict):
     results: list[BatchMessageResult]
     startedAt: NotRequired[str | None]
     completedAt: NotRequired[str | None]
+
+
+class BatchCancelResponse(TypedDict):
+    """Response from ``POST /messages/batch/:batchId/cancel``: the batch state without per-recipient ``results``."""
+
+    batchId: str
+    status: BatchLifecycleStatus
+    progress: BatchProgress
 
 
 # ── Contact ───────────────────────────────────────────────────────
@@ -770,11 +787,13 @@ class GroupParticipant(TypedDict):
 
 
 class GroupSummary(TypedDict):
-    """Item returned by ``GET /sessions/:id/groups`` (the slim list shape)."""
+    """Item returned by ``GET /sessions/:id/groups`` (the slim list shape), and the ``groups.create`` response."""
 
     id: Jid
     name: str
+    # Only in a groups.create response, never in groups.list; groups.get carries the participants.
     participantsCount: NotRequired[int]
+    # Only in a groups.create response, never in groups.list; groups.get carries each participant's role.
     isAdmin: NotRequired[bool]
     linkedParentJID: NotRequired[str | None]
 
@@ -911,7 +930,8 @@ class UpdateWebhookRequest(TypedDict, total=False):
     secret: str
     headers: dict[str, str]
     filters: WebhookFilters | None
-    # Server DTO field is ``retryCount`` (0-5; default 3).
+    # Total delivery attempts per event including the first, 0 to 5 (0 and 1 both mean one attempt);
+    # omit to keep the current value. Server DTO field is ``retryCount``.
     retryCount: int
     active: bool
 
@@ -944,7 +964,7 @@ class WebhookDelivery(TypedDict):
     :func:`openwa.verify_webhook_signature` before parsing it.
     """
 
-    event: WebhookEvent | Literal["test"]
+    event: WebhookDeliveryEvent | Literal["test"]
     timestamp: str
     sessionId: str
     idempotencyKey: str
@@ -963,9 +983,12 @@ class WebhookDeliveryFailure(TypedDict):
     # The idempotency key the receiver would have deduped on.
     idempotencyKey: NotRequired[str | None]
     deliveryId: NotRequired[str | None]
-    # Attempts recorded; 0 when the delivery was shed, refused or failed before sending.
+    # Attempts made before giving up; 0 when the delivery was not given up after retries (oversize or
+    # unserializable payload, capacity shed, or shutdown, possibly in a retry backoff after earlier
+    # attempts were sent).
     attempts: int
-    # Last HTTP status when the failure was a non-2xx response; None for a network or timeout error.
+    # Last HTTP status when the failure was a non-2xx response; None for a network or timeout error,
+    # or when attempts is 0.
     lastStatusCode: NotRequired[int | None]
     lastError: str
     # ISO timestamp of when the failure was first recorded.
@@ -1216,7 +1239,7 @@ class HealthDependencyStatus(TypedDict):
     status: str
 
 
-class HealthReadyResponse(TypedDict, total=False):
+class HealthReadyResponse(TypedDict):
     status: str
     details: dict[str, HealthDependencyStatus]
 
@@ -1228,6 +1251,7 @@ class AuthValidateResponse(TypedDict, total=False):
     valid: bool
     role: str
     engineType: str
+    scoped: bool
 
 
 # ── Template ──────────────────────────────────────────────────────
@@ -1245,8 +1269,7 @@ class TemplateRecord(TypedDict, total=False):
 
 
 class CreateTemplateRequest(TypedDict):
-    # name + body required; header/footer optional. Modeled total=False
-    # (callers pass plain dicts); the backend validates the required fields.
+    # name + body required; header/footer optional.
     name: str
     body: str
     header: NotRequired[str]
@@ -1367,8 +1390,7 @@ class ProductMessageResponse(TypedDict):
     timestamp: int
 
 
-# chatId + productId required; body optional. Modeled total=False for 3.9 compat
-# (callers pass plain dicts); the backend validates the required fields.
+# chatId + productId required; body optional.
 class SendProductRequest(TypedDict):
     chatId: Jid
     productId: str

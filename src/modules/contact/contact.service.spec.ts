@@ -52,12 +52,6 @@ describe('ContactService', () => {
     await expect(svc.getContactById('s1', 'c404')).rejects.toBeInstanceOf(NotFoundException);
   });
 
-  it('delegates checkNumberExists to the engine', async () => {
-    const checkNumberExists = jest.fn().mockResolvedValue(true);
-    await expect(makeService({ checkNumberExists }).checkNumberExists('s1', '628123')).resolves.toBe(true);
-    expect(checkNumberExists).toHaveBeenCalledWith('628123');
-  });
-
   it('delegates getNumberId to the engine (canonical JID resolution)', async () => {
     const getNumberId = jest.fn().mockResolvedValue('628123@c.us');
     await expect(makeService({ getNumberId }).getNumberId('s1', '628123')).resolves.toBe('628123@c.us');
@@ -130,16 +124,19 @@ describe('ContactService', () => {
       .fn()
       .mockResolvedValueOnce('https://pps/1.jpg')
       .mockImplementationOnce(() => new Promise(() => undefined)); // never settles
-    const started = Date.now();
-    const out = await makeService({ getProfilePicture }).getProfilePictures('s1', ['a@c.us', 'b@c.us']);
-    expect(out).toEqual({ 'a@c.us': 'https://pps/1.jpg', 'b@c.us': null });
-    expect(Date.now() - started).toBeLessThan(12_000);
-  }, 15_000);
+    jest.useFakeTimers();
+    try {
+      const out = makeService({ getProfilePicture }).getProfilePictures('s1', ['a@c.us', 'b@c.us']);
+      await jest.advanceTimersByTimeAsync(8000);
+      await expect(out).resolves.toEqual({ 'a@c.us': 'https://pps/1.jpg', 'b@c.us': null });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 
   describe('block/unblock reject ids that do not name a person', () => {
     // whatsapp-web.js's Contact.block()/unblock() return false for a group id (nothing blocked,
-    // answered 200 "blocked"); Baileys hands the id to updateBlockStatus whose Boom for an
-    // unresolvable jid surfaces as an opaque 500. Both engines share this 400 guard.
+    // answered 200 "blocked"). Both engines share this 400 guard.
     it.each([
       ['blockContact', (svc: ContactService) => svc.blockContact('s1', '120363000000000000@g.us')],
       ['unblockContact', (svc: ContactService) => svc.unblockContact('s1', '120363000000000000@g.us')],
@@ -321,20 +318,6 @@ describe('ContactService', () => {
         resolveContactPhone: jest.fn().mockRejectedValue(new Error('Protocol error: Target closed')),
       });
       await expect(svc.resolveContactPhone('s1', '123@lid')).resolves.toBeNull();
-    });
-  });
-
-  describe('resolveContactPhone null-on-failure boundary', () => {
-    it('returns null (200 contract) when the engine lookup throws', async () => {
-      const svc = makeService({
-        resolveContactPhone: jest.fn().mockRejectedValue(new Error('Protocol error: Target closed')),
-      });
-      await expect(svc.resolveContactPhone('s1', '123@lid')).resolves.toBeNull();
-    });
-
-    it('returns the engine answer verbatim on success', async () => {
-      const svc = makeService({ resolveContactPhone: jest.fn().mockResolvedValue('628123') });
-      await expect(svc.resolveContactPhone('s1', '123@lid')).resolves.toBe('628123');
     });
   });
 });

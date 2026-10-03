@@ -16,7 +16,7 @@ import {
   Res,
 } from '@nestjs/common';
 import type { Response } from 'express';
-import { ApiTags, ApiOperation, ApiResponse, ApiParam, ApiQuery } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiResponse, ApiParam, ApiQuery, ApiExtraModels, getSchemaPath } from '@nestjs/swagger';
 import { SessionService } from './session.service';
 import {
   CreateSessionDto,
@@ -163,6 +163,7 @@ export class SessionController {
     description: 'Session details',
     type: SessionResponseDto,
   })
+  @ApiResponse({ status: 400, description: 'The session id is not a UUID' })
   @ApiResponse({ status: 404, description: 'Session not found' })
   async findOne(@Param('sessionId', ParseUUIDPipe) id: string): Promise<SessionResponseDto> {
     const session = await this.sessionService.findOne(id);
@@ -177,6 +178,7 @@ export class SessionController {
     description: 'Effective session configuration',
     type: SessionConfigResponseDto,
   })
+  @ApiResponse({ status: 400, description: 'The session id is not a UUID' })
   @ApiResponse({ status: 404, description: 'Session not found' })
   async getConfig(@Param('sessionId', ParseUUIDPipe) id: string): Promise<SessionConfigResponseDto> {
     return this.sessionService.getConfig(id);
@@ -200,6 +202,7 @@ export class SessionController {
   })
   @ApiResponse({ status: 400, description: 'A supplied value is outside its accepted range' })
   @ApiResponse({ status: 404, description: 'Session not found' })
+  @ApiResponse({ status: 409, description: 'The session config kept changing under concurrent requests; retry' })
   async updateConfig(
     @Param('sessionId', ParseUUIDPipe) id: string,
     @Body() dto: UpdateSessionConfigDto,
@@ -222,6 +225,7 @@ export class SessionController {
     description: 'Effective proxy configuration',
     type: SessionProxyResponseDto,
   })
+  @ApiResponse({ status: 400, description: 'The session id is not a UUID' })
   @ApiResponse({ status: 404, description: 'Session not found' })
   async getProxy(@Param('sessionId', ParseUUIDPipe) id: string): Promise<SessionProxyResponseDto> {
     return this.sessionService.getProxy(id);
@@ -267,6 +271,7 @@ export class SessionController {
   @ApiOperation({ summary: 'Delete a session' })
   @ApiParam({ name: 'sessionId', description: 'Session ID' })
   @ApiResponse({ status: 204, description: 'Session deleted' })
+  @ApiResponse({ status: 400, description: 'The session id is not a UUID' })
   @ApiResponse({ status: 404, description: 'Session not found' })
   @ApiResponse({
     status: 409,
@@ -297,7 +302,14 @@ export class SessionController {
     description: 'Session started',
     type: SessionResponseDto,
   })
-  @ApiResponse({ status: 400, description: 'Session already started' })
+  @ApiResponse({
+    status: 400,
+    description:
+      'Session already started or already starting, or this node is at its MAX_CONCURRENT_SESSIONS cap ' +
+      '(`Maximum concurrent sessions reached (N)`), answered only after the 404 and the 409 for a ' +
+      'session running on another node; a start refused at the cap launches nothing and leaves a ' +
+      'stop in place.',
+  })
   @ApiResponse({ status: 404, description: 'Session not found' })
   @ApiResponse({
     status: 409,
@@ -308,14 +320,17 @@ export class SessionController {
       'effect runs before this refusal. Also returned when another node currently holds this ' +
       "session's engine: only the owner may start it, and the claim is refused before any engine " +
       'is launched, so no second connection to the account is opened. Also returned, with no `code`, ' +
-      'when a stop or force-kill of this session finished while the start was waiting: the stop ' +
-      'stands, and a new POST /start clears it and starts the session.',
+      'when a stop, a force-kill that found a running engine to kill, or a data import (`stopOrphans`) ' +
+      'of this session began or finished while the start was waiting, or a delete of it was still ' +
+      'running: the start yields and launches nothing. After a stop or force-kill, a new POST /start ' +
+      'clears it and starts the session; after a delete, or an import that removed the session, the ' +
+      'retry answers 404.',
   })
   @ApiResponse({
     status: 504,
     description:
       'The engine did not finish starting within its timeout (WhatsApp Web or the network unreachable, ' +
-      'a stalled browser or resource limit, an unreachable proxyUrl, or the whatsapp-web.js auth ' +
+      'a stalled browser or resource limit, or, on whatsapp-web.js, an unreachable proxyUrl or the auth ' +
       'timeout); the engine is torn down and the start can be retried.',
   })
   async start(@Param('sessionId', ParseUUIDPipe) id: string): Promise<SessionResponseDto> {
@@ -337,6 +352,7 @@ export class SessionController {
     description: 'Session stopped',
     type: SessionResponseDto,
   })
+  @ApiResponse({ status: 400, description: 'The session id is not a UUID' })
   @ApiResponse({ status: 404, description: 'Session not found' })
   @ApiResponse({
     status: 409,
@@ -514,7 +530,8 @@ export class SessionController {
     description:
       'WhatsApp did not answer the group-list query. Deliberately not reported as an empty list — ' +
       'the engine returns the same empty value for "you are in no groups", and a caller cannot tell ' +
-      'those apart from the body.',
+      'those apart from the body. On Baileys, also answered when WhatsApp rate-limits or times out the ' +
+      'request (code 429 or 408); retry after a pause.',
   })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   @ApiQuery({ name: 'limit', required: false, description: 'Max groups to return (1–1000, default 1000)' })
@@ -657,6 +674,12 @@ export class SessionController {
       ' On Baileys this route also answers `409` for a `ready` session whose account push name has ' +
       'not synced yet. Nothing was sent, and a retry succeeds only once the name has synced.',
   })
+  @ApiResponse({
+    status: 503,
+    description:
+      'The whatsapp-web.js page connection died, or WhatsApp Web did not answer within the protocol ' +
+      'timeout. Nothing was confirmed; setting presence converges when repeated, so a retry is safe.',
+  })
   async setOnlinePresence(
     @Param('sessionId', ParseUUIDPipe) id: string,
     @Body() dto: SetOwnPresenceDto,
@@ -680,7 +703,13 @@ export class SessionController {
   })
   @ApiParam({ name: 'sessionId', description: 'Session ID' })
   @ApiParam({ name: 'chatId', description: 'Chat ID as subscribed' })
-  @ApiResponse({ status: 200, description: 'Last reported presence, or null', type: ChatPresenceResponseDto })
+  @ApiExtraModels(ChatPresenceResponseDto)
+  @ApiResponse({
+    status: 200,
+    description: 'Last reported presence, or null',
+    schema: { nullable: true, allOf: [{ $ref: getSchemaPath(ChatPresenceResponseDto) }] },
+  })
+  @ApiResponse({ status: 400, description: 'The session id is not a UUID' })
   @ApiResponse({ status: 404, description: 'Session not found' })
   async getPresence(
     @Param('sessionId', ParseUUIDPipe) id: string,
@@ -893,6 +922,12 @@ export class SessionController {
   @ApiOperation({ summary: "Send a typing/recording presence indicator to a chat (or clear it with 'paused')" })
   @ApiParam({ name: 'sessionId', description: 'Session ID' })
   @ApiResponse({ status: 200, description: 'Presence sent', type: SessionActionResponseDto })
+  @ApiResponse({
+    status: 400,
+    description:
+      'Session is not started, or validation failed (an empty chatId, a state other than typing, ' +
+      'recording or paused, or a body field the DTO does not declare).',
+  })
   @ApiResponse({ status: 404, description: 'Session not found' })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   async sendChatState(

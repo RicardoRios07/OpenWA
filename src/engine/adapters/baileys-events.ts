@@ -116,6 +116,46 @@ export function differentWaIds(
   return !lidGap(x, y) && !lidGap(y, x);
 }
 
+/**
+ * Whether the media node Baileys' downloadMediaMessage would fetch is served from WhatsApp's media
+ * hosts. Baileys builds the address from the message as the sender composed it (`url`, or
+ * `https://<host of url>` + `directPath`) and fetches it with no host check of its own, so anything
+ * outside https://*.whatsapp.net on the default port is refused here. The node and the address are
+ * resolved exactly as rc14's downloadMediaMessage and downloadContentFromMessage resolve them.
+ */
+export function isWhatsAppMediaSource(
+  b: Pick<typeof BaileysLib, 'extractMessageContent' | 'getContentType'>,
+  message: WAMessage['message'],
+): boolean {
+  const content = b.extractMessageContent(message);
+  const type = content ? b.getContentType(content) : undefined;
+  const media: unknown = type ? content?.[type] : undefined;
+  // Baileys refuses a node like this itself, before any fetch.
+  if (!media || typeof media !== 'object') return true;
+  const node = media as { url?: string | null; directPath?: string | null; thumbnailDirectPath?: string | null };
+  const thumbnailOnly = 'thumbnailDirectPath' in media && !('url' in media);
+  const url = thumbnailOnly ? undefined : node.url;
+  const directPath = thumbnailOnly ? node.thumbnailDirectPath : node.directPath;
+  let host = 'mmg.whatsapp.net';
+  try {
+    if (url) host = new URL(url).host;
+  } catch {
+    // Baileys falls back to its default host for an unparsable url.
+  }
+  const target = directPath ? `https://${host}${directPath}` : url;
+  if (!target) return true;
+  try {
+    const parsed = new URL(target);
+    return (
+      parsed.protocol === 'https:' &&
+      parsed.port === '' &&
+      (parsed.hostname === 'whatsapp.net' || parsed.hostname.endsWith('.whatsapp.net'))
+    );
+  } catch {
+    return false;
+  }
+}
+
 export interface BaileysEventsHost {
   /** Live socket handle for media re-upload requests (inbound media download). */
   getSocket(): WASocket;
@@ -223,7 +263,20 @@ export class BaileysEvents {
    */
   private readonly editedWhileInFlight = new Map<string, { envelope: WAMessageKey; body: string }>();
 
+  /**
+   * Bumped by fenceStoredWrites when the account is unlinked. A message stores its copy only while the
+   * generation it arrived under is current: one still processing when the store is wiped (a media
+   * download outlives the socket, and the limiter queue is unbounded) must not recreate a row of the
+   * unlinked account afterwards.
+   */
+  private storeGeneration = 0;
+
   constructor(private readonly host: BaileysEventsHost) {}
+
+  /** Drop the store writes of every message that arrived before now; call before wiping the store. */
+  fenceStoredWrites(): void {
+    this.storeGeneration++;
+  }
 
   /** Whether a delete for everyone of this message was accepted (see deletedForEveryone). */
   wasDeletedForEveryone(messageId: string): boolean {
@@ -288,8 +341,9 @@ export class BaileysEvents {
       // and the message keeps its media either way. The catch below is the teardown path: the
       // limiter rejects only when it has been closed, since processInboundMessage handles its own
       // failures (a media download that fails emits the omitted marker rather than throwing).
+      const generation = this.storeGeneration;
       const processed = this.host.inboundLimiter
-        .run(() => this.processInboundMessage(msg))
+        .run(() => this.processInboundMessage(msg, { generation }))
         .catch((error: unknown) => {
           // Only one failure can actually land here today: the limiter closing, an orderly teardown.
           // Its queue is unbounded so it never sheds, and processInboundMessage swallows its own
@@ -304,7 +358,7 @@ export class BaileysEvents {
               : 'Inbound media download failed; emitting message without media',
             { msgId: msg.key?.id ?? 'unknown', ...(closed ? {} : { error: String(error) }) },
           );
-          return this.processInboundMessage(msg, { skipMedia: true });
+          return this.processInboundMessage(msg, { generation, skipMedia: true });
         });
       const id = msg.key.id;
       if (id) {
@@ -348,7 +402,10 @@ export class BaileysEvents {
     });
   }
 
-  private async processInboundMessage(msg: WAMessage, opts?: { skipMedia?: boolean }): Promise<void> {
+  private async processInboundMessage(
+    msg: WAMessage,
+    opts: { generation: number; skipMedia?: boolean },
+  ): Promise<void> {
     try {
       const b = await this.host.loadLib();
       const remoteJid = msg.key.remoteJid!;
@@ -544,7 +601,7 @@ export class BaileysEvents {
       // is kept, so the message is still recorded and still guards against a repeat delivery.
       const ownStatusPost = msg.key.fromMe === true && remoteJid === 'status@broadcast';
       const incoming = await this.mapMessage(msg, contentType, {
-        skipMediaDownload: opts?.skipMedia || ownStatusPost,
+        skipMediaDownload: opts.skipMedia || ownStatusPost,
       });
       // Stored before it is announced: whoever hears about this message may act on it at once (a quoted
       // reply, a reaction, a read receipt), and the store holds a read of an id until its write lands.
@@ -561,11 +618,13 @@ export class BaileysEvents {
         if (content) setBaileysText(content, editedBody);
         incoming.body = editedBody;
       }
-      void this.host.putStoredMessage(toStore)?.catch(err =>
-        this.host.logger.warn('Failed to persist message to store', {
-          error: err instanceof Error ? err.message : String(err),
-        }),
-      );
+      if (opts.generation === this.storeGeneration) {
+        void this.host.putStoredMessage(toStore)?.catch(err =>
+          this.host.logger.warn('Failed to persist message to store', {
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        );
+      }
       // Its delete was announced first and found nothing to clear, so announcing the message now, or
       // leaving its text as the chat preview, would publish what the sender took back. An edit announced
       // first found nothing to change either, so the message carries it here and in the preview.
@@ -1188,13 +1247,23 @@ export class BaileysEvents {
         return Buffer.alloc(0);
       }
       const b = await this.host.loadLib();
+      // The address comes from the sender, and so does a re-upload answer (encrypted with the
+      // sender's own media key): both are checked before Baileys fetches them.
+      const assertWhatsAppSource = (m: WAMessage): WAMessage => {
+        if (!isWhatsAppMediaSource(b, m.message)) {
+          throw new Error('Inbound media address is not a WhatsApp media host; not fetched');
+        }
+        return m;
+      };
+      assertWhatsAppSource(msg);
+      const sock = this.host.getSocket();
       stream = (await b.downloadMediaMessage(
         msg,
         'stream',
         dispatcher ? { options: { dispatcher } as RequestInit } : {},
         {
           logger: createSilentLogger(),
-          reuploadRequest: this.host.getSocket().updateMediaMessage,
+          reuploadRequest: async m => assertWhatsAppSource(await sock.updateMediaMessage(m)),
         },
       )) as AsyncIterable<Buffer> & { destroy?: () => void };
       if (timedOut) {

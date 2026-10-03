@@ -9,7 +9,7 @@ import {
   PUBLIC_PATHS,
   METRICS_BEARER_SCHEME,
 } from './swagger.config';
-import type { OpenAPIObject } from '@nestjs/swagger';
+import type { OpenAPIObject, OperationObject } from '@nestjs/swagger';
 import { EnginePageError } from '../common/errors/engine-page.error';
 
 describe('createSwaggerConfig', () => {
@@ -143,6 +143,23 @@ describe('documentErrorResponses', () => {
     expect((twice.paths['/api/sessions'].get!.responses['403'] as { description: string }).description).toBe(
       "The API key's role, session or chat scope, or IP allow-list does not allow this operation",
     );
+  });
+
+  // The global ValidationPipe (whitelist + forbidNonWhitelisted) and the JSON body parser answer 400
+  // before the handler runs, so every operation that takes a body can return one.
+  it('adds a 400 to an operation that takes a request body, keeping its own when it has one', () => {
+    const doc = fixtureDoc();
+    const body = { content: { 'application/json': { schema: { type: 'object' } } } };
+    doc.paths['/api/sessions'].post!.requestBody = body;
+    doc.paths['/api/sessions'].put = { requestBody: body, responses: { '400': { description: 'Name taken' } } };
+    doc.paths['/api/sessions'].get = { responses: { '200': { description: 'ok' } } };
+    const paths = documentErrorResponses(doc).paths['/api/sessions'];
+    const description = (op: OperationObject | undefined): string | undefined =>
+      (op?.responses['400'] as { description: string } | undefined)?.description;
+    expect(description(paths.post)).toMatch(/does not declare/);
+    expect(paths.post!.responses['400']).toEqual(expect.objectContaining({ content: ref }));
+    expect(description(paths.put)).toBe('Name taken');
+    expect(description(paths.get)).toBeUndefined();
   });
 
   it('leaves operations with their own security as they were', () => {

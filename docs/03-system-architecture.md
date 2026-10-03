@@ -62,14 +62,18 @@ sequenceDiagram
     participant DB as Database
     participant WA as WhatsApp
 
-    Client->>API: Create Session
-    API->>SM: createSession()
-    SM->>DB: Save session config
+    Client->>API: POST /api/sessions
+    API->>SM: create()
+    SM->>DB: Save session (status created)
+    API-->>Client: Session
+    Client->>API: POST /api/sessions/:sessionId/start
+    API->>SM: start()
     SM->>Engine: Initialize
     Engine->>WA: Connect
     WA-->>Engine: QR Code
-    Engine-->>SM: QR Ready
-    SM-->>API: QR Code data
+    Engine-->>SM: QR Ready (status qr_ready)
+    API-->>Client: Session
+    Client->>API: GET /api/sessions/:sessionId/qr (or the session.qr event)
     API-->>Client: QR Code response
 ```
 
@@ -431,7 +435,7 @@ src/
 │   ├── auth/                   # API-key auth: auth.service.ts, guards/, decorators/, entities/
 │   ├── queue/                  # BullMQ wiring + processors/
 │   ├── integration/            # Integration fabric (plugin instances, ingress, mappings)
-│   ├── automation/            # Autoreply rules (automation_rules, the 14th migration table)
+│   ├── automation/            # Autoreply rules (automation_rules, exported and restored with the other migration tables)
 │   ├── media/  chat-media/    # Inbound media handling + the optional chat-media archive
 │   ├── takeover/
 │   └── plugins/  mcp/  events/  infra/  docker/  settings/  metrics/  audit/  health/
@@ -591,18 +595,18 @@ flowchart LR
         E --> F[Get Session]
         F --> G{Engine loaded?}
         G -->|No| H[400 Error]
-        G -->|Yes| G2{Engine ready?}
-        G2 -->|No| H2[409 Error]
-        G2 -->|Yes| K[Engine]
+        G -->|Yes| S[Store PENDING row]
+        S --> K[Engine send]
     end
 
     subgraph Execution["4. Execution"]
-        K --> L[WhatsApp]
+        K -->|Not ready| H2[409 Error\nrow marked FAILED, message:failed]
+        K -->|Accepted| L[WhatsApp]
     end
 
     subgraph Response["5. Response"]
         L --> M[Success]
-        M --> N[Store]
+        M --> N[Update row to SENT]
         N --> O[Response]
     end
 ```
@@ -1211,7 +1215,7 @@ flowchart TB
 
     subgraph Migration["Migration Path"]
         C[Update engine library]
-        D[Switch ENGINE_TYPE to the other engine]
+        D[Switch ENGINE_TYPE to the other engine\nre-link each session by QR or pairing code]
         E[Track upstream fix\nOperators use fallback channel]
     end
 
@@ -1219,6 +1223,7 @@ flowchart TB
         F[Service Restored]
     end
 
+    A2 --> B
     A --> B
     B -->|Minor| C --> F
     B -->|Major one engine| D --> F
@@ -1431,11 +1436,12 @@ return {
 
 > **Note:** OpenWA does not currently apply SQLite-specific concurrency hardening. There is **no**
 > `journal_mode = WAL` PRAGMA, no `SqliteWriteQueueService`, and no application-level write
-> serialization in the source. SQLite is used with TypeORM's defaults, so its standard
-> single-writer behavior applies. For high write-concurrency or multi-session deployments, use
-> PostgreSQL (`DATABASE_TYPE=postgres`). `MAX_CONCURRENT_SESSIONS` (default `0`, unlimited) caps
-> concurrent sessions on any database. Cross-dialect schema differences are handled at migration
-> time (see below), not by a runtime optimizations layer.
+> serialization in the source. SQLite is used with TypeORM's defaults apart from a fixed 30 s busy
+> timeout (`SQLITE_BUSY_TIMEOUT_MS`), so its standard single-writer behavior applies. For high
+> write-concurrency or multi-session deployments, use PostgreSQL (`DATABASE_TYPE=postgres`).
+> `MAX_CONCURRENT_SESSIONS` (default `0`, unlimited) caps concurrent sessions on any database.
+> Cross-dialect schema differences are handled at migration time (see below), not by a runtime
+> optimizations layer.
 
 #### Migration Strategy
 
@@ -1469,8 +1475,7 @@ There is **no** cache-manager / `CacheModuleOptions` / `redisStore` setup and **
 is unreachable — the service **fails open**: every read returns `null` and every write is a silent
 no-op, so the app keeps serving from its source of truth. In other words, "no cache configured" means
 **no cache** (recompute), not an in-process LRU. Cache is never the source of truth, and today no
-request path reads from it: the only consumers are the infra status probe (`isAvailable`) and a
-sessions-stats snapshot that `StatsService` writes and nothing reads back.
+request path reads from it: its only consumer is the infra status probe (`isAvailable`).
 
 ```typescript
 // src/common/cache/cache.service.ts
@@ -1548,8 +1553,8 @@ flowchart LR
 | **Enterprise** | PostgreSQL | S3/MinIO | Redis | 10+      | 4GB+  | Agency, high volume   |
 
 > Session counts are guidance only by default. Set `MAX_CONCURRENT_SESSIONS` to a positive integer
-> to cap concurrently running or initializing engines; the default `0` keeps the historical
-> unlimited behavior.
+> to cap concurrently running or initializing engines, plus sessions waiting to relaunch after a
+> failed reconnect; the default `0` keeps the historical unlimited behavior.
 
 ### Configuration Examples
 

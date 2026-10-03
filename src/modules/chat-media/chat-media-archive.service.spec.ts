@@ -148,6 +148,21 @@ describe('ChatMediaArchiveService', () => {
       expect(files).toEqual([first]);
     });
 
+    it('keeps one file when two writers archive the same row concurrently', async () => {
+      // Both callers hold a snapshot read before either pointer landed, so the in-memory guard
+      // passes twice; the pointer write itself has to pick one winner.
+      const row = await saveRow({ mimetype: 'image/png', data: PNG.toString('base64') });
+
+      const keys = await Promise.all([enabled().archive(row), enabled().archive(row)]);
+      const winner = keys.filter(k => k !== null);
+
+      expect(winner).toHaveLength(1);
+      expect((await repository.findOneByOrFail({ id: row.id })).mediaPath).toBe(winner[0]);
+      const files = [];
+      for await (const f of storageService.iterateFiles('')) files.push(f);
+      expect(files).toEqual(winner);
+    });
+
     it('skips media above the archive cap without touching the row', async () => {
       const row = await saveRow({ mimetype: 'image/png', data: PNG.toString('base64') });
 
@@ -409,6 +424,25 @@ describe('ChatMediaArchiveService', () => {
       del.mockRestore();
     }, 30_000);
 
+    it('does not plan the batch select as a walk of the whole table on SQLite', async () => {
+      // Ordering by the bare primary key lets SQLite satisfy ORDER BY from its autoindex and then
+      // visit every row in the table, which blocks the event loop on every tick once the backlog is
+      // drained. The plan must start from the createdAt range instead.
+      await seedExpired(1);
+      const runner = Object.getPrototypeOf(ds.createQueryRunner()) as {
+        query: (sql: string, params?: unknown[]) => Promise<unknown>;
+      };
+      const query = jest.spyOn(runner, 'query');
+
+      await enabled({ 'chatMedia.ttlDays': 7 }).purgeExpired(Date.now());
+
+      const select = query.mock.calls.find(([sql]) => /^SELECT/i.test(sql) && /LIMIT/i.test(sql));
+      query.mockRestore();
+      expect(select).toBeDefined();
+      const plan = await ds.query<{ detail: string }[]>(`EXPLAIN QUERY PLAN ${select![0]}`, select![1]);
+      expect(plan.map(p => p.detail).join('\n')).not.toMatch(/SCAN .*sqlite_autoindex_messages/);
+    });
+
     it('stops instead of spinning when every delete in a batch fails', async () => {
       await seedExpired(3);
       const del = jest.spyOn(storageService, 'deleteFile').mockRejectedValue(new Error('s3 down'));
@@ -578,20 +612,20 @@ describe('ChatMediaArchiveService', () => {
         .mockImplementationOnce(() => new Promise<void>(resolve => (releaseDelete = resolve)));
       const svc = build({ 'chatMedia.ttlDays': 7 });
       const sweep = jest.spyOn(svc, 'sweepOrphanedMedia').mockResolvedValue(0);
-      const find = jest.spyOn(repository, 'find');
+      const select = jest.spyOn(repository, 'createQueryBuilder');
       try {
         svc.onModuleInit();
         await jest.advanceTimersByTimeAsync(15 * 60 * 1000);
         await jest.advanceTimersByTimeAsync(15 * 60 * 1000);
-        expect(find).toHaveBeenCalledTimes(1);
+        expect(select).toHaveBeenCalledTimes(1);
 
         releaseDelete();
         await jest.advanceTimersByTimeAsync(15 * 60 * 1000);
-        expect(find.mock.calls.length).toBeGreaterThan(1);
+        expect(select.mock.calls.length).toBeGreaterThan(1);
       } finally {
         svc.onModuleDestroy();
         releaseDelete();
-        [del, sweep, find].forEach(spy => spy.mockRestore());
+        [del, sweep, select].forEach(spy => spy.mockRestore());
         jest.useRealTimers();
       }
     });

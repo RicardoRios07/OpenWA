@@ -1,5 +1,6 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, Index, ValueTransformer } from 'typeorm';
 import { jsonColumnType } from '../../../common/utils/column-types';
+import { NulFreeTransformer } from '../../../common/transformers/nul-free.transformer';
 
 /**
  * A `bigint` column reads back as a string on PostgreSQL (pg avoids >2^53 precision loss) but as a
@@ -60,7 +61,7 @@ export class Message {
 
   /** The sender's contact name (pushName) as the engine reported it: in a group that is the member, not
    *  the group. Null on legacy rows and on rows that carried no contact. */
-  @Column({ nullable: true })
+  @Column({ nullable: true, transformer: NulFreeTransformer })
   chatName?: string;
 
   /**
@@ -78,7 +79,7 @@ export class Message {
   @Column()
   to!: string;
 
-  @Column({ type: 'text', nullable: true })
+  @Column({ type: 'text', nullable: true, transformer: NulFreeTransformer })
   body!: string;
 
   @Column({ default: 'text' })
@@ -115,7 +116,7 @@ export class Message {
 
   /** Mimetype of the archived media, so the read endpoint can serve a Content-Type without
    *  depending on the inline copy. Null whenever `mediaPath` is. */
-  @Column({ nullable: true })
+  @Column({ nullable: true, transformer: NulFreeTransformer })
   mediaMimetype?: string;
 
   @Column({

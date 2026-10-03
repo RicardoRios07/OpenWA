@@ -205,6 +205,22 @@ describe('parsePluginPackage', () => {
     expect(() => parsePluginPackage(buf)).toThrow(/duplicate path/i);
   });
 
+  it('rejects entries that collide only under Unicode case folding (long s folds to s)', () => {
+    const other = JSON.stringify({ ...validManifest, id: 'other-id' });
+    const buf = zipOf({ 'manifest.json': JSON.stringify(validManifest), 'index.js': 'x', 'manife\u017Ft.json': other });
+    expect(() => parsePluginPackage(buf)).toThrow(/duplicate path/i);
+  });
+
+  it('rejects entries that differ only in Unicode normalization (NFC vs NFD)', () => {
+    const buf = zipOf({
+      'manifest.json': JSON.stringify(validManifest),
+      'index.js': 'x',
+      'caf\u00e9.js': 'a',
+      'cafe\u0301.js': 'b',
+    });
+    expect(() => parsePluginPackage(buf)).toThrow(/duplicate path/i);
+  });
+
   it('rejects a package missing its declared main file', () => {
     const buf = zipOf({ 'manifest.json': JSON.stringify(validManifest), 'other.js': 'x' });
     expect(() => parsePluginPackage(buf)).toThrow(/missing its main file/i);

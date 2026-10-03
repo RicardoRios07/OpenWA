@@ -148,9 +148,9 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
     private readonly webhookQueue?: Queue<WebhookJobData>,
   ) {
     this.queueEnabled = configService.get<boolean>('queue.enabled', false);
-    // Bound fan-out: cap how many matching webhooks are delivered CONCURRENTLY for one event. Without
-    // it, an event matching N webhooks opens N outbound sockets at once. Default 16
-    // (WEBHOOK_DISPATCH_CONCURRENCY).
+    // Bound fan-out: cap how many webhook deliveries run CONCURRENTLY in this process. Every event and
+    // session shares this one pool, so an event matching N webhooks cannot open N outbound sockets at
+    // once. Default 16 (WEBHOOK_DISPATCH_CONCURRENCY).
     const dispatchConcurrency = this.configService.get<number>('webhook.dispatchConcurrency', 16);
     this.dispatchMaxQueued = this.configService.get<number>('webhook.dispatchMaxQueued', 1000);
     this.dispatchLimiter = new ConcurrencyLimiter(dispatchConcurrency, this.dispatchMaxQueued);
@@ -271,8 +271,36 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
     // Resolve a lid actor to its phone through the persistent table so a phone filter matches a
     // lid-addressed sender (e.g. an unresolved @lid group participant). Absent store -> no resolution.
     const resolveLid = (jid: string): string | null => this.lidMappingStore?.resolveLid(jid) ?? null;
-    const subscribed = webhooks.filter(w => w.events.includes(event) || w.events.includes('*'));
-    const matching = subscribed.filter(w => evaluateFilters(w.filters, event, data, resolveLid));
+    // A row is judged on its own: one whose stored events or filters are malformed (e.g. restored from
+    // a hand-edited backup) is skipped, instead of throwing here and dropping the event for every
+    // other webhook of the session. A `filters` that is not a plain object, or a non-array `conditions`,
+    // is refused explicitly: evaluateFilters reads either as "no filter", which would deliver every
+    // subscribed event unfiltered.
+    const subscribed = webhooks.filter(
+      w => Array.isArray(w.events) && (w.events.includes(event) || w.events.includes('*')),
+    );
+    const matching = subscribed.filter(w => {
+      try {
+        const filters: unknown = w.filters;
+        if (
+          filters != null &&
+          (typeof filters !== 'object' ||
+            Array.isArray(filters) ||
+            (w.filters?.conditions != null && !Array.isArray(w.filters.conditions)))
+        ) {
+          throw new TypeError('filters must be an object with a conditions array');
+        }
+        return evaluateFilters(w.filters, event, data, resolveLid);
+      } catch (error) {
+        this.logger.warn('Skipping webhook with malformed filters', {
+          webhookId: w.id,
+          event,
+          error: String(error),
+          action: 'webhook_filters_invalid',
+        });
+        return false;
+      }
+    });
     // A subscribed webhook that a filter drops leaves no trace otherwise: dispatch() awaits an empty
     // array and returns, and the delivery-failure table only records deliveries that were ATTEMPTED.
     // That is fine when the filter is doing its job, and indistinguishable from it when it is not —
@@ -520,10 +548,12 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
       };
 
       await this.webhookQueue!.add(`webhook-${webhook.id}`, jobData, {
-        // jobId = deliveryId gives BullMQ exactly-once enqueue semantics (same precedent as the
-        // ingress producer), so a crash between add() and the bookkeeping below cannot re-enqueue
-        // the same delivery. Safe for fan-out: deliveryId is minted per webhook per dispatch in
-        // dispatchWithLimit, so sibling subscriptions to one event never share a job id.
+        // jobId = deliveryId makes this add() idempotent within BullMQ (same precedent as the ingress
+        // producer). It does not dedup a crash replay: if the process dies before the outbox row is
+        // closed, the reconciler re-enqueues the event under a new deliveryId as a second job, with
+        // the same idempotency key, which is what receivers dedup on. Safe for fan-out: deliveryId is
+        // minted per webhook per dispatch in dispatchWithLimit, so sibling subscriptions to one event
+        // never share a job id.
         jobId: deliveryId,
         attempts: webhook.retryCount,
         backoff: {

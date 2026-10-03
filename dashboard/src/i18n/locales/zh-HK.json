@@ -36,6 +36,7 @@
     "hoursAgo": "{{count}} 小時前",
     "hoursAgo_other": "{{count}} 小時前",
     "optional": "選填",
+    "fieldTooLong": "最多 {{max}} 個字元（目前 {{count}} 個）。",
     "language": "語言",
     "back": "返回",
     "next": "下一步",
@@ -122,7 +123,6 @@
       "unknownType": "未知類型"
     },
     "you": "你",
-    "youPrefix": "你：",
     "yesterday": "昨天",
     "attachTitle": "傳送檔案 / 圖片",
     "emojiTitle": "選擇表情符號",
@@ -348,7 +348,7 @@
       "configured": "{{host}} ({{type}})",
       "noProxy": "未設定代理",
       "hasCredentials": "憑證已儲存，但不會顯示。輸入完整的 URL 即可更改。",
-      "hint": "變更會在下次啟動工作階段時生效，不會套用至正在運作的連線。代理必須真實且可連線：無法連線的代理會令 QR 碼無法送達，啟動請求會傳回 504。",
+      "hint": "變更會在下次啟動工作階段時生效，不會套用至正在運作的連線。代理必須真實且可連線：無法連線的代理會令 QR 碼無法送達。在 whatsapp-web.js 上啟動請求會傳回 504，在 Baileys 上啟動會成功，但工作階段會持續重試。",
       "createHint": "只有在你的網絡無法直接連線 WhatsApp 時才需要。必須是真實且可連線的代理。",
       "invalidUrl": "請輸入有效的 http、https、socks4 或 socks5 代理 URL。",
       "saveSuccessTitle": "代理已儲存",
@@ -487,11 +487,9 @@
       "valueLabel": "篩選值"
     },
     "columns": {
-      "url": "URL",
       "events": "事件",
       "session": "工作階段",
-      "status": "狀態",
-      "actions": "操作"
+      "status": "狀態"
     },
     "empty": {
       "title": "尚未設定 Webhook",
@@ -671,7 +669,6 @@
       "revoke": "撤銷"
     },
     "actions": {
-      "copy": "複製",
       "revoke": "撤銷",
       "delete": "刪除",
       "edit": "編輯存取權限"
@@ -886,7 +883,7 @@
       "sslRejectUnauthorized": "驗證 SSL 憑證",
       "sslRejectUnauthorizedDesc": "拒絕自簽署或無效的憑證。對於使用自簽署憑證的託管 Postgres（Supabase、Heroku、Render、Railway），請關閉此項。",
       "migrationsTitle": "資料庫遷移",
-      "migrationsStatus": "結構會透過 TypeORM 自動同步",
+      "migrationsStatus": "待處理的遷移會在啟動時自動套用",
       "migrationsHint": "遷移會自動管理。手動遷移請使用 CLI。"
     },
     "engine": {
@@ -909,7 +906,7 @@
     "redis": {
       "title": "Redis",
       "enable": "啟用 Redis",
-      "enableDesc": "快取、工作階段儲存及 BullMQ 佇列需要 Redis",
+      "enableDesc": "用於快取、BullMQ 佇列、速率限制計數器及多節點 WebSocket 分發",
       "useBuiltIn": "使用內置 Redis 容器",
       "builtInDesc": "OpenWA 會為你管理 Redis 容器",
       "queueTitle": "啟用 BullMQ 佇列系統",
@@ -921,7 +918,7 @@
       "failed": "失敗",
       "viewBullMq": "查看 Bull MQ 控制面板",
       "disabledTitle": "Redis 已停用",
-      "disabledDesc": "啟用 Redis 以使用快取、工作階段儲存及 BullMQ 訊息佇列。",
+      "disabledDesc": "啟用 Redis 以使用快取、BullMQ 訊息佇列、速率限制計數器及多節點 WebSocket 分發。",
       "passwordOptional": "（選填）",
       "bullMqUrlCopied": "已複製 Bull MQ 儀表板網址",
       "bullMqUrlHint": "請使用 ADMIN API 金鑰開啟 — 瀏覽器分頁無法進行身份驗證。"
@@ -1055,7 +1052,7 @@
       "healthFail": "健康檢查失敗",
       "healthError": "健康檢查錯誤",
       "savedTitle": "設定已儲存",
-      "savedDesc": "需要重新啟動伺服器以套用變更。",
+      "savedDesc": "變更無需重新啟動伺服器即可生效。",
       "saveFailed": "儲存失敗",
       "installed": "外掛已安裝",
       "installFailed": "安裝失敗",

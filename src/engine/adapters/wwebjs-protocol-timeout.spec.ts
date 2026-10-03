@@ -220,6 +220,23 @@ describe('a protocol timeout is a 503, never a not-found verdict', () => {
     expect(reportIfPageTransportError).not.toHaveBeenCalled();
   });
 
+  // Mute and pin resolve the chat first, so the write itself is where a slow renderer runs out the budget.
+  it.each([
+    ['muteChat', (host: WwebjsEngineHost) => chats(host).muteChat(CHAT, Date.now() + 60_000)],
+    ['unmuteChat', (host: WwebjsEngineHost) => chats(host).muteChat(CHAT, null)],
+    ['pinChat', (host: WwebjsEngineHost) => chats(host).pinChat(CHAT, true)],
+    ['unpinChat', (host: WwebjsEngineHost) => chats(host).pinChat(CHAT, false)],
+  ] as const)('%s answers a protocolTimeout on its write with a 503 and reports no death', async (method, call) => {
+    const timeout = new Error(await puppeteerProtocolTimeoutMessage());
+    const { host, reportIfPageTransportError } = makeHost({
+      getChatById: jest.fn().mockResolvedValue({ id: { _serialized: CHAT } }),
+      [method]: jest.fn().mockRejectedValue(timeout),
+    });
+
+    await expect(call(host)).rejects.toBeInstanceOf(EngineTransportError);
+    expect(reportIfPageTransportError).not.toHaveBeenCalled();
+  });
+
   // The list reads walk the whole store in one command, so they are the ones a large account
   // pushes past the budget; none has a not-found verdict, but a raw rethrow would answer 500.
   it.each([

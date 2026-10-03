@@ -221,6 +221,8 @@ function ConfigField({
         required={field.required}
         min={field.type === 'number' ? field.min : undefined}
         max={field.type === 'number' ? field.max : undefined}
+        // min/max are value bounds only; without step="any" the default step of 1 rejects 0.7.
+        step={field.type === 'number' ? 'any' : undefined}
         minLength={field.type !== 'number' ? field.min : undefined}
         maxLength={field.type !== 'number' ? field.max : undefined}
         pattern={field.type !== 'number' ? field.pattern : undefined}
@@ -592,7 +594,16 @@ export default function Plugins() {
   const { data: plugins = [], isLoading: loadingPlugins, error: queryError } = usePluginsQuery();
   const loading = loadingPlugins;
   const error = queryError instanceof Error ? queryError.message : null;
-  const [actionLoading, setActionLoading] = useState<string | null>(null);
+  // Ids of plugins with a lifecycle action in flight. One per plugin, so another plugin's action
+  // settling first does not re-enable this plugin's buttons while its own request is pending.
+  const [actionLoading, setActionLoading] = useState<ReadonlySet<string>>(new Set());
+  const startAction = (id: string) => setActionLoading(s => new Set(s).add(id));
+  const endAction = (id: string) =>
+    setActionLoading(s => {
+      const next = new Set(s);
+      next.delete(id);
+      return next;
+    });
   const schemaFormRef = useRef<HTMLFormElement>(null);
 
   const [showConfigModal, setShowConfigModal] = useState(false);
@@ -636,7 +647,7 @@ export default function Plugins() {
         return;
       }
     }
-    setActionLoading(plugin.id);
+    startAction(plugin.id);
     try {
       // Both endpoints report lifecycle failures as 200 + {success:false} — surface them instead of
       // silently refetching. The card flips to ERROR either way, but without the message the operator
@@ -656,12 +667,12 @@ export default function Plugins() {
         err instanceof Error ? err.message : t('plugins.toasts.errorDefault'),
       );
     } finally {
-      setActionLoading(null);
+      endAction(plugin.id);
     }
   };
 
   const handleHealthCheck = async (pluginId: string) => {
-    setActionLoading(pluginId);
+    startAction(pluginId);
     try {
       const result = await pluginsApi.healthCheck(pluginId);
       if (result.healthy) {
@@ -672,7 +683,7 @@ export default function Plugins() {
     } catch (err) {
       toast.error(t('plugins.toasts.healthError'), err instanceof Error ? err.message : t('common.unknownError'));
     } finally {
-      setActionLoading(null);
+      endAction(pluginId);
     }
   };
 
@@ -820,7 +831,7 @@ export default function Plugins() {
 
   const handleUninstall = async (plugin: Plugin) => {
     if (!window.confirm(t('plugins.uninstallConfirm', { name: localizePlugin(plugin, i18n.language).name }))) return;
-    setActionLoading(plugin.id);
+    startAction(plugin.id);
     try {
       await pluginsApi.uninstall(plugin.id);
       refetchAll();
@@ -829,7 +840,7 @@ export default function Plugins() {
     } catch (err) {
       toast.error(t('plugins.toasts.uninstallFailed', 'Uninstall failed'), err instanceof Error ? err.message : '');
     } finally {
-      setActionLoading(null);
+      endAction(plugin.id);
     }
   };
 
@@ -916,7 +927,7 @@ export default function Plugins() {
           <div className="plugins-grid">
             {visiblePlugins.map(plugin => {
               const TypeIcon = pluginTypeIcons[plugin.type as PluginType] || Puzzle;
-              const isLoading = actionLoading === plugin.id;
+              const isLoading = actionLoading.has(plugin.id);
               const lz = localizePlugin(plugin, i18n.language);
 
               return (

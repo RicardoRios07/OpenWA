@@ -1,3 +1,4 @@
+import { MessageChannel } from 'worker_threads';
 import { PluginWorkerHost } from './plugin-worker-host';
 import { PluginWorkerChannel, HostToWorkerMessage, WorkerToHostMessage } from './protocol';
 import { HookManager } from '../../hooks/hook-manager.service';
@@ -917,6 +918,10 @@ describe('PluginWorkerHost', () => {
         timeoutMs: 500,
       });
 
+    // The verdict is given one loop turn after the window closes (see armProbe); a fake setImmediate
+    // queued while timers are advancing runs on the next timer step.
+    const verdict = () => jest.advanceTimersToNextTimer();
+
     beforeEach(() => jest.useFakeTimers());
     afterEach(() => jest.useRealTimers());
 
@@ -956,6 +961,7 @@ describe('PluginWorkerHost', () => {
       jest.advanceTimersByTime(500);
       await pending;
       jest.advanceTimersByTime(PROBE_MS);
+      verdict();
       expect(onUnresponsive).toHaveBeenCalledTimes(1);
 
       const again = hook(host);
@@ -982,6 +988,7 @@ describe('PluginWorkerHost', () => {
 
       // A full window with no answer at all is still reported.
       jest.advanceTimersByTime(PROBE_MS);
+      verdict();
       expect(onUnresponsive).toHaveBeenCalledTimes(1);
     });
 
@@ -995,6 +1002,7 @@ describe('PluginWorkerHost', () => {
       jest.advanceTimersByTime(PROBE_MS - 100);
       ch.reply({ kind: 'log', level: 'log', message: 'still spinning' });
       jest.advanceTimersByTime(100);
+      verdict();
       expect(onUnresponsive).toHaveBeenCalledTimes(1);
     });
 
@@ -1011,6 +1019,7 @@ describe('PluginWorkerHost', () => {
         await pending;
         expect(pings(ch)).toHaveLength(1);
         jest.advanceTimersByTime(PROBE_MS);
+        verdict();
         expect(onUnresponsive).toHaveBeenCalledTimes(1);
       }
     });
@@ -1022,6 +1031,50 @@ describe('PluginWorkerHost', () => {
       jest.advanceTimersByTime(500);
       await pending;
       expect(pings(ch)).toHaveLength(0);
+    });
+
+    // Real timers and a real MessagePort: the race lives in the event loop's phase order. After a host
+    // stall the timers phase runs before the poll phase that delivers the port message, so a pong the
+    // worker sent in time was read only after the probe timer had already fired.
+    it('reads a pong that was queued while the host was stalled before giving its verdict', async () => {
+      jest.useRealTimers();
+      const SHORT_PROBE_MS = 50;
+      const { port1, port2 } = new MessageChannel();
+      const ch = new FakeChannel();
+      ch.postMessage = (message: HostToWorkerMessage): void => {
+        ch.sent.push(message);
+        if (message.kind !== 'ping') return;
+        setImmediate(() => {
+          port2.postMessage({ kind: 'pong', id: message.id });
+          const until = Date.now() + SHORT_PROBE_MS * 2;
+          while (Date.now() < until); // the host's own loop is blocked past the probe window
+        });
+      };
+      port1.on('message', (message: WorkerToHostMessage) => ch.reply(message));
+      const onUnresponsive = jest.fn();
+      const host = new PluginWorkerHost(
+        ch,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        SHORT_PROBE_MS,
+        onUnresponsive,
+      );
+      try {
+        await host.dispatchHook({ event: 'message:received', data: {}, source: 'Engine', timeoutMs: 10 });
+        await new Promise(resolve => setTimeout(resolve, SHORT_PROBE_MS * 4));
+
+        expect(pings(ch)).toHaveLength(1);
+        expect(onUnresponsive).not.toHaveBeenCalled();
+      } finally {
+        port1.close();
+      }
     });
 
     it('a worker exit cancels a probe in flight', async () => {

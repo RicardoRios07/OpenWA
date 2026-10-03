@@ -54,15 +54,16 @@ export function buildHeaderMap(rows: readonly HeaderRow[]): HeaderMapResult {
 
 /**
  * Null when the secret is acceptable: empty (not sent) or 16 to 255 characters. Never trimmed.
- * Characters are counted as the gateway's validator counts them: a surrogate pair, or a character
- * followed by a presentation selector (U+FE0E/U+FE0F), is one.
+ * Characters are counted as the gateway's validators count them: for the 16 minimum (@MinLength) a
+ * surrogate pair, or a character followed by a presentation selector (U+FE0E/U+FE0F), is one; the
+ * 255 maximum (@MaxCodePoints) counts code points, so a presentation selector counts on its own.
  */
 export function secretError(secret: string): string | null {
   const length =
     secret.length -
     (secret.match(/[^\uFE0F\uFE0E][\uFE0F\uFE0E]/g)?.length ?? 0) -
     (secret.match(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g)?.length ?? 0);
-  if (secret === '' || (length >= 16 && length <= 255)) return null;
+  if (secret === '' || (length >= 16 && [...secret].length <= 255)) return null;
   return 'webhooks.auth.errors.secretLength';
 }
 

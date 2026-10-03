@@ -41,7 +41,7 @@
   letter-spacing: 0.05em;
   border-bottom: 1px solid var(--border);
   padding: 1.125rem 1.5rem;
-  text-align: left;
+  text-align: start;
 }
 
 .api-keys-page .keys-table tbody tr.table-row td {
@@ -562,7 +562,7 @@
   .api-keys-page .keys-table tbody tr.table-row td:has(.status-badge) {
     display: inline-block;
     order: 3;
-    margin-right: 0.5rem;
+    margin-inline-end: 0.5rem;
   }
 
   .api-keys-page .sessions-cell {

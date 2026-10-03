@@ -10,6 +10,7 @@ import { encodeSegment } from '../http.js';
 import type { BinaryResponse } from '../http.js';
 import type { OpenWAClient } from '../client.js';
 import type {
+  BatchCancelResponse,
   BatchStatusResponse,
   BulkMessageResponse,
   ChatHistoryMessage,
@@ -275,8 +276,8 @@ export class MessagesResource {
   }
 
   /** Cancel a running batch. Requires an OPERATOR-level key. */
-  cancelBatch(sessionId: string, batchId: string): Promise<BatchStatusResponse> {
-    return this.client.request<BatchStatusResponse>({
+  cancelBatch(sessionId: string, batchId: string): Promise<BatchCancelResponse> {
+    return this.client.request<BatchCancelResponse>({
       method: 'POST',
       path: `/api/sessions/${encodeSegment(sessionId)}/messages/batch/${encodeSegment(batchId)}/cancel`,
     });

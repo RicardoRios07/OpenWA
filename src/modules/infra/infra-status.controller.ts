@@ -163,7 +163,7 @@ export class InfraStatusController {
     if (engineType === 'whatsapp-web.js') {
       // Kick the auto-resolve but DON'T await it — /infra/status is polled frequently and the registry
       // fetch can take up to 5s on a firewalled host. Read whatever's cached now (null until the first
-      // success); a later poll reflects the resolved build. (#488 review)
+      // success); a later poll reflects the resolved build. (#488)
       if (getEffectiveWebVersionInfo().source === 'auto') {
         void resolveCurrentWebVersion().catch(() => undefined);
       }

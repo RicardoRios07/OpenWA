@@ -35,11 +35,49 @@ import { SessionStatusBroadcaster } from './session-status-broadcaster';
 import {
   resolveMaxConcurrentSessions,
   resolveReconnectConfig,
+  startSlotHolders,
   type ReconnectState,
 } from './session-engine-lifecycle.service';
 
 /** A start refused because an operator stopped the session. Same 409 on the wire as any conflict. */
 export class SessionStoppedException extends ConflictException {}
+
+/**
+ * The stop marks. Each add() stamps the id afresh, even one already marked, so start() can tell a mark
+ * set while it waited from one that was already there when it began.
+ */
+export class StopMarks extends Set<string> {
+  private seq = 0;
+  private readonly stamps = new Map<string, number>();
+
+  override add(id: string): this {
+    this.stamps.set(id, ++this.seq);
+    return super.add(id);
+  }
+
+  override delete(id: string): boolean {
+    this.stamps.delete(id);
+    return super.delete(id);
+  }
+
+  /** The stamp of the id's current mark, undefined when it has none. */
+  stamp(id: string): number | undefined {
+    return this.stamps.get(id);
+  }
+}
+
+/** Caller callbacks for stop()/delete(), run around the session read that opens each verb. */
+export interface StopHooks {
+  /** stop() only: runs once the session read succeeds and before any teardown; records the stop. */
+  afterRead?: () => Promise<void>;
+  /**
+   * Runs when the first session read fails (for stop() and delete(), after the stop mark is dropped):
+   * undoes the caller's request count.
+   */
+  onReadFailed?: () => void;
+  /** forceKill() only: runs synchronously once there is an engine to kill; records the stop request. */
+  onEngineFound?: () => void;
+}
 
 /**
  * The deps + core call-ins SessionEngineControls needs from the lifecycle. Built ONCE in the
@@ -76,7 +114,7 @@ export interface SessionEngineControlsHost {
   updateStatus(id: string, status: SessionStatus): Promise<void>;
   /** Ownership gate, same contract as SessionEngineWiringHost.ownsSession. */
   ownsSession(id: string): boolean;
-  stoppingSessions: Set<string>;
+  stoppingSessions: StopMarks;
   /** The engine each operator-initiated teardown is retiring; see the lifecycle field of the same name. */
   operatorTeardowns: Map<string, IWhatsAppEngine>;
   reconnectStates: Map<string, ReconnectState>;
@@ -109,7 +147,7 @@ export class SessionEngineControls {
   private readonly logger: ReturnType<typeof createLogger>;
   private readonly fences: SessionLifecycleFences;
   private readonly broadcaster: SessionStatusBroadcaster;
-  private readonly stoppingSessions: Set<string>;
+  private readonly stoppingSessions: StopMarks;
   private readonly operatorTeardowns: Map<string, IWhatsAppEngine>;
   private readonly reconnectStates: Map<string, ReconnectState>;
   private readonly stuckAuthRecoveryUsed: Set<string>;
@@ -148,11 +186,12 @@ export class SessionEngineControls {
    * that fails has retired nothing, so the mark must not outlive it: left on a running session, its
    * next disconnect would never reconnect and start() would keep refusing it as already started.
    */
-  private async requireSessionOrDropStopMark(id: string): Promise<Session> {
+  private async requireSessionOrDropStopMark(id: string, onReadFailed?: () => void): Promise<Session> {
     try {
       return await this.requireSession(id);
     } catch (error) {
       this.stoppingSessions.delete(id);
+      onReadFailed?.();
       throw error;
     }
   }
@@ -174,6 +213,11 @@ export class SessionEngineControls {
       throw new BadRequestException('Session is already starting');
     }
     this.initializingSessions.add(id);
+    // A stop mark already set when this start began is stale (a start is how one is cleared). One set
+    // while it waits below comes from a retirement that saw this start in flight, stopOrphanEngines
+    // above all, which writes nothing else this start could read and counts on it aborting. That
+    // includes a mark set again on top of a stale one, which only its stamp tells apart.
+    const markAtEntry = this.stoppingSessions.stamp(id);
 
     try {
       const session = await this.requireSession(id);
@@ -194,8 +238,10 @@ export class SessionEngineControls {
         // `engines` (set at the start of initializeEngine) and `initializingSessions` (until
         // start()'s finally), so summing the two sizes would double-count it; and `id` itself is
         // already reserved in `initializingSessions` (added at entry), so it must not count
-        // against the cap it is being checked against.
-        const activeIds = new Set<string>(this.engines.activeIds());
+        // against the cap it is being checked against. A session waiting out a failed relaunch holds
+        // no engine (the attempt evicted it) but re-registers one when its timer fires, without a cap
+        // check of its own, so it keeps its slot here.
+        const activeIds = startSlotHolders(this.engines, this.reconnectStates);
         activeIds.delete(id);
         if (activeIds.size >= maxConcurrentSessions) {
           throw new BadRequestException(`Maximum concurrent sessions reached (${maxConcurrentSessions})`);
@@ -215,7 +261,11 @@ export class SessionEngineControls {
       // again, so a refused start does not leave a false "already starting" mark behind (briefly held).
       await this.fences.awaitPendingTeardown(session.name);
 
-      // A fresh start intentionally (re-)creates the engine — clear any stale stop/delete mark.
+      // A fresh start intentionally (re-)creates the engine — clear any stale stop/delete mark, but
+      // yield to one set after this start began, leaving it in place.
+      if (this.stoppingSessions.has(id) && this.stoppingSessions.stamp(id) !== markAtEntry) {
+        throw new SessionStoppedException(`Session ${id} was stopped`);
+      }
       this.stoppingSessions.delete(id);
 
       // Cancel any reconnect timer a prior failed executeReconnect left pending, BEFORE the awaited
@@ -324,8 +374,10 @@ export class SessionEngineControls {
     }
   }
 
-  async stop(id: string): Promise<Session> {
-    const session = await this.requireSessionOrDropStopMark(id);
+  async stop(id: string, hooks: StopHooks = {}): Promise<Session> {
+    const session = await this.requireSessionOrDropStopMark(id, hooks.onReadFailed);
+    // Recorded only once the row is known to exist, and before anything is torn down.
+    await hooks.afterRead?.();
 
     // Mark as tearing down BEFORE cleanup so an in-flight reconnect can't resurrect it.
     this.stoppingSessions.add(id);
@@ -497,8 +549,12 @@ export class SessionEngineControls {
    * engine is hung. Mirrors stop()'s lifecycle (stop-mark + cancel-reconnect + bounded, isolated
    * teardown + Map reconciliation) but uses the engine's forceDestroy().
    */
-  async forceKill(id: string): Promise<Session> {
-    const session = await this.requireSession(id);
+  async forceKill(id: string, hooks: StopHooks = {}): Promise<Session> {
+    // No stop mark is set yet, so a failed read leaves a concurrent stop's mark alone.
+    const session = await this.requireSession(id).catch((error: unknown) => {
+      hooks.onReadFailed?.();
+      throw error;
+    });
     const engine = this.engines.get(id);
 
     // No live engine means there is nothing to SIGKILL. Resolving would let the controller write a
@@ -508,6 +564,8 @@ export class SessionEngineControls {
     if (!engine) {
       throw new BadRequestException('Session is not started. Call POST /sessions/:sessionId/start first.');
     }
+    // In the same synchronous step as the engine lookup: a refused or failed kill never gets here.
+    hooks.onEngineFound?.();
 
     // Mark as tearing down BEFORE cleanup so an in-flight reconnect can't resurrect it.
     this.stoppingSessions.add(id);
@@ -562,8 +620,8 @@ export class SessionEngineControls {
     return this.requireSession(id);
   }
 
-  async delete(id: string): Promise<void> {
-    const session = await this.requireSessionOrDropStopMark(id);
+  async delete(id: string, hooks: StopHooks = {}): Promise<void> {
+    const session = await this.requireSessionOrDropStopMark(id, hooks.onReadFailed);
 
     // FENCE #1 — fail-fast on an ALREADY-PENDING credential teardown for this session NAME, BEFORE
     // any lifecycle mutation. A logout teardown that lost its deadline race is still running and ends
@@ -748,7 +806,9 @@ export class SessionEngineControls {
    * 10s deadlines per engine (destroy, then the forceDestroy escalation). The mark + reconnect-cancel happen first so an in-flight reconnect
    * cannot resurrect the id while teardown runs. Engines that are mid-initialization (no entry in
    * `engines` yet) are marked but cannot be torn down here — their start() will see the stop mark
-   * via its existing guard and self-abort; the caller learns about them in `notRunning`.
+   * via its existing guard and self-abort; the caller learns about them in `notRunning`. A session
+   * waiting to relaunch after a failed reconnect has no engine either: the reconnect cancel above is
+   * what stops it, and it is reported in `notRunning` too.
    *
    * Always resolves. Best-effort: a `failed` entry means destroy and the forceDestroy escalation both
    * threw or timed out, and the engine is removed from the Map regardless so it stops holding a

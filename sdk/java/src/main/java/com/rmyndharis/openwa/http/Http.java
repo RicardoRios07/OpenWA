@@ -32,10 +32,15 @@ public final class Http {
     /**
      * Build an absolute URL, preserving a base path prefix and omitting null query values.
      *
-     * @throws IllegalArgumentException if the path has a {@code .} or {@code ..} segment (also
-     *     written {@code %2e}); empty segments, such as a trailing slash, are kept as written.
+     * @throws IllegalArgumentException if the path does not begin with {@code /} (appended to the
+     *     base, any other path can change the host the request and its API key go to), or has a
+     *     {@code .} or {@code ..} segment (also written {@code %2e}); empty segments, such as a
+     *     trailing slash, are kept as written.
      */
     public static String buildUrl(String baseUrl, String path, Object query, Gson gson) {
+        if (!path.startsWith("/")) {
+            throw new IllegalArgumentException("OpenWA: path must begin with \"/\": \"" + path + "\"");
+        }
         String pathOnly = path.split("[?#]", 2)[0];
         for (String segment : pathOnly.split("/", -1)) {
             String dots = segment.replaceAll("(?i)%2e", ".");
@@ -58,7 +63,7 @@ public final class Http {
             qs.add(encodeQuery(e.getKey()) + "=" + encodeQuery(value));
         }
         String q = qs.toString();
-        return q.isEmpty() ? url : url + "?" + q;
+        return q.isEmpty() ? url : url + (url.contains("?") ? "&" : "?") + q;
     }
 
     private static String encodeQuery(String s) {

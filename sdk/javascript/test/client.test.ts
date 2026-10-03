@@ -105,6 +105,16 @@ describe('OpenWAClient', () => {
     expect(t.calls).toHaveLength(2);
   });
 
+  it('refuses a raw path that does not begin with a slash, so the request never leaves the base host', async () => {
+    const t = new MockTransport().passthrough({ status: 200, body: [] });
+    const c = client(t);
+    for (const path of ['.example.net/api/sessions', '@example.net/x', 'api/sessions', '']) {
+      await expect(c.request({ method: 'GET', path })).rejects.toThrow(TypeError);
+      await expect(c.requestBytes({ method: 'GET', path })).rejects.toThrow(TypeError);
+    }
+    expect(t.calls).toHaveLength(0);
+  });
+
   it('sends a raw path with a trailing slash, a double slash or only a slash as written', async () => {
     const t = new MockTransport().passthrough({ status: 200, body: [] });
     const c = client(t);
@@ -125,6 +135,12 @@ describe('OpenWAClient', () => {
     expect(t.lastCall!.url).toContain('chatId=a%40c.us');
     expect(t.lastCall!.url).toContain('limit=10');
     expect(t.lastCall!.url).not.toContain('from=');
+  });
+
+  it('appends query params to a query string already in the path', async () => {
+    const t = new MockTransport().passthrough({ status: 200, body: [] });
+    await client(t).request({ method: 'GET', path: '/api/sessions?limit=5', query: { name: 'x' } });
+    expect(t.lastCall!.url).toBe('http://localhost:2785/api/sessions?limit=5&name=x');
   });
 
   it('maps a 404 to OpenWANotFoundError with parsed body', async () => {
@@ -339,6 +355,25 @@ describe('OpenWAClient', () => {
     await expect(c.sessions.list()).rejects.toBeInstanceOf(OpenWATimeoutError);
   });
 
+  it('reports a timeout, not the status, when a non-2xx response body stalls', async () => {
+    const stalledErrorFetch: FetchLike = async (_url, init) => {
+      const signal = init?.signal;
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          signal?.addEventListener('abort', () => {
+            const error = new Error('body aborted');
+            error.name = 'AbortError';
+            controller.error(error);
+          });
+        },
+      });
+      return new Response(body, { status: 500 });
+    };
+    const c = new OpenWAClient({ baseUrl: 'http://x', apiKey: 'k', timeoutMs: 5, fetch: stalledErrorFetch });
+
+    await expect(c.sessions.list()).rejects.toBeInstanceOf(OpenWATimeoutError);
+  });
+
   it('turns the timeout off for 0 or Infinity, and caps a delay setTimeout cannot hold', async () => {
     // setTimeout fires after 1 ms for a delay that is not finite or exceeds 2^31-1, which would
     // abort every request instead of waiting longer.
@@ -426,6 +461,23 @@ describe('OpenWAClient', () => {
     await c.request({ method: 'GET', path: '/api/sessions', headers: { 'content-type': 'text/plain' } });
     expect(wire!.get('x-api-key')).toBe('REAL');
     expect(wire!.get('content-type')).toBe('application/json');
+    expect(wire!.get('x-trace')).toBe('keep');
+  });
+
+  it('lets a per-request header replace a default header that differs only in case', async () => {
+    let wire: Headers | undefined;
+    const recordingFetch: FetchLike = async (_url, init) => {
+      wire = new Headers(init?.headers);
+      return new Response('[]', { status: 200 });
+    };
+    const c = new OpenWAClient({
+      baseUrl: 'http://localhost',
+      apiKey: 'k',
+      defaultHeaders: { Accept: 'a', 'X-Trace': 'keep' },
+      fetch: recordingFetch,
+    });
+    await c.request({ method: 'GET', path: '/api/sessions', headers: { accept: 'b' } });
+    expect(wire!.get('accept')).toBe('b');
     expect(wire!.get('x-trace')).toBe('keep');
   });
 

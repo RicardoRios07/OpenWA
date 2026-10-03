@@ -8,6 +8,13 @@ import { type ApiKey, ApiKeyRole } from './entities/api-key.entity';
 import { AuditService } from '../audit/audit.service';
 import { AuditAction } from './../audit/entities/audit-log.entity';
 
+// A key stored before expiresAt was validated can hold an unparseable expiry, which SQLite reads back as
+// an Invalid Date. The gateway refuses such a key as expired, but JSON would serialize the expiry as null
+// (no expiry). Report it as the epoch instead, so the key shows as expired and can be given a new expiry.
+function readableExpiry(expiresAt: Date | null): Date | null {
+  return expiresAt && Number.isNaN(expiresAt.getTime()) ? new Date(0) : expiresAt;
+}
+
 @ApiTags('auth')
 @Controller('auth/api-keys')
 // Key lifecycle routes have no session dimension, so a session-scoped ADMIN key could otherwise
@@ -41,7 +48,24 @@ export class AuthController {
       allowedIps: key.allowedIps,
       allowedSessions: key.allowedSessions,
       allowedChats: key.allowedChats,
-      expiresAt: key.expiresAt,
+      expiresAt: readableExpiry(key.expiresAt),
+    };
+  }
+
+  private toResponse(k: ApiKey): ApiKeyResponseDto {
+    return {
+      id: k.id,
+      name: k.name,
+      keyPrefix: k.keyPrefix,
+      role: k.role,
+      allowedIps: k.allowedIps || undefined,
+      allowedSessions: k.allowedSessions || undefined,
+      allowedChats: k.allowedChats || undefined,
+      isActive: k.isActive,
+      expiresAt: readableExpiry(k.expiresAt) || undefined,
+      lastUsedAt: k.lastUsedAt || undefined,
+      usageCount: k.usageCount,
+      createdAt: k.createdAt,
     };
   }
 
@@ -69,21 +93,7 @@ export class AuthController {
         scope: this.authzSnapshot(apiKey),
       },
     });
-    return {
-      id: apiKey.id,
-      name: apiKey.name,
-      keyPrefix: apiKey.keyPrefix,
-      role: apiKey.role,
-      allowedIps: apiKey.allowedIps || undefined,
-      allowedSessions: apiKey.allowedSessions || undefined,
-      allowedChats: apiKey.allowedChats || undefined,
-      isActive: apiKey.isActive,
-      expiresAt: apiKey.expiresAt || undefined,
-      lastUsedAt: apiKey.lastUsedAt || undefined,
-      usageCount: apiKey.usageCount,
-      createdAt: apiKey.createdAt,
-      apiKey: rawKey,
-    };
+    return { ...this.toResponse(apiKey), apiKey: rawKey };
   }
 
   @Get()
@@ -96,20 +106,7 @@ export class AuthController {
   })
   async findAll(): Promise<ApiKeyResponseDto[]> {
     const keys = await this.authService.findAll();
-    return keys.map(k => ({
-      id: k.id,
-      name: k.name,
-      keyPrefix: k.keyPrefix,
-      role: k.role,
-      allowedIps: k.allowedIps || undefined,
-      allowedSessions: k.allowedSessions || undefined,
-      allowedChats: k.allowedChats || undefined,
-      isActive: k.isActive,
-      expiresAt: k.expiresAt || undefined,
-      lastUsedAt: k.lastUsedAt || undefined,
-      usageCount: k.usageCount,
-      createdAt: k.createdAt,
-    }));
+    return keys.map(k => this.toResponse(k));
   }
 
   @Get(':id')
@@ -123,20 +120,7 @@ export class AuthController {
   @ApiResponse({ status: 404, description: 'No API key with this id.' })
   async findOne(@Param('id') id: string): Promise<ApiKeyResponseDto> {
     const k = await this.authService.findOne(id);
-    return {
-      id: k.id,
-      name: k.name,
-      keyPrefix: k.keyPrefix,
-      role: k.role,
-      allowedIps: k.allowedIps || undefined,
-      allowedSessions: k.allowedSessions || undefined,
-      allowedChats: k.allowedChats || undefined,
-      isActive: k.isActive,
-      expiresAt: k.expiresAt || undefined,
-      lastUsedAt: k.lastUsedAt || undefined,
-      usageCount: k.usageCount,
-      createdAt: k.createdAt,
-    };
+    return this.toResponse(k);
   }
 
   @Put(':id')
@@ -166,20 +150,7 @@ export class AuthController {
         after: this.authzSnapshot(k),
       },
     });
-    return {
-      id: k.id,
-      name: k.name,
-      keyPrefix: k.keyPrefix,
-      role: k.role,
-      allowedIps: k.allowedIps || undefined,
-      allowedSessions: k.allowedSessions || undefined,
-      allowedChats: k.allowedChats || undefined,
-      isActive: k.isActive,
-      expiresAt: k.expiresAt || undefined,
-      lastUsedAt: k.lastUsedAt || undefined,
-      usageCount: k.usageCount,
-      createdAt: k.createdAt,
-    };
+    return this.toResponse(k);
   }
 
   @Delete(':id')
@@ -221,19 +192,6 @@ export class AuthController {
       ...this.auditContext(req, actor),
       metadata: { targetKeyId: k.id, targetKeyName: k.name },
     });
-    return {
-      id: k.id,
-      name: k.name,
-      keyPrefix: k.keyPrefix,
-      role: k.role,
-      allowedIps: k.allowedIps || undefined,
-      allowedSessions: k.allowedSessions || undefined,
-      allowedChats: k.allowedChats || undefined,
-      isActive: k.isActive,
-      expiresAt: k.expiresAt || undefined,
-      lastUsedAt: k.lastUsedAt || undefined,
-      usageCount: k.usageCount,
-      createdAt: k.createdAt,
-    };
+    return this.toResponse(k);
   }
 }

@@ -30,14 +30,14 @@ export class SendProductDto {
 }
 
 export class ProductQueryDto {
-  @ApiPropertyOptional({ description: 'Result page (1-based).', example: 1, minimum: 1 })
+  @ApiPropertyOptional({ description: 'Result page (1-based).', example: 1, type: 'integer', minimum: 1 })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
   page?: number = 1;
 
-  @ApiPropertyOptional({ description: 'Page size.', example: 20, minimum: 1 })
+  @ApiPropertyOptional({ description: 'Page size.', example: 20, type: 'integer', minimum: 1 })
   @IsOptional()
   @Type(() => Number)
   @IsInt()

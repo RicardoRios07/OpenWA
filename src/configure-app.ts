@@ -42,8 +42,8 @@ export interface AppliedBodyCaps {
 
 /**
  * Everything the production HTTP surface installs on the Express app: request context, the CSP
- * nonce, helmet, the SPA document handler, CORS, the in-flight body budget, the body parsers and the
- * trailing-slash DELETE refusal.
+ * nonce, helmet, the SPA document handler, CORS, the encoded-NUL refusal, the in-flight body budget,
+ * the body parsers and the trailing-slash DELETE refusal.
  *
  * It lives here rather than inside bootstrap() so the e2e lane can run the SAME stack. main.ts
  * boots on import, so a suite cannot import it; the whole stack was therefore executed by nothing,
@@ -121,14 +121,16 @@ export function configureApp(app: INestApplication, options: ConfigureAppOptions
   if (dashboard.enabled && existsSync(join(dashboard.distDir, 'index.html'))) {
     const dashboardIndex = readFileSync(join(dashboard.distDir, 'index.html'), 'utf8');
     app.use((req: Request, res: Response, next: NextFunction) => {
+      // Lowercased because routing matches these prefixes case-insensitively.
+      const path = req.path.toLowerCase();
       const excluded =
-        req.path.startsWith('/api/') ||
-        req.path === '/api' ||
-        req.path.startsWith('/socket.io/') ||
-        req.path === '/socket.io' ||
-        req.path.startsWith('/mcp/') ||
-        req.path === '/mcp' ||
-        req.path.startsWith('/assets/');
+        path.startsWith('/api/') ||
+        path === '/api' ||
+        path.startsWith('/socket.io/') ||
+        path === '/socket.io' ||
+        path.startsWith('/mcp/') ||
+        path === '/mcp' ||
+        path.startsWith('/assets/');
       const documentRequest =
         req.method === 'GET' &&
         !excluded &&
@@ -196,6 +198,14 @@ export function configureApp(app: INestApplication, options: ConfigureAppOptions
       'Retry-After-ingress-ip',
     ],
     maxAge: 86400, // 24 hours
+  });
+
+  // Express decodes %00 in a path parameter or the query to U+0000, which PostgreSQL rejects in every text
+  // parameter, so the lookup behind the route failed with 500 (on the public ingress route too, which
+  // resolves its instance before anything else). No route takes one. After CORS, so a browser can read it.
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    if (!req.originalUrl.includes('%00')) return next();
+    res.status(400).json({ statusCode: 400, message: 'URL must not contain an encoded NUL', error: 'Bad Request' });
   });
 
   // Aggregate in-flight body budget (DoS hardening): once too many body bytes are being buffered

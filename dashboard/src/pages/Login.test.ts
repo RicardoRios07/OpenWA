@@ -1,6 +1,7 @@
 // Login page under the bare `node --test` runner, on the jsdom harness the other page tests use. The
 // key typed at sign-in is the one the dashboard stores and compares against its API key prefixes, so it
-// must be stored trimmed; and the form's alignment must follow the document direction set on <html>.
+// must be stored trimmed; a gateway that is down is not reported as an invalid key; and the form's
+// alignment must follow the document direction set on <html>.
 import '../test-helpers/register-hooks.ts';
 import { test, before, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -9,13 +10,18 @@ import { fileURLToPath } from 'node:url';
 import { createElement } from 'react';
 
 let sentKey: string | null = null;
+let reply: () => Response = okReply;
+
+function okReply(): Response {
+  return new Response(JSON.stringify({ valid: true, role: 'admin' }), {
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
 
 function installFetchStub(): void {
   globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     sentKey = new Headers(init?.headers).get('X-API-Key');
-    return Promise.resolve(
-      new Response(JSON.stringify({ valid: true, role: 'admin' }), { headers: { 'Content-Type': 'application/json' } }),
-    );
+    return Promise.resolve(reply());
   }) as typeof fetch;
 }
 
@@ -36,6 +42,7 @@ before(async () => {
 
 afterEach(() => {
   sentKey = null;
+  reply = okReply;
   rtl.cleanup();
 });
 
@@ -50,6 +57,44 @@ test('a key pasted with surrounding whitespace is sent and stored trimmed', asyn
   await waitFor(() => assert.equal(logins.length, 1));
   assert.deepEqual(logins, ['owa_k1_secret']);
   assert.equal(sentKey, 'owa_k1_secret');
+});
+
+async function submitAndReadError(): Promise<string> {
+  const { screen, fireEvent } = rtl;
+  rtl.render(createElement(Login, { onLogin: () => assert.fail('a refused key signed in') }));
+  fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'owa_k1_secret' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+  const message = await rtl.waitFor(() => {
+    const el = document.querySelector('.error-message');
+    assert.ok(el);
+    return el.textContent ?? '';
+  });
+  return message;
+}
+
+test('a proxy error page while the gateway is down is a connection error, not an invalid key', async () => {
+  reply = () => new Response('<html>502 Bad Gateway</html>', { status: 502, headers: { 'Content-Type': 'text/html' } });
+  assert.equal(await submitAndReadError(), 'Unable to connect to server. Please try again.');
+});
+
+test('a 5xx with a JSON message is still a connection error', async () => {
+  reply = () => new Response(JSON.stringify({ statusCode: 503, message: 'Service Unavailable' }), { status: 503 });
+  assert.equal(await submitAndReadError(), 'Unable to connect to server. Please try again.');
+});
+
+test('a refused key keeps the reason the gateway gave', async () => {
+  reply = () => new Response(JSON.stringify({ statusCode: 401, message: 'API key has expired' }), { status: 401 });
+  assert.equal(await submitAndReadError(), 'API key has expired');
+});
+
+test('a 401 without a message reads as an invalid key', async () => {
+  reply = () => new Response('', { status: 401 });
+  assert.equal(await submitAndReadError(), 'Invalid API key');
+});
+
+test('a refusal other than 401 without a message is a connection error, not an invalid key', async () => {
+  reply = () => new Response('', { status: 403 });
+  assert.equal(await submitAndReadError(), 'Unable to connect to server. Please try again.');
 });
 
 test('the login form aligns to the document direction, which is set on <html>', () => {

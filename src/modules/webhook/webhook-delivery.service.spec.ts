@@ -1114,7 +1114,7 @@ describe('WebhookDeliveryService', () => {
       await dispatchP;
       expect(destroyed).toBe(true);
       // The refused delivery keeps its pending outbox row, so the next start's sweep replays it.
-      expect(outboxService.close).not.toHaveBeenCalledWith('wh-b', expect.anything(), 'failed');
+      expect(outboxService.close).not.toHaveBeenCalledWith('wh-b', expect.anything(), expect.anything());
     });
 
     it('queued mode: parked enqueues drain to the queue on shutdown instead of dead-lettering', async () => {
@@ -1356,6 +1356,55 @@ describe('WebhookDeliveryService', () => {
       // Table maps lid 111 -> 628999 -> the same message now fires.
       lidStore.getCached.mockImplementation((lid: string) => (lid === '111' ? '628999' : null));
       expect(await deliveries(f, 'message.received', data)).toBe(1);
+    });
+
+    it('skips only the webhook whose stored events or filters are malformed', async () => {
+      mockFetch.mockClear();
+      const healthy = createMockWebhook({ id: 'wh-ok', events: ['*'] });
+      const badEvents = createMockWebhook({ id: 'wh-bad-events', events: {} as unknown as string[] });
+      const badFilters = createMockWebhook({
+        id: 'wh-bad-filters',
+        events: ['*'],
+        filters: { conditions: [null] } as unknown as WebhookFilters,
+      });
+      (repository.find as jest.Mock).mockResolvedValue([badEvents, badFilters, healthy]);
+
+      await expect(service.dispatch('sess-1', 'message.received', { from: '111@c.us' })).resolves.toBeUndefined();
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['conditions is a string', { conditions: 'x' }],
+      ['conditions is an object', { conditions: {} }],
+      ['filters is an array', [{ field: 'from', operator: 'is', value: ['x'] }]],
+      ['filters is a string', 'x'],
+    ])('skips a webhook whose stored %s instead of delivering unfiltered', async (_label, filters) => {
+      mockFetch.mockClear();
+      const healthy = createMockWebhook({ id: 'wh-ok', events: ['*'] });
+      const badFilters = createMockWebhook({
+        id: 'wh-bad-conditions',
+        events: ['*'],
+        filters: filters as unknown as WebhookFilters,
+      });
+      (repository.find as jest.Mock).mockResolvedValue([badFilters, healthy]);
+
+      await service.dispatch('sess-1', 'message.received', { from: '111@c.us' });
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['an empty object', {}],
+      ['an empty conditions array', { conditions: [] }],
+    ])('still delivers to a webhook whose stored filters is %s', async (_label, filters) => {
+      mockFetch.mockClear();
+      const webhook = createMockWebhook({ id: 'wh-empty', events: ['*'], filters: filters as WebhookFilters });
+      (repository.find as jest.Mock).mockResolvedValue([webhook]);
+
+      await service.dispatch('sess-1', 'message.received', { from: '111@c.us' });
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -2240,6 +2289,8 @@ describe('WebhookDeliveryService', () => {
     // A retry backoff gives its slot up, so without a count of the sleepers every failed attempt let
     // another delivery in, and the number held in heap grew with the event rate.
     it('counts deliveries waiting out a backoff against the dispatch bound', async () => {
+      // Earlier tests leave calls on the shared spy; the first wait below must see this test's backoff.
+      (sleep as unknown as jest.Mock).mockClear();
       internals().dispatchLimiter = new ConcurrencyLimiter(1, 1000);
       internals().dispatchMaxQueued = 1;
       hooksBySession['sess-a'] = [createMockWebhook({ id: 'wh-a', url: 'https://a.example/hook', retryCount: 2 })];
@@ -2279,6 +2330,7 @@ describe('WebhookDeliveryService', () => {
     // A delivery woken from its backoff parks to take its slot back while it is still counted as
     // admitted, so counting the parked tasks as well shed deliveries below the bound.
     it('counts a delivery waiting to take its slot back once against the dispatch bound', async () => {
+      (sleep as unknown as jest.Mock).mockClear();
       internals().dispatchLimiter = new ConcurrencyLimiter(1, 1000);
       internals().dispatchMaxQueued = 2;
       for (const s of ['a', 'b', 'c', 'd']) {

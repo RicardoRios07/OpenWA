@@ -198,6 +198,15 @@ describe('validateEnv', () => {
     expect(() => validateEnv({ INFLIGHT_BODY_BUDGET_BYTES: '104857600' })).not.toThrow();
   });
 
+  it('rejects a BODY_SIZE_LIMIT that refuses every body or would silently fall back to the default', () => {
+    for (const value of ['0', '0kb', '0.5', '50M', '50MiB', '50 MiB', 'abc']) {
+      expect(() => validateEnv({ BODY_SIZE_LIMIT: value })).toThrow(/BODY_SIZE_LIMIT must be a positive size/);
+    }
+    for (const value of ['25mb', '1.5gb', '1048576', '50 MB']) {
+      expect(() => validateEnv({ BODY_SIZE_LIMIT: value })).not.toThrow();
+    }
+  });
+
   it('rejects a negative/non-integer webhook fan-out knob (0 is a documented escape hatch)', () => {
     expect(() => validateEnv({ WEBHOOK_MAX_PER_SESSION: '-1' })).toThrow(/WEBHOOK_MAX_PER_SESSION/);
     expect(() => validateEnv({ WEBHOOK_MAX_PER_SESSION: '1.5' })).toThrow(/WEBHOOK_MAX_PER_SESSION/);
@@ -687,6 +696,48 @@ describe('validateEnv', () => {
     expect(() => validateEnv({ [key]: '2147483648' })).toThrow(new RegExp(`${key} must not exceed 2147483647 ms`));
     expect(() => validateEnv({ [key]: '2147483647' })).not.toThrow();
   });
+
+  // 0 disables each sweep; a negative value used to boot clean and keep the sweep running.
+  it.each(['MESSAGE_REAPER_INTERVAL_MS', 'WEBHOOK_RECONCILE_INTERVAL_MS', 'INGRESS_RECONCILE_INTERVAL_MS'])(
+    'rejects a negative %s and keeps 0 as the off switch',
+    key => {
+      expect(() => validateEnv({ [key]: '-1' })).toThrow(new RegExp(`${key} must be a non-negative integer`));
+      expect(() => validateEnv({ [key]: '0' })).not.toThrow();
+    },
+  );
+
+  // A huge grace builds a cutoff whose year SQLite binds in wrapped form, matching fresh rows.
+  it.each(['MESSAGE_REAPER_GRACE_MS', 'WEBHOOK_RECONCILE_GRACE_MS', 'INGRESS_RECONCILE_GRACE_MS'])(
+    'rejects a malformed or oversized %s',
+    key => {
+      expect(() => validateEnv({ [key]: '1h' })).toThrow(new RegExp(`${key} must be a non-negative integer`));
+      expect(() => validateEnv({ [key]: '-1' })).toThrow(new RegExp(`${key} must be a non-negative integer`));
+      expect(() => validateEnv({ [key]: '999999999999999' })).toThrow(
+        new RegExp(`${key} must be at most 3153600000000`),
+      );
+      expect(() => validateEnv({ [key]: '3153600000000' })).not.toThrow();
+      expect(() => validateEnv({ [key]: '0' })).not.toThrow();
+    },
+  );
+
+  it('rejects a non-positive or overflowing SSRF_DNS_TIMEOUT_MS', () => {
+    expect(() => validateEnv({ SSRF_DNS_TIMEOUT_MS: '0' })).toThrow(/SSRF_DNS_TIMEOUT_MS must be a positive integer/);
+    expect(() => validateEnv({ SSRF_DNS_TIMEOUT_MS: '10s' })).toThrow(/SSRF_DNS_TIMEOUT_MS must be a positive integer/);
+    expect(() => validateEnv({ SSRF_DNS_TIMEOUT_MS: '2147483648' })).toThrow(
+      /SSRF_DNS_TIMEOUT_MS must not exceed 2147483647 ms/,
+    );
+    expect(() => validateEnv({ SSRF_DNS_TIMEOUT_MS: '2147483647' })).not.toThrow();
+  });
+
+  // pg arms these with setTimeout and sends statement_timeout to a server capped at INT_MAX; 0 still disables.
+  it.each(['DATABASE_CONNECTION_TIMEOUT_MS', 'DATABASE_IDLE_TIMEOUT_MS', 'DATABASE_STATEMENT_TIMEOUT_MS'])(
+    'rejects a %s above 2147483647 ms and keeps 0',
+    key => {
+      expect(() => validateEnv({ [key]: '99999999999' })).toThrow(new RegExp(`${key} must not exceed 2147483647 ms`));
+      expect(() => validateEnv({ [key]: '2147483647' })).not.toThrow();
+      expect(() => validateEnv({ [key]: '0' })).not.toThrow();
+    },
+  );
 
   it('rejects a SESSION_LEASE_HEARTBEAT_MS above the Node timer ceiling even inside a longer lease', () => {
     const lease = { SESSION_LEASE_TTL_MS: '5000000000' };

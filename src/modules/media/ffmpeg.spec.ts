@@ -52,14 +52,22 @@ describe('ffmpeg encoder arguments', () => {
       expect(valueOf(args, '-movflags')).toBe('+faststart');
     });
 
-    // Unquoted, ffmpeg reads the filter as `scale=if(gte(iw`. The longer edge is capped at 1280 and
-    // truncated to even, and -2 derives the other edge, even too; H.264 requires both. Bounding the
-    // width alone let an odd width through (a 499x281 GIF, refused by libx264) and left a 1080x1920
-    // portrait video at its full height.
-    it('quotes the scale expressions, bounds the longer edge and keeps both edges even', () => {
+    // Unquoted, ffmpeg reads the filter as `scale=min(iw`. The frame is fitted inside 1280x720 (or
+    // 720x1280), which keeps every aspect ratio within the Baseline 3.1 frame size the stream declares:
+    // capping only the longer edge left a square 1080x1080 or a 4:3 1280x960 frame above it. Both
+    // edges are kept even, which H.264 requires (an odd 499x281 GIF is refused by libx264).
+    it('quotes the scale expressions, fits the frame within level 3.1 and keeps both edges even', () => {
+      expect(valueOf(args, '-level')).toBe('3.1');
       expect(valueOf(args, '-vf')).toBe(
-        "scale='if(gte(iw,ih),min(1280,trunc(iw/2)*2),-2)':'if(gte(iw,ih),-2,min(1280,trunc(ih/2)*2))'",
+        "scale='min(iw,if(gte(iw,ih),1280,720))':'min(ih,if(gte(iw,ih),720,1280))'" +
+          ':force_original_aspect_ratio=decrease:force_divisible_by=2',
       );
+    });
+
+    // Level 3.1 also caps the macroblock rate, which is 1280x720 at 30 fps: a 60 fps phone clip kept
+    // its rate and declared a level it exceeded. `-fpsmax` lowers a faster rate and leaves a slower one.
+    it('caps the frame rate at the 30 fps level 3.1 allows for a 720p frame', () => {
+      expect(valueOf(args, '-fpsmax')).toBe('30');
     });
   });
 });
@@ -87,6 +95,15 @@ describe('ffmpeg invocation shape', () => {
     expect(args[at + 1]).toBe('1001');
     expect(at).toBeGreaterThan(args.indexOf('libopus'));
     expect(at).toBe(args.length - 3);
+  });
+
+  // ffmpeg parses -fs as a signed 64-bit integer and exits 1 on anything wider, so a row-of-nines cap
+  // meant as "unlimited" would fail every conversion instead.
+  it('keeps the size cap within what ffmpeg accepts, however large the configured limit', () => {
+    for (const limit of [Number('99999999999999999999'), 1e21]) {
+      const huge = buildFfmpegArgs('/in', '/out', [], limit);
+      expect(huge[huge.indexOf('-fs') + 1]).toBe(String(Number.MAX_SAFE_INTEGER));
+    }
   });
 
   it('confines ffmpeg to the file protocol', () => {

@@ -4,6 +4,7 @@ import { ServiceUnavailableException, UnauthorizedException } from '@nestjs/comm
 import { ConfigService } from '@nestjs/config';
 import { Request } from 'express';
 import { HealthController } from './health.controller';
+import { ReadinessResponseDto } from './dto/health-response.dto';
 import { ShutdownService } from '../../common/services/shutdown.service';
 import { AuthService } from '../auth/auth.service';
 import { AuditService } from '../audit/audit.service';
@@ -18,7 +19,7 @@ describe('HealthController', () => {
   const logWarn = jest.fn().mockResolvedValue(null);
 
   const reqWith = (headers: Record<string, string> = {}, ip = '127.0.0.1'): Request =>
-    ({ headers, socket: { remoteAddress: ip } }) as unknown as Request;
+    ({ method: 'GET', path: '/api/health', headers, socket: { remoteAddress: ip } }) as unknown as Request;
 
   beforeEach(async () => {
     mainQuery.mockResolvedValue([{ '1': 1 }]);
@@ -112,8 +113,8 @@ describe('HealthController', () => {
       expect(result).not.toHaveProperty('version');
       expect(logWarn).toHaveBeenCalledWith(AuditAction.API_KEY_AUTH_FAILED, {
         ipAddress: '127.0.0.1',
-        method: undefined,
-        path: undefined,
+        method: 'GET',
+        path: '/api/health',
         errorMessage: 'Invalid API key',
       });
     });
@@ -225,21 +226,60 @@ describe('HealthController', () => {
       expect(dataQuery).toHaveBeenCalledWith('SELECT 1');
     });
 
+    /** Runs readiness() and returns the 503 body it threw. */
+    const unavailableBody = async (pending: Promise<unknown> = controller.readiness()) => {
+      const err: unknown = await pending.catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ServiceUnavailableException);
+      return (err as ServiceUnavailableException).getResponse();
+    };
+
     it('throws 503 when the data database is down', async () => {
       dataQuery.mockRejectedValue(new Error('connection refused'));
-      await expect(controller.readiness()).rejects.toBeInstanceOf(ServiceUnavailableException);
+      expect(await unavailableBody()).toEqual({
+        status: 'error',
+        details: { mainDatabase: { status: 'up' }, dataDatabase: { status: 'down' } },
+      });
     });
 
     it('throws 503 when the main (auth/audit) database is down', async () => {
       mainQuery.mockRejectedValue(new Error('disk I/O error'));
-      await expect(controller.readiness()).rejects.toBeInstanceOf(ServiceUnavailableException);
+      expect(await unavailableBody()).toEqual({
+        status: 'error',
+        details: { mainDatabase: { status: 'down' }, dataDatabase: { status: 'up' } },
+      });
+    });
+
+    it('reports a database whose probe hangs as down after 3 s instead of stalling', async () => {
+      jest.useFakeTimers();
+      try {
+        mainQuery.mockReturnValue(new Promise(() => {}));
+        const pending = unavailableBody();
+        await jest.advanceTimersByTimeAsync(3000);
+        expect(await pending).toEqual({
+          status: 'error',
+          details: { mainDatabase: { status: 'down' }, dataDatabase: { status: 'up' } },
+        });
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     it('throws 503 while draining, without even probing the DBs', async () => {
       isShuttingDown.mockReturnValue(true);
-      await expect(controller.readiness()).rejects.toBeInstanceOf(ServiceUnavailableException);
+      expect(await unavailableBody()).toEqual({ status: 'error', details: { shutdown: { status: 'draining' } } });
       expect(mainQuery).not.toHaveBeenCalled();
       expect(dataQuery).not.toHaveBeenCalled();
+    });
+
+    // The draining 503 answers while every database is up, so the contract must not describe the
+    // status as a dependency outage only.
+    it('documents both 503 causes with the readiness body shape', () => {
+      const responses = Reflect.getMetadata(
+        'swagger/apiResponse',
+        Object.getOwnPropertyDescriptor(HealthController.prototype, 'readiness')?.value as object,
+      ) as Record<string, { description: string; type?: unknown }>;
+      expect(responses['503'].description).toContain('draining');
+      expect(responses['503'].type).toBe(ReadinessResponseDto);
     });
   });
 });

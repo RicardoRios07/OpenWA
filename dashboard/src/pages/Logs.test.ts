@@ -65,6 +65,8 @@ let exportGrowsMidWalk = false;
 let listTotal: number | null = null;
 // When set, a request for the first on-screen page waits for it before answering.
 let firstPageGate: Promise<void> | null = null;
+// When set, the on-screen list read fails with this status.
+let listFailure: number | null = null;
 
 /** Row `i` of a table walked newest first; every row has its own id, as the gateway's rows do. */
 function exportRow(i: number): AuditLog {
@@ -91,6 +93,9 @@ function installFetchStub(): void {
         return Promise.resolve(jsonResponse({ data: [...Array(200).keys()].map(exportRow), total: 300 }));
       const shifted = [exportRow(-1), ...[...Array(300).keys()].map(exportRow)];
       return Promise.resolve(jsonResponse({ data: shifted.slice(offset), total: 301 }));
+    }
+    if (listFailure && !url.includes('limit=200')) {
+      return Promise.resolve(new Response(JSON.stringify({ message: 'Bad Gateway' }), { status: listFailure }));
     }
     // The gateway holds no error rows, so the server-side severity filter matches nothing.
     if (new URL(url, 'http://localhost').searchParams.get('severity') === 'error') {
@@ -208,7 +213,11 @@ test('an export stopped by the throttle says to wait, not to narrow the filter',
     fireEvent.click(screen.getByRole('button', { name: 'Export CSV' }));
     // The walk retries the refused page after one second and after two more before it stops.
     await screen.findByText(/newest 400 entries because the gateway is rate-limiting/, {}, { timeout: 10_000 });
-    assert.equal(screen.queryByText(/Narrow the severity filter/), null, 'the throttle was reported as the row cap');
+    assert.equal(
+      screen.queryByText(/Narrow the severity filter/) === null,
+      true,
+      'the throttle was reported as the row cap',
+    );
     assert.equal(downloads.length, 1, 'the rows fetched before the throttle are still downloaded');
   } finally {
     exportTotal = null;
@@ -242,7 +251,11 @@ test('a truncated export whose search matches nothing names the entries it scann
     fireEvent.change(screen.getByPlaceholderText('Search logs...'), { target: { value: 'no-such-action' } });
     fireEvent.click(screen.getByRole('button', { name: 'Export CSV' }));
     await screen.findByText(/None of the newest 10,000 entries scanned match the search/, {}, { timeout: 10_000 });
-    assert.equal(screen.queryByText(/The export covers only/), null, 'the warning reads as if a file was produced');
+    assert.equal(
+      screen.queryByText(/The export covers only/) === null,
+      true,
+      'the warning reads as if a file was produced',
+    );
     assert.equal(downloads.length, 0, 'an empty export was downloaded');
   } finally {
     exportTotal = null;
@@ -320,4 +333,57 @@ test('the severity badge shows the translated severity', async () => {
   await rtl.screen.findByText('infra.restart');
   const badges = [...container.querySelectorAll('.severity-badge')].map(badge => badge.textContent);
   assert.deepEqual(badges, ['Info', 'Error']);
+});
+
+test('the search matches errorMessage as well as action, whatever the case', async () => {
+  const { screen, fireEvent, waitFor } = rtl;
+  renderLogs();
+  await screen.findByText('infra.restart');
+  // Only LOG_FAILED_SEND's errorMessage ('SESSION_STOP_INCOMPLETE') holds this, and only case-insensitively.
+  fireEvent.change(screen.getByPlaceholderText('Search logs...'), { target: { value: 'Stop_Incomplete' } });
+  await waitFor(() => assert.ok(!screen.queryByText('infra.restart'), 'the search did not filter'));
+  assert.ok(screen.queryByText('session.stop'), 'the errorMessage match was hidden');
+});
+
+test('a search of only spaces filters nothing, on screen or in the export', async () => {
+  const { screen, fireEvent, waitFor } = rtl;
+  const { downloads, restore } = recordDownloads();
+  try {
+    renderLogs();
+    await screen.findByText('infra.restart');
+    fireEvent.change(screen.getByPlaceholderText('Search logs...'), { target: { value: ' ' } });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.ok(screen.queryByText('infra.restart'), 'a blank search hid the rows');
+    assert.ok(screen.queryByText('session.stop'), 'a blank search hid the rows');
+    fireEvent.click(screen.getByRole('button', { name: 'Export CSV' }));
+    await waitFor(() => assert.equal(downloads.length, 1));
+    assert.equal((await downloads[0].text()).split('\n').length, 1 + LOGS.length, 'a blank search narrowed the export');
+  } finally {
+    restore();
+  }
+});
+
+test('a search padded with spaces still matches', async () => {
+  const { screen, fireEvent, waitFor } = rtl;
+  renderLogs();
+  await screen.findByText('infra.restart');
+  fireEvent.change(screen.getByPlaceholderText('Search logs...'), { target: { value: ' session ' } });
+  await waitFor(() => assert.ok(!screen.queryByText('infra.restart'), 'the search did not filter'));
+  assert.ok(screen.queryByText('session.stop'), 'the padded query matched nothing');
+});
+
+test('a failed read does not say that no logs exist', async () => {
+  const { screen } = rtl;
+  listFailure = 502;
+  try {
+    renderLogs();
+    await screen.findByRole('alert');
+    assert.ok(!screen.queryByText('No logs found'), 'a read that failed was reported as an empty history');
+    assert.ok(
+      !screen.queryByText(/Audit logs will appear here/),
+      'a read that failed was reported as an empty history',
+    );
+  } finally {
+    listFailure = null;
+  }
 });

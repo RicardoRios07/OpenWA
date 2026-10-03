@@ -15,7 +15,7 @@ import type { Request } from 'express';
 import { NestFactory } from '@nestjs/core';
 import request from 'supertest';
 import { App } from 'supertest/types';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { request as httpRequest } from 'http';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -73,13 +73,16 @@ class HttpSurfaceModule {}
 
 // A stand-in for the bundled document: the real dashboard/index.html carries the placeholder in a
 // meta element, which Plugins.tsx reads to copy the nonce onto its sandboxed iframe's scripts.
-const distDir = join(mkdtempSync(join(tmpdir(), 'openwa-surface-')), 'dashboard', 'dist');
+const surfaceRoot = mkdtempSync(join(tmpdir(), 'openwa-surface-'));
+const distDir = join(surfaceRoot, 'dashboard', 'dist');
 mkdirSync(distDir, { recursive: true });
 writeFileSync(
   join(distDir, 'index.html'),
   `<!doctype html><html><head><meta name="openwa-csp-nonce" content="${DASHBOARD_CSP_NONCE_PLACEHOLDER}" />` +
     `</head><body><script nonce="${DASHBOARD_CSP_NONCE_PLACEHOLDER}"></script></body></html>`,
 );
+// The e2e globalTeardown sweeps only openwa-e2e-* entries, so this suite removes its own fixture.
+afterAll(() => rmSync(surfaceRoot, { recursive: true, force: true }));
 
 describe('production HTTP surface (configureApp)', () => {
   let app: INestApplication<App>;
@@ -258,6 +261,28 @@ describe('production HTTP surface (configureApp)', () => {
     await request(app.getHttpServer()).delete('/api/ingress/p/i/hook/').expect(202);
     await request(app.getHttpServer()).delete('/API/ingress/p/i/hook/').expect(202);
     expect(ingressHits).toEqual(['DELETE /api/ingress/p/i/hook/', 'DELETE /API/ingress/p/i/hook/']);
+  });
+
+  it('refuses a path or query that decodes to a NUL character before any route runs', async () => {
+    ingressHits.length = 0;
+    for (const path of ['/api/sessions/abc%00', '/api/sessions/abc?name=%00', '/api/ingress/p%00/i/hook']) {
+      const res = await request(app.getHttpServer()).get(path).set('Origin', 'https://allowed.example').expect(400);
+      expect(res.body).toMatchObject({ statusCode: 400, error: 'Bad Request' });
+      expect(res.headers['x-request-id']).toBeDefined();
+      expect(res.headers['access-control-allow-origin']).toBe('https://allowed.example');
+    }
+    expect(ingressHits).toEqual([]);
+    // %2500 decodes to the text "%00", not to a NUL, so it still reaches the route.
+    await request(app.getHttpServer()).get('/api/sessions/abc%2500').expect(200);
+  });
+
+  it('refuses a body holding a NUL character at any depth', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/api/echo')
+      .set('Content-Type', 'application/json')
+      .send({ items: [{ variables: { name: 'a\u0000b' } }] });
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ statusCode: 400, error: 'Bad Request' });
   });
 
   it('answers a compressed body with 415 rather than charging the budget its inflated size', async () => {

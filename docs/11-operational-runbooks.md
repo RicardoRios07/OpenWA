@@ -31,6 +31,7 @@ Each runbook follows this format:
 - SSH access to server
 - Docker CLI access
 - Database access
+- An OPERATOR (or ADMIN) API key, to start sessions and send the test message
 
 **Steps:**
 
@@ -150,10 +151,13 @@ curl -H "X-API-Key: $API_KEY" \
   http://localhost:2785/api/sessions/{sessionId}/qr
 
 # Save the QR as a PNG to open or scan. There is no raw QR string: the `session.qr`
-# webhook/WebSocket event carries the same PNG data URL as this endpoint.
-curl -s -H "X-API-Key: $API_KEY" \
+# webhook/WebSocket event carries the same PNG data URL as this endpoint. When no QR is
+# available (not started, already authenticated, not ready yet) the server's message is
+# printed and qr.png is not written.
+QR=$(curl -s -H "X-API-Key: $API_KEY" \
   http://localhost:2785/api/sessions/{sessionId}/qr \
-  | jq -r .qrCode | sed 's#^data:image/png;base64,##' | base64 -d > qr.png
+  | jq -er '.qrCode // error(.message)') \
+  && printf '%s' "${QR#data:image/png;base64,}" | base64 -d > qr.png
 ```
 
 **Verification:**
@@ -183,6 +187,7 @@ curl -X POST http://localhost:2785/api/sessions/{sessionId}/messages/send-text \
 
 - SSH access
 - Docker CLI
+- An OPERATOR (or ADMIN) API key, to start sessions after the restart
 
 **Steps:**
 
@@ -350,6 +355,7 @@ curl -H "X-API-Key: $ADMIN_API_KEY" \
 - Scheduled maintenance window
 - Backup verified
 - User notification sent
+- An OPERATOR (or ADMIN) API key, to stop and start sessions around the backup
 
 **Steps:**
 
@@ -435,6 +441,7 @@ curl -H "X-API-Key: $API_KEY" \
 - Release notes reviewed
 - Breaking changes identified
 - Rollback plan ready
+- An ADMIN API key for step 3; an OPERATOR key covers the stop, start and send steps
 
 **Steps:**
 
@@ -455,7 +462,7 @@ docker exec -e BACKUP_DIR=/app/data/backups -e TMPDIR=/app/data/backups openwa-a
 docker cp openwa-api:/app/data/backups/. "$BACKUP_DIR"/
 
 # 3. Export the Data DB as JSON alongside the archive (admin key)
-curl -H "X-API-Key: $API_KEY" \
+curl -H "X-API-Key: $ADMIN_API_KEY" \
   http://localhost:2785/api/infra/export-data > "$BACKUP_DIR/export-data.json"
 
 # Started with docker-compose.dev.yml (the README Quick Start)? Add `-f docker-compose.dev.yml`
@@ -492,7 +499,9 @@ curl -H "X-API-Key: $API_KEY" http://localhost:2785/api/health | jq '.version'
 # 11. Verify all sessions
 #     (they reconnect on their own only with AUTO_START_SESSIONS=true; otherwise POST
 #     /api/sessions/{sessionId}/start each one first). A session stopped in step 2 stays down,
-#     even with AUTO_START_SESSIONS=true, until that explicit start
+#     even with AUTO_START_SESSIONS=true, until that explicit start, but only when the old image
+#     was 0.24.0 or later: a stop made on 0.23.7 or earlier is not recorded, so with
+#     AUTO_START_SESSIONS=true that session starts on its own after the upgrade
 curl -H "X-API-Key: $API_KEY" \
   http://localhost:2785/api/sessions
 
@@ -620,18 +629,25 @@ curl -H "X-API-Key: $API_KEY" http://localhost:2785/api/health
 
 **Trigger:** Daily schedule, before maintenance, before upgrade
 
-**Impact:** None for the databases, which are snapshotted consistently online (`sqlite3 .backup`,
-`pg_dump`). Engine authentication state (`sessions/`, `baileys/`) is copied while the engines write
-it, so a restored session can need re-pairing; for a copy that is consistent by construction, stop
-the sessions first (`POST /api/sessions/:id/stop`), or stop the container and archive the volume.
-A stopped session stays down across restarts, even with `AUTO_START_SESSIONS=true`, so start each
-one again with `POST /api/sessions/:id/start` once the backup is copied. The stop is recorded in the
-backed-up database, so a restore of that archive keeps the session stopped too.
+**Impact:** The databases are snapshotted consistently online (`sqlite3 .backup`, `pg_dump`). Each
+SQLite file (`main.sqlite` on every deployment, plus the data database with `DATABASE_TYPE=sqlite`)
+is copied under a read lock, and an app write that meets it waits for the copy to end, failing if the
+copy outlasts the 30 s busy timeout. The SQLite driver waits synchronously, so while a write waits the
+whole gateway stalls with it (API, WebSocket, engine events, health probes), not only that write; run
+the backup in a quiet window, or stop the container for a large database. Engine authentication
+state (`sessions/`, `baileys/`) is copied while the engines write it, so a restored session can need
+re-pairing; for a copy that is consistent by construction, stop the sessions first
+(`POST /api/sessions/:id/stop`), or stop the container and archive the volume. A stopped session
+stays down across restarts, even with `AUTO_START_SESSIONS=true`, so start each one again with
+`POST /api/sessions/:id/start` once the backup is copied. From 0.24.0 the stop is recorded in the
+backed-up database, so a restore of that archive keeps the session stopped too; an archive taken on
+0.23.7 or earlier records no stop.
 
 **Prerequisites:**
 
 - Sufficient disk space
 - Backup storage accessible
+- An OPERATOR (or ADMIN) API key, to stop and start sessions for a consistent engine-state copy
 
 **Steps:**
 
@@ -707,16 +723,17 @@ OPENWA_DATA_DIR=/srv/openwa/data \
 > third layer from the archive's `.env.generated` when the archive carries one, because that copy
 > replaces the target's and is the one the restored app reads. Two caveats when
 > operating directly on the host mount: a path recorded inside the container (`/app/data/...`) is not
-> host-visible, so override it in the environment; and a value written with quotes or a trailing `#`
-> comment, or a `KEY: value` line, is reported and skipped rather than guessed at, so pass those
-> explicitly too. Blanks around `=` and CRLF line endings are read as the app reads them.
+> host-visible, so override it in the environment; and a quoted value followed by a `#` comment, a
+> double-quoted value with backslash escapes, or a `KEY: value` line is reported and resolves to the
+> script default, so pass those explicitly too. Blanks around `=`, CRLF line endings, a value in one
+> pair of quotes and a `#` comment after an unquoted value are read as the app reads them.
 
 **Verification:**
 
 ```bash
 # The archive MUST contain main.sqlite, the configured data store, and the auth directory for the
-# selected engine (sessions/ for whatsapp-web.js or baileys/ for Baileys).
-tar -tzf ./backups/openwa-backup-*.tar.gz
+# selected engine (sessions/ for whatsapp-web.js or baileys/ for Baileys). Lists the newest archive.
+tar -tzf "$(ls -t ./backups/openwa-backup-*.tar.gz | head -n 1)"
 ```
 
 > Backup archives contain API keys, provider credentials, WhatsApp auth state, and plugin secrets.
@@ -735,6 +752,7 @@ tar -tzf ./backups/openwa-backup-*.tar.gz
 - Valid backup file
 - Sufficient disk space
 - SSH access
+- An OPERATOR (or ADMIN) API key from the restored installation, to start sessions after the restore
 
 **Steps:**
 
@@ -880,7 +898,10 @@ curl -s -X POST -H "X-API-Key: <an-existing-key>" http://localhost:2785/api/auth
 # Health check
 curl http://localhost:2785/api/health
 
-# Verify sessions
+# Verify sessions. They reconnect on their own only with AUTO_START_SESSIONS=true (the production
+# compose leaves it unset, so off), and a session that was stopped when the archive was taken (an
+# archive from 0.24.0 or later) stays down even then. Start each one:
+#   curl -X POST -H "X-API-Key: $API_KEY" http://localhost:2785/api/sessions/{sessionId}/start
 curl -H "X-API-Key: $API_KEY" \
   http://localhost:2785/api/sessions
 
@@ -968,9 +989,12 @@ sudo truncate -s 0 "$(docker inspect --format='{{.LogPath}}' openwa-api)"
 find /backups -name "*.tar.gz" -mtime +30 -delete
 
 # D. Archived chat media: let the app expire it instead of deleting files, which leaves rows
-#    pointing at missing files. Set CHAT_MEDIA_ARCHIVE_TTL_DAYS (default 0, keep forever) and
-#    restart; expiry clears the file and the row's media columns. Under the production compose the
-#    media lives in the openwa_openwa-data volume, not in ./data in the checkout.
+#    pointing at missing files. Set CHAT_MEDIA_ARCHIVE_TTL_DAYS (default 0, keep forever) in .env and
+#    recreate the container with `docker compose up -d openwa-api`; a plain `docker compose restart`
+#    keeps the old environment. Sessions reconnect on their own only with AUTO_START_SESSIONS=true;
+#    otherwise POST /api/sessions/{sessionId}/start each one. Expiry clears the file and the row's
+#    media columns. Under the production compose the media lives in the openwa_openwa-data volume,
+#    not in ./data in the checkout.
 
 # 4. Verify
 df -h

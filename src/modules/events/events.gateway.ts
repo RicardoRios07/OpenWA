@@ -372,6 +372,7 @@ export class EventsGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       // chat's events to it. Mirrors the REST guard's default-deny for unmarked routes.
       if ((validKey.allowedChats?.length ?? 0) > 0) {
         this.logger.warn(`Client ${client.id} rejected: chat-scoped key ${validKey.id} cannot subscribe to events`);
+        this.auditChatScopedRefusal(validKey, clientIp);
         client.emit(
           'message',
           this.createError('UNAUTHORIZED', 'API keys restricted to selected chats cannot subscribe to events'),
@@ -437,6 +438,19 @@ export class EventsGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       client.emit('message', this.createError('UNAUTHORIZED', 'Authentication failed'));
       client.disconnect();
     }
+  }
+
+  /**
+   * A refused chat-scoped key is a stored key turned away, which the REST guard, the MCP surface and
+   * Bull Board all record; the socket refusal returns before the handshake's catch, so it audits here.
+   */
+  private auditChatScopedRefusal(apiKey: ApiKey, clientIp: string): void {
+    void this.auditService.logWarn(AuditAction.API_KEY_AUTH_FAILED, {
+      apiKey,
+      ipAddress: clientIp,
+      metadata: { surface: 'websocket' },
+      errorMessage: 'API keys restricted to selected chats cannot subscribe to events',
+    });
   }
 
   handleDisconnect(client: Socket) {
@@ -534,8 +548,15 @@ export class EventsGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     let subscriberKey: ApiKey | null;
     try {
       subscriberKey = rawApiKey ? await this.authService.validateApiKey(rawApiKey, clientIp) : null;
-    } catch {
+    } catch (error) {
       subscriberKey = null;
+      // A key refused here was valid at connect (revoked, expired, deleted or IP-refused since), so it
+      // is audited like the handshake refusal; the socket is disconnected below, bounding the volume.
+      void this.auditService.logWarn(AuditAction.API_KEY_AUTH_FAILED, {
+        ipAddress: clientIp,
+        metadata: { surface: 'websocket' },
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
     }
     if (!subscriberKey) {
       client.emit('message', this.createError('UNAUTHORIZED', 'API key is no longer valid', requestId));
@@ -560,6 +581,7 @@ export class EventsGateway implements OnGatewayInit, OnGatewayConnection, OnGate
         'API keys restricted to selected chats cannot subscribe to events',
         requestId,
       );
+      this.auditChatScopedRefusal(subscriberKey, clientIp);
       client.emit('message', refusal);
       client.disconnect();
       return refusal;

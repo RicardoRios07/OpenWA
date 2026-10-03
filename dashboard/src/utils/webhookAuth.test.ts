@@ -75,7 +75,7 @@ test('a secret is empty or 16 to 255 characters, and is not trimmed', () => {
   assert.equal(secretError(`  ${'x'.repeat(10)}  `), 'webhooks.auth.errors.secretLength');
 });
 
-// The gateway's @MinLength/@MaxLength count an emoji (a surrogate pair) or a character plus its
+// The gateway's @MinLength counts an emoji (a surrogate pair) or a character plus its
 // presentation selector as one; UTF-16 length counted them as two, so 8 emoji passed inline and
 // then came back as a raw 400.
 test('the secret length is counted the way the gateway counts it', () => {
@@ -84,6 +84,13 @@ test('the secret length is counted the way the gateway counts it', () => {
   assert.equal(secretError('\u2764\uFE0F'.repeat(8)), 'webhooks.auth.errors.secretLength');
   assert.equal(secretError('\u2764\uFE0F'.repeat(16)), null);
   assert.equal(secretError('\u{1F600}'.repeat(255)), null);
+});
+
+// The gateway's upper bound is @MaxCodePoints, which counts a presentation selector on its own, so a
+// selector-joined secret within 255 folded characters can still be rejected there.
+test('the secret maximum is counted in code points', () => {
+  assert.equal(secretError('\u2714\uFE0F'.repeat(127)), null);
+  assert.equal(secretError('\u2714\uFE0F'.repeat(128)), 'webhooks.auth.errors.secretLength');
 });
 
 test('a generated secret is 64 hex characters and passes the length check', () => {

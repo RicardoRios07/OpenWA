@@ -13,8 +13,9 @@ public record SessionResponse(
     String updatedAt,
     /**
      * Human-readable reason while {@code status} is {@code FAILED} or {@code ACTION_REQUIRED}, or
-     * {@code INITIALIZING} during a prolonged automatic reconnect (fifth attempt onward, or while a
-     * failed relaunch waits to retry); {@code null} otherwise.
+     * {@code INITIALIZING} from the fifth attempt of a reconnect the engine runs itself (Baileys),
+     * or while a reconnect waits to retry after a failed relaunch (either engine); {@code null}
+     * otherwise.
      */
     String lastError,
     /**

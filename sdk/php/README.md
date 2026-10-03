@@ -15,7 +15,11 @@ Requires PHP 8.1+ and Guzzle 7. The namespace is `OpenWA\`.
 This README describes `main`. The 0.5.0 release lacks `sessions->getProxy`,
 `sessions->updateProxy`, `messages->clickButton`, `WebhookSignature::verify`, the
 `getErrorCode()`, `getRetryAfterSeconds()` and `getHeaders()` exception methods, the refusal of an
-empty, `.` or `..` id and the `sessions->create()` fix that sends an empty `config` as `{}`; they
+empty, `.` or `..` id, the refusal of a `request()` path that does not begin with `/`, the
+`sessions->create()` fix that sends an empty `config` as `{}`, the
+`allowInsecureHttp` option (0.5.0 always raises an `E_USER_WARNING` for a non-local `http://`
+`baseUrl`) and the `null` return of `catalog->info()` and `catalog->product()` for a missing catalog
+or product (0.5.0 throws a `TypeError`); they
 ship with the next SDK release. See [the SDK overview](../README.md#coverage).
 
 ## Usage
@@ -36,6 +40,8 @@ $client = new Client([
 $session = $client->sessions->create(['name' => 'my-session']);
 $client->sessions->start($session['id']);
 
+// Link the account before sending: scan sessions->getQrCode or use sessions->requestPairingCode,
+// then wait for status 'ready'. An unlinked session answers the send with 409.
 $result = $client->messages->sendText($session['id'], [
     'chatId' => '628123456789@c.us',
     'text'   => 'Hello from the OpenWA PHP SDK!',
@@ -67,13 +73,15 @@ exposing `getStatus()` and the parsed `getBody()`. A timeout throws `OpenWATimeo
 503 is transient, but a catalog 503 can persist because WhatsApp may never answer that query,
 so bound any retry. A 429 from the global rate limiter lifts when its window expires (seconds for
 the per-second tier, up to an hour for the hourly tier by default), and `getRetryAfterSeconds()`
-carries its `Retry-After` header. A 429 whose `getErrorCode()` is `"SEND_PACING_LIMITED"` is not
-transient: do not retry it before `getRetryAfterSeconds()`, which then comes from the body and can
-be hours. `getHeaders()` returns the response headers. A 503 does not prove a write was never
-carried out: the engine answers it when WhatsApp did not confirm in time, and the change may still
-have been applied, so re-read the state before repeating it. In a routed deployment a forward that
-fails before reaching the owner node answers 503, one that fails after the request reached it answers
-502 or 504, and a 503 from the owner itself is relayed unchanged.
+carries its `Retry-After` header. A 429 whose `getErrorCode()` is `"SEND_PACING_LIMITED"` is usually
+not transient: do not retry it before `getRetryAfterSeconds()`, which then comes from the body: a
+few seconds when only sends still in flight caused it, the rest of the failure breaker's cooldown
+(`SEND_PACING_BREAKER_COOLDOWN_MS`, 15 minutes by default) after a run of send failures, otherwise
+up to the next UTC day. `getHeaders()` returns the response headers. A 503 does not prove a write
+was never carried out: the engine answers it when WhatsApp did not confirm in time, and the change
+may still have been applied, so re-read the state before repeating it. In a routed deployment a
+forward that fails before reaching the owner node answers 503, one that fails after the request
+reached it answers 502 or 504, and a 503 from the owner itself is relayed unchanged.
 
 ```php
 use OpenWA\Exceptions\OpenWANotFoundException;

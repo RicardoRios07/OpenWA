@@ -12,9 +12,9 @@ type GroupParticipant struct {
 }
 
 // GroupSummary is the slim group shape from the list endpoint. Note that
-// ParticipantsCount and IsAdmin are stripped by the LIST endpoint on the
-// current engine and will normally be absent from the payload — use Groups.Get
-// (which returns GroupInfo) when you need them. They are pointers so a missing
+// ParticipantsCount and IsAdmin are stripped by the LIST endpoint and are
+// never returned by List, only by Create; use Groups.Get (which returns
+// GroupInfo) when you need them. They are pointers so a missing
 // field decodes as nil rather than being confused with a zero-valued present
 // field.
 type GroupSummary struct {

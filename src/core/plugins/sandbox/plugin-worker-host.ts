@@ -372,14 +372,22 @@ export class PluginWorkerHost {
   // (Re)start the probe window. The port is FIFO, so a worker working through a burst of dispatches
   // reads the ping only after that backlog; every result it sends meanwhile proves its loop is turning
   // and restarts the window (handleMessage). Only a full window with no answer at all is reported.
+  // The verdict waits one loop turn: after a host-side stall the timers phase runs before the poll
+  // phase that delivers port messages, so a pong already queued must be read before judging. A pong
+  // or a re-arm handled in between replaces this.probe, which the timer comparison detects.
   private armProbe(id: number): void {
     if (this.probe) clearTimeout(this.probe.timer);
-    const timer = setTimeout(() => {
-      this.probe = undefined;
-      if (this.dead || this.terminated || this.unresponsiveReported) return;
-      this.unresponsiveReported = true;
-      this.onUnresponsive?.();
-    }, this.livenessTimeoutMs);
+    const timer = setTimeout(
+      () =>
+        setImmediate(() => {
+          if (this.probe?.timer !== timer) return;
+          this.probe = undefined;
+          if (this.dead || this.terminated || this.unresponsiveReported) return;
+          this.unresponsiveReported = true;
+          this.onUnresponsive?.();
+        }),
+      this.livenessTimeoutMs,
+    );
     this.probe = { id, timer };
   }
 

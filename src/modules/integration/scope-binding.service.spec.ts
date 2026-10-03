@@ -275,8 +275,8 @@ describe('ScopeBindingService.onApplicationBootstrap reconciliation', () => {
         list: jest.fn().mockResolvedValue([]),
       } as unknown as PluginInstanceService;
       await new ScopeBindingService(instances, loader, audit, sessionRows).onApplicationBootstrap();
-      // The wildcard activation must survive in both row orders ('*' subsumes the concrete scope).
-      expect(plugin.activeSessions).toContain('*');
+      // Both row orders end at exactly ['*'] ('*' subsumes the concrete scope).
+      expect(plugin.activeSessions).toEqual(['*']);
     }
   });
 });

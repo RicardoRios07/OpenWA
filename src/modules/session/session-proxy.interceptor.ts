@@ -31,8 +31,9 @@ const RELAYED_RESPONSE_HEADERS = [
   'content-disposition',
   'x-content-type-options',
   // Throttle answers come from the OWNER's counters, so the client must be told what the owner
-  // said: without these a forwarded 429 arrives with no indication of when to retry. The suffixed
-  // names are the ones the throttler actually sets (there is no bare Retry-After).
+  // said: without these a forwarded 429 arrives with no indication of when to retry.
+  // ProxyAwareThrottlerGuard sets the plain Retry-After that HTTP clients read; the base throttler
+  // adds the per-tier Retry-After-<name> and X-RateLimit-* headers. All of them are relayed.
   'retry-after',
   'retry-after-short',
   'retry-after-medium',

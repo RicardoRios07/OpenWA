@@ -36,6 +36,7 @@
     "hoursAgo": "{{count}} hour ago",
     "hoursAgo_other": "{{count}} hours ago",
     "optional": "optional",
+    "fieldTooLong": "Limited to {{max}} characters ({{count}} now).",
     "language": "Language",
     "back": "Back",
     "next": "Next",
@@ -122,7 +123,6 @@
       "unknownType": "Unknown type"
     },
     "you": "You",
-    "youPrefix": "You: ",
     "yesterday": "Yesterday",
     "attachTitle": "Send file / image",
     "emojiTitle": "Pick emoji",
@@ -353,7 +353,7 @@
       "configured": "{{host}} ({{type}})",
       "noProxy": "No proxy configured",
       "hasCredentials": "Credentials are stored but not shown. Enter a full URL to change them.",
-      "hint": "Changes apply on the next session start, not to a running connection. The proxy must be real and reachable — an unreachable value blocks QR delivery and start returns 504.",
+      "hint": "Changes apply on the next session start, not to a running connection. The proxy must be real and reachable — an unreachable value blocks QR delivery: on whatsapp-web.js the start returns 504; on Baileys the start succeeds and the session keeps retrying.",
       "createHint": "Only needed when your network cannot reach WhatsApp directly. Must be a real, reachable proxy.",
       "invalidUrl": "Enter a valid http, https, socks4, or socks5 proxy URL.",
       "saveSuccessTitle": "Proxy Saved",
@@ -487,11 +487,9 @@
       "valueLabel": "Filter value"
     },
     "columns": {
-      "url": "URL",
       "events": "Events",
       "session": "Session",
-      "status": "Status",
-      "actions": "Actions"
+      "status": "Status"
     },
     "empty": {
       "title": "No webhooks configured",
@@ -671,7 +669,6 @@
       "revoke": "Revoke"
     },
     "actions": {
-      "copy": "Copy",
       "revoke": "Revoke",
       "delete": "Delete",
       "edit": "Edit access"
@@ -886,7 +883,7 @@
       "sslRejectUnauthorized": "Verify SSL Certificate",
       "sslRejectUnauthorizedDesc": "Reject self-signed or invalid certificates. Turn off for managed Postgres with self-signed certs (Supabase, Heroku, Render, Railway).",
       "migrationsTitle": "Database Migrations",
-      "migrationsStatus": "Schema is auto-synchronized with TypeORM",
+      "migrationsStatus": "Pending migrations are applied automatically at startup",
       "migrationsHint": "Migrations are managed automatically. Use CLI for manual migrations."
     },
     "engine": {
@@ -909,7 +906,7 @@
     "redis": {
       "title": "Redis",
       "enable": "Enable Redis",
-      "enableDesc": "Required for caching, session storage, and BullMQ queues",
+      "enableDesc": "Used for caching, BullMQ queues, rate-limit counters, and multi-node WebSocket fan-out",
       "useBuiltIn": "Use Built-in Redis Container",
       "builtInDesc": "OpenWA will manage a Redis container for you",
       "queueTitle": "Enable BullMQ Queue System",
@@ -921,7 +918,7 @@
       "failed": "Failed",
       "viewBullMq": "View Bull MQ Dashboard",
       "disabledTitle": "Redis is Disabled",
-      "disabledDesc": "Enable Redis for caching, session storage, and BullMQ message queues.",
+      "disabledDesc": "Enable Redis for caching, BullMQ message queues, rate-limit counters, and multi-node WebSocket fan-out.",
       "passwordOptional": "(optional)",
       "bullMqUrlCopied": "Bull MQ dashboard URL copied",
       "bullMqUrlHint": "Open it with an ADMIN API key — a browser tab can't authenticate."
@@ -1055,7 +1052,7 @@
       "healthFail": "Health Check Failed",
       "healthError": "Health Check Error",
       "savedTitle": "Configuration Saved",
-      "savedDesc": "Server restart required to apply changes.",
+      "savedDesc": "Changes take effect without a server restart.",
       "saveFailed": "Save Failed",
       "installed": "Plugin installed",
       "installFailed": "Install failed",

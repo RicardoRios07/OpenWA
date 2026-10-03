@@ -36,6 +36,7 @@
     "hoursAgo": "{{count}} saat önce",
     "hoursAgo_other": "{{count}} saat önce",
     "optional": "isteğe bağlı",
+    "fieldTooLong": "En fazla {{max}} karakter olabilir (şu an {{count}}).",
     "language": "Dil",
     "back": "Geri",
     "next": "İleri",
@@ -122,7 +123,6 @@
       "unknownType": "Bilinmeyen tür"
     },
     "you": "Siz",
-    "youPrefix": "Siz: ",
     "yesterday": "Dün",
     "attachTitle": "Dosya / görsel gönder",
     "emojiTitle": "Emoji seç",
@@ -353,7 +353,7 @@
       "configured": "{{host}} ({{type}})",
       "noProxy": "Yapılandırılmış proxy yok",
       "hasCredentials": "Kimlik bilgileri kayıtlı ancak gösterilmiyor. Değiştirmek için tam bir URL girin.",
-      "hint": "Değişiklikler çalışan bir bağlantıya değil, oturumun bir sonraki başlatılışında uygulanır. Proxy gerçek ve erişilebilir olmalıdır: erişilemeyen bir değer QR teslimini engeller ve başlatma 504 döndürür.",
+      "hint": "Değişiklikler çalışan bir bağlantıya değil, oturumun bir sonraki başlatılışında uygulanır. Proxy gerçek ve erişilebilir olmalıdır: erişilemeyen bir değer QR teslimini engeller. whatsapp-web.js'te başlatma 504 döndürür, Baileys'te başlatma başarılı olur ve oturum yeniden denemeye devam eder.",
       "createHint": "Yalnızca ağınız WhatsApp'a doğrudan erişemiyorsa gereklidir. Gerçek ve erişilebilir bir proxy olmalıdır.",
       "invalidUrl": "Geçerli bir http, https, socks4 veya socks5 proxy URL'si girin.",
       "saveSuccessTitle": "Proxy Kaydedildi",
@@ -487,11 +487,9 @@
       "valueLabel": "Filtre değeri"
     },
     "columns": {
-      "url": "URL",
       "events": "Olaylar",
       "session": "Oturum",
-      "status": "Durum",
-      "actions": "İşlemler"
+      "status": "Durum"
     },
     "empty": {
       "title": "Yapılandırılmış webhook yok",
@@ -671,7 +669,6 @@
       "revoke": "Geçersiz Kıl"
     },
     "actions": {
-      "copy": "Kopyala",
       "revoke": "Geçersiz Kıl",
       "delete": "Sil",
       "edit": "Erişimi düzenle"
@@ -886,7 +883,7 @@
       "sslRejectUnauthorized": "SSL Sertifikasını Doğrula",
       "sslRejectUnauthorizedDesc": "Kendinden imzalı veya geçersiz sertifikaları reddeder. Kendinden imzalı sertifikalara sahip yönetilen Postgres için kapatın (Supabase, Heroku, Render, Railway).",
       "migrationsTitle": "Veritabanı Geçişleri (Migrations)",
-      "migrationsStatus": "Şema, TypeORM ile otomatik olarak senkronize edilir",
+      "migrationsStatus": "Bekleyen geçişler başlangıçta otomatik olarak uygulanır",
       "migrationsHint": "Geçişler otomatik olarak yönetilir. Manuel geçişler için CLI kullanın."
     },
     "engine": {
@@ -909,7 +906,7 @@
     "redis": {
       "title": "Redis",
       "enable": "Redis'i Etkinleştir",
-      "enableDesc": "Önbelleğe alma, oturum depolama ve BullMQ kuyrukları için gereklidir",
+      "enableDesc": "Önbelleğe alma, BullMQ kuyrukları, hız sınırı sayaçları ve çok düğümlü WebSocket dağıtımı için kullanılır",
       "useBuiltIn": "Dahili Redis Konteynerini Kullan",
       "builtInDesc": "OpenWA sizin için bir Redis konteynerini yönetecektir",
       "queueTitle": "BullMQ Kuyruk Sistemini Etkinleştir",
@@ -921,7 +918,7 @@
       "failed": "Başarısız",
       "viewBullMq": "Bull MQ Kontrol Panelini Görüntüle",
       "disabledTitle": "Redis Devre Dışı",
-      "disabledDesc": "Önbelleğe alma, oturum depolama ve BullMQ mesaj kuyrukları için Redis'i etkinleştirin.",
+      "disabledDesc": "Önbelleğe alma, BullMQ mesaj kuyrukları, hız sınırı sayaçları ve çok düğümlü WebSocket dağıtımı için Redis'i etkinleştirin.",
       "passwordOptional": "(isteğe bağlı)",
       "bullMqUrlCopied": "Bull MQ kontrol paneli URL'si kopyalandı",
       "bullMqUrlHint": "Bir ADMIN API anahtarıyla açın — normal bir tarayıcı sekmesi kimlik doğrulaması yapamaz."
@@ -1055,7 +1052,7 @@
       "healthFail": "Sağlık Kontrolü Başarısız",
       "healthError": "Sağlık Kontrolü Hatası",
       "savedTitle": "Yapılandırma Kaydedildi",
-      "savedDesc": "Değişikliklerin uygulanması için sunucunun yeniden başlatılması gerekir.",
+      "savedDesc": "Değişiklikler sunucu yeniden başlatılmadan geçerli olur.",
       "saveFailed": "Kaydetme Başarısız",
       "installed": "Eklenti yüklendi",
       "installFailed": "Yükleme başarısız",

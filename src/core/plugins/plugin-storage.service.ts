@@ -82,16 +82,29 @@ export class PluginStorageService {
     try {
       if (fs.existsSync(this.registryPath)) {
         const content = fs.readFileSync(this.registryPath, 'utf-8');
-        const entries = JSON.parse(content) as PluginRegistryEntry[];
-        this.registry = new Map(entries.map(e => [e.id, e]));
+        const entries: unknown = JSON.parse(content);
+        if (!Array.isArray(entries)) throw new Error('registry is not a JSON array');
+        this.registry = new Map((entries as PluginRegistryEntry[]).map(e => [e.id, e]));
         this.logger.debug(`Loaded ${this.registry.size} plugins from registry`, {
           action: 'registry_loaded',
         });
       }
     } catch (error) {
-      this.logger.error('Failed to load plugin registry', String(error), {
-        action: 'registry_load_failed',
-      });
+      // The next save (every boot registers plugins) would replace the unreadable file with an empty
+      // registry, losing every plugin's config, secrets and enable decision for good. Move it aside
+      // first so the operator can repair and restore it.
+      const movedTo = `${this.registryPath}.corrupt-${Date.now()}`;
+      try {
+        fs.renameSync(this.registryPath, movedTo);
+        this.logger.error(`Failed to load plugin registry; moved it to ${movedTo}`, String(error), {
+          action: 'registry_load_failed',
+          movedTo,
+        });
+      } catch {
+        this.logger.error('Failed to load plugin registry', String(error), {
+          action: 'registry_load_failed',
+        });
+      }
     }
   }
 

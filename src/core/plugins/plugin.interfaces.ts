@@ -90,8 +90,9 @@ export interface PluginManifest {
 
   // Outbound-HTTP host allowlist for `ctx.net.fetch` (requires the `net:fetch` permission). Each
   // entry is `host:port` (exact) or a bare `host` (any port); `'*'` allows any public host. Absent /
-  // empty = deny all. `allowConfigHosts` additionally admits the host of each named config key (e.g. an
-  // operator-set base URL), resolved at fetch time. The SSRF guard still blocks internal IPs regardless.
+  // empty = deny all. `allowConfigHosts` additionally admits the https origin (host and port) of each
+  // named config key (e.g. an operator-set base URL), resolved at fetch time. The SSRF guard still
+  // blocks internal IPs regardless.
   net?: { allow?: string[]; allowConfigHosts?: string[] };
 
   // Localized dashboard text (name/description/config field titles) per locale code. English is the
@@ -223,6 +224,13 @@ export interface IngressSignatureSpec {
   dedupHeader?: string;
 }
 
+const INGRESS_SIGNATURE_SCHEMES: readonly IngressSignatureSpec['scheme'][] = [
+  'hmac-sha256',
+  'shared-secret',
+  'standard-webhooks',
+  'none',
+];
+
 /** Provider webhook-verification challenge (e.g. a GET handshake on route registration). */
 export interface IngressChallengeSpec {
   method: 'GET';
@@ -236,7 +244,7 @@ export interface IngressChallengeSpec {
 export type IngressPreflightCheck = {
   // Reject (503) when the route's concrete-scoped WhatsApp session is not alive (no live engine, or
   // EngineStatus.FAILED). Recoverable statuses (INITIALIZING/QR_READY/AUTHENTICATING/DISCONNECTED) and
-  // READY pass through to a normal 202+enqueue so the worker can fail fast and the dedup row holds the
+  // READY pass through to a normal ack + enqueue so the worker can fail fast and the dedup row holds the
   // delivery. Skipped for wildcard (sessionScope null/'*') scopes — there is no single session to probe.
   type: 'session-alive';
 };
@@ -368,6 +376,28 @@ export function validateIngressManifest(manifest: PluginManifest, allowUnsignedI
       throw new Error(
         `Plugin ${manifest.id}: ingress route '${String(r.route)}' must be a single URL path segment ` +
           `(no '/', '\\', '?', '#', '%', control character or lone surrogate, and not '.' or '..')`,
+      );
+    }
+    // The verifier treats any scheme it does not know as hmac-sha256, so a typo would load and then
+    // reject every delivery as a signature mismatch, with nothing pointing back at the manifest.
+    const signature: Partial<IngressSignatureSpec> | undefined =
+      r.signature && typeof r.signature === 'object' ? r.signature : undefined;
+    if (!signature?.scheme || !INGRESS_SIGNATURE_SCHEMES.includes(signature.scheme)) {
+      throw new Error(
+        `Plugin ${manifest.id}: route '${r.route}' signature.scheme must be one of ` +
+          `${INGRESS_SIGNATURE_SCHEMES.join(', ')} (got '${String(signature?.scheme)}')`,
+      );
+    }
+    // Only hmac-sha256 reads `encoding`; the other schemes ignore it, so a stray value there still loads.
+    if (
+      signature.scheme === 'hmac-sha256' &&
+      signature.encoding !== undefined &&
+      signature.encoding !== 'hex' &&
+      signature.encoding !== 'base64'
+    ) {
+      throw new Error(
+        `Plugin ${manifest.id}: route '${r.route}' signature.encoding must be 'hex' or 'base64' ` +
+          `(got '${String(signature.encoding)}')`,
       );
     }
     if (r.signature.scheme === 'none' && !allowUnsignedIngress) {

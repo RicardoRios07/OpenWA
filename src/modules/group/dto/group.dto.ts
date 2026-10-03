@@ -129,7 +129,6 @@ export class SetGroupPictureDto {
   @ApiPropertyOptional({ description: 'Base64 encoded image data' })
   @IsOptional()
   @IsString()
-  @ValidateIf((o: SetGroupPictureDto) => !o.url)
   base64?: string;
 
   @ApiPropertyOptional({ description: 'Image MIME type (required when using base64)', example: 'image/jpeg' })

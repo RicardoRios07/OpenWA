@@ -34,7 +34,7 @@ import {
   SessionEngineEventWiring,
   SessionEngineWiringHost,
 } from './session-engine-event-wiring';
-import { SessionEngineControls } from './session-engine-controls';
+import { SessionEngineControls, StopMarks, type StopHooks } from './session-engine-controls';
 import { SessionOwnershipService, nodeOwnsSession } from './session-ownership.service';
 
 /**
@@ -56,6 +56,12 @@ export interface ReconnectState extends ReconnectAttemptState {
   initInFlight?: boolean;
   /** The failure parked during that window, applied or dropped by executeReconnect once init settles. */
   parkedFailure?: { run: () => void; terminal: boolean };
+  /**
+   * How many attempts executeReconnect has started on this state. An attempt whose re-init fails compares
+   * it with its own number: a later attempt may be mid-teardown with nothing registered yet. A timer
+   * that READY cancelled never starts, so it does not count.
+   */
+  started?: number;
   /** When the session last reached READY; consumed by the next scheduleReconnect (see STABLE_READY_MS). */
   readyAt?: number;
   /**
@@ -94,6 +100,22 @@ export function resolveReconnectConfig(
     ? Math.floor(clampNumber(attemptsRaw, 0, RECONNECT_MAX_ATTEMPTS_CAP))
     : Number.POSITIVE_INFINITY;
   return { maxAttempts, baseDelay };
+}
+
+/** An armed reconnect timer, or a fired one whose executeReconnect has counted its attempt and not seen READY. */
+export function isReconnectPending(state: ReconnectState): boolean {
+  return state.timer !== null || (state.attempts > 0 && state.readyAt === undefined);
+}
+
+/**
+ * Sessions holding a MAX_CONCURRENT_SESSIONS slot: engines, init reservations and pending relaunches. A
+ * session waiting out a failed relaunch holds no engine, but re-registers one when its timer fires without
+ * a cap check of its own, so it keeps its slot.
+ */
+export function startSlotHolders(engines: EngineRegistry, reconnectStates: Map<string, ReconnectState>): Set<string> {
+  const ids = new Set<string>(engines.activeIds());
+  for (const [rid, state] of reconnectStates) if (isReconnectPending(state)) ids.add(rid);
+  return ids;
 }
 
 export function resolveMaxConcurrentSessions(configService?: Pick<ConfigService, 'get'>): number | null {
@@ -218,7 +240,7 @@ export class SessionEngineLifecycle {
   // engine init, so a stop/delete during that window could re-register an engine AFTER
   // teardown (orphan). stop()/delete() add the id here; executeReconnect checks it after its
   // awaits and destroys any engine it just created; start() clears it (intentional restart).
-  private stoppingSessions: Set<string> = new Set();
+  private stoppingSessions = new StopMarks();
 
   // Sessions whose engine is mid-initialization (a start() is in flight). Reserved synchronously
   // in start() so a near-simultaneous second start() can't pass the engines.has() check during the
@@ -425,8 +447,8 @@ export class SessionEngineLifecycle {
   }
 
   /** Delegate: SessionEngineControls.stop. */
-  stop(id: string): Promise<Session> {
-    return this.controls.stop(id);
+  stop(id: string, hooks?: StopHooks): Promise<Session> {
+    return this.controls.stop(id, hooks);
   }
 
   /** Delegate: SessionEngineControls.logout. */
@@ -435,13 +457,13 @@ export class SessionEngineLifecycle {
   }
 
   /** Delegate: SessionEngineControls.forceKill. */
-  forceKill(id: string): Promise<Session> {
-    return this.controls.forceKill(id);
+  forceKill(id: string, hooks?: StopHooks): Promise<Session> {
+    return this.controls.forceKill(id, hooks);
   }
 
   /** Delegate: SessionEngineControls.delete. */
-  delete(id: string): Promise<void> {
-    return this.controls.delete(id);
+  delete(id: string, hooks?: StopHooks): Promise<void> {
+    return this.controls.delete(id, hooks);
   }
 
   /** Delegate: SessionEngineControls.shutdown. */
@@ -533,9 +555,12 @@ export class SessionEngineLifecycle {
     // this node forever. So is a state whose last event was READY: its streak survives for the
     // stability window, but nothing is pending until the next drop arms a timer.
     const reconnect = this.reconnectStates.get(id);
-    return (
-      reconnect != null && (reconnect.timer !== null || (reconnect.attempts > 0 && reconnect.readyAt === undefined))
-    );
+    return reconnect != null && isReconnectPending(reconnect);
+  }
+
+  /** Sessions holding a MAX_CONCURRENT_SESSIONS slot: engines, init reservations and pending relaunches. */
+  startSlotHolders(): Set<string> {
+    return startSlotHolders(this.engines, this.reconnectStates);
   }
 
   /** Whether the last READY stretch lasted STABLE_READY_MS, measured to where it ended (or to now). */
@@ -811,13 +836,16 @@ export class SessionEngineLifecycle {
       metadata: { previousPhone, incomingPhone },
       errorMessage: reason,
     });
+    // Evicted before the logout, which can take up to its 10s deadline: every inbound callback is gated
+    // on the live engine, so the refused account's messages and history sync, which arrive right after
+    // the link opens, are dropped instead of stored and dispatched under this session. A start() racing
+    // the logout still waits for it: the logout registers its credential fence in this same tick.
+    this.engines.deleteIfLive(id, engine);
     // logout() wipes the wrong account's credentials and removes this device from that account.
     await this.teardownEngineSafely(id, engine, e => e.logout(), 'logout', sessionName);
     // Re-fence after the await, as handleEngineDisconnected does: a concurrent start() may have
-    // replaced the engine while logout ran. If this handler is now stale it must not delete the new
-    // engine or write FAILED over a fresh start.
-    if (!this.isLiveEngine(id, engine)) return;
-    this.engines.deleteIfLive(id, engine);
+    // registered an engine while logout ran. If so it must not get FAILED written over it.
+    if (this.engines.has(id)) return;
     // Fenced on ownership like every engine-driven terminal write: a lapsed lease must not park a
     // peer's session unrecoverably in FAILED. Defensively caught like handleEngineReady's row write.
     if (this.ownsSession(id)) {
@@ -1059,7 +1087,12 @@ export class SessionEngineLifecycle {
       },
     );
 
-    void this.updateStatus(id, SessionStatus.DISCONNECTED);
+    void this.updateStatus(id, SessionStatus.DISCONNECTED).catch(err =>
+      this.logger.warn('Failed to persist the disconnected status', {
+        sessionId: id,
+        error: err instanceof Error ? err.message : String(err),
+      }),
+    );
 
     // Pre-schedule fence: scheduleReconnect's timer eventually calls executeReconnect, which does
     // a fresh engines.get(id) and destroys whatever engine currently owns the id. If this engine
@@ -1122,7 +1155,14 @@ export class SessionEngineLifecycle {
       // Same ownership fence as the engine callbacks: a reconnect chain that exhausts itself after
       // this node's lease lapsed must not park a peer's session in FAILED, which nothing resets
       // automatically. The in-memory error above is per-process and harmless either way.
-      if (this.ownsSession(id)) void this.updateStatus(id, SessionStatus.FAILED);
+      if (this.ownsSession(id)) {
+        void this.updateStatus(id, SessionStatus.FAILED).catch(err =>
+          this.logger.warn('Failed to persist the reconnect-exhausted FAILED state', {
+            sessionId: id,
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        );
+      }
       // The hook signal a terminal failure carries: a failed re-init no longer fires session:error per
       // attempt, so the episode's one terminal end reports it here.
       void this.hookManager.execute('session:error', { reason }, { sessionId: id, source: 'SessionService' });
@@ -1228,6 +1268,7 @@ export class SessionEngineLifecycle {
     // The engine this attempt registers, captured like start() does: the catch must reap this one, not
     // whatever a later attempt has registered by the time the init rejects.
     let mine: IWhatsAppEngine | undefined;
+    const attempt = (state.started = (state.started ?? 0) + 1);
     try {
       // Clean up old engine. Time-bound the teardown: a wedged Chromium (the common reconnect
       // trigger) makes destroy() hang, and a raw await here would stall the reconnect forever —
@@ -1325,10 +1366,12 @@ export class SessionEngineLifecycle {
       // start() sees the session as "already started". Only while it is still registered: otherwise the
       // init deadline has reaped it already, or a later attempt destroyed it as its old engine.
       if (mine && this.engines.isLive(id, mine)) this.evictAndForceDestroy(id, mine);
-      // A disconnect of this attempt's engine mid-init re-armed the same state, and a later attempt
-      // registered a replacement before this init rejected. That attempt owns the episode: arming
-      // another would destroy its engine as the old one, or kill it on the exhausted branch.
-      if (this.engines.has(id)) return;
+      // A disconnect of this attempt's engine mid-init re-armed the same state, so a later attempt that
+      // has started owns the episode, whether it has registered a replacement already or is still tearing
+      // this attempt's engine down (the teardown is often what made this init reject). Arming another
+      // would destroy its engine as the old one, or kill it on the exhausted branch. One still waiting on
+      // its timer needs no return: scheduleReconnect below keeps that timer.
+      if (this.engines.has(id) || state.started !== attempt) return;
       if (this.stoppingSessions.has(id)) {
         this.cancelReconnect(id);
         return;

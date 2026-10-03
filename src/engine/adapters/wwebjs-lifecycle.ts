@@ -261,7 +261,7 @@ export class WwebjsLifecycle {
       this.host.logger.error(BACKPORT_MISSING_MESSAGE);
     }
 
-    // The other seven whatsapp-web.js patchers fail the same way and were equally silent about it.
+    // The other whatsapp-web.js patchers fail the same way and were equally silent about it.
     const unapplied = unappliedPatches('wwebjs');
     if (unapplied.length) {
       this.host.logger.error(unappliedPatchesMessage('wwebjs', unapplied));
@@ -372,6 +372,12 @@ export class WwebjsLifecycle {
         await this.runInitAttempt(puppeteerArgs, authTimeoutMs, proxyAuthentication, versionPin);
       }
     } catch (error) {
+      // A stop, delete or force-kill closed the browser under the launch, which is what rejected it:
+      // settle like the other teardown exits instead of reporting the stop as a failed start.
+      if (this.tearingDown) {
+        if (this.status !== EngineStatus.DISCONNECTED) this.setStatus(EngineStatus.DISCONNECTED);
+        return;
+      }
       this.setStatus(EngineStatus.FAILED);
       const reason = error instanceof Error ? error.message : String(error);
       // What the dashboard renders as `lastError` is exactly this string and nothing else — the log
@@ -608,7 +614,8 @@ export class WwebjsLifecycle {
 
     this.client.on('authenticated', () => {
       // Only the first authentication starts the reconcile window. Ignore a re-fired 'authenticated'
-      // while already AUTHENTICATING (so it can't restart the 90s deadline), once READY/FAILED, or any
+      // while already AUTHENTICATING (so it can't restart the 90s deadline), once READY/FAILED, at
+      // ACTION_REQUIRED (a re-inject must not clear it, which only stop then start does), or any
       // time after the adapter is finished — teardown, or a reported disconnect the lifecycle has not
       // replaced the engine for yet (#982). The initial status is DISCONNECTED too, so "finished" is
       // carried by the flags, never by the status alone.
@@ -618,6 +625,7 @@ export class WwebjsLifecycle {
         this.disconnectReported ||
         this.status === EngineStatus.AUTHENTICATING ||
         this.status === EngineStatus.READY ||
+        this.status === EngineStatus.ACTION_REQUIRED ||
         this.status === EngineStatus.FAILED
       ) {
         return;

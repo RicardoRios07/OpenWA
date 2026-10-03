@@ -1,3 +1,4 @@
+import { hostname } from 'node:os';
 import { DataSource, Repository } from 'typeorm';
 import { SessionOwnershipService } from './session-ownership.service';
 import { Session } from './entities/session.entity';
@@ -221,6 +222,24 @@ describe('SessionOwnershipService', () => {
       expect(nodeA.ownedIds()).toEqual([]);
       expect((await sessions.findOneByOrFail({ id: one.id })).nodeId).toBeNull();
       expect((await sessions.findOneByOrFail({ id: two.id })).nodeId).toBeNull();
+    });
+
+    // Per-session bookkeeping must end with the claim, or create/delete churn grows it forever.
+    it('keeps no per-session state once a claim ends by release, shutdown or loss', async () => {
+      const [one, two, three] = [await seed(), await seed(), await seed()];
+      const nodeA = service('node-a');
+      const claimGen = (nodeA as unknown as { claimGen: Map<string, number> }).claimGen;
+      await nodeA.claim(one.id);
+      await nodeA.claim(two.id);
+      await nodeA.claim(three.id);
+
+      await nodeA.release(one.id);
+      await sessions.update({ id: two.id }, { nodeId: 'node-b', leaseExpiresAt: new Date(Date.now() + 60_000) });
+      await nodeA.renew();
+      expect([...claimGen.keys()]).toEqual([three.id]);
+
+      await nodeA.releaseAll();
+      expect(claimGen.size).toBe(0);
     });
   });
 
@@ -557,36 +576,6 @@ describe('SessionOwnershipService', () => {
     });
   });
 
-  describe('what a booting process may reset', () => {
-    const now = new Date();
-
-    it('leaves alone a session another node holds on a live lease', () => {
-      expect(
-        service('node-b').ownedByOtherLiveNode(
-          { nodeId: 'node-a', leaseExpiresAt: new Date(now.getTime() + 60_000) },
-          now,
-        ),
-      ).toBe(true);
-    });
-
-    it('reclaims its own rows, which really are dead after a restart', () => {
-      expect(
-        service('node-a').ownedByOtherLiveNode(
-          { nodeId: 'node-a', leaseExpiresAt: new Date(now.getTime() + 60_000) },
-          now,
-        ),
-      ).toBe(false);
-    });
-
-    it('reclaims an unowned row and one whose lease has lapsed', () => {
-      const node = service('node-b');
-      expect(node.ownedByOtherLiveNode({ nodeId: null, leaseExpiresAt: null }, now)).toBe(false);
-      expect(node.ownedByOtherLiveNode({ nodeId: 'node-a', leaseExpiresAt: new Date(now.getTime() - 1) }, now)).toBe(
-        false,
-      );
-    });
-  });
-
   /**
    * Drives an operator-facing warning during a data import: this process can only stop its own
    * engines, so a session running elsewhere has to be named rather than quietly counted as handled.
@@ -656,11 +645,15 @@ describe('SessionOwnershipService', () => {
 
   describe('node identity', () => {
     it('falls back to the hostname when nothing is configured, and never to the pid', () => {
-      const bare = new SessionOwnershipService(sessions);
-      expect(bare.nodeId).toBeTruthy();
       // A pid-derived id would never match after a restart, so a process could not recognise — and
       // therefore could not reset — its own leftover rows.
-      expect(bare.nodeId).not.toContain(String(process.pid));
+      const saved = process.env.NODE_ID;
+      delete process.env.NODE_ID;
+      try {
+        expect(new SessionOwnershipService(sessions).nodeId).toBe(hostname());
+      } finally {
+        if (saved !== undefined) process.env.NODE_ID = saved;
+      }
     });
   });
 

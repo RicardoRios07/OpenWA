@@ -538,14 +538,21 @@ export function Chats() {
   );
 
   const handleIncomingMessageRevoked = useCallback(
-    (event: { sessionId: string; id: string; revokedId?: string; type: string }) => {
+    (event: { sessionId: string; id: string; revokedId?: string; chatId: string; type: string }) => {
       if (event.sessionId !== selectedSessionId) return;
 
       // Walk every cached chat under this session, find the deleted message and zero it — the
       // backend emits an empty body; the localized "deleted" label is rendered below. Matching is
       // in findRevokedIndex: the event carries two candidate ids and wwebjs's `id` alone can miss.
       const revoked = (m: ChatMessageView): boolean => findRevokedIndex([m], event) !== -1;
-      for (const [key] of cachedSessionThreads(queryClient, event.sessionId, revoked)) {
+      let matchedCachedMessage = false;
+      let revokedLastMessage = false;
+      for (const [key, thread] of cachedSessionThreads(queryClient, event.sessionId, revoked)) {
+        matchedCachedMessage = true;
+        // The sidebar previews the newest row, so only deleting that one changes it.
+        if (key[2] === event.chatId && findRevokedIndex(thread, event) === thread.length - 1) {
+          revokedLastMessage = true;
+        }
         updateCachedMessages(queryClient, key, list => {
           const idx = findRevokedIndex(list, event);
           if (idx === -1) return list;
@@ -554,8 +561,15 @@ export function Chats() {
           return next;
         });
       }
+      if (revokedLastMessage) {
+        setChats(previous => previous.map(chat => (chat.id === event.chatId ? { ...chat, lastMessage: '' } : chat)));
+      } else if (!matchedCachedMessage) {
+        // No cached thread proves whether the deleted message was the chat's newest; refresh the
+        // summaries, as an edit does.
+        void loadChats(selectedSessionId, { background: true });
+      }
     },
-    [selectedSessionId, queryClient],
+    [selectedSessionId, queryClient, loadChats],
   );
 
   const handleIncomingMessageEdited = useCallback(
@@ -661,6 +675,14 @@ export function Chats() {
     }
   }, [isConnected, connectionFailed, selectedSessionId, queryClient, loadChats, activeChatId, canWrite, markChatRead]);
 
+  // The threads cache at staleTime: Infinity, and this session's events were not delivered while
+  // another session was selected or the page was away. Mark them stale on a mount or a session switch
+  // so the open one refetches and the others do when opened, with or without a live feed (a
+  // chat-scoped key is refused one).
+  useEffect(() => {
+    if (selectedSessionId) void queryClient.invalidateQueries({ queryKey: ['messages', selectedSessionId] });
+  }, [selectedSessionId, queryClient]);
+
   useEffect(() => {
     if (selectedSessionId && isConnected) {
       subscribe(selectedSessionId, [
@@ -672,9 +694,8 @@ export function Chats() {
         'message.edited',
         'status.received',
       ]);
-      // The threads cache at staleTime: Infinity, and events for this session were not delivered before
-      // this subscribe: after a mount, a session switch or a reconnect, a cached thread may miss some.
-      // Mark them stale so the open one refetches and the others do when opened.
+      // Events sent while the socket was down were not delivered: after a reconnect, a cached thread
+      // may miss some. Mark them stale the same way.
       void queryClient.invalidateQueries({ queryKey: ['messages', selectedSessionId] });
       return () => {
         unsubscribe(selectedSessionId);
@@ -784,8 +805,11 @@ export function Chats() {
   // A cross-session hit switches session, which asynchronously reloads the chats list — so the
   // target chat may not be available at click time. pendingHitRef carries the intent across that
   // async gap: the chat-select effect picks it up once the list lands, and the scroll effect runs
-  // once the messages have rendered.
-  const pendingHitRef = useRef<{ sessionId: string; chatId: string; waMessageId: string } | null>(null);
+  // once the messages have rendered. `opened` marks a hit whose chat has been opened, so the user
+  // leaving that chat before its thread renders drops the hit instead of being sent back into it.
+  const pendingHitRef = useRef<{ sessionId: string; chatId: string; waMessageId: string; opened?: boolean } | null>(
+    null,
+  );
   // Bumped with every hit, so a hit in the chat already open still re-runs the scroll effect, where
   // every other state it sets is unchanged and React skips the render.
   const [hitSeq, setHitSeq] = useState(0);
@@ -810,7 +834,8 @@ export function Chats() {
         }
         setSessions(ready);
       }
-      pendingHitRef.current = { sessionId: hit.sessionId, chatId: hit.chatId, waMessageId: hit.waMessageId };
+      const pending = { sessionId: hit.sessionId, chatId: hit.chatId, waMessageId: hit.waMessageId };
+      pendingHitRef.current = pending;
       setHitSeq(n => n + 1);
       if (hit.sessionId !== selectedSessionId) {
         // Switching session triggers loadChats; the effect below selects the chat once the list lands.
@@ -823,16 +848,12 @@ export function Chats() {
             // hit's message-highlight is intentionally dropped here since that pane has no per-message scroll target.
             switchTab('channels');
             pendingHitRef.current = null;
-          } else if (chat.kind === 'status') {
-            setActiveTab('status');
-            setActiveChat(chat);
-            setActiveChannel(null);
-            setActiveStatusContactId(null);
           } else {
-            setActiveTab('chats');
+            setActiveTab(chat.kind === 'status' ? 'status' : 'chats');
             setActiveChat(chat);
             setActiveChannel(null);
             setActiveStatusContactId(null);
+            pendingHitRef.current = { ...pending, opened: true };
           }
         } else {
           pendingHitRef.current = null;
@@ -850,7 +871,7 @@ export function Chats() {
   useEffect(() => {
     const pending = pendingHitRef.current;
     if (!pending) return;
-    if (pending.sessionId !== selectedSessionId) {
+    if (pending.sessionId !== selectedSessionId || (pending.opened && activeChat?.id !== pending.chatId)) {
       pendingHitRef.current = null;
       return;
     }
@@ -861,26 +882,23 @@ export function Chats() {
     } else if (chat.kind === 'channel') {
       switchTab('channels');
       pendingHitRef.current = null;
-    } else if (chat.kind === 'status') {
-      setActiveTab('status');
-      setActiveChat(chat);
-      setActiveChannel(null);
-      setActiveStatusContactId(null);
     } else {
-      setActiveTab('chats');
+      setActiveTab(chat.kind === 'status' ? 'status' : 'chats');
       setActiveChat(chat);
       setActiveChannel(null);
       setActiveStatusContactId(null);
+      pendingHitRef.current = { ...pending, opened: true };
     }
   }, [chats, loadingChats, activeChat, selectedSessionId, switchTab]);
 
   // Best-effort scroll to the hit message. Runs as a layout effect (after useChatScrollPosition's
   // own restore on the same commit) so it overrides the bottom/saved jump with no visible flash.
   // Degrades silently to session+chat selection when the element isn't present — the message is
-  // still visible in the conversation.
+  // still visible in the conversation. Until the hit's session has its list on screen, the open chat
+  // still belongs to the session being left, even when it has the hit's chat id.
   useLayoutEffect(() => {
     const pending = pendingHitRef.current;
-    if (!pending || !activeChat || activeChat.id !== pending.chatId) return;
+    if (!pending || listedSessionRef.current !== pending.sessionId || activeChat?.id !== pending.chatId) return;
     if (loadingMessages || messages.length === 0) return;
     const container = messagesContainerRef.current;
     if (container) {
@@ -1162,7 +1180,13 @@ export function Chats() {
                   ) : (
                     (channelMessages.data ?? []).map(m => (
                       <div key={m.id} className="message-bubble incoming">
-                        {m.hasMedia && m.mediaUrl && <img className="channel-media" src={m.mediaUrl} alt="" />}
+                        {/* whatsapp-web.js flags a post's media but gives no URL for it. */}
+                        {m.hasMedia &&
+                          (m.mediaUrl ? (
+                            <img className="channel-media" src={m.mediaUrl} alt="" />
+                          ) : (
+                            <span className="status-media-placeholder">{t('chats.status.mediaUnavailable')}</span>
+                          ))}
                         {m.body && <MessageBody text={stripMentionDelimiters(m.body)} className="message-text" />}
                         <span className="message-time">{formatChatTime(m.timestamp)}</span>
                       </div>

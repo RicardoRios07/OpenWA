@@ -121,7 +121,12 @@ export class HealthController {
   @Get('ready')
   @ApiOperation({ summary: 'Readiness probe — verifies the auth/audit + data databases respond' })
   @ApiResponse({ status: 200, description: 'Application is ready to accept traffic', type: ReadinessResponseDto })
-  @ApiResponse({ status: 503, description: 'A required dependency is down' })
+  @ApiResponse({
+    status: 503,
+    description:
+      'A required dependency is down, or the node is draining for shutdown (details.shutdown.status = draining)',
+    type: ReadinessResponseDto,
+  })
   async readiness(): Promise<HealthCheckResult> {
     // While draining (shutdown started), report 503 so the LB/orchestrator stops
     // routing new traffic before teardown — even if the DBs are still up.

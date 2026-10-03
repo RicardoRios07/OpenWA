@@ -165,7 +165,13 @@ export class SessionEngineEventWiring {
         });
         return;
       }
-      void host.updateStatus(id, status);
+      void host.updateStatus(id, status).catch(err =>
+        this.logger.warn('Failed to persist an engine status', {
+          sessionId: id,
+          status,
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
     };
 
     return {

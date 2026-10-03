@@ -24,8 +24,6 @@ export interface WwebjsEngineHost {
   readonly config: WhatsAppWebJsConfig;
   /** Live callbacks bag — read per event, since initialize() installs it after delegates are built. */
   getCallbacks(): EngineEventCallbacks;
-  /** Own account wid, or undefined while no client exists (late events during teardown). */
-  getSelfWid(): string | undefined;
 }
 
 /**

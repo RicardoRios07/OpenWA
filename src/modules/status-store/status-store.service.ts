@@ -311,8 +311,10 @@ export class StatusStoreService implements OnModuleInit, OnModuleDestroy {
     const row = await this.repository.findOne({
       where: { sessionId, waStatusId: statusId, expiresAt: MoreThan(Date.now()) },
     });
-    if (!row || row.mediaOmitted || !row.mediaPath || !row.mediaMimetype) return null;
-    return { path: row.mediaPath, mimetype: row.mediaMimetype };
+    // Same condition toStatus() advertises a mediaUrl on. Media stored without a type (an engine that
+    // reported none) is still served, as octet-stream.
+    if (!row || row.mediaOmitted || !row.mediaPath) return null;
+    return { path: row.mediaPath, mimetype: row.mediaMimetype || 'application/octet-stream' };
   }
 
   /**

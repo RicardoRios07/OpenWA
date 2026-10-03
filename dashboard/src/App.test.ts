@@ -7,6 +7,8 @@ import assert from 'node:assert/strict';
 import { createElement } from 'react';
 
 let role = 'operator';
+let scoped = false;
+const requested: string[] = [];
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
@@ -16,7 +18,8 @@ function installFetchStub(): void {
   globalThis.fetch = ((input: RequestInfo | URL): Promise<Response> => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const path = url.replace(/^https?:\/\/[^/]+/, '');
-    if (path === '/api/auth/validate') return Promise.resolve(jsonResponse({ valid: true, role }));
+    requested.push(path);
+    if (path === '/api/auth/validate') return Promise.resolve(jsonResponse({ valid: true, role, scoped }));
     if (path === '/api/audit' || path.startsWith('/api/audit?'))
       return Promise.resolve(jsonResponse({ data: [], total: 0 }));
     if (path === '/api/sessions' || path === '/api/webhooks') return Promise.resolve(jsonResponse([]));
@@ -58,10 +61,13 @@ before(async () => {
 
 afterEach(() => {
   rtl.cleanup();
+  scoped = false;
+  window.sessionStorage.removeItem('openwa_key_scoped');
 });
 
 function renderAt(path: string, as: string): void {
   role = as;
+  requested.length = 0;
   window.history.replaceState(null, '', path);
   window.sessionStorage.setItem('openwa_api_key', 'test-key');
   window.sessionStorage.setItem('openwa_user_role', as);
@@ -85,6 +91,21 @@ test('an admin keeps the Logs entry and the route', async () => {
   await new Promise(resolve => setTimeout(resolve, 50));
   assert.equal(window.location.pathname, '/logs');
 });
+
+// API keys, Infrastructure and Plugins read routes that refuse any session-scoped key, so a scoped
+// admin opening one by URL or reload must be sent home rather than mount a page whose reads all 403.
+for (const page of ['api-keys', 'infrastructure', 'plugins']) {
+  test(`a session-scoped admin opening /${page} is sent home without calling its routes`, async () => {
+    scoped = true;
+    window.sessionStorage.setItem('openwa_key_scoped', 'true');
+    renderAt(`/${page}`, 'admin');
+    await rtl.waitFor(() => assert.ok(document.querySelector('a[href="/sessions"]')));
+    await rtl.waitFor(() => assert.equal(window.location.pathname, '/'));
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const refused = requested.filter(path => /^\/api\/(auth\/api-keys|infra|plugins)/.test(path));
+    assert.deepEqual(refused, [], 'the page sent reads a session-scoped key is refused on');
+  });
+}
 
 // The startup /auth/validate for a saved key is not cancelled by a logout. If it lands after the user
 // has signed back in with another key, its answer is about a key no longer in use and must not touch

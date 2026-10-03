@@ -8,6 +8,7 @@ import com.rmyndharis.openwa.ClientConfig;
 import com.rmyndharis.openwa.OpenWAClient;
 import com.rmyndharis.openwa.http.BinaryResponse;
 import com.rmyndharis.openwa.http.HttpMethod;
+import com.rmyndharis.openwa.model.BatchCancelResponse;
 import com.rmyndharis.openwa.model.BulkMessageContent;
 import com.rmyndharis.openwa.model.BulkMessageItem;
 import com.rmyndharis.openwa.model.BulkMessageType;
@@ -368,8 +369,13 @@ class MessagesResourceTest {
 
     @Test
     void cancelBatchHitsCancelPath() {
-        tx.respond(200, "{\"batchId\":\"b1\",\"status\":\"cancelled\"}");
-        client.messages.cancelBatch("s", "b1");
+        tx.respond(
+            200,
+            "{\"batchId\":\"b1\",\"status\":\"cancelled\","
+                + "\"progress\":{\"total\":2,\"sent\":1,\"failed\":0,\"pending\":0,\"cancelled\":1}}");
+        BatchCancelResponse res = client.messages.cancelBatch("s", "b1");
+        assertEquals("b1", res.batchId());
+        assertEquals(1, res.progress().cancelled());
         assertEquals("http://h/api/sessions/s/messages/batch/b1/cancel", tx.lastRequest().url());
         assertEquals(HttpMethod.POST, tx.lastRequest().method());
     }

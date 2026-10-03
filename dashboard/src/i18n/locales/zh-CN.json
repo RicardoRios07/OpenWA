@@ -36,6 +36,7 @@
     "hoursAgo": "{{count}} 小时前",
     "hoursAgo_other": "{{count}} 小时前",
     "optional": "可选",
+    "fieldTooLong": "最多 {{max}} 个字符（当前 {{count}} 个）。",
     "language": "语言",
     "back": "返回",
     "next": "下一步",
@@ -122,7 +123,6 @@
       "unknownType": "未知类型"
     },
     "you": "你",
-    "youPrefix": "你：",
     "yesterday": "昨天",
     "attachTitle": "发送文件 / 图片",
     "emojiTitle": "选择表情",
@@ -348,7 +348,7 @@
       "configured": "{{host}} ({{type}})",
       "noProxy": "未配置代理",
       "hasCredentials": "凭据已保存，但不会显示。输入完整的 URL 即可更改。",
-      "hint": "更改将在下次启动会话时生效，不会作用于正在运行的连接。代理必须真实且可访问：无法访问的代理会导致 QR 码无法送达，启动请求将返回 504。",
+      "hint": "更改将在下次启动会话时生效，不会作用于正在运行的连接。代理必须真实且可访问：无法访问的代理会导致 QR 码无法送达。在 whatsapp-web.js 上启动请求将返回 504，在 Baileys 上启动会成功，但会话会持续重试。",
       "createHint": "仅当你的网络无法直接访问 WhatsApp 时才需要。必须是真实且可访问的代理。",
       "invalidUrl": "请输入有效的 http、https、socks4 或 socks5 代理 URL。",
       "saveSuccessTitle": "代理已保存",
@@ -487,11 +487,9 @@
       "valueLabel": "筛选值"
     },
     "columns": {
-      "url": "URL",
       "events": "事件",
       "session": "会话",
-      "status": "状态",
-      "actions": "操作"
+      "status": "状态"
     },
     "empty": {
       "title": "尚未配置 Webhook",
@@ -671,7 +669,6 @@
       "revoke": "撤销"
     },
     "actions": {
-      "copy": "复制",
       "revoke": "撤销",
       "delete": "删除",
       "edit": "编辑访问权限"
@@ -886,7 +883,7 @@
       "sslRejectUnauthorized": "验证 SSL 证书",
       "sslRejectUnauthorizedDesc": "拒绝自签名或无效的证书。对于使用自签名证书的托管 Postgres（Supabase、Heroku、Render、Railway），请关闭此项。",
       "migrationsTitle": "数据库迁移",
-      "migrationsStatus": "架构会通过 TypeORM 自动同步",
+      "migrationsStatus": "待处理的迁移会在启动时自动应用",
       "migrationsHint": "迁移会自动管理。手动迁移请使用 CLI。"
     },
     "engine": {
@@ -909,7 +906,7 @@
     "redis": {
       "title": "Redis",
       "enable": "启用 Redis",
-      "enableDesc": "缓存、会话存储和 BullMQ 队列需要 Redis",
+      "enableDesc": "用于缓存、BullMQ 队列、限流计数器和多节点 WebSocket 分发",
       "useBuiltIn": "使用内置 Redis 容器",
       "builtInDesc": "OpenWA 将为你管理 Redis 容器",
       "queueTitle": "启用 BullMQ 队列系统",
@@ -921,7 +918,7 @@
       "failed": "失败",
       "viewBullMq": "查看 Bull MQ 仪表盘",
       "disabledTitle": "Redis 已禁用",
-      "disabledDesc": "启用 Redis 以使用缓存、会话存储和 BullMQ 消息队列。",
+      "disabledDesc": "启用 Redis 以使用缓存、BullMQ 消息队列、限流计数器和多节点 WebSocket 分发。",
       "passwordOptional": "（可选）",
       "bullMqUrlCopied": "已复制 Bull MQ 仪表板网址",
       "bullMqUrlHint": "请使用 ADMIN API 密钥打开 — 浏览器标签页无法进行身份验证。"
@@ -1055,7 +1052,7 @@
       "healthFail": "健康检查失败",
       "healthError": "健康检查出错",
       "savedTitle": "配置已保存",
-      "savedDesc": "需要重启服务器以应用更改。",
+      "savedDesc": "更改无需重启服务器即可生效。",
       "saveFailed": "保存失败",
       "installed": "插件已安装",
       "installFailed": "安装失败",

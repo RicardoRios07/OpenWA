@@ -98,11 +98,13 @@ async function bootstrap() {
   });
 
   // Advisory (not enforced): without API_KEY_PEPPER, stored API-key hashes use plain SHA-256. Enabling
-  // a pepper re-hashes keys and invalidates existing ones, so we only nudge the operator (see api-key-hash.ts).
+  // a pepper on an install with keys locks every key out (see api-key-hash.ts), so we only nudge the operator.
   if (isApiKeyPepperMissingInProduction(process.env.NODE_ENV, process.env.API_KEY_PEPPER)) {
     bootstrapLogger.warn(
       'API_KEY_PEPPER is not set in production: stored API-key hashes use plain SHA-256. ' +
-        'Set API_KEY_PEPPER and re-issue keys to enable HMAC hashing.',
+        'Set API_KEY_PEPPER before the first boot to enable HMAC hashing; on an install with keys it locks out ' +
+        'every key until the previous pepper is restored, or api_keys is cleared and the instance restarted to ' +
+        'seed a new admin key.',
     );
   }
 
@@ -149,8 +151,8 @@ async function bootstrap() {
   app.useWebSocketAdapter(new RedisIoAdapter(app));
 
   // The production HTTP surface: request context, the CSP nonce, helmet, the SPA document handler,
-  // CORS, in-flight body budget, body parsers and the trailing-slash DELETE refusal. Extracted so the
-  // e2e lane runs the SAME stack instead of a copy of it (src/configure-app.ts).
+  // CORS, the encoded-NUL refusal, in-flight body budget, body parsers and the trailing-slash DELETE
+  // refusal. Extracted so the e2e lane runs the SAME stack instead of a copy of it (src/configure-app.ts).
   const { bodyLimit, inflightBudgetBytes } = configureApp(app);
   bootstrapLogger.log(`Request body caps: ${bodyLimit} per request, ${inflightBudgetBytes} bytes aggregate in flight`);
 

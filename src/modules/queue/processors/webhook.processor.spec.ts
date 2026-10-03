@@ -35,6 +35,8 @@ describe('WebhookProcessor', () => {
     ({
       id: 'job-1',
       attemptsMade,
+      // BullMQ counts the activation running the job, so a job in process() has started one more.
+      attemptsStarted: attemptsMade + 1,
       data: {
         webhookId: 'wh-1',
         url: 'https://8.8.8.8/hook', // IP literal → SSRF guard needs no DNS lookup
@@ -540,6 +542,40 @@ describe('WebhookProcessor', () => {
       await expect(gp.process(job, 'tok-2')).rejects.toBeInstanceOf(DelayedError);
 
       expect((move.mock.calls[0] as [number])[0]).toBeGreaterThanOrEqual(before + 1000);
+      first.release();
+      await inFlight;
+    });
+
+    // Every backlogged job of a dead receiver is otherwise promoted and bounced again each 1-2x the
+    // retry delay, so the churn grows with the backlog. Each bounce doubles the job's wait, up to 64x.
+    it('backs a repeatedly bounced job off exponentially, up to 64 times the retry delay', async () => {
+      const gp = gatedProcessor(1000);
+      mockFetch.mockResolvedValueOnce({ ok: false, status: 500, statusText: 'Server Error' });
+      await expect(gp.process(makeJob())).rejects.toThrow('HTTP 500');
+      const first = hang();
+      const inFlight = gp.process(makeJob(), 'tok-1');
+      await new Promise(resolve => setImmediate(resolve));
+
+      // attemptsStarted counts every activation, attemptsMade only real attempts: the gap, less the
+      // current activation, is how many times the job has already been bounced.
+      const waitAfter = async (bounces: number): Promise<number> => {
+        const job = makeJob({}, 1);
+        (job as unknown as { attemptsStarted: number }).attemptsStarted = 1 + bounces + 1;
+        const move = withMoveToDelayed(job);
+        const before = Date.now();
+        await expect(gp.process(job, 'tok-2')).rejects.toBeInstanceOf(DelayedError);
+        return (move.mock.calls[0] as [number])[0] - before;
+      };
+      const fresh = await waitAfter(0);
+      expect(fresh).toBeGreaterThanOrEqual(1000);
+      expect(fresh).toBeLessThan(2000 + 50);
+      const third = await waitAfter(3);
+      expect(third).toBeGreaterThanOrEqual(8000);
+      expect(third).toBeLessThan(16000 + 50);
+      const capped = await waitAfter(40);
+      expect(capped).toBeGreaterThanOrEqual(64000);
+      expect(capped).toBeLessThan(128000 + 50);
+
       first.release();
       await inFlight;
     });

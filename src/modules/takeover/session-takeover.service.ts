@@ -1,6 +1,5 @@
 import { ConflictException, Injectable, OnApplicationBootstrap, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { setTimeout } from 'node:timers/promises';
 import { createLogger } from '../../common/services/logger.service';
 import { resolveFeatureFlags } from '../../config/feature-flags';
 import { Session, SessionStatus } from '../session/entities/session.entity';
@@ -8,6 +7,7 @@ import { SessionOwnershipService } from '../session/session-ownership.service';
 import { ShutdownService } from '../../common/services/shutdown.service';
 import { SessionService } from '../session/session.service';
 import { SessionStoppedException } from '../session/session-engine-controls';
+import { resolveMaxConcurrentSessions } from '../session/session-engine-lifecycle.service';
 
 /**
  * Statuses worth adopting from a lapsed node. They all mean "an engine was (or should be) running".
@@ -160,6 +160,14 @@ export class SessionTakeoverService implements OnApplicationBootstrap, OnModuleD
       // stagger, so the loop spans a large part of the sweep interval and shutdown can begin partway
       // through. Everything already adopted is left to the normal teardown; nothing further starts.
       if (this.stopping) return;
+      // start() refuses at the cap without touching the lease, so stopping here only saves a refused
+      // launch per remaining row; the lease stays where a peer with room adopts it.
+      if (!this.hasStartCapacity()) {
+        this.logger.debug('Takeover paused: this node is at MAX_CONCURRENT_SESSIONS', {
+          pending: eligible.length - i,
+        });
+        return;
+      }
       try {
         await this.sessionService.start(session.id);
         this.logger.log(`Adopted session ${session.name} from lapsed node ${session.nodeId ?? '?'}`, {
@@ -182,9 +190,15 @@ export class SessionTakeoverService implements OnApplicationBootstrap, OnModuleD
         }
       }
       if (i < eligible.length - 1) {
-        await setTimeout(TAKEOVER_START_STAGGER_MS);
+        await new Promise(resolve => setTimeout(resolve, TAKEOVER_START_STAGGER_MS));
       }
     }
+  }
+
+  /** The same count the start path's MAX_CONCURRENT_SESSIONS check uses. */
+  private hasStartCapacity(): boolean {
+    const max = resolveMaxConcurrentSessions(this.configService);
+    return max === null || this.sessionService.hasStartCapacity(max);
   }
 
   private isEligible(session: Session): boolean {

@@ -116,6 +116,14 @@ describe('isDeliverableWebhook', () => {
     expect(isDeliverableWebhook({ ...row, active: false }, 'message.received')).toBe(false);
     expect(isDeliverableWebhook(row, 'message.ack')).toBe(false);
   });
+
+  it('refuses a row whose events column is not an array instead of throwing', () => {
+    for (const events of [null, '*', { 0: 'message.received' }]) {
+      expect(isDeliverableWebhook({ active: true, events: events as unknown as string[] }, 'message.received')).toBe(
+        false,
+      );
+    }
+  });
 });
 
 describe('generateSignature', () => {

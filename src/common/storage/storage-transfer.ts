@@ -119,7 +119,11 @@ async function appendEntries(
     try {
       source = await openFile(file);
     } catch (error) {
-      if (!isMissingObjectError(error)) throw error;
+      // Only a per-object miss is skippable: ENOENT locally, NoSuchKey from S3 (openS3File returns it
+      // once the local fallback also misses). isMissingObjectError also counts any 404, which includes
+      // a bucket that is gone, and skipping that would report a partial archive as a finished export.
+      const { code, name } = error as { code?: string; name?: string };
+      if (code !== 'ENOENT' && name !== 'NoSuchKey') throw error;
       logger.warn(`Failed to export file: ${file}`, { error: String(error) });
       continue;
     }
@@ -201,7 +205,9 @@ export async function importFromStream(
       gunzip.destroy();
       // Destroying the input mid-pipe stops the source; without an error arg it emits no 'error'.
       inputStream.destroy();
-      reject(err);
+      // The counts reached so far ride on the rejection for the caller's audit row. A lower bound: a
+      // putFile already in flight when a gzip or input error lands can still complete afterwards.
+      reject(Object.assign(err, { imported: importedCount, failed: failedCount }));
     };
     // Every stream in the pipeline needs an 'error' listener: an EventEmitter with none CRASHES the
     // process on error. pipe() does not forward errors, so a corrupt gzip (zlib error on gunzip) or

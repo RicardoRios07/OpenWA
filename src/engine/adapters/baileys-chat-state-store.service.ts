@@ -174,6 +174,10 @@ export class ChatStateStoreService implements ChatStateStore, OnModuleInit {
   async reload(): Promise<void> {
     const seq = this.writeSeq;
     const idle = this.writes.size === 0;
+    // Dropped before the read, as refreshSession does: a restore may have replaced the table, so if
+    // the read fails, every chat not cached must read through rather than trust a stale mark.
+    this.completeSessions.clear();
+    this.absent.clear();
     try {
       const rows = await this.repo.find({
         order: { updatedAt: 'DESC' },

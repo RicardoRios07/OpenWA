@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -18,7 +19,7 @@ import { ApiKey, ApiKeyRole } from './entities/api-key.entity';
 import { CreateApiKeyDto, UpdateApiKeyDto } from './dto';
 import { createLogger } from '../../common/services/logger.service';
 import { setRequestActor } from '../../common/services/request-context';
-import { readBootstrapKey, removeBootstrapKey, writeBootstrapKey } from './bootstrap-key-file';
+import { bootstrapKeyFilePath, readBootstrapKey, removeBootstrapKey, writeBootstrapKey } from './bootstrap-key-file';
 import { ApiKeyUsageTracker } from './api-key-usage-tracker.service';
 import { ActiveKeyIndex } from './active-key-index';
 import { apiKeyAuthorizationFingerprint, normalizeScopeList } from './api-key-authorization';
@@ -62,13 +63,14 @@ export function resolveSeedApiKey(): string {
  * The line to print for the API key in the startup banner. The full raw key is shown ONLY when it was
  * just created (first run, when the operator needs to capture it once). On every subsequent boot the
  * key is masked to a short non-secret fingerprint, so the live admin key is not re-written to the log
- * pipeline (Docker/Loki/CloudWatch) on each restart — it stays in `data/.api-key` (0600) and the
- * dashboard. A placeholder (e.g. "(check dashboard for keys)") is passed through unchanged.
+ * pipeline (Docker/Loki/CloudWatch) on each restart — it stays in `data/.api-key` (0600), or wherever
+ * `BOOTSTRAP_KEY_FILE` points; the dashboard only ever shows a key's prefix. A placeholder
+ * (e.g. "(check dashboard for keys)") is passed through unchanged.
  */
 export function bannerKeyLine(displayKey: string, isNewKey: boolean): string {
   if (isNewKey) return displayKey;
   if (displayKey.startsWith('(')) return displayKey;
-  return `${displayKey.slice(0, 8)}… (full key in data/.api-key or the dashboard)`;
+  return `${displayKey.slice(0, 8)}… (full key in ${bootstrapKeyFilePath()})`;
 }
 
 @Injectable()
@@ -158,7 +160,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
       const byPrefix = await this.apiKeyRepository.findOne({ where: { keyPrefix: rawKey.substring(0, 12) } });
       if (byPrefix) {
         this.logger.warn(
-          'Bootstrap API key file does not match any stored key hash — API_KEY_PEPPER changed since the key was seeded? The key itself is still live, so the file is kept; restore the original pepper or rotate the key to repair.',
+          'Bootstrap API key file does not match any stored key hash — API_KEY_PEPPER changed since the key was seeded? The key itself is still live, so the file is kept; restore the original pepper, or clear the api_keys table and restart to seed a new admin key.',
           { keyPrefix: byPrefix.keyPrefix, action: 'bootstrap_key_pepper_mismatch' },
         );
         return null;
@@ -208,7 +210,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
       allowedIps: dto.allowedIps || null,
       allowedSessions: normalizeScopeList(dto.allowedSessions),
       allowedChats: normalizeChatAllowList(dto.allowedChats),
-      expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : null,
+      expiresAt: dto.expiresAt ? AuthService.parseExpiry(dto.expiresAt) : null,
     });
 
     const saved = await this.apiKeyRepository.save(apiKey);
@@ -245,7 +247,8 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
       (dto.role !== undefined && dto.role !== ApiKeyRole.ADMIN) ||
       (normalizeScopeList(dto.allowedSessions)?.length ?? 0) > 0 ||
       (normalizeChatAllowList(dto.allowedChats)?.length ?? 0) > 0;
-    const setsExpiry = dto.expiresAt !== undefined && dto.expiresAt !== null;
+    const expiry = dto.expiresAt ? AuthService.parseExpiry(dto.expiresAt) : null;
+    const setsExpiry = expiry !== null;
     const removesOrSchedulesLastAdmin = stripsAdmin || setsExpiry;
 
     // Capture the authorization-relevant fields BEFORE applying the change. Only a change to role,
@@ -267,19 +270,19 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     if (dto.allowedIps !== undefined) patch.allowedIps = dto.allowedIps;
     if (dto.allowedSessions !== undefined) patch.allowedSessions = normalizeScopeList(dto.allowedSessions);
     if (dto.allowedChats !== undefined) patch.allowedChats = normalizeChatAllowList(dto.allowedChats);
-    if (dto.expiresAt !== undefined) patch.expiresAt = dto.expiresAt ? new Date(dto.expiresAt) : null;
+    if (dto.expiresAt !== undefined) patch.expiresAt = expiry;
 
     let saved: ApiKey;
-    if (removesOrSchedulesLastAdmin && apiKey.role === ApiKeyRole.ADMIN) {
-      // The guard's predicate is the target's ROLE, not its usability snapshot: usability also
-      // depends on isActive/expiry/scope, which the guarded statement itself evaluates against live
-      // row state. A non-admin target genuinely cannot strand the system, so it stays lock-free.
+    if (removesOrSchedulesLastAdmin) {
+      // Guarded whatever role the pre-read saw: a concurrent promotion can make the target the last
+      // usable admin before this write lands, and only the statement itself sees the live row. On a
+      // row that is not a usable admin the guard passes, so non-admin keys are unaffected.
       // An expiry pushed later on a key that already expires cannot bring a lockout closer, so the
       // guard lets it through on its own; alongside a demotion or scoping it is guarded as usual.
       const result = await this.withLastAdminGuard(
         this.apiKeyRepository.createQueryBuilder().update(ApiKey).set(patch),
         id,
-        setsExpiry && !stripsAdmin ? new Date(dto.expiresAt as string) : undefined,
+        stripsAdmin ? undefined : (expiry ?? undefined),
       ).execute();
       await this.assertMutationApplied(id, result.affected);
       // The row's post-write state, for the eviction comparison below.
@@ -302,16 +305,12 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
 
   async delete(id: string): Promise<void> {
     const apiKey = await this.findOne(id);
-    if (apiKey.role === ApiKeyRole.ADMIN) {
-      const result = await this.withLastAdminGuard(
-        this.apiKeyRepository.createQueryBuilder().delete().from(ApiKey),
-        id,
-      ).execute();
-      await this.assertMutationApplied(id, result.affected);
-    } else {
-      // A non-admin target cannot strand the system — no guard needed.
-      await this.apiKeyRepository.remove(apiKey);
-    }
+    // Guarded whatever role the pre-read saw, so the statement judges the live row (see update).
+    const result = await this.withLastAdminGuard(
+      this.apiKeyRepository.createQueryBuilder().delete().from(ApiKey),
+      id,
+    ).execute();
+    await this.assertMutationApplied(id, result.affected);
     // Drop any un-flushed usage accumulator so a deleted key leaves nothing behind in the Map.
     this.usageTracker.forget(id);
     this.removeBootstrapKeyFileIfMatching(apiKey);
@@ -325,19 +324,13 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
 
   async revoke(id: string): Promise<ApiKey> {
     const apiKey = await this.findOne(id);
-    let saved: ApiKey;
-    if (apiKey.role === ApiKeyRole.ADMIN) {
-      const result = await this.withLastAdminGuard(
-        this.apiKeyRepository.createQueryBuilder().update(ApiKey).set({ isActive: false }),
-        id,
-      ).execute();
-      await this.assertMutationApplied(id, result.affected);
-      saved = await this.findOne(id);
-    } else {
-      // A non-admin target cannot strand the system — no guard needed.
-      await this.applyUnguardedUpdate({ isActive: false }, id);
-      saved = await this.findOne(id);
-    }
+    // Guarded whatever role the pre-read saw, so the statement judges the live row (see update).
+    const result = await this.withLastAdminGuard(
+      this.apiKeyRepository.createQueryBuilder().update(ApiKey).set({ isActive: false }),
+      id,
+    ).execute();
+    await this.assertMutationApplied(id, result.affected);
+    const saved = await this.findOne(id);
     // A revoked key fails validation before its next flush, so its accumulator would orphan —
     // drop it here.
     this.usageTracker.forget(id);
@@ -347,6 +340,17 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     this.evictActiveSockets(id, 'revoked');
     this.keyIndex?.refreshSoon();
     return saved;
+  }
+
+  /**
+   * @IsDateString accepts every ISO 8601 form, but `new Date` parses only some of them: a week
+   * ('2026-W40-1'), ordinal ('2026-274') or basic ('20261001T101010Z') date is an Invalid Date, which
+   * would be stored as NaN and never compare as expired. Refuse it instead.
+   */
+  private static parseExpiry(value: string): Date {
+    const at = new Date(value);
+    if (Number.isNaN(at.getTime())) throw new BadRequestException('expiresAt is not a parseable date');
+    return at;
   }
 
   /**
@@ -436,7 +440,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Apply a single-row UPDATE with no last-admin guard — the caller has established the target
-   * cannot strand the system (non-admin target, or a non-stripping patch). The SET list is only
+   * cannot strand the system (a patch that neither strips nor expires a key). The SET list is only
    * the patch itself: saving the pre-read ENTITY instead would write every column from that
    * snapshot, resurrecting a revoke or demote that committed between the read and the write (a
    * rename writing isActive: true back over a concurrent false, for instance). There is no guard
@@ -514,7 +518,9 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
       throw new UnauthorizedException('API key is revoked');
     }
 
-    if (apiKey.expiresAt && apiKey.expiresAt < new Date()) {
+    // Negated so a stored expiry that hydrates to an Invalid Date (every comparison false) counts as
+    // expired rather than never expiring.
+    if (apiKey.expiresAt && !(apiKey.expiresAt >= new Date())) {
       throw new UnauthorizedException('API key has expired');
     }
 

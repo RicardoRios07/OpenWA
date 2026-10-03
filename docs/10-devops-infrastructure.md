@@ -479,8 +479,9 @@ WEBHOOK_DISPATCH_MAX_QUEUED=1000
 # admitted before it (running, parked, or in their retries) are not counted. The direct delivery
 # used when Redis rejects an enqueue is not capped. Queued, it applies to every job attempt
 # that starts afterwards, including retries and jobs already waiting (the rest wait in the delayed
-# set without spending an attempt); only an attempt already running is not counted. The failing
-# state and the cap are held per process, not per cluster.
+# set without spending an attempt, each wait doubling up to 64 times WEBHOOK_RETRY_DELAY (at
+# least 1 s), plus up to as much again in jitter); only an attempt already running is not counted.
+# The failing state and the cap are held per process, not per cluster.
 # The first 2xx from the webhook lifts it. With the queue disabled, a session parks at most a
 # quarter of WEBHOOK_DISPATCH_MAX_QUEUED behind that limit and sheds the rest, so other sessions
 # keep room.
@@ -531,8 +532,9 @@ export default () => ({
       .map(proxy => proxy.trim())
       .filter(Boolean),
   },
-  // Session data path and Puppeteer both live under `engine` — there is no top-level
-  // `session` or `puppeteer` key.
+  // Session data path and Puppeteer both live under `engine`; there is no top-level `puppeteer`
+  // key, and the top-level `session` (ownership leases) and `sessions` (concurrency cap) blocks do
+  // not hold the data path.
   engine: {
     type: process.env.ENGINE_TYPE || 'whatsapp-web.js',
     sessionDataPath: process.env.SESSION_DATA_PATH || './data/sessions',
@@ -997,9 +999,9 @@ seen, so keep new renderers on that composition.
 > and still means "the process is alive". Alert on `openwa_stats_available == 0` for the degradation itself;
 > an alert written as `openwa_sessions_active == 0` would never fire for it, and one written with `absent()`
 > would. Because of the two caches, `openwa_stats_available` can keep reporting 1, and the series their last
-> values, for up to `STATS_CACHE_TTL_MS` + 5 s after the data database fails, so give an alert on it a `for:`
-> at least that long. `STATS_CACHE_TTL_MS=0` makes the signal live at the cost of a full overview query per
-> render.
+> values, for up to `STATS_CACHE_TTL_MS` + 5 s after the data database fails, so expect an alert on it to fire
+> up to that much later; a `for:` adds to that delay rather than offsetting it. `STATS_CACHE_TTL_MS=0` makes
+> the signal live at the cost of a full overview query per render.
 
 ### Grafana Dashboard Definition
 
@@ -1196,6 +1198,7 @@ multiple replicas against a shared session volume corrupt WhatsApp auth. Run exa
 instance per session-data volume (`replicas: 1`). Session claims and leases ship; the rest of the design
 that would be required to scale out is documented — as a future design sketch, not a shipped feature —
 in [13 - Horizontal Scaling Guide](./13-horizontal-scaling.md).
+
 ---
 
 <div align="center">

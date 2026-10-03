@@ -149,11 +149,13 @@ EOF
 # cp walked the tree (Chromium cache and LevelDB churn, the Baileys store's temp files and consumed
 # keys, media retention and plugin storage writes) is a torn copy, not a failed backup. With a label
 # the copy is engine auth state and goes in ENGINE-STATE-NOTE; without one it is only logged. Every
-# other cp error stays fatal.
+# other cp error stays fatal. cp runs in the C locale so the error text matched here is the one it
+# prints, and grep reads a here-string: piped from printf, a grep -q that stops at the first fatal line
+# breaks the pipe once the errors outgrow its buffer, and pipefail then reads a failure as benign.
 copy_live_tree() {
   local err
-  if ! err="$(cp -pRH "$1" "$2" 2>&1)"; then
-    if printf '%s\n' "$err" | grep -qv 'No such file or directory'; then
+  if ! err="$(LC_ALL=C cp -pRH "$1" "$2" 2>&1)"; then
+    if grep -qv 'No such file or directory' <<<"$err"; then
       printf '%s\n' "$err" >&2
       exit 1
     fi
@@ -177,7 +179,14 @@ backup_sqlite() {
     exit 1
   fi
   if command -v sqlite3 >/dev/null 2>&1; then
-    sqlite3 "$src" ".backup '$dest'"
+    # The app writes in rollback-journal mode, and a bare .backup gave up on the first lock it met and
+    # restarted after every outside write, so a busy gateway never got a backup. The read transaction
+    # lets the copy finish in one pass, but it blocks every app write, and with it the app's event
+    # loop, until the copy ends, and a write that outlasts the app's SQLite busy timeout fails. The
+    # busy timeout here waits out a commit, and -init /dev/null keeps the operator's sqlite3 rc file
+    # out of the run.
+    sqlite3 -init /dev/null -cmd ".timeout 30000" "$src" \
+      "BEGIN" "SELECT count(*) FROM sqlite_master" ".backup '$dest'" "COMMIT" >/dev/null
   else
     log "WARN: sqlite3 not found — plain-copying live database $src (the snapshot may be torn)"
     cp "$src" "$dest"
@@ -290,10 +299,12 @@ ARCHIVE_LIST="$(tar -tzf "$ARCHIVE")"
 
 # Min-content check on the finished archive: every configured database must be present. If not,
 # delete the defective archive and fail — leaving it on disk invites a restore into a fresh-empty
-# install (new API keys, new master key) reported as success.
+# install (new API keys, new master key) reported as success. grep reads a here-string, not a pipe: a
+# grep -q that matches early stops reading, and on a listing larger than the pipe buffer the broken pipe
+# made pipefail report a member that is there as missing.
 MISSING_MEMBERS=""
 for member in "${REQUIRED_MEMBERS[@]}"; do
-  if ! printf '%s\n' "$ARCHIVE_LIST" | grep -qxF "$member"; then
+  if ! grep -qxF "$member" <<<"$ARCHIVE_LIST"; then
     MISSING_MEMBERS="$MISSING_MEMBERS $member"
   fi
 done

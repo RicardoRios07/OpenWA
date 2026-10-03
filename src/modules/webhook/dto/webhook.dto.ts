@@ -362,8 +362,10 @@ export class WebhookResponseDto {
 }
 
 /**
- * A webhook delivery that exhausted its retries, or one not sent (attempts 0) that the outbox replays; the
- * shape `GET /webhooks/delivery-failures` serves. A later successful delivery removes the row.
+ * A webhook delivery that exhausted its retries, or one not sent (attempts 0); the shape
+ * `GET /webhooks/delivery-failures` serves. A shed or shutdown-refused delivery is replayed by the outbox
+ * sweep; one rejected before sending (an over-cap or unserializable payload) is recorded once and not
+ * replayed. A later successful delivery removes the row.
  */
 export class WebhookDeliveryFailureDto {
   @ApiProperty({ example: '0a941dac-a965-45e7-b318-74ae8be134f0' })
@@ -392,7 +394,10 @@ export class WebhookDeliveryFailureDto {
   deliveryId?: string | null;
 
   @ApiProperty({
-    description: 'Attempts recorded for the delivery; 0 when it was shed, refused or failed before sending.',
+    description:
+      'Attempts recorded for the delivery; 0 when it was shed, refused or failed before sending. With the ' +
+      'queue disabled, a delivery that shutdown caught in a retry backoff also records 0, although earlier ' +
+      'attempts were sent.',
     example: 5,
   })
   attempts!: number;
@@ -405,7 +410,7 @@ export class WebhookDeliveryFailureDto {
   })
   lastStatusCode?: number | null;
 
-  @ApiProperty({ example: 'connect ECONNREFUSED 10.0.0.1:443' })
+  @ApiProperty({ example: 'fetch failed' })
   lastError!: string;
 
   @ApiProperty({ type: String, format: 'date-time', description: 'When the failure was first recorded.' })

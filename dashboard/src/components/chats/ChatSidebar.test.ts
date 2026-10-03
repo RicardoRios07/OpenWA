@@ -47,6 +47,8 @@ function renderSidebar(activeTab: ChatsTab, chats: Chat[], channels: { all: Chan
     canWrite: true,
     engineType: 'whatsapp-web.js',
     setEngineType: () => undefined,
+    scoped: false,
+    setScoped: () => undefined,
   };
   const query = { isLoading: false, error: null, data: channels.all } as unknown as UseQueryResult<Channel[], Error>;
   return rtl.render(
