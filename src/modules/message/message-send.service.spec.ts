@@ -1,9 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { FindOperator, In, Repository } from 'typeorm';
+import { DataSource, FindOperator, In, Repository } from 'typeorm';
 import { LidMappingStoreService } from '../../engine/identity/lid-mapping-store.service';
 import type { LidMapping } from '../../engine/identity/lid-mapping.entity';
-import { BadRequestException, NotFoundException, PayloadTooLargeException } from '@nestjs/common';
+import { BadRequestException, ExecutionContext, NotFoundException, PayloadTooLargeException } from '@nestjs/common';
+import { from, lastValueFrom } from 'rxjs';
 import { MessageSendService } from './message-send.service';
 import { Message, MessageDirection, MessageStatus } from './entities/message.entity';
 import { SessionService } from '../session/session.service';
@@ -16,6 +17,10 @@ import { SsrfBlockedError } from '../../common/security/ssrf-guard';
 import { SendPacingService } from './send-pacing.service';
 import { EnginePageError } from '../../common/errors/engine-page.error';
 import type { MessageProjector } from '../session/message-projector.service';
+import { EngineNotReadyError } from '../../common/errors/engine-not-ready.error';
+import { SendIdempotencyKey } from './entities/send-idempotency-key.entity';
+import { SendIdempotencyService } from './idempotency/send-idempotency.service';
+import { SendIdempotencyInterceptor } from './idempotency/send-idempotency.interceptor';
 
 /** Pacing is off by default in these tests; the governor's own spec covers its behaviour. */
 const inertPacing = (): SendPacingService =>
@@ -114,6 +119,51 @@ describe('MessageSendService', () => {
     }).compile();
 
     service = module.get<MessageSendService>(MessageSendService);
+  });
+
+  it.each(['engine', 'failure bookkeeping'])('prevents a same-key retry after a dispatched %s error', async stage => {
+    const ds = new DataSource({
+      type: 'better-sqlite3',
+      database: ':memory:',
+      entities: [SendIdempotencyKey],
+      synchronize: true,
+    });
+    await ds.initialize();
+    try {
+      const store = new SendIdempotencyService(ds.getRepository(SendIdempotencyKey));
+      const interceptor = new SendIdempotencyInterceptor(store);
+      const body = { chatId: '628123456789@c.us', text: 'Hello' };
+      const context = {
+        getType: () => 'http',
+        getHandler: () => ({ name: 'sendText' }),
+        switchToHttp: () => ({
+          getRequest: () => ({ headers: { 'idempotency-key': 'order-1' }, params: { sessionId: 'sess-1' }, body }),
+          getResponse: () => ({ setHeader: jest.fn() }),
+        }),
+      } as unknown as ExecutionContext;
+      const run = async () =>
+        lastValueFrom(await interceptor.intercept(context, { handle: () => from(service.sendText('sess-1', body)) }));
+      const engineError = new EngineNotReadyError();
+      mockEngine.sendTextMessage.mockRejectedValueOnce(engineError);
+      const responseError = stage === 'engine' ? engineError : new BadRequestException('Failure hook rejected');
+      if (stage !== 'engine') {
+        (hookManager.execute as jest.Mock).mockImplementation((event: string, data: unknown) => {
+          if (event === 'message:failed') return Promise.reject(responseError);
+          return Promise.resolve({ continue: true, data });
+        });
+      }
+
+      await expect(run()).rejects.toBe(responseError);
+      await expect(run()).rejects.toMatchObject({
+        response: { code: 'IDEMPOTENCY_OUTCOME_UNKNOWN' },
+      });
+      expect(mockEngine.sendTextMessage).toHaveBeenCalledTimes(1);
+      expect((await ds.getRepository(SendIdempotencyKey).findOneByOrFail({ idempotencyKey: 'order-1' })).state).toBe(
+        'failed',
+      );
+    } finally {
+      await ds.destroy();
+    }
   });
 
   // ── sendText ──────────────────────────────────────────────────────
@@ -1519,14 +1569,13 @@ describe('MessageSendService', () => {
 
     it('merges the media payload onto the echo row instead of losing it', async () => {
       (repository.save as jest.Mock).mockRejectedValueOnce(uniqueViolation);
-      (repository.findOne as jest.Mock).mockResolvedValueOnce({ id: 'echo-row', ...bulkRow });
+      (repository.findOne as jest.Mock).mockResolvedValue({ id: 'echo-row', ...bulkRow });
 
       const saved = await service.saveOutgoingMessage('sess-1', bulkRow);
 
       expect(repository.update).toHaveBeenCalledWith(
-        { sessionId: 'sess-1', waMessageId: 'wa-bulk-1' },
+        expect.objectContaining({ sessionId: 'sess-1', waMessageId: 'wa-bulk-1' }),
         expect.objectContaining({
-          timestamp: 1706868000,
           metadata: bulkRow.metadata,
         }),
       );
@@ -1581,6 +1630,23 @@ describe('MessageSendService', () => {
   });
 
   describe('persistSentState vs the own-send echo (dedup race)', () => {
+    it('retains the sent media row when merging onto the echo fails', async () => {
+      (repository.save as jest.Mock)
+        .mockImplementationOnce(msg => Promise.resolve(msg))
+        .mockRejectedValueOnce(new Error('UNIQUE constraint failed: messages.sessionId, messages.waMessageId'));
+      (repository.findOne as jest.Mock).mockResolvedValue({ id: 'echo-row', metadata: {} });
+      (repository.update as jest.Mock).mockRejectedValueOnce(new Error('SQLITE_BUSY'));
+
+      const result = await service.sendImage('sess-1', { chatId: '621@c.us', base64: 'QUJD', mimetype: 'image/png' });
+
+      expect(result.messageId).toBe('wa-msg-1');
+      expect(mockEngine.sendImageMessage).toHaveBeenCalledTimes(1);
+      expect(repository.delete).not.toHaveBeenCalled();
+      expect(repository.update).toHaveBeenCalledWith(
+        { id: 'msg-uuid-1', status: MessageStatus.PENDING },
+        { status: MessageStatus.SENT, timestamp: 1706868000 },
+      );
+    });
     it('merges state onto the echo row, then drops the redundant PENDING row', async () => {
       // The engine's message_create echo (onMessageCreate) won the insert race, so the SENT-state save
       // collides on UNIQUE(sessionId, waMessageId). The echo row carries only what the engine reported
@@ -1614,6 +1680,7 @@ describe('MessageSendService', () => {
       (repository.save as jest.Mock)
         .mockImplementationOnce(msg => Promise.resolve(msg))
         .mockRejectedValueOnce(new Error('UNIQUE constraint failed: messages.sessionId, messages.waMessageId'));
+      (repository.findOne as jest.Mock).mockResolvedValue({ id: 'echo-row', metadata: {} });
 
       await service.sendImage('sess-1', { chatId: '621@c.us', base64: 'QUJD', mimetype: 'image/png' });
 

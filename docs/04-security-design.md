@@ -426,6 +426,15 @@ with the payload limit at least 4/3 of the inline limit plus room for the envelo
 gateway applies only the inline limit. Media the engine downloaded stays retrievable from
 `GET /api/sessions/:sessionId/messages/:chatId/:messageId/media` (`404` when nothing was stored).
 
+A `webhook_delivery_failures` row holds no event data by default. With
+`WEBHOOK_FAILURE_PAYLOAD_RETENTION_HOURS` > 0 a terminal row also keeps the pre-hook event data
+(already media-shed, so at most about `WEBHOOK_MEDIA_INLINE_MAX_BYTES` of media) so an ADMIN can
+replay it with `POST /api/webhooks/delivery-failures/redrive`. That is message content at rest in
+the data database: it is cleared once the window passes (checked at startup and then hourly; setting
+the knob back to `0` clears every stored copy on the next start), it is never returned by the list
+route, and `GET /api/infra/export-data` drops it from backups. With the queue enabled each job also
+carries the copy in Redis for the queue's retention window.
+
 ## 4.9 Security Headers
 
 ### Helmet Configuration

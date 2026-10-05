@@ -101,6 +101,7 @@ func TestRouting(t *testing.T) {
 		{"Webhooks.Test", func(c *Client) { c.Webhooks.Test(ctx, "s1", "w1") }, "POST", "/api/sessions/s1/webhooks/w1/test"},
 		{"Webhooks.ListAll", func(c *Client) { c.Webhooks.ListAll(ctx, nil) }, "GET", "/api/webhooks"},
 		{"Webhooks.DeliveryFailures", func(c *Client) { c.Webhooks.DeliveryFailures(ctx, nil) }, "GET", "/api/webhooks/delivery-failures"},
+		{"Webhooks.RedriveDeliveryFailures", func(c *Client) { c.Webhooks.RedriveDeliveryFailures(ctx, nil) }, "POST", "/api/webhooks/delivery-failures/redrive"},
 
 		{"Media.ConversionStatus", func(c *Client) { c.Media.ConversionStatus(ctx, "s1") }, "GET", "/api/sessions/s1/media/convert"},
 		{"Media.ConvertVoice", func(c *Client) { c.Media.ConvertVoice(ctx, "s1", ConvertMediaInput{}) }, "POST", "/api/sessions/s1/media/convert/voice"},

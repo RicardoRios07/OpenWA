@@ -9,8 +9,10 @@ import { encodeSegment } from '../http.js';
 import type { OpenWAClient } from '../client.js';
 import type {
   CreateWebhookRequest,
+  RedriveWebhookDeliveriesRequest,
   UpdateWebhookRequest,
   WebhookDeliveryFailure,
+  WebhookRedriveResult,
   WebhookResponse,
   WebhookTestResult,
 } from '../types.js';
@@ -52,6 +54,21 @@ export class WebhooksResource {
       method: 'GET',
       path: '/api/webhooks/delivery-failures',
       query,
+    });
+  }
+
+  /**
+   * Replay recorded deliveries that still hold their event data (`replayable: true` in
+   * {@link deliveryFailures}), fewest attempts first, then oldest, one bounded batch per call.
+   * Each replay reuses the stored idempotency key, so a receiver that already handled the event can dedup it. Only rows recorded
+   * while the gateway's `WEBHOOK_FAILURE_PAYLOAD_RETENTION_HOURS` is above 0 are replayable. Requires
+   * an ADMIN-level key; rows outside the key's allowedSessions are never touched.
+   */
+  redriveDeliveryFailures(body: RedriveWebhookDeliveriesRequest = {}): Promise<WebhookRedriveResult> {
+    return this.client.request<WebhookRedriveResult>({
+      method: 'POST',
+      path: '/api/webhooks/delivery-failures/redrive',
+      body,
     });
   }
 

@@ -102,12 +102,6 @@ export class WebhookReconcilerService implements OnModuleInit, OnModuleDestroy {
           stats.skipped++;
           continue;
         }
-        if (row.attempts >= opts.maxAttempts) {
-          // Budget spent: stop replaying and leave the failure row as the recovery path.
-          await this.outbox.close(row.webhookId, row.idempotencyKey, 'failed');
-          stats.failed++;
-          continue;
-        }
         const webhook = await this.webhooks.findOne({ where: { id: row.webhookId } });
         if (!isDeliverableWebhook(webhook, row.event)) {
           // The subscription is gone, switched off or no longer lists this event; replaying it would
@@ -115,6 +109,19 @@ export class WebhookReconcilerService implements OnModuleInit, OnModuleDestroy {
           // processor applies before every attempt.
           await this.outbox.close(row.webhookId, row.idempotencyKey, 'failed');
           stats.skipped++;
+          continue;
+        }
+        if (row.deliveryId && (await this.delivery.isQueueJobPending(row.deliveryId))) {
+          stats.skipped++;
+          continue;
+        }
+        if (row.attempts >= opts.maxAttempts) {
+          // A database fault may have prevented every terminal failure write. Keep the outbox
+          // payload until this handoff succeeds, without sending beyond the replay budget.
+          if (await this.delivery.recordReplayExhaustion(row, webhook.url)) {
+            await this.outbox.close(row.webhookId, row.idempotencyKey, 'failed');
+          }
+          stats.failed++;
           continue;
         }
         if (!(await this.outbox.countAttempt(row.id, row.attempts))) {
@@ -135,16 +142,15 @@ export class WebhookReconcilerService implements OnModuleInit, OnModuleDestroy {
             row.idempotencyKey,
             row.payload,
           );
-          if (outcome === 'failed') {
+          if (outcome === 'failed' || outcome === 'unrecorded') {
             // Left 'pending' on purpose: the next sweep retries it until the budget is spent.
             this.logger.warn(`Replay of ${row.event} to webhook ${row.webhookId} did not deliver`);
             stats.failed++;
             continue;
           }
-          // 'delivered', 'enqueued' and 'cancelled' all retire the row: the delivery reached a durable
-          // owner, a plugin dropped it on purpose, or a retry found the webhook removed, disabled or
-          // unsubscribed. Only 'failed' is worth another sweep.
-          await this.outbox.close(row.webhookId, row.idempotencyKey, 'dispatched');
+          // Enqueued rows retain their copy until the worker settles them. Success and deliberate
+          // cancellation can retire immediately.
+          if (outcome !== 'enqueued') await this.outbox.close(row.webhookId, row.idempotencyKey, 'dispatched');
           stats.replayed++;
         } catch (error) {
           // An exception is an unexpected fault rather than a delivery failure; the row stays

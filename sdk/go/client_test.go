@@ -1748,3 +1748,71 @@ func TestDoPathWithQueryAppendsQueryValues(t *testing.T) {
 		t.Errorf("query = %q, want %q", got, "limit=5&name=x")
 	}
 }
+
+func TestSendIdempotencyKey(t *testing.T) {
+	rt := &recordTransport{status: 200, body: `{"messageId":"m","timestamp":1}`}
+	c := newTestClient(t, rt, WithHeader("idempotency-key", "default"))
+	for _, segment := range []string{"send-text", "send-image", "send-video", "send-audio", "send-document", "send-sticker", "send-location", "send-contact", "send-template", "send-poll", "reply", "forward"} {
+		ctx := WithIdempotencyKey(context.Background(), segment)
+		if _, err := c.Messages.send(ctx, "s", segment, map[string]string{"chatId": "x"}); err != nil {
+			t.Fatal(err)
+		}
+		if got := rt.lastReq.Header.Values("Idempotency-Key"); len(got) != 1 || got[0] != segment {
+			t.Fatalf("%s: %v", segment, got)
+		}
+		if string(rt.lastRaw) != `{"chatId":"x"}` {
+			t.Fatalf("body changed: %s", rt.lastRaw)
+		}
+	}
+	if _, err := c.Messages.SendText(context.Background(), "s", SendTextRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := rt.lastReq.Header.Get("Idempotency-Key"); got != "default" {
+		t.Fatalf("default mutated: %s", got)
+	}
+	for _, key := range []string{"", "a b", "a\n", "é", strings.Repeat("x", 256)} {
+		rt.lastReq = nil
+		if _, err := c.Messages.SendText(WithIdempotencyKey(context.Background(), key), "s", SendTextRequest{}); err == nil {
+			t.Fatalf("accepted %q", key)
+		}
+		if rt.lastReq != nil {
+			t.Fatalf("transport called for %q", key)
+		}
+	}
+}
+
+func TestRedrivePreservesAnEmptyIDsFilter(t *testing.T) {
+	rt := &recordTransport{status: 200, body: `{}`}
+	c := newTestClient(t, rt)
+	empty := []string{}
+	for _, ids := range []*[]string{nil, &empty} {
+		if _, err := c.Webhooks.RedriveDeliveryFailures(context.Background(), &RedriveWebhookDeliveriesRequest{IDs: ids}); err != nil {
+			t.Fatal(err)
+		}
+		want := `{}`
+		if ids != nil {
+			want = `{"ids":[]}`
+		}
+		if string(rt.lastRaw) != want {
+			t.Fatalf("body = %s, want %s", rt.lastRaw, want)
+		}
+	}
+}
+
+func TestRetryKeepsIdempotencyKey(t *testing.T) {
+	var keys []string
+	rt := RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		keys = append(keys, req.Header.Get("Idempotency-Key"))
+		return &http.Response{StatusCode: 503, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{}`)), Request: req}, nil
+	})
+	c := newTestClient(t, rt, WithRetry(RetryPolicy{MaxRetries: 2, BaseDelay: time.Millisecond, MaxDelay: time.Millisecond, RetryableStatuses: []int{503}}))
+	_, _ = c.Messages.SendText(WithIdempotencyKey(context.Background(), "stable"), "s", SendTextRequest{})
+	if len(keys) != 3 {
+		t.Fatalf("attempts: %v", keys)
+	}
+	for _, key := range keys {
+		if key != "stable" {
+			t.Fatalf("keys: %v", keys)
+		}
+	}
+}

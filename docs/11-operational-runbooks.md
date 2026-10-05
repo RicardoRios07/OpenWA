@@ -994,7 +994,8 @@ find /backups -name "*.tar.gz" -mtime +30 -delete
 #    keeps the old environment. Sessions reconnect on their own only with AUTO_START_SESSIONS=true;
 #    otherwise POST /api/sessions/{sessionId}/start each one. Expiry clears the file and the row's
 #    media columns. Under the production compose the media lives in the openwa_openwa-data volume,
-#    not in ./data in the checkout.
+#    not in ./data in the checkout. With MESSAGE_INLINE_MEDIA=archive the expired file is the only
+#    copy (no inline fallback), so expiry makes that media unreadable for good.
 
 # 4. Verify
 df -h

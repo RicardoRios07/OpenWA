@@ -60,6 +60,7 @@ import {
   MESSAGE_NOT_FOUND_404,
   RECIPIENT_UNREACHABLE_400,
 } from '../../common/openapi/engine-status-responses';
+import { IdempotentSend } from './idempotency/idempotent-send.decorator';
 
 // whatsapp-web.js drops these sends without an error, so its adapter refuses them up front
 // (ensureSendable in wwebjs-messaging.ts). The contract keeps one entry per status, so on a route
@@ -159,6 +160,7 @@ export class MessageController {
 
   @ChatScoped('fenced')
   @Post('send-text')
+  @IdempotentSend()
   @RequireRole(ApiKeyRole.OPERATOR)
   @ApiOperation({ summary: 'Send a text message' })
   @ApiParam({ name: 'sessionId', description: 'Session ID' })
@@ -182,6 +184,7 @@ export class MessageController {
 
   @ChatScoped('fenced')
   @Post('send-template')
+  @IdempotentSend()
   @RequireRole(ApiKeyRole.OPERATOR)
   @ApiOperation({ summary: 'Render a stored text template and send it as a text message' })
   @ApiParam({ name: 'sessionId', description: 'Session ID' })
@@ -205,6 +208,7 @@ export class MessageController {
 
   @ChatScoped('fenced')
   @Post('send-image')
+  @IdempotentSend()
   @RequireRole(ApiKeyRole.OPERATOR)
   @ApiOperation({ summary: 'Send an image message' })
   @ApiParam({ name: 'sessionId', description: 'Session ID' })
@@ -233,6 +237,7 @@ export class MessageController {
 
   @ChatScoped('fenced')
   @Post('send-video')
+  @IdempotentSend()
   @RequireRole(ApiKeyRole.OPERATOR)
   @ApiOperation({ summary: 'Send a video message' })
   @ApiParam({ name: 'sessionId', description: 'Session ID' })
@@ -259,6 +264,7 @@ export class MessageController {
 
   @ChatScoped('fenced')
   @Post('send-audio')
+  @IdempotentSend()
   @RequireRole(ApiKeyRole.OPERATOR)
   @ApiOperation({ summary: 'Send an audio/voice message' })
   @ApiParam({ name: 'sessionId', description: 'Session ID' })
@@ -285,6 +291,7 @@ export class MessageController {
 
   @ChatScoped('fenced')
   @Post('send-document')
+  @IdempotentSend()
   @RequireRole(ApiKeyRole.OPERATOR)
   @ApiOperation({ summary: 'Send a document/file' })
   @ApiParam({ name: 'sessionId', description: 'Session ID' })
@@ -313,6 +320,7 @@ export class MessageController {
 
   @ChatScoped('fenced')
   @Post('send-location')
+  @IdempotentSend()
   @RequireRole(ApiKeyRole.OPERATOR)
   @ApiOperation({ summary: 'Send a location message' })
   @ApiParam({ name: 'sessionId', description: 'Session ID' })
@@ -331,6 +339,7 @@ export class MessageController {
 
   @ChatScoped('fenced')
   @Post('send-contact')
+  @IdempotentSend()
   @RequireRole(ApiKeyRole.OPERATOR)
   @ApiOperation({ summary: 'Send a contact card message' })
   @ApiParam({ name: 'sessionId', description: 'Session ID' })
@@ -349,6 +358,7 @@ export class MessageController {
 
   @ChatScoped('fenced')
   @Post('send-sticker')
+  @IdempotentSend()
   @RequireRole(ApiKeyRole.OPERATOR)
   @ApiOperation({ summary: 'Send a sticker message' })
   @ApiParam({ name: 'sessionId', description: 'Session ID' })
@@ -375,6 +385,7 @@ export class MessageController {
 
   @ChatScoped('fenced')
   @Post('send-poll')
+  @IdempotentSend()
   @RequireRole(ApiKeyRole.OPERATOR)
   @ApiOperation({ summary: 'Send a native WhatsApp poll' })
   @ApiParam({ name: 'sessionId', description: 'Session ID' })
@@ -399,6 +410,7 @@ export class MessageController {
   @ChatQuotedAllowed()
   @ChatScoped('fenced')
   @Post('reply')
+  @IdempotentSend()
   @RequireRole(ApiKeyRole.OPERATOR)
   @ApiOperation({ summary: 'Reply to a message' })
   @ApiParam({ name: 'sessionId', description: 'Session ID' })
@@ -448,6 +460,7 @@ export class MessageController {
 
   @ChatScoped('fenced')
   @Post('forward')
+  @IdempotentSend()
   @RequireRole(ApiKeyRole.OPERATOR)
   @ApiOperation({ summary: 'Forward a message to another chat' })
   @ApiParam({ name: 'sessionId', description: 'Session ID' })
@@ -736,7 +749,12 @@ export class MessageController {
   @ApiOperation({ summary: 'Cast a vote on a poll' })
   @ApiParam({ name: 'sessionId', description: 'Session ID' })
   @ApiResponse({ status: 200, description: 'Vote cast', type: MessageActionResponseDto })
-  @ApiResponse({ status: 400, description: 'Session not active, or the target message is not a poll' })
+  @ApiResponse({
+    status: 400,
+    description:
+      'Session not active, the target message is not a poll, or `POLL_OPTION_NOT_FOUND`: none of the ' +
+      'option texts match the poll (the body lists `validOptions`). Nothing is sent, so the current vote stays.',
+  })
   @ApiResponse({ status: 404, description: 'Poll not found in the chat’s recent history' })
   @ApiResponse({ status: 501, description: 'Not supported on the Baileys engine' })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })

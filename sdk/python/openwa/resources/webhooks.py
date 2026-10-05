@@ -10,8 +10,10 @@ from typing import TYPE_CHECKING, TypedDict
 from .._http import quote_segment
 from ..types import (
     CreateWebhookRequest,
+    RedriveWebhookDeliveriesRequest,
     UpdateWebhookRequest,
     WebhookDeliveryFailure,
+    WebhookRedriveResult,
     WebhookResponse,
     WebhookTestResult,
 )
@@ -56,6 +58,16 @@ class WebhooksResource:
         recent first.
         """
         return self._http.request("GET", "/api/webhooks/delivery-failures", query=query)
+
+    def redrive_delivery_failures(self, body: RedriveWebhookDeliveriesRequest | None = None) -> WebhookRedriveResult:
+        """Replay recorded deliveries in one bounded batch, fewest attempts first, then oldest.
+
+        Only rows with ``replayable: True`` in :meth:`delivery_failures` qualify: terminal rows recorded while
+        the gateway's ``WEBHOOK_FAILURE_PAYLOAD_RETENTION_HOURS`` is above 0. Each replay reuses the stored
+        idempotency key, so a receiver that already handled the event can dedup it. Requires an ADMIN-level
+        key; rows outside the key's allowedSessions are never touched.
+        """
+        return self._http.request("POST", "/api/webhooks/delivery-failures/redrive", body=body or {})
 
     def list(self, session_id: str) -> list[WebhookResponse]:
         return self._http.request("GET", f"/api/sessions/{quote_segment(session_id)}/webhooks")

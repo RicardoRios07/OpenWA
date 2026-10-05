@@ -1312,6 +1312,8 @@ also writes status media through `putFile` (under `statuses/`) and sweeps orphan
 `deleteFile`. Incoming and outgoing message media is returned inline to REST/webhook consumers and is
 **not** written through `StorageService` unless `CHAT_MEDIA_ARCHIVE_ENABLED=true`, which archives a copy
 under `chat-media/<sessionId>/` (media this account sent also needs `CHAT_MEDIA_ARCHIVE_OUTBOUND=true`).
+That copy is in addition to the inline one unless `MESSAGE_INLINE_MEDIA=archive`, which replaces the
+row's inline base64 with an `{ omitted: true, archived: true }` marker once the file reads back intact.
 On S3 every key sits under the `S3_KEY_PREFIX` root (default `media/`).
 **MinIO is not a separate type** — it is the `s3` backend. The S3 client is created from credentials
 alone, so plain AWS S3 works with no endpoint (the SDK derives one from the region); `S3_ENDPOINT` is

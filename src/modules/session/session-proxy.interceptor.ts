@@ -22,14 +22,18 @@ import { normalizeIp } from '../../common/utils/ip';
 /**
  * The request headers a forwarded call carries over. Everything else is this hop's business.
  * content-type is not among them: forward() sends every body as JSON and labels it so itself.
+ * idempotency-key travels so the OWNER claims it: the claim is part of the request's meaning, not
+ * of this hop.
  */
-const FORWARDED_REQUEST_HEADERS = ['x-api-key', 'authorization', 'accept'] as const;
+const FORWARDED_REQUEST_HEADERS = ['x-api-key', 'authorization', 'accept', 'idempotency-key'] as const;
 
 /** The response headers relayed back. Deliberately short: hop-by-hop headers must not leak through. */
 const RELAYED_RESPONSE_HEADERS = [
   'content-type',
   'content-disposition',
   'x-content-type-options',
+  // Tells the client the owner answered from a stored Idempotency-Key response, not a new send.
+  'idempotent-replayed',
   // Throttle answers come from the OWNER's counters, so the client must be told what the owner
   // said: without these a forwarded 429 arrives with no indication of when to retry.
   // ProxyAwareThrottlerGuard sets the plain Retry-After that HTTP clients read; the base throttler

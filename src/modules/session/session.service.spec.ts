@@ -5925,7 +5925,7 @@ describe('SessionService', () => {
 
       expect(messageRepository.save).not.toHaveBeenCalled();
       expect(messageRepository.update).toHaveBeenCalledWith(
-        { sessionId: 'sess-uuid-1', waMessageId: 'wa-1' },
+        expect.objectContaining({ sessionId: 'sess-uuid-1', waMessageId: 'wa-1' }),
         { metadata: { reactions: { alice: '👍' } } },
       );
     });

@@ -1,15 +1,27 @@
-import { Controller, Get, Query } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Post, Query } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiQuery } from '@nestjs/swagger';
 import { WebhookService } from './webhook.service';
-import { WebhookResponseDto, WebhookDeliveryFailureDto } from './dto';
+import { WebhookRedriveResult, WebhookRedriveService } from './webhook-redrive.service';
+import {
+  WebhookResponseDto,
+  WebhookDeliveryFailureDto,
+  RedriveWebhookDeliveriesDto,
+  WebhookRedriveResultDto,
+} from './dto';
 import { WebhookDeliveryFailure } from './entities/webhook-delivery-failure.entity';
 import { RequireRole, CurrentApiKey } from '../auth/decorators/auth.decorators';
 import { ApiKey, ApiKeyRole } from '../auth/entities/api-key.entity';
+import { AuditService } from '../audit/audit.service';
+import { AuditAction } from '../audit/entities/audit-log.entity';
 
 @ApiTags('webhooks')
 @Controller('webhooks')
 export class WebhooksListController {
-  constructor(private readonly webhookService: WebhookService) {}
+  constructor(
+    private readonly webhookService: WebhookService,
+    private readonly redriveService: WebhookRedriveService,
+    private readonly audit: AuditService,
+  ) {}
 
   @Get('delivery-failures')
   @RequireRole(ApiKeyRole.ADMIN)
@@ -32,7 +44,7 @@ export class WebhooksListController {
     @Query('sessionId') sessionId?: string,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
-  ): Promise<WebhookDeliveryFailure[]> {
+  ): Promise<Array<WebhookDeliveryFailure & { replayable: boolean }>> {
     // Scope to the calling key's allowedSessions so a session-restricted ADMIN key cannot read another
     // session's failed-delivery URLs/errors via the `sessionId` query param (which bypasses the guard).
     return this.webhookService.listDeliveryFailures(
@@ -43,6 +55,45 @@ export class WebhooksListController {
       },
       apiKey?.allowedSessions,
     );
+  }
+
+  // Replaying lost deliveries sends real events to receivers, so it is ADMIN-gated like the listing
+  // and the integration redrive. The body's sessionId bypasses the guard's route-param fence, so the
+  // service scopes every row to the calling key's allowedSessions itself.
+  @Post('delivery-failures/redrive')
+  @RequireRole(ApiKeyRole.ADMIN)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Replay recorded webhook deliveries that still hold their event data' })
+  @ApiResponse({
+    status: 200,
+    description:
+      'One bounded batch of replayable failure rows (terminal rows recorded while ' +
+      'WEBHOOK_FAILURE_PAYLOAD_RETENTION_HOURS > 0), least-retried first, then oldest. Each replay reuses the stored ' +
+      'idempotency key, so a receiver that already handled the event can dedup it, and runs the ' +
+      'webhook:before hooks again. Each row gets one direct POST attempt even when ordinary delivery ' +
+      'uses the queue; enqueued stays zero. Rows outside the key allowedSessions are ' +
+      'never touched.',
+    type: WebhookRedriveResultDto,
+  })
+  async redriveDeliveryFailures(
+    @Body() dto: RedriveWebhookDeliveriesDto,
+    @CurrentApiKey() apiKey?: ApiKey,
+  ): Promise<WebhookRedriveResult> {
+    const result = await this.redriveService.redrive(dto, apiKey?.allowedSessions);
+    // A redrive sends real events, so every batch is audited with its counts (no payload content).
+    void this.audit.logInfo(AuditAction.WEBHOOK_DELIVERIES_REDRIVEN, {
+      apiKey,
+      sessionId: dto.sessionId,
+      metadata: {
+        webhookId: dto.webhookId,
+        ids: dto.ids?.length,
+        redriven: result.redriven,
+        failed: result.failed,
+        skipped: result.skipped,
+        remaining: result.remaining,
+      },
+    });
+    return result;
   }
 
   @Get()

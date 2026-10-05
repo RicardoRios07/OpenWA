@@ -9,6 +9,11 @@ jest.mock('archiver', () => ({ default: jest.fn() }));
 import { StorageService } from '../../common/storage/storage.service';
 import { Message, MessageDirection, MessageStatus } from '../message/entities/message.entity';
 import { ChatMediaArchiveService, CHAT_MEDIA_PREFIX } from './chat-media-archive.service';
+import { MessageMutationProjector } from '../session/message-mutation-projector';
+import { KeyedMutationQueue } from '../../common/utils/keyed-mutation-queue';
+import { MessageSendService } from '../message/message-send.service';
+import { EngineRegistry } from '../../engine/engine-registry.service';
+import { updateMessageMetadata } from '../message/message-metadata';
 
 /** A ConfigService stub that returns each call's default unless overridden by `overrides`. */
 function fakeConfigService(overrides: Record<string, unknown> = {}): ConfigService {
@@ -68,11 +73,145 @@ describe('ChatMediaArchiveService', () => {
   });
 
   afterEach(async () => {
+    jest.restoreAllMocks();
     await repository.clear();
     for await (const file of storageService.iterateFiles('')) await storageService.deleteFile(file);
   });
 
   describe('archive', () => {
+    it('updates null metadata and never restores metadata after a concurrent revoke', async () => {
+      const row = await saveRow();
+      expect(await updateMessageMetadata(repository, { id: row.id }, () => ({ keep: 1 }))).toEqual({ keep: 1 });
+      const update = repository.update.bind(repository);
+      jest.spyOn(repository, 'update').mockImplementationOnce(async (where, patch) => {
+        await update({ id: row.id }, { type: 'revoked', metadata: {} });
+        return update(where, patch);
+      });
+      expect(await updateMessageMetadata(repository, { id: row.id }, current => ({ ...current, stale: 1 }))).toBeNull();
+      expect((await repository.findOneByOrFail({ id: row.id })).metadata).toEqual({});
+    });
+
+    it('bounds metadata retries when another writer wins every update', async () => {
+      const row = await saveRow();
+      const update = jest.spyOn(repository, 'update').mockResolvedValue({ affected: 0, raw: [], generatedMaps: [] });
+      await expect(updateMessageMetadata(repository, { id: row.id }, () => ({ keep: 1 }))).rejects.toThrow(
+        'Message metadata changed repeatedly',
+      );
+      expect(update).toHaveBeenCalledTimes(3);
+      expect((await repository.findOneByOrFail({ id: row.id })).metadata).toBeNull();
+    });
+    it('enforces the byte cap even when supplied sizeBytes is too small', async () => {
+      const row = await saveRow({ mimetype: 'image/png', data: PNG.toString('base64'), sizeBytes: 1 });
+      expect(await enabled({ 'chatMedia.maxBytes': 1 }).archive(row)).toBeNull();
+      expect((await repository.findOneByOrFail({ id: row.id })).mediaPath).toBeNull();
+    });
+    it.each(['bulk', 'single'])('keeps an archived echo when the %s send writer merges later', async mode => {
+      const media = { mimetype: 'image/png', data: PNG.toString('base64') };
+      const row = await saveRow(media, { direction: MessageDirection.OUTGOING });
+      await enabled({ 'chatMedia.inlineMode': 'archive' }).archive(row);
+      const engines = new EngineRegistry();
+      engines.set('sess-1', {
+        sendImageMessage: () => Promise.resolve({ id: row.waMessageId, timestamp: 1 }),
+      } as never);
+      const sender = new MessageSendService(
+        repository,
+        { findOne: () => Promise.resolve({ phone: '628111' }) } as never,
+        engines,
+        { execute: (_event: string, data: unknown) => Promise.resolve({ continue: true, data }) } as never,
+        {} as never,
+        { assertSendAllowed: () => Promise.resolve(), recordSendSuccess: () => undefined } as never,
+        fakeConfigService({ 'features.simulateTyping': false }),
+      );
+      if (mode === 'bulk') {
+        await sender.saveOutgoingMessage('sess-1', {
+          waMessageId: row.waMessageId,
+          chatId: row.chatId,
+          type: 'image',
+          status: MessageStatus.SENT,
+          metadata: { media },
+        });
+      } else {
+        await sender.sendImage('sess-1', { chatId: row.chatId, base64: media.data, mimetype: media.mimetype });
+      }
+      const stored = await repository.findOneByOrFail({ id: row.id });
+      expect(stored.mediaPath).toBeTruthy();
+      expect(stored.metadata).toEqual({
+        media: { mimetype: 'image/png', omitted: true, archived: true, sizeBytes: PNG.length },
+      });
+      expect(await repository.count()).toBe(1);
+    });
+
+    it('keeps archived media when a reaction read preceded archive publication', async () => {
+      const row = await saveRow({ mimetype: 'image/png', data: PNG.toString('base64') });
+      const archive = enabled({ 'chatMedia.inlineMode': 'archive' });
+      const update = repository.update.bind(repository);
+      let published = false;
+      jest.spyOn(repository, 'update').mockImplementation(async (where, patch) => {
+        if (patch.metadata && !published) {
+          published = true;
+          await archive.archive(row);
+        }
+        return update(where, patch);
+      });
+      const mutations = new KeyedMutationQueue();
+      const projector = new MessageMutationProjector(
+        repository,
+        { emitMessageReaction: jest.fn() } as never,
+        { dispatch: jest.fn().mockResolvedValue(undefined) } as never,
+        mutations,
+        { error: jest.fn() } as never,
+      );
+      projector.applyReactionQueued('sess-1', {
+        messageId: row.waMessageId,
+        chatId: row.chatId,
+        senderId: '628111@c.us',
+        reaction: 'ok',
+      });
+      while (mutations.size) await new Promise(resolve => setImmediate(resolve));
+      const stored = await repository.findOneByOrFail({ id: row.id });
+      expect(stored.mediaPath).toBeTruthy();
+      expect(stored.metadata).toEqual({
+        media: { mimetype: 'image/png', omitted: true, archived: true, sizeBytes: PNG.length },
+        reactions: { '628111@c.us': 'ok' },
+      });
+    });
+
+    it.each(['bulk', 'single'])('preserves sent bytes after a failed %s echo merge', async mode => {
+      const row = await saveRow(undefined, { direction: MessageDirection.OUTGOING });
+      const engines = new EngineRegistry();
+      engines.set('sess-1', {
+        sendImageMessage: () => Promise.resolve({ id: row.waMessageId, timestamp: 1 }),
+      } as never);
+      const sender = new MessageSendService(
+        repository,
+        { findOne: () => Promise.resolve({ phone: '628111' }) } as never,
+        engines,
+        { execute: (_event: string, data: unknown) => Promise.resolve({ continue: true, data }) } as never,
+        {} as never,
+        { assertSendAllowed: () => Promise.resolve(), recordSendSuccess: () => undefined } as never,
+        fakeConfigService({ 'features.simulateTyping': false }),
+      );
+      jest.spyOn(repository, 'update').mockRejectedValueOnce(new Error('SQLITE_BUSY'));
+      const media = { mimetype: 'image/png', data: PNG.toString('base64') };
+      if (mode === 'bulk') {
+        await sender.saveOutgoingMessage('sess-1', {
+          waMessageId: row.waMessageId,
+          chatId: row.chatId,
+          type: 'image',
+          status: MessageStatus.SENT,
+          metadata: { media },
+        });
+      } else {
+        await sender.sendImage('sess-1', { chatId: row.chatId, base64: media.data, mimetype: media.mimetype });
+      }
+      const retained = await repository.findOneByOrFail({ sessionId: 'sess-1', waMessageId: IsNull() });
+      expect(retained.status).toBe(MessageStatus.SENT);
+      expect(retained.metadata.media).toEqual(media);
+      expect(await repository.count()).toBe(2);
+      expect(await enabled({ 'chatMedia.inlineMode': 'archive' }).archive(retained)).toBeNull();
+      expect((await repository.findOneByOrFail({ id: retained.id })).metadata.media).toEqual(media);
+    });
+
     it('writes the blob and points the row at it, under the chat-media prefix', async () => {
       const row = await saveRow({ mimetype: 'image/png', data: PNG.toString('base64') });
 
@@ -221,6 +360,151 @@ describe('ChatMediaArchiveService', () => {
       const files = [];
       for await (const f of storageService.iterateFiles(CHAT_MEDIA_PREFIX)) files.push(f);
       expect(files).toEqual([]);
+    });
+  });
+
+  describe('archive with MESSAGE_INLINE_MEDIA=archive', () => {
+    const replacing = (overrides: Record<string, unknown> = {}): ChatMediaArchiveService =>
+      enabled({ 'chatMedia.inlineMode': 'archive', ...overrides });
+    const mediaOf = async (id: string) =>
+      ((await repository.findOneByOrFail({ id })).metadata as { media: Record<string, unknown> }).media;
+
+    it('replaces the inline copy with the archived marker once the file is stored', async () => {
+      const row = await saveRow({ mimetype: 'image/png', data: PNG.toString('base64'), filename: 'cat.png' });
+
+      const key = await replacing().archive(row);
+
+      expect(key).not.toBeNull();
+      expect(await mediaOf(row.id)).toEqual({
+        mimetype: 'image/png',
+        filename: 'cat.png',
+        omitted: true,
+        sizeBytes: PNG.length,
+        archived: true,
+      });
+      // The bytes now live once, in the store, and the media route reads them from there.
+      expect(await storageService.getFile(key!)).toEqual(PNG);
+    });
+
+    it('keeps the rest of the metadata the row gained since it was persisted', async () => {
+      const row = await saveRow({ mimetype: 'image/png', data: PNG.toString('base64') });
+      await repository.update(
+        { id: row.id },
+        {
+          metadata: { ...row.metadata, quotedMessage: { id: 'q1', body: 'hi' } },
+        },
+      );
+
+      await replacing().archive(row);
+
+      const reloaded = await repository.findOneByOrFail({ id: row.id });
+      expect((reloaded.metadata as { quotedMessage: unknown }).quotedMessage).toEqual({ id: 'q1', body: 'hi' });
+      expect((reloaded.metadata as { media: { data?: string } }).media.data).toBeUndefined();
+    });
+
+    it('keeps the inline copy when the stored file does not read back intact', async () => {
+      const base64 = PNG.toString('base64');
+      const row = await saveRow({ mimetype: 'image/png', data: base64 });
+      const get = jest.spyOn(storageService, 'getFile').mockResolvedValueOnce(Buffer.from('truncated'));
+
+      expect(await replacing().archive(row)).toBeNull();
+
+      expect((await mediaOf(row.id)).data).toBe(base64);
+      expect((await repository.findOneByOrFail({ id: row.id })).mediaPath).toBeNull();
+      get.mockRestore();
+    });
+
+    it('keeps the inline copy when the read-back fails', async () => {
+      const base64 = PNG.toString('base64');
+      const row = await saveRow({ mimetype: 'image/png', data: base64 });
+      const get = jest.spyOn(storageService, 'getFile').mockRejectedValueOnce(new Error('s3 down'));
+
+      await expect(replacing().archive(row)).resolves.toBeNull();
+
+      expect((await mediaOf(row.id)).data).toBe(base64);
+      expect((await repository.findOneByOrFail({ id: row.id })).mediaPath).toBeNull();
+      get.mockRestore();
+    });
+
+    it('keeps metadata changed between the inline snapshot and replacement', async () => {
+      const base64 = PNG.toString('base64');
+      const row = await saveRow({ mimetype: 'image/png', data: base64 });
+      const originalFindOne = repository.findOne.bind(repository);
+      const find = jest.spyOn(repository, 'findOne').mockImplementationOnce(async options => {
+        const snapshot = await originalFindOne(options);
+        await repository.update({ id: row.id }, { metadata: { ...row.metadata, reactions: { user: 'ok' } } });
+        return snapshot;
+      });
+
+      await replacing().archive(row);
+
+      find.mockRestore();
+      const current = await repository.findOneByOrFail({ id: row.id });
+      expect(current.metadata).toEqual({ ...row.metadata, reactions: { user: 'ok' } });
+      expect(current.mediaPath).toBeNull();
+    });
+
+    it('keeps an inline payload that changed while the archive was written', async () => {
+      const row = await saveRow({ mimetype: 'image/png', data: PNG.toString('base64') });
+      const changedMedia = { mimetype: 'image/png', data: Buffer.from('new bytes').toString('base64') };
+      const originalPut = storageService.putFile.bind(storageService);
+      const put = jest.spyOn(storageService, 'putFile').mockImplementationOnce(async (key, bytes) => {
+        await originalPut(key, bytes);
+        await repository.update({ id: row.id }, { metadata: { media: changedMedia } });
+      });
+
+      await replacing().archive(row);
+
+      put.mockRestore();
+      expect(await mediaOf(row.id)).toEqual(changedMedia);
+      expect((await repository.findOneByOrFail({ id: row.id })).mediaPath).toBeNull();
+    });
+
+    it('does not publish media revoked while the verified snapshot was read', async () => {
+      const row = await saveRow({ mimetype: 'image/png', data: PNG.toString('base64') });
+      const originalFindOne = repository.findOne.bind(repository);
+      const find = jest.spyOn(repository, 'findOne').mockImplementationOnce(async options => {
+        const snapshot = await originalFindOne(options);
+        await repository.update({ id: row.id }, { type: 'revoked', metadata: null as unknown as undefined });
+        return snapshot;
+      });
+
+      expect(await replacing().archive(row)).toBeNull();
+
+      find.mockRestore();
+      const current = await repository.findOneByOrFail({ id: row.id });
+      expect(current.type).toBe('revoked');
+      expect(current.metadata).toBeNull();
+      expect(current.mediaPath).toBeNull();
+    });
+
+    it('keeps the inline copy when the file could not be written', async () => {
+      const base64 = PNG.toString('base64');
+      const row = await saveRow({ mimetype: 'image/png', data: base64 });
+      const put = jest.spyOn(storageService, 'putFile').mockRejectedValueOnce(new Error('disk on fire'));
+
+      await replacing().archive(row);
+
+      expect((await mediaOf(row.id)).data).toBe(base64);
+      put.mockRestore();
+    });
+
+    it('keeps the inline copy of media above the archive cap, which is not archived', async () => {
+      const base64 = PNG.toString('base64');
+      const row = await saveRow({ mimetype: 'image/png', data: base64 });
+
+      expect(await replacing({ 'chatMedia.maxBytes': 4 }).archive(row)).toBeNull();
+
+      expect((await mediaOf(row.id)).data).toBe(base64);
+    });
+
+    it('leaves the inline copy alone in the default inline mode', async () => {
+      const base64 = PNG.toString('base64');
+      const row = await saveRow({ mimetype: 'image/png', data: base64 });
+
+      await enabled({ 'chatMedia.inlineMode': 'inline' }).archive(row);
+
+      expect((await mediaOf(row.id)).data).toBe(base64);
     });
   });
 

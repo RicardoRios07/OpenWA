@@ -55,6 +55,7 @@ export enum AuditAction {
   WEBHOOK_DELETED = 'webhook_deleted',
   WEBHOOK_TRIGGERED = 'webhook_triggered',
   WEBHOOK_FAILED = 'webhook_failed',
+  WEBHOOK_DELIVERIES_REDRIVEN = 'webhook_deliveries_redriven',
 
   // Integration plugin-instance events
   INTEGRATION_INSTANCE_CREATED = 'integration_instance_created',

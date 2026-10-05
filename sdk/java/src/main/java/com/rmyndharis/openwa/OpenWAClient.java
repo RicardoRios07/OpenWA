@@ -36,6 +36,7 @@ import com.rmyndharis.openwa.resources.WebhooksResource;
 import java.io.IOException;
 import java.lang.reflect.Array;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -117,9 +118,14 @@ public final class OpenWAClient {
      * be JSON; a non-JSON body surfaces as a tidy {@link OpenWAError}, never a raw
      * Gson exception.
      */
-    @SuppressWarnings("unchecked")
     public <T> T request(HttpMethod method, String path, Object query, Object body, Class<T> type) {
-        HttpResponseData res = execute(method, path, query, body);
+        return request(method, path, query, body, type, null);
+    }
+
+    /** Issue a request with an optional caller-supplied send idempotency key. */
+    @SuppressWarnings("unchecked")
+    public <T> T request(HttpMethod method, String path, Object query, Object body, Class<T> type, String idempotencyKey) {
+        HttpResponseData res = execute(method, path, query, body, idempotencyKey);
         String text = utf8(res.body());
         if (res.status() == 204 || text.isEmpty()) {
             return null;
@@ -209,8 +215,26 @@ public final class OpenWAClient {
     }
 
     private HttpResponseData execute(HttpMethod method, String path, Object query, Object body) {
+        return execute(method, path, query, body, null);
+    }
+
+    private HttpResponseData execute(HttpMethod method, String path, Object query, Object body, String idempotencyKey) {
+        Map<String, String> defaults = config.defaultHeaders;
+        if (idempotencyKey != null) {
+            boolean valid = !idempotencyKey.isEmpty() && idempotencyKey.length() <= 255;
+            for (int i = 0; valid && i < idempotencyKey.length(); i++) {
+                char value = idempotencyKey.charAt(i);
+                valid = value >= 0x21 && value <= 0x7e;
+            }
+            if (!valid) {
+                throw new IllegalArgumentException("OpenWA: idempotencyKey must be 1-255 visible ASCII characters");
+            }
+            defaults = new LinkedHashMap<>(defaults);
+            defaults.keySet().removeIf(name -> name.equalsIgnoreCase("Idempotency-Key"));
+        }
         String url = Http.buildUrl(config.baseUrl, path, query, gson);
-        Map<String, String> headers = Http.mergeHeaders(config.defaultHeaders, null, config.apiKey);
+        Map<String, String> headers = Http.mergeHeaders(
+            defaults, idempotencyKey == null ? null : Map.of("Idempotency-Key", idempotencyKey), config.apiKey);
         String bodyJson = body != null ? bodySerializer(body).toJson(body) : null;
         HttpRequestData reqData = new HttpRequestData(method, url, headers, bodyJson, config.timeout);
         HttpResponseData res;

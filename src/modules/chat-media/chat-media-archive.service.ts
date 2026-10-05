@@ -53,9 +53,12 @@ interface InlineMedia {
  * Archives chat-message media to the file store so it stays retrievable after delivery, independent
  * of the inline base64 copy the message row already carries.
  *
- * Opt-in (`CHAT_MEDIA_ARCHIVE_ENABLED`, default off) because it doubles storage for media under the
- * cap: the inline copy is deliberately left in place, since the dashboard renders from it and
- * stripping it would break the response contract.
+ * Opt-in (`CHAT_MEDIA_ARCHIVE_ENABLED`, default off) because, by default, it doubles storage for
+ * media under the cap: the inline copy is left in place, since the dashboard renders from it.
+ * `MESSAGE_INLINE_MEDIA=archive` changes that: once a file is stored, read back intact and the row
+ * points at it, the row's inline copy is replaced with the omitted marker (`omitted: true`,
+ * `archived: true`), so the bytes are kept once and served by the media route. Any failure along
+ * the way leaves the inline copy, so the mode can lose a saving but never the media.
  *
  * Two recurring sweeps run regardless of that flag, which gates the writer rather than the store: a
  * retention purge (when `CHAT_MEDIA_ARCHIVE_TTL_DAYS` is non-zero) that clears files past their TTL
@@ -85,6 +88,11 @@ export class ChatMediaArchiveService implements OnModuleInit, OnModuleDestroy {
 
   get enabled(): boolean {
     return this.configService.get<boolean>('chatMedia.archiveEnabled', false);
+  }
+
+  /** MESSAGE_INLINE_MEDIA=archive: an archived file replaces the row's inline copy. */
+  get replacesInline(): boolean {
+    return this.configService.get<'inline' | 'archive'>('chatMedia.inlineMode', 'inline') === 'archive';
   }
 
   onModuleInit(): void {
@@ -145,7 +153,8 @@ export class ChatMediaArchiveService implements OnModuleInit, OnModuleDestroy {
     if (MEDIA_URL_POINTER.test(media.data)) return null;
 
     const maxBytes = this.configService.get<number>('chatMedia.maxBytes', DEFAULT_ARCHIVE_MAX_BYTES);
-    const sizeBytes = media.sizeBytes ?? Buffer.byteLength(media.data, 'base64');
+    // Measure decoded bytes; a plugin or imported row may supply an incorrect sizeBytes.
+    const sizeBytes = Buffer.byteLength(media.data, 'base64');
     if (sizeBytes > maxBytes) return null;
 
     // A random key rather than the WhatsApp message id: message ids are engine-controlled strings
@@ -153,8 +162,9 @@ export class ChatMediaArchiveService implements OnModuleInit, OnModuleDestroy {
     // id into S3 keys. The row is read on the way out anyway, so nothing is gained by a derivable
     // key. Mirrors the status store.
     const key = `${CHAT_MEDIA_PREFIX}${row.sessionId}/${randomUUID()}.${extFromMimetype(media.mimetype)}`;
+    const bytes = Buffer.from(media.data, 'base64');
     try {
-      await this.storageService.putFile(key, Buffer.from(media.data, 'base64'));
+      await this.storageService.putFile(key, bytes);
     } catch (error) {
       this.logger.error(
         `Failed to archive chat media for session ${row.sessionId}, message ${row.id}`,
@@ -164,14 +174,49 @@ export class ChatMediaArchiveService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      // Conditional on the row not being revoked: a revoke that landed while the file was written
-      // cleared the row, and pointing it at the file would bring the deleted media back. And on no
-      // pointer yet: the other writer may have passed the snapshot guard above while this file was
-      // being written, and the first pointer wins so the losing file is deleted, not stranded.
-      const result = await this.repository.update(
-        { id: row.id, type: Not('revoked'), mediaPath: IsNull() },
-        { mediaPath: key, mediaMimetype: media.mimetype },
-      );
+      let result;
+      if (this.replacesInline) {
+        const stored = await this.storageService.getFile(key);
+        if (!stored.equals(bytes)) throw new Error('Archived media did not read back intact');
+        const current = await this.repository.findOne({
+          where: { id: row.id, mediaPath: IsNull(), type: Not('revoked') },
+          select: { id: true, metadata: true, waMessageId: true },
+        });
+        const metadata = current?.metadata;
+        const currentMedia = (metadata as { media?: InlineMedia } | null | undefined)?.media;
+        // The media route needs a WhatsApp id. An id-less send must keep its inline bytes.
+        if (!current?.waMessageId || !currentMedia?.data || currentMedia.data !== media.data) {
+          await this.storageService.deleteFile(key).catch(() => undefined);
+          return null;
+        }
+        const { data: _data, ...rest } = currentMedia;
+        void _data;
+        // Publish the verified pointer and remove only the exact metadata snapshot we read.
+        // A concurrent reaction, edit or revoke wins instead of being overwritten.
+        result = await this.repository
+          .createQueryBuilder()
+          .update()
+          .set({
+            mediaPath: key,
+            mediaMimetype: media.mimetype,
+            metadata: {
+              ...metadata,
+              media: { ...rest, omitted: true, sizeBytes: bytes.length, archived: true },
+            },
+          })
+          .where({ id: row.id, type: Not('revoked'), mediaPath: IsNull() })
+          .andWhere('"metadata" = :snapshot', { snapshot: JSON.stringify(metadata) })
+          .execute();
+      } else {
+        // Conditional on the row not being revoked: a revoke that landed while the file was written
+        // cleared the row, and pointing it at the file would bring the deleted media back. And on no
+        // pointer yet: the other writer may have passed the snapshot guard above while this file was
+        // being written, and the first pointer wins so the losing file is deleted, not stranded.
+        result = await this.repository.update(
+          { id: row.id, type: Not('revoked'), mediaPath: IsNull() },
+          { mediaPath: key, mediaMimetype: media.mimetype },
+        );
+      }
       if (result.affected === 0) {
         await this.storageService.deleteFile(key).catch(() => undefined); // else the orphan sweep reaps it
         return null;
@@ -179,9 +224,12 @@ export class ChatMediaArchiveService implements OnModuleInit, OnModuleDestroy {
     } catch (error) {
       // The file exists but no row references it — an orphan the sweep reaps after its grace
       // window. The row itself stays consistent (mediaPath still null), so nothing else to undo.
-      this.logger.warn(`Chat media ${key} written but the row update failed; leaving it for the orphan sweep`, {
-        error: String(error),
-      });
+      this.logger.warn(
+        `Chat media ${key} written but not published; keeping inline media and leaving the file for the orphan sweep`,
+        {
+          error: String(error),
+        },
+      );
       return null;
     }
     return key;

@@ -107,14 +107,14 @@ terminationGracePeriodSeconds: 45
 # fsGroup is what makes a fresh volume writable by it. OnRootMismatch makes the
 # kubelet re-own the volume only when its root has the wrong group or mode,
 # instead of touching every file on every mount. `add: null` removes the
-# default list below; Helm merges maps, so leaving it out keeps all five.
+# default list below; Helm merges maps, so leaving it out keeps all six.
 # The RuntimeDefault seccomp profile is opt-in (it can also be set alone,
 # under either context) until a whatsapp-web.js session start under it has
 # been confirmed on arm64, where the image uses Debian's Chromium.
 podSecurityContext: {}
 
-# Parity with docker-compose hardening. The five added capabilities are used
-# only by the root entrypoint (chown, then the gosu drop); see
+# Parity with docker-compose hardening. The added capabilities support
+# the root entrypoint and init signal forwarding after the gosu drop; see
 # podSecurityContext above for the non-root alternative.
 containerSecurityContext:
   readOnlyRootFilesystem: true
@@ -126,6 +126,7 @@ containerSecurityContext:
       - CHOWN
       - DAC_OVERRIDE
       - FOWNER
+      - KILL
       - SETGID
       - SETUID
 

@@ -1,6 +1,7 @@
 import { DelayedError, Job } from 'bullmq';
 import { FindOperator, Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
+import { WebhookOutboxService } from '../../webhook/webhook-outbox.service';
 import { WebhookProcessor } from './webhook.processor';
 import { Webhook } from '../../webhook/entities/webhook.entity';
 import { WebhookDeliveryFailure } from '../../webhook/entities/webhook-delivery-failure.entity';
@@ -24,7 +25,8 @@ jest.mock('undici', () => {
 describe('WebhookProcessor', () => {
   let processor: WebhookProcessor;
   let repo: { update: jest.Mock; findOne: jest.Mock };
-  let failureRepo: { insert: jest.Mock; count: jest.Mock; delete: jest.Mock };
+  let failureRepo: { insert: jest.Mock; count: jest.Mock; delete: jest.Mock; update: jest.Mock };
+  let outbox: { close: jest.Mock };
   let failureRows: Array<{ webhookId?: string; idempotencyKey?: string | null; attempts?: number }>;
   let hookManager: { execute: jest.Mock };
   let configService: { get: jest.Mock };
@@ -65,7 +67,9 @@ describe('WebhookProcessor', () => {
     // inserts, so a constant would leave that guard unexercised here and let a duplicated row pass.
     failureRows = [];
     const insertedFailures = failureRows;
+    outbox = { close: jest.fn().mockResolvedValue(undefined) };
     failureRepo = {
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
       insert: jest.fn().mockImplementation((rowToInsert: { webhookId?: string; idempotencyKey?: string | null }) => {
         insertedFailures.push(rowToInsert);
         return Promise.resolve({});
@@ -106,6 +110,7 @@ describe('WebhookProcessor', () => {
       failureRepo as unknown as Repository<WebhookDeliveryFailure>,
       hookManager as unknown as HookManager,
       configService as unknown as ConfigService,
+      outbox as unknown as WebhookOutboxService,
     );
     // The merged delivery path uses withSafeFetch (undici), so mock undici's fetch, not global.fetch.
     mockFetch = undiciFetch as jest.Mock;
@@ -185,6 +190,45 @@ describe('WebhookProcessor', () => {
         lastError: 'HTTP 503: Service Unavailable',
       }),
     );
+  });
+
+  it('keeps queue ownership in the outbox when the terminal database write fails', async () => {
+    failureRepo.insert.mockRejectedValue(new Error('disk unavailable'));
+    mockFetch.mockResolvedValue({ ok: false, status: 503, statusText: 'Unavailable' });
+    await expect(processor.process(makeJob({}, 2))).rejects.toThrow('HTTP 503');
+    expect(outbox.close).not.toHaveBeenCalled();
+  });
+
+  it('keeps the job replay copy (pre-hook data) on the final-attempt row, never the sent body', async () => {
+    configService.get.mockImplementation((key: string, def?: unknown) =>
+      key === 'webhook.failurePayloadRetentionHours' ? 24 : def,
+    );
+    mockFetch.mockResolvedValue({ ok: false, status: 503, statusText: 'Service Unavailable' });
+    const job = makeJob({ maxRetries: 3, replayData: { from: 'x@c.us', body: 'hi' } }, 2);
+    job.data.payload.data = { redacted: true };
+
+    await expect(processor.process(job)).rejects.toThrow();
+
+    expect(failureRepo.insert).toHaveBeenCalledWith(
+      expect.objectContaining({ attempts: 3, payload: { from: 'x@c.us', body: 'hi' } }),
+    );
+  });
+
+  it.each(['terminal', 'stalled'])('drops an old queued replay copy after retention is disabled (%s)', async mode => {
+    const job = makeJob({ replayData: { body: 'private' } }, 2);
+    mockFetch.mockResolvedValue({ ok: false, status: 503, statusText: 'Unavailable' });
+    if (mode === 'terminal') await expect(processor.process(job)).rejects.toThrow();
+    else await processor.onWorkerFailed(job, new Error('job stalled more than allowable limit'));
+    expect(failureRepo.insert).toHaveBeenCalledTimes(1);
+    expect((failureRepo.insert.mock.calls as unknown[][])[0][0]).not.toHaveProperty('payload');
+  });
+
+  it('writes no payload for a job enqueued with payload retention off', async () => {
+    mockFetch.mockResolvedValue({ ok: false, status: 503, statusText: 'Service Unavailable' });
+
+    await expect(processor.process(makeJob({ maxRetries: 3 }, 2))).rejects.toThrow();
+
+    expect((failureRepo.insert.mock.calls as unknown[][])[0][0]).not.toHaveProperty('payload');
   });
 
   it("replaces a replayed delivery's attempts-0 shed row with its own final-attempt row", async () => {
@@ -485,6 +529,7 @@ describe('WebhookProcessor', () => {
         failureRepo as unknown as Repository<WebhookDeliveryFailure>,
         hookManager as unknown as HookManager,
         configService as unknown as ConfigService,
+        outbox as unknown as WebhookOutboxService,
       );
     };
     const withMoveToDelayed = (job: Job<WebhookJobData>): jest.Mock => {

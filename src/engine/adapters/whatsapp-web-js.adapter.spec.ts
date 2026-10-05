@@ -5247,6 +5247,51 @@ describe('votePoll', () => {
     const adapter = ready(chatWith([]));
     await expect(adapter.votePoll('628@c.us', 'OLD', ['x'])).rejects.toBeInstanceOf(MessageNotFoundError);
   });
+
+  describe('option texts checked against the poll', () => {
+    const poll = (vote: jest.Mock) => ({
+      id: { _serialized: 'P1' },
+      pollOptions: [
+        { name: 'Pizza', localId: 0 },
+        { name: 'Sushi', localId: 1 },
+      ],
+      vote,
+    });
+
+    it('refuses options that match none of the poll texts with 400, never sending the empty vote', async () => {
+      // vote() would send an empty selection here, which clears the account's vote, while the route
+      // answered 200 (the hidden defect behind #1738).
+      const vote = jest.fn().mockResolvedValue(undefined);
+      const adapter = ready(chatWith([poll(vote)]));
+
+      const err = await adapter.votePoll('628@c.us', 'P1', ['pizza', 'Burger']).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(BadRequestException);
+      expect((err as BadRequestException).getResponse()).toEqual(
+        expect.objectContaining({ code: 'POLL_OPTION_NOT_FOUND', validOptions: ['Pizza', 'Sushi'] }),
+      );
+      expect((err as Error).message).toMatch(/"Pizza", "Sushi"/);
+      expect(vote).not.toHaveBeenCalled();
+    });
+
+    it('still votes when at least one text matches, as before', async () => {
+      const vote = jest.fn().mockResolvedValue(undefined);
+      const adapter = ready(chatWith([poll(vote)]));
+
+      await adapter.votePoll('628@c.us', 'P1', ['Pizza', 'Burger']);
+
+      expect(vote).toHaveBeenCalledWith(['Pizza', 'Burger']);
+    });
+
+    it('keeps an explicit empty array as a deliberate clear', async () => {
+      const vote = jest.fn().mockResolvedValue(undefined);
+      const adapter = ready(chatWith([poll(vote)]));
+
+      await adapter.votePoll('628@c.us', 'P1', []);
+
+      expect(vote).toHaveBeenCalledWith([]);
+    });
+  });
 });
 
 describe('pinMessage / unpinMessage', () => {

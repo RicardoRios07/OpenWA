@@ -203,7 +203,12 @@ describe('MessageProjector', () => {
       const payload = dispatchPayload(webhookService.dispatch);
       expect(payload.reactions).toEqual({ '627@c.us': '❤️', '628@c.us': '👍' });
       expect(messageRepository.update).toHaveBeenCalledWith(
-        { sessionId: 's1', waMessageId: 'WA1' },
+        expect.objectContaining({
+          sessionId: 's1',
+          waMessageId: 'WA1',
+          type: Not('revoked'),
+          metadata: expect.anything() as unknown,
+        }),
         { metadata: { reactions: { '627@c.us': '❤️', '628@c.us': '👍' } } },
       );
     });
@@ -1094,10 +1099,18 @@ describe('MessageProjector (inbound projection)', () => {
         const { releaseA } = await echoWaitingBehindA();
         projector.applyReactionQueued(SESSION_ID, { messageId: 'S', senderId: 'x@c.us', reaction: 'ok' } as never);
         projector.applyReactionQueued(SESSION_ID, { messageId: 'S', senderId: 'y@c.us', reaction: '' } as never);
+        messageRepository.update.mockImplementation(() =>
+          Promise.resolve({ affected: inserted().includes('S') ? 1 : 0 }),
+        );
         releaseA();
         await flush();
 
-        expect(updatesAfterS()).toEqual([[whereS, { metadata: { keep: 1, reactions: { 'x@c.us': 'ok' } } }]]);
+        expect(updatesAfterS()).toEqual([
+          [
+            expect.objectContaining({ ...whereS, type: Not('revoked'), metadata: expect.anything() as unknown }),
+            { metadata: { keep: 1, reactions: { 'x@c.us': 'ok' } } },
+          ],
+        ]);
         expect(emitMessageReaction).toHaveBeenCalledTimes(2);
       });
     });

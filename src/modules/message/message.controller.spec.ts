@@ -7,6 +7,7 @@ import { MessageController } from './message.controller';
 import { MessageService } from './message.service';
 import { BulkMessageService } from './bulk-message.service';
 import { ChatScopeService } from '../auth/chat-scope.service';
+import { SendIdempotencyService } from './idempotency/send-idempotency.service';
 import { CHAT_SCOPED_KEY } from '../auth/decorators/auth.decorators';
 import type { ApiKey } from '../auth/entities/api-key.entity';
 import type { SendBulkMessageDto } from './dto/bulk-message.dto';
@@ -183,6 +184,8 @@ describe('MessageController - caller-supplied batch ids', () => {
         { provide: MessageService, useValue: messages },
         { provide: BulkMessageService, useValue: bulk },
         ChatScopeService,
+        // The send routes carry SendIdempotencyInterceptor; this test sends no Idempotency-Key.
+        { provide: SendIdempotencyService, useValue: {} },
       ],
     }).compile();
     const app = moduleRef.createNestApplication();

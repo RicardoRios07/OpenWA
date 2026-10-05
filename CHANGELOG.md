@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add bounded webhook failure redrive with optional payload retention.
+- Expose caller-supplied send idempotency keys in all five SDKs.
+- Add optional 24-hour idempotency keys to twelve single-recipient send routes.
+
+- Add opt-in archive-only chat media with dashboard previews.
+
+### Fixed
+
+- Preserve archived media and reactions during concurrent metadata updates.
+- Keep sent media when merging onto an echo row fails.
+- Keep inline media when its WhatsApp message ID is unavailable.
+- Enforce chat media size limits using decoded payload bytes.
+- Bound archived dashboard previews alongside inline media.
+- Preserve the Java failure constructor and empty Go redrive filters.
+- Keep narrow chat panes scrollable and prevent message actions from shrinking previews.
+- Open archived images in the dashboard media viewer without fetching them again.
+- Forward container shutdown signals after dropping process privileges in Compose and Helm.
+- Preserve webhook outbox payloads until delivery or durable failure storage succeeds.
+- Enforce webhook replay retention and keep later eligible failures moving through batches.
+- Keep one terminal webhook failure per receiver idempotency key.
+- Retain send idempotency keys after engine-stage failures, including HTTP 409.
+- Reject poll votes with no matching options while preserving explicit vote clearing.
+
 ## [0.24.0] - 2026-10-03
 
 ### Added

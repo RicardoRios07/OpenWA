@@ -10,6 +10,7 @@ import { KeyedMutationQueue } from '../../common/utils/keyed-mutation-queue';
 import { SessionLidResolver } from './session-lid-resolver.service';
 import { buildMessageMetadata, storableWaMessageId } from './message-row.mapper';
 import { MessageMutationProjector } from './message-mutation-projector';
+import { updateMessageMetadata } from '../message/message-metadata';
 import { persistHistoryMessages } from './message-history-projector';
 import { isTransientDbError, isUniqueViolation } from '../../common/utils/db-errors';
 import { resolveFeatureFlags } from '../../config/feature-flags';
@@ -515,16 +516,14 @@ export class MessageProjector {
 
   /** Merge reactions into the row's metadata, withdrawing a sender's on ''. Must run on the mutation chain. */
   private async storeReactions(id: string, waMessageId: string, changes: Record<string, string>): Promise<void> {
-    const row = await this.messageRepository.findOne({ where: { sessionId: id, waMessageId } });
-    if (!row) return;
-    const metadata = row.metadata ?? {};
-    const reactions = { ...(metadata.reactions as Record<string, string> | undefined) };
-    for (const [sender, reaction] of Object.entries(changes)) {
-      if (reaction) reactions[sender] = reaction;
-      else delete reactions[sender];
-    }
-    // Only the metadata column, so a concurrent ack UPDATE is not overwritten.
-    await this.messageRepository.update({ sessionId: id, waMessageId }, { metadata: { ...metadata, reactions } });
+    await updateMessageMetadata(this.messageRepository, { sessionId: id, waMessageId }, metadata => {
+      const reactions = { ...(metadata.reactions as Record<string, string> | undefined) };
+      for (const [sender, reaction] of Object.entries(changes)) {
+        if (reaction) reactions[sender] = reaction;
+        else delete reactions[sender];
+      }
+      return { ...metadata, reactions };
+    });
   }
 
   /**

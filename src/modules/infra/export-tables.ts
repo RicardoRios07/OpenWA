@@ -1,4 +1,11 @@
-import type { MigrationTables, SessionRow, WebhookRow, MessageRow, MessageBatchRow } from './migration-tables.types';
+import type {
+  MigrationTables,
+  SessionRow,
+  WebhookRow,
+  MessageRow,
+  MessageBatchRow,
+  WebhookDeliveryFailureRow,
+} from './migration-tables.types';
 
 /**
  * A `data` value that is a POINTER rather than bytes. `metadata.media.data` holds `base64 || dto.url!`
@@ -23,6 +30,17 @@ function redactWebhookCredentials(rows: WebhookRow[]): void {
   for (const row of rows) {
     delete row.secret;
     delete row.headers;
+  }
+}
+
+/**
+ * A delivery-failure row's `payload` is a short-lived replay copy of the event (a whole message body,
+ * cleared after WEBHOOK_FAILURE_PAYLOAD_RETENTION_HOURS). It is not part of the record a backup keeps,
+ * and the importer never restores it, so it is left out of the archive rather than carried in it.
+ */
+function stripWebhookFailurePayload(rows: WebhookDeliveryFailureRow[]): void {
+  for (const row of rows) {
+    delete row.payload;
   }
 }
 
@@ -280,7 +298,12 @@ export const EXPORT_TABLES: AnyExportTable[] = [
   defineExportTable({ key: 'pluginInstances', table: 'plugin_instances', optional: true }),
   defineExportTable({ key: 'conversationMappings', table: 'conversation_mappings', optional: true }),
   defineExportTable({ key: 'ingressEvents', table: 'ingress_events', optional: true }),
-  defineExportTable({ key: 'webhookDeliveryFailures', table: 'webhook_delivery_failures', optional: true }),
+  defineExportTable({
+    key: 'webhookDeliveryFailures',
+    table: 'webhook_delivery_failures',
+    optional: true,
+    afterRead: stripWebhookFailurePayload,
+  }),
   defineExportTable({ key: 'webhookOutboxEvents', table: 'webhook_outbox_events', optional: true }),
   defineExportTable({
     key: 'integrationDeliveryFailures',
@@ -306,5 +329,6 @@ export const EXPORT_TABLES: AnyExportTable[] = [
  * entity metadata does not report it.
  */
 export const EXPORT_TABLE_EXCLUSIONS: Readonly<Record<string, string>> = {
-  // (empty today: every data-connection entity table is exported)
+  // Claims expire within 24 hours; a restored key would only block or replay a send it never saw.
+  send_idempotency_keys: 'short-lived Idempotency-Key claims (24 h TTL), meaningless after a restore',
 };

@@ -203,6 +203,42 @@ type WebhookDeliveryFailure struct {
 	LastError      string `json:"lastError"`
 	// CreatedAt is the ISO timestamp of when the failure was first recorded.
 	CreatedAt string `json:"createdAt"`
+	// Replayable is true when the row still holds the event data and can be
+	// replayed with RedriveDeliveryFailures: a terminal row (Attempts > 0)
+	// recorded while the gateway's WEBHOOK_FAILURE_PAYLOAD_RETENTION_HOURS is
+	// above 0, until that window passes.
+	Replayable bool `json:"replayable"`
+}
+
+// RedriveWebhookDeliveriesRequest is the body of RedriveDeliveryFailures.
+// Every field narrows; an empty body takes eligible rows with the fewest attempts.
+type RedriveWebhookDeliveriesRequest struct {
+	// SessionID limits the batch to one session (within the key's allowedSessions).
+	SessionID string `json:"sessionId,omitempty"`
+	// WebhookID limits the batch to one webhook.
+	WebhookID string `json:"webhookId,omitempty"`
+	// IDs limits the batch to these failure rows (at most 500).
+	// A nil pointer uses the default scope; a pointer to an empty slice replays nothing.
+	IDs *[]string `json:"ids,omitempty"`
+	// Limit caps the rows replayed by this call (1-500, default 100).
+	Limit int `json:"limit,omitempty"`
+}
+
+// WebhookRedriveResult is the outcome of RedriveDeliveryFailures.
+type WebhookRedriveResult struct {
+	// Redriven is the rows replayed by this call: Delivered plus Enqueued.
+	Redriven int `json:"redriven"`
+	// Delivered rows went out by a direct POST; their failure rows were removed.
+	Delivered int `json:"delivered"`
+	// Enqueued is reserved for compatibility; operator redrive always returns zero.
+	Enqueued int `json:"enqueued"`
+	// Failed replays failed again; their rows stay, with attempts raised by one.
+	Failed int `json:"failed"`
+	// Skipped rows were not replayed: the webhook was removed, disabled or
+	// unsubscribed, or a plugin cancelled it.
+	Skipped int `json:"skipped"`
+	// Remaining is the replayable rows still in scope after this call.
+	Remaining int `json:"remaining"`
 }
 
 // WebhookDelivery is the JSON body of a webhook delivery (docs/06 section

@@ -195,6 +195,8 @@ const check = (id, ok, detail) => results.push({ id, ok, detail });
   const problems = [
     podContext(byDefault) && 'the default render sets a pod securityContext',
     !addsCaps(byDefault) && 'the default render lost the capabilities the root entrypoint needs',
+    !/^ {14}- KILL$/m.test(byKind(byDefault, 'StatefulSet')[0] ?? '') &&
+      'the root init cannot forward shutdown signals after the privilege drop',
     !/runAsNonRoot: true/.test(pod) && 'podSecurityContext.runAsNonRoot does not reach the pod spec',
     !/fsGroup: 997/.test(pod) && 'podSecurityContext.fsGroup does not reach the pod spec',
     // Without it the kubelet re-owns every file on the volume on every mount before the pod starts.

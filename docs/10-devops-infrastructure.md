@@ -383,6 +383,8 @@ LOG_FORMAT=json
 # chat-media/<sessionId>/; media this account sent also needs CHAT_MEDIA_ARCHIVE_OUTBOUND=true.
 # With the archive off, chat media stays inline on the message row (up to MEDIA_DOWNLOAD_MAX_BYTES),
 # where GET /api/sessions/:sessionId/messages/:chatId/:messageId/media still serves it.
+# With the archive on, the row keeps its inline copy too unless MESSAGE_INLINE_MEDIA=archive, which
+# makes the store the only copy of archived media: back it up alongside the database.
 # On S3 every key sits under the S3_KEY_PREFIX root (default media/, so media/chat-media/...).
 # While S3 has not been reachable since boot, or its credentials are missing, files go to
 # STORAGE_LOCAL_PATH instead.

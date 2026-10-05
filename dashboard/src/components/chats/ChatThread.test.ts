@@ -172,3 +172,48 @@ test('a document sent by URL opens in a new tab instead of navigating the dashbo
   assert.equal(inline.getAttribute('target'), null);
   assert.equal(inline.getAttribute('download'), 'inline.pdf');
 });
+
+test('archive-only media previews inline from the media route; a plain omitted marker and a document keep the button', async () => {
+  // MESSAGE_INLINE_MEDIA=archive leaves `{ omitted, archived }` on the row: the image rendered inline
+  // before, so it must still. The over-budget marker (no `archived`) must not fetch on render, and a
+  // document has nothing to preview.
+  const media = (id: string, type: ChatMessageView['type'], archived: boolean): ChatMessageView => ({
+    ...PROMPT,
+    id,
+    waMessageId: `wamid.${id}`,
+    body: '',
+    type,
+    metadata: { media: { mimetype: 'image/jpeg', filename: `${id}.jpg`, omitted: true, sizeBytes: 10, archived } },
+  });
+  const fetched: string[] = [];
+  const fetchOriginal = globalThis.fetch;
+  const createOriginal = URL.createObjectURL;
+  const revokeOriginal = URL.revokeObjectURL;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    fetched.push(String(input));
+    return new Response(new Blob(['x'], { type: 'image/jpeg' }), { status: 200 });
+  }) as typeof fetch;
+  URL.createObjectURL = () => 'blob:archived';
+  URL.revokeObjectURL = () => {};
+  try {
+    const { container } = renderThread('viewer', [
+      media('arch', 'image', true),
+      media('plain', 'image', false),
+      media('doc', 'document', true),
+    ]);
+    const img = await rtl.waitFor(() => {
+      const found = container.querySelector('[data-wa-message-id="wamid.arch"] img.chat-image-media');
+      assert.ok(found, 'the archived image did not preview');
+      return found;
+    });
+    assert.equal(img.getAttribute('src'), 'blob:archived');
+    assert.equal(fetched.length, 1, 'only the archived image is fetched on render');
+    assert.match(fetched[0], /\/messages\/.+\/wamid\.arch\/media$/);
+    assert.ok(container.querySelector('[data-wa-message-id="wamid.plain"] button.message-media-omitted'));
+    assert.ok(container.querySelector('[data-wa-message-id="wamid.doc"] button.message-media-omitted'));
+  } finally {
+    globalThis.fetch = fetchOriginal;
+    URL.createObjectURL = createOriginal;
+    URL.revokeObjectURL = revokeOriginal;
+  }
+});

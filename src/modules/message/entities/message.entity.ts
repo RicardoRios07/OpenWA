@@ -101,7 +101,7 @@ export class Message {
    * Storage key of this message's archived media, or null when nothing was archived — which is the
    * case for every row written while `CHAT_MEDIA_ARCHIVE_ENABLED` is off (the default), for non-media
    * messages, and for media above the archive cap. Independent of the inline base64 copy in
-   * `metadata.media`, which is unaffected by archiving.
+   * `metadata.media`, which stays inline by default and is replaced after verification in archive mode.
    */
   // Partial index for the chat-media orphan sweep's per-chunk `mediaPath IN (...)` lookup. NULL for
   // every un-archived row (archiving is opt-in), so the WHERE clause keeps the index to rows that

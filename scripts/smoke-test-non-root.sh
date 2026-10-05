@@ -22,9 +22,13 @@ else
 fi
 
 VOL=""
+SIGNAL_CONTAINER=""
 
 # Only remove an image this script created — never one the caller handed us.
 cleanup() {
+  if [ -n "$SIGNAL_CONTAINER" ]; then
+    docker rm -f "$SIGNAL_CONTAINER" > /dev/null 2>&1 || true
+  fi
   if [ -n "$VOL" ]; then
     docker volume rm -f "$VOL" > /dev/null 2>&1 || true
   fi
@@ -64,6 +68,37 @@ else
   echo "FAIL: PID 1 is '$PID1' (expected dumb-init), check the ENTRYPOINT chain" >&2
   exit 1
 fi
+
+echo ""
+echo "==> Checking signal forwarding with Compose capabilities..."
+CAPS=$(docker run --rm -i --entrypoint node "$IMAGE_TAG" -e \
+  'const fs=require("fs"),yaml=require("js-yaml");console.log(yaml.load(fs.readFileSync(0,"utf8")).services["openwa-api"].cap_add.join(" "))' < docker-compose.yml)
+set --
+for cap in $CAPS; do
+  set -- "$@" --cap-add "$cap"
+done
+SIGNAL_CONTAINER=$(docker run -d --read-only --tmpfs /tmp --cap-drop ALL "$@" \
+  --security-opt no-new-privileges "$IMAGE_TAG" node -e \
+  'const fs=require("fs");if(process.getuid()!==997||!/^CapEff:\s+0+$/m.test(fs.readFileSync("/proc/self/status","utf8")))process.exit(1);process.on("SIGTERM",()=>process.exit(0));console.log("signal-ready");setInterval(()=>{},1000)')
+for attempt in 1 2 3 4 5; do
+  if docker logs "$SIGNAL_CONTAINER" | grep -q '^signal-ready$'; then
+    break
+  fi
+  if [ "$attempt" -eq 5 ]; then
+    echo "FAIL: the non-root signal test did not become ready" >&2
+    exit 1
+  fi
+  sleep 1
+done
+docker stop --time 5 "$SIGNAL_CONTAINER" > /dev/null
+SIGNAL_EXIT=$(docker inspect --format '{{.State.ExitCode}}' "$SIGNAL_CONTAINER")
+if [ "$SIGNAL_EXIT" != 0 ]; then
+  echo "FAIL: the unprivileged process did not receive SIGTERM (exit $SIGNAL_EXIT)" >&2
+  exit 1
+fi
+echo "PASS: init forwards SIGTERM and the non-root process has no effective capabilities"
+docker rm "$SIGNAL_CONTAINER" > /dev/null
+SIGNAL_CONTAINER=""
 
 echo ""
 echo "==> Checking /app/data ownership on start..."

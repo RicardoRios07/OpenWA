@@ -237,6 +237,15 @@ func (c *Client) call(ctx context.Context, method, path string, query url.Values
 	return nil
 }
 
+type idempotencyContextKey struct{}
+
+// WithIdempotencyKey supplies a caller-owned key for one logical send. Reuse
+// this context for its retries and choose another key for an unrelated send.
+// Only the gateway's documented idempotent send routes interpret the header.
+func WithIdempotencyKey(ctx context.Context, key string) context.Context {
+	return context.WithValue(ctx, idempotencyContextKey{}, key)
+}
+
 // doRaw performs the request and returns the response body and Content-Type.
 // Any non-2xx status (including an unfollowed 3xx) is an error.
 //
@@ -268,9 +277,18 @@ func (c *Client) doRaw(ctx context.Context, method, path string, query url.Value
 		rawURL += sep + query.Encode()
 	}
 
+	key, hasKey := ctx.Value(idempotencyContextKey{}).(string)
+	if hasKey {
+		if len(key) < 1 || len(key) > 255 || strings.IndexFunc(key, func(r rune) bool { return r < 0x21 || r > 0x7e }) >= 0 {
+			return nil, "", errors.New("openwa: idempotency key must contain 1-255 visible ASCII characters")
+		}
+	}
 	req, err := http.NewRequestWithContext(ctx, method, rawURL, reader)
 	if err != nil {
 		return nil, "", fmt.Errorf("openwa: building request: %w", err)
+	}
+	if hasKey {
+		req.Header.Set("Idempotency-Key", key)
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")

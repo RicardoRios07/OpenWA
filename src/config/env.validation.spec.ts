@@ -104,6 +104,21 @@ describe('validateEnv', () => {
     expect(() => validateEnv({ STORAGE_TYPE: 's3' })).not.toThrow();
   });
 
+  it('accepts MESSAGE_INLINE_MEDIA inline or archive, and refuses a typo', () => {
+    expect(() => validateEnv({ MESSAGE_INLINE_MEDIA: 'inline' })).not.toThrow();
+    expect(() => validateEnv({ MESSAGE_INLINE_MEDIA: 'archive', CHAT_MEDIA_ARCHIVE_ENABLED: 'true' })).not.toThrow();
+    expect(() => validateEnv({ MESSAGE_INLINE_MEDIA: 'archived' })).toThrow(/MESSAGE_INLINE_MEDIA must be one of/);
+  });
+
+  it('refuses MESSAGE_INLINE_MEDIA=archive without the archiver, which would silently do nothing', () => {
+    expect(() => validateEnv({ MESSAGE_INLINE_MEDIA: 'archive' })).toThrow(
+      /MESSAGE_INLINE_MEDIA=archive needs CHAT_MEDIA_ARCHIVE_ENABLED=true/,
+    );
+    expect(() => validateEnv({ MESSAGE_INLINE_MEDIA: 'archive', CHAT_MEDIA_ARCHIVE_ENABLED: 'false' })).toThrow(
+      /needs CHAT_MEDIA_ARCHIVE_ENABLED=true/,
+    );
+  });
+
   // The runtime compares these raw (`=== 'postgres'`, the engine plugin lookup, `=== 's3'`), so a
   // padded value that only matches after trimming would validate here and then take the default branch.
   it.each([

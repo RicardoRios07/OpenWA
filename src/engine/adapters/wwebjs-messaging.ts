@@ -963,6 +963,27 @@ export class WwebjsMessaging {
     try {
       await this.withPage('votePoll', async () => {
         const message = await this.findInFetchWindow(chatId, pollMessageId);
+        // vote() matches option TEXTS exactly and silently drops the ones that match nothing. When
+        // none match it sends an empty selection, the same as `options: []`, which CLEARS the vote
+        // while the route answered 200. Refuse that case with the poll's real options so a typo or a
+        // differently-cased text is reported instead of erasing the account's vote. An explicit `[]`
+        // is still a deliberate clear. A message with no pollOptions is not a poll; vote() below
+        // rejects it with its own error.
+        const pollOptions = (message as unknown as { pollOptions?: Array<{ name?: unknown }> }).pollOptions;
+        if (options.length > 0 && Array.isArray(pollOptions)) {
+          const names = pollOptions.map(o => o?.name).filter((n): n is string => typeof n === 'string');
+          if (!options.some(option => names.includes(option))) {
+            throw new BadRequestException({
+              statusCode: 400,
+              error: 'Bad Request',
+              message: `None of the options match poll ${pollMessageId}; options must be the exact texts: ${names
+                .map(n => JSON.stringify(n))
+                .join(', ')}`,
+              code: 'POLL_OPTION_NOT_FOUND',
+              validOptions: names,
+            });
+          }
+        }
         await (message as unknown as { vote(selected: string[]): Promise<void> }).vote(options);
       });
     } catch (error) {

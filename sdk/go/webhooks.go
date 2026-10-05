@@ -32,6 +32,23 @@ func (s *WebhooksService) DeliveryFailures(ctx context.Context, query *DeliveryF
 	return out, err
 }
 
+// RedriveDeliveryFailures replays recorded deliveries that still hold their event data
+// (Replayable in DeliveryFailures), fewest attempts first, then oldest, one bounded batch per call.
+// Each replay reuses the stored idempotency key, so a receiver that already handled the event can dedup it. Only rows
+// recorded while the gateway's WEBHOOK_FAILURE_PAYLOAD_RETENTION_HOURS is above 0 are replayable.
+// Requires an ADMIN-level key; rows outside the key's allowedSessions are never touched. A nil body
+// uses the default batch filter.
+func (s *WebhooksService) RedriveDeliveryFailures(ctx context.Context, body *RedriveWebhookDeliveriesRequest) (*WebhookRedriveResult, error) {
+	if body == nil {
+		body = &RedriveWebhookDeliveriesRequest{}
+	}
+	var out WebhookRedriveResult
+	if err := s.client.do(ctx, "POST", "/api/webhooks/delivery-failures/redrive", nil, body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // List returns webhooks for a session.
 func (s *WebhooksService) List(ctx context.Context, sessionID string) ([]WebhookResponse, error) {
 	var out []WebhookResponse

@@ -14,11 +14,14 @@ import { Message } from './entities/message.entity';
 import { Session } from '../session/entities/session.entity';
 import { SendPacingService } from './send-pacing.service';
 import { MessageBatch } from './entities/message-batch.entity';
+import { SendIdempotencyKey } from './entities/send-idempotency-key.entity';
+import { SendIdempotencyService } from './idempotency/send-idempotency.service';
+import { SendIdempotencyInterceptor } from './idempotency/send-idempotency.interceptor';
 import { PLUGIN_MESSAGE_PORT } from '../../core/plugins/plugin-host-ports';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Message, MessageBatch, Session], 'data'),
+    TypeOrmModule.forFeature([Message, MessageBatch, Session, SendIdempotencyKey], 'data'),
     SessionModule,
     TemplateModule,
     ChatMediaModule,
@@ -32,6 +35,8 @@ import { PLUGIN_MESSAGE_PORT } from '../../core/plugins/plugin-host-ports';
     PendingMessageReaperService,
     MessageRetentionService,
     SendPacingService,
+    SendIdempotencyService,
+    SendIdempotencyInterceptor,
     // Binds the core-owned plugin capability port to this module's service. The plugin runtime
     // resolves the token lazily via ModuleRef (PluginHostServices), which keeps its provider cycle
     // broken; this adapter is how core reaches the service without importing it.

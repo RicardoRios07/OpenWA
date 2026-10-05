@@ -62,7 +62,7 @@ services:
       - internal-docker
     # Container hardening: Chromium runs with --no-sandbox, so the
     # container itself is the confinement boundary. cap_drop ALL + a minimal re-add
-    # ONLY for the root entrypoint's chown + gosu privilege-drop; once gosu setuids to
+    # for root entrypoint ownership, the gosu drop and init signal forwarding. Once gosu setuids to
     # the openwa user the node/Chromium process keeps NO effective capabilities.
     # read_only rootfs (Chromium's profile lives on the writable /app/data volume;
     # HOME=/tmp + tmpfs absorb stray writes). no-new-privileges blocks setuid escalation.
@@ -74,6 +74,7 @@ services:
       - CHOWN # entrypoint: chown openwa /app/data on the named volume
       - DAC_OVERRIDE # entrypoint: chown across pre-existing files
       - FOWNER
+      - KILL # dumb-init: forward signals to the openwa process after gosu drops uid
       - SETGID # gosu: drop to the openwa group
       - SETUID # gosu: drop to the openwa user
     read_only: true
@@ -201,6 +202,7 @@ services:
       - CHAT_MEDIA_ARCHIVE_OUTBOUND=${CHAT_MEDIA_ARCHIVE_OUTBOUND:-}
       - CHAT_MEDIA_ARCHIVE_MAX_BYTES=${CHAT_MEDIA_ARCHIVE_MAX_BYTES:-}
       - CHAT_MEDIA_ARCHIVE_TTL_DAYS=${CHAT_MEDIA_ARCHIVE_TTL_DAYS:-}
+      - MESSAGE_INLINE_MEDIA=${MESSAGE_INLINE_MEDIA:-}
       - CHAT_MEDIA_ORPHAN_SWEEP_INTERVAL_MS=${CHAT_MEDIA_ORPHAN_SWEEP_INTERVAL_MS:-}
       - CHAT_MEDIA_ORPHAN_GRACE_MS=${CHAT_MEDIA_ORPHAN_GRACE_MS:-}
       # Send pacing (opt-in anti-ban governor). Forwarded explicitly for the same reason as the
@@ -303,6 +305,7 @@ services:
       - WEBHOOK_MAX_PAYLOAD_BYTES=${WEBHOOK_MAX_PAYLOAD_BYTES:-}
       - WEBHOOK_MAX_PER_SESSION=${WEBHOOK_MAX_PER_SESSION:-}
       - WEBHOOK_FAILURE_RETENTION_DAYS=${WEBHOOK_FAILURE_RETENTION_DAYS:-}
+      - WEBHOOK_FAILURE_PAYLOAD_RETENTION_HOURS=${WEBHOOK_FAILURE_PAYLOAD_RETENTION_HOURS:-}
       - WEBHOOK_WORKER_CONCURRENCY=${WEBHOOK_WORKER_CONCURRENCY:-}
       - WEBHOOK_DEGRADED_SESSION_CONCURRENCY=${WEBHOOK_DEGRADED_SESSION_CONCURRENCY:-}
       # Integration Fabric ingress: per-instance fairness, retries, retention, reconciler, workers.

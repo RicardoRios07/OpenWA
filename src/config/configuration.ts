@@ -310,6 +310,10 @@ export default () => ({
     // 0 = don't wait (explicit opt-out); blank/garbage falls back to the default — a NaN here would
     // silently remove the drain deadline downstream (Math.max(0, NaN) is NaN).
     shutdownDrainMs: resolveNonNegativeIntEnv(process.env.WEBHOOK_SHUTDOWN_DRAIN_MS, 5000),
+    // How long a terminal delivery-failure row keeps the event data it was built from, so
+    // `POST /webhooks/delivery-failures/redrive` can replay it. 0 (the default) stores nothing, which
+    // is the pre-redrive behaviour. The retention sweep nulls an expired payload and keeps the row.
+    failurePayloadRetentionHours: resolveNonNegativeIntEnv(process.env.WEBHOOK_FAILURE_PAYLOAD_RETENTION_HOURS, 0),
   },
 
   // API configuration
@@ -452,6 +456,11 @@ export default () => ({
       const n = parseInt(process.env.CHAT_MEDIA_ORPHAN_GRACE_MS ?? '', 10);
       return Number.isFinite(n) && n > 0 ? n : 60 * 60 * 1000;
     })(),
+    // What happens to a row's inline base64 once its media is archived. 'inline' (the default) keeps
+    // it, as before. 'archive' replaces it with the omitted marker after the file is stored and
+    // verified, so the bytes live once, in the file store; reads go through the media route.
+    // Validated at boot to need CHAT_MEDIA_ARCHIVE_ENABLED=true.
+    inlineMode: process.env.MESSAGE_INLINE_MEDIA === 'archive' ? ('archive' as const) : ('inline' as const),
   },
 
   // Session ownership across processes. A session's engine runs in exactly one process; these

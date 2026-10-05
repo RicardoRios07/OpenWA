@@ -1,5 +1,7 @@
 import { Injectable, BadRequestException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { markEngineSendFailure } from '../../common/errors/engine-send-failure';
+import { mergeSentMetadata, updateMessageMetadata } from './message-metadata';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository, QueryDeepPartialEntity } from 'typeorm';
 import { SessionService } from '../session/session.service';
@@ -207,42 +209,47 @@ export class MessageSendService {
     input: unknown,
     error: unknown,
   ): Promise<never> {
-    // Only failures that say something about the account's standing feed the breaker: adapters also
-    // raise client-fault and engine-state errors from inside this call (a blocked media URL, an
-    // unsupported capability, a disconnected socket), and counting those let a client sending bad
-    // requests trip the breaker on a healthy session.
-    if (countsTowardSendBreaker(error)) {
-      this.pacing.recordSendFailure(sessionId);
-      // The same classification picks the failures worth a log line. Otherwise an engine-side failure
-      // leaves only Nest's generic `[ExceptionsHandler]` line, with no session, chat or message type to
-      // correlate it with.
-      this.logger.warn(`Send failed in the engine (${type})`, {
-        sessionId,
-        chatId: message.chatId,
-        messageId: message.id,
-        error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
-        // An EnginePageError keeps the full in-page summary (stack, own properties) here only.
-        ...(error instanceof Error && error.cause instanceof Error ? { cause: error.cause.message } : {}),
-      });
+    try {
+      // Only failures that say something about the account's standing feed the breaker: adapters also
+      // raise client-fault and engine-state errors from inside this call (a blocked media URL, an
+      // unsupported capability, a disconnected socket), and counting those let a client sending bad
+      // requests trip the breaker on a healthy session.
+      if (countsTowardSendBreaker(error)) {
+        this.pacing.recordSendFailure(sessionId);
+        // The same classification picks the failures worth a log line. Otherwise an engine-side failure
+        // leaves only Nest's generic `[ExceptionsHandler]` line, with no session, chat or message type to
+        // correlate it with.
+        this.logger.warn(`Send failed in the engine (${type})`, {
+          sessionId,
+          chatId: message.chatId,
+          messageId: message.id,
+          error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+          // An EnginePageError keeps the full in-page summary (stack, own properties) here only.
+          ...(error instanceof Error && error.cause instanceof Error ? { cause: error.cause.message } : {}),
+        });
+      }
+      await this.saveFailedMessage(message);
+      // Sanitize the hook payload: an SSRF block's raw .message names the resolved internal address
+      // (a recon/DNS-rebind oracle); the client-facing throw below already maps it to a generic
+      // message via toClientFacingError, and the message:failed hook must not expose more than the
+      // client sees. Now that every media/extended sender routes here, this is the chokepoint that
+      // keeps SSRF detail out of plugin hands (bulk does the same via sanitizeBatchError).
+      const hookError =
+        error instanceof SsrfBlockedError
+          ? SSRF_BLOCKED_CLIENT_MESSAGE
+          : error instanceof Error
+            ? error.message
+            : String(error);
+      await this.hookManager.execute(
+        'message:failed',
+        { sessionId, error: hookError, input, type },
+        { sessionId, source: 'MessageService' },
+      );
+      throw this.toClientFacingError(error);
+    } catch (failure) {
+      // HTTP status alone cannot prove whether an engine accepted the message before failing.
+      throw markEngineSendFailure(failure);
     }
-    await this.saveFailedMessage(message);
-    // Sanitize the hook payload: an SSRF block's raw .message names the resolved internal address
-    // (a recon/DNS-rebind oracle) — the client-facing throw below already maps it to a generic
-    // message via toClientFacingError, and the message:failed hook must not expose more than the
-    // client sees. Now that every media/extended sender routes here, this is the chokepoint that
-    // keeps SSRF detail out of plugin hands (bulk does the same via sanitizeBatchError).
-    const hookError =
-      error instanceof SsrfBlockedError
-        ? SSRF_BLOCKED_CLIENT_MESSAGE
-        : error instanceof Error
-          ? error.message
-          : String(error);
-    await this.hookManager.execute(
-      'message:failed',
-      { sessionId, error: hookError, input, type },
-      { sessionId, source: 'MessageService' },
-    );
-    throw this.toClientFacingError(error);
   }
 
   /**
@@ -713,10 +720,23 @@ export class MessageSendService {
       };
       // Only when this write actually carries metadata worth merging: a text item must not blank
       // the echo's, and a URL pointer must not replace bytes the engine already downloaded.
-      if (message.metadata && !isUrlPointerMetadata(message.metadata)) {
-        patch.metadata = message.metadata as QueryDeepPartialEntity<Record<string, unknown>>;
+      const metadata = message.metadata;
+      if (metadata && !isUrlPointerMetadata(metadata)) {
+        try {
+          await updateMessageMetadata(this.messageRepository, { sessionId, waMessageId }, current =>
+            mergeSentMetadata(current, metadata),
+          );
+        } catch (error) {
+          if (message.status !== MessageStatus.SENT) throw error;
+          this.logger.warn(`Merging sent metadata onto the echo row failed (id=${waMessageId})`, {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          // The bulk engine has already sent this item. Keep its media in an id-less SENT row
+          // when the echo cannot accept it, instead of losing the only payload-bearing copy.
+          return this.messageRepository.save(this.messageRepository.create({ ...message, waMessageId: undefined }));
+        }
       }
-      await this.messageRepository.update({ sessionId, waMessageId }, patch);
+      if (message.timestamp !== undefined) await this.messageRepository.update({ sessionId, waMessageId }, patch);
       const surviving = await this.messageRepository.findOne({ where: { sessionId, waMessageId } });
       if (!surviving) throw err;
       return surviving;
@@ -807,8 +827,36 @@ export class MessageSendService {
         // first has advanced it further. Writing SENT here would undo that. See the sibling merge
         // in saveOutgoingMessage.
         const patch: QueryDeepPartialEntity<Message> = { timestamp: result.timestamp };
-        if (message.metadata && !isUrlPointerMetadata(message.metadata)) {
-          patch.metadata = message.metadata as QueryDeepPartialEntity<Record<string, unknown>>;
+        const metadata = message.metadata;
+        let metadataMerged = true;
+        if (metadata && !isUrlPointerMetadata(metadata)) {
+          await updateMessageMetadata(
+            this.messageRepository,
+            { sessionId: message.sessionId, waMessageId: result.id },
+            current => mergeSentMetadata(current, metadata),
+          ).catch(err => {
+            metadataMerged = false;
+            this.logger.warn(`Merging media onto the echo-persisted row failed (id=${result.id})`, {
+              error: err instanceof Error ? err.message : String(err),
+            });
+          });
+        }
+        if (!metadataMerged) {
+          // Keep the payload-bearing row when the echo merge fails. Mark it SENT without the
+          // conflicting engine id so the pending reaper cannot strip successfully sent media.
+          await this.messageRepository
+            .update(
+              { id: message.id, status: MessageStatus.PENDING },
+              { status: MessageStatus.SENT, timestamp: result.timestamp },
+            )
+            .catch(err =>
+              this.logger.warn(`Preserving the sent media row failed (id=${message.id})`, {
+                error: err instanceof Error ? err.message : String(err),
+              }),
+            );
+          const retained = await this.messageRepository.findOne({ where: { id: message.id } }).catch(() => null);
+          if (retained) this.emitPersisted(message.sessionId, retained);
+          return { messageId: result.id, timestamp: result.timestamp };
         }
         await this.messageRepository
           .update({ sessionId: message.sessionId, waMessageId: result.id }, patch)
