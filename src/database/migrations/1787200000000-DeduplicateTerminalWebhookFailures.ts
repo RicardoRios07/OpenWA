@@ -6,13 +6,16 @@ export class DeduplicateTerminalWebhookFailures1787200000000 implements Migratio
 
   async up(queryRunner: QueryRunner): Promise<void> {
     if (queryRunner.dataSource.options.type === 'postgres') await queryRunner.query('SET LOCAL statement_timeout = 0');
+    const payloadOrder = (await queryRunner.hasColumn('webhook_delivery_failures', 'payload'))
+      ? 'CASE WHEN "payload" IS NOT NULL THEN 0 ELSE 1 END,'
+      : '';
     // Prefer a replay copy, then the largest attempt count and most recent record.
     // Unkeyed failures have no shared identity and remain separate.
     await queryRunner.query(`DELETE FROM "webhook_delivery_failures" WHERE "id" IN (
       SELECT "id" FROM (
         SELECT "id", ROW_NUMBER() OVER (
           PARTITION BY "webhookId", "idempotencyKey"
-          ORDER BY CASE WHEN "payload" IS NOT NULL THEN 0 ELSE 1 END,
+          ORDER BY ${payloadOrder}
             "attempts" DESC, "createdAt" DESC, "id" DESC
         ) AS ordinal FROM "webhook_delivery_failures"
         WHERE "attempts" > 0 AND "idempotencyKey" IS NOT NULL

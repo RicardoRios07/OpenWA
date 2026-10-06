@@ -155,6 +155,34 @@ describePostgres('webhook and media recovery on PostgreSQL', () => {
     await expect(failures.save({ ...input })).rejects.toThrow();
   });
 
+  it('advances outbox pages without rounding PostgreSQL timestamp precision', async () => {
+    const repository = ds.getRepository(WebhookOutboxEvent);
+    const outbox = new WebhookOutboxService(repository);
+    for (let i = 1; i <= 3; i++) {
+      const row = await repository.save({
+        webhookId: input.webhookId,
+        sessionId,
+        event: input.event,
+        idempotencyKey: `precision-${i}`,
+        deliveryId: `job-${i}`,
+        payload: { body: 'retained' },
+        state: 'queued',
+        attempts: 0,
+      });
+      await ds.query('UPDATE webhook_outbox_events SET "createdAt" = $1 WHERE id = $2', [
+        `2026-01-01 00:00:00.000${i}00`,
+        row.id,
+      ]);
+    }
+    let cursor: string | undefined;
+    for (let i = 1; i <= 3; i++) {
+      const rows = await outbox.findStale(new Date(), 1, cursor);
+      expect(rows.map(row => row.idempotencyKey)).toEqual([`precision-${i}`]);
+      cursor = rows[0].id;
+    }
+    expect(await outbox.findStale(new Date(), 1, cursor)).toEqual([]);
+  });
+
   it('retains queued outbox data and never reopens a settled row', async () => {
     const repository = ds.getRepository(WebhookOutboxEvent);
     const outbox = new WebhookOutboxService(repository);

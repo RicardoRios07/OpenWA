@@ -177,6 +177,8 @@ export interface ExportTable<K extends keyof MigrationTables = keyof MigrationTa
    * export, because a backup that silently omits them is worse than no backup.
    */
   optional?: boolean;
+  /** Columns read from SQL, excluding transient payloads before they can be materialized. */
+  columns?: readonly string[];
   /**
    * Rows carry an FK `sessionId` to sessions. The reads share no snapshot, so a session created after
    * `sessions` was read can leave child rows here that would fail the restore's FK check and roll the
@@ -302,6 +304,19 @@ export const EXPORT_TABLES: AnyExportTable[] = [
     key: 'webhookDeliveryFailures',
     table: 'webhook_delivery_failures',
     optional: true,
+    columns: [
+      'id',
+      'webhookId',
+      'sessionId',
+      'event',
+      'url',
+      'idempotencyKey',
+      'deliveryId',
+      'attempts',
+      'lastStatusCode',
+      'lastError',
+      'createdAt',
+    ],
     afterRead: stripWebhookFailurePayload,
   }),
   defineExportTable({ key: 'webhookOutboxEvents', table: 'webhook_outbox_events', optional: true }),

@@ -352,7 +352,7 @@ function ChatThread({
                   <ArchivedMediaPreview
                     key={`${sessionId}:${activeChat.id}:${waMessageId}`}
                     kind={previewKind}
-                    load={() => sessionApi.getMessageMediaBlob(sessionId, activeChat.id, waMessageId)}
+                    load={signal => sessionApi.getMessageMediaBlob(sessionId, activeChat.id, waMessageId, signal)}
                     alt={mediaInfo.filename || t('chats.media.image')}
                     fallback={downloadButton}
                     measureMedia={measureMedia}

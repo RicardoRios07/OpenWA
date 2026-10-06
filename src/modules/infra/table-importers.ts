@@ -79,6 +79,40 @@ function nulFree(value: unknown): unknown {
   return NulFreeTransformer.to(value);
 }
 
+/** Apply the terminal index's keeper order to archives created before that index existed. */
+export function deduplicateArchivedWebhookFailures(rows: WebhookDeliveryFailureRow[]): WebhookDeliveryFailureRow[] {
+  const owners = new Map<string, WebhookDeliveryFailureRow>();
+  const identity = (row: WebhookDeliveryFailureRow): string => JSON.stringify([row.webhookId, row.idempotencyKey]);
+  // SQLite's zone-less datetime strings represent UTC, just like PostgreSQL's explicit UTC exports.
+  const timestamp = (value: string): number =>
+    new Date(
+      /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?$/.test(value) ? `${value.replace(' ', 'T')}Z` : value,
+    ).getTime();
+  // Malformed archive rows must still reach the normal all-or-nothing restore checks.
+  const eligible = (row: WebhookDeliveryFailureRow): boolean =>
+    row.attempts > 0 &&
+    row.idempotencyKey != null &&
+    [row.id, row.webhookId, row.sessionId, row.event, row.url, row.lastError, row.createdAt].every(
+      value => value != null,
+    );
+  for (const row of rows) {
+    if (!eligible(row)) continue;
+    const key = identity(row);
+    const previous = owners.get(key);
+    if (!previous) {
+      owners.set(key, row);
+      continue;
+    }
+    const rank =
+      Number(row.payload == null) - Number(previous.payload == null) ||
+      previous.attempts - row.attempts ||
+      timestamp(previous.createdAt) - timestamp(row.createdAt) ||
+      (row.id === previous.id ? 0 : row.id > previous.id ? -1 : 1);
+    if (rank < 0) owners.set(key, row);
+  }
+  return rows.filter(row => !eligible(row) || owners.get(identity(row)) === row);
+}
+
 // (sessionId, NUL-free name) -> id of the first archived template holding it, built once per table.
 const templateNameOwners = new WeakMap<TemplateRow[], Map<string, string>>();
 

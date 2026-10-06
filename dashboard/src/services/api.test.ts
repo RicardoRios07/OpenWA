@@ -69,6 +69,36 @@ test('a role 403 keeps the key and rejects with the status', async () => {
   assert.deepEqual(navigations, []);
 });
 
+test('archived media forwards cancellation through fetch and the response body', async () => {
+  const controller = new AbortController();
+  let requested: string | undefined;
+  let options: RequestInit | undefined;
+  let reading = false;
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    requested = String(input);
+    options = init;
+    return Promise.resolve({
+      ok: true,
+      blob: () => {
+        reading = true;
+        return new Promise<Blob>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), {
+            once: true,
+          });
+        });
+      },
+    } as Response);
+  }) as typeof fetch;
+  const bytes = sessionApi.getMessageMediaBlob('s1', '100@c.us', 'WA1', controller.signal);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(reading);
+  assert.ok(requested?.endsWith('/sessions/s1/messages/100%40c.us/WA1/media'));
+  assert.equal((options?.headers as Record<string, string>)['X-API-Key'], 'stored-key');
+  assert.equal(options?.signal, controller.signal);
+  controller.abort();
+  await assert.rejects(bytes, { name: 'AbortError' });
+});
+
 test('the contact list walks past the 1000 contacts one response carries', async () => {
   const { contactApi } = await import('./api.ts');
   const requested: string[] = [];

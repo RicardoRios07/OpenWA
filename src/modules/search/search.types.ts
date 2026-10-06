@@ -22,6 +22,8 @@ export interface SearchQuery {
   q: string;
   /** Scoped by SearchService from the caller's API-key allowedSessions (not user-supplied). */
   sessionIds?: string[];
+  /** Host-set, lid-expanded chat scope: undefined is unrestricted, [] denies every chat. */
+  chatIds?: string[];
   sessionId?: string;
   chatId?: string;
   direction?: MessageDirection;

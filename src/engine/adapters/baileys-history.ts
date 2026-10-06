@@ -3,6 +3,7 @@ import type { Chat, Contact as BaileysContact, WAMessage, WASocket } from '@whis
 import { EngineEventCallbacks, IncomingMessage, MessageType } from '../interfaces/whatsapp-engine.interface';
 import {
   BAILEYS_NON_CONTENT_TYPES,
+  baileysChatJid,
   buildIncomingMessageFromBaileys,
   extractBaileysBody,
   extractBaileysButtonReply,
@@ -30,6 +31,7 @@ export interface BaileysHistoryHost {
   loadLib(): Promise<typeof BaileysLib>;
   /** Seed the chat's last-message preview + sort time from a history/live message. */
   recordMessage(msg: WAMessage, type?: MessageType): void;
+  recordMessageEdit(chatId: string, messageId: string, text: string, type?: MessageType): void;
   upsertContacts(records: Partial<BaileysContact>[]): void;
   upsertChats(records: Partial<Chat>[]): void;
   /**
@@ -105,6 +107,7 @@ export class BaileysHistory {
     const b = await this.host.loadLib();
     const nameUpdates: { id: string; notify: string }[] = [];
     const mapped: IncomingMessage[] = [];
+    const revokes: { chatId: string; messageId: string }[] = [];
     for (const msg of messages) {
       if (msg.key?.fromMe !== true && msg.pushName) {
         const sender = msg.key?.participant ?? msg.key?.remoteJid;
@@ -117,8 +120,19 @@ export class BaileysHistory {
         // Only content messages replace the preview; reactions and protocol updates do not.
         this.host.recordMessage(msg, incoming.type);
         mapped.push(incoming);
+      } else if (msg.key?.remoteJid) {
+        const content = b.normalizeMessageContent(msg.message) ?? msg.message;
+        const protocol = content?.protocolMessage;
+        if (protocol && protocol.type === b.proto.Message.ProtocolMessage.Type.REVOKE && protocol.key?.id) {
+          revokes.push({
+            chatId: baileysChatJid(msg.key.remoteJid, msg.key.participant, msg.key.fromMe === true),
+            messageId: protocol.key.id,
+          });
+        }
       }
     }
+    // History batches can put a revoke before its target. Update only the target preview after all content.
+    for (const { chatId, messageId } of revokes) this.host.recordMessageEdit(chatId, messageId, '', 'revoked');
     if (nameUpdates.length) {
       this.host.upsertContacts(nameUpdates);
     }

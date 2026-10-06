@@ -1,5 +1,62 @@
-import type { WASocket } from '@whiskeysockets/baileys';
+import type { WAMessage, WASocket } from '@whiskeysockets/baileys';
 import { BaileysHistory, BaileysHistoryHost } from './baileys-history';
+import { BaileysSessionStore } from './baileys-session-store';
+
+describe('history chat previews', () => {
+  it.each([false, true])('clears the revoked target in either batch order (reversed=%s)', async reversed => {
+    const store = new BaileysSessionStore(undefined, 's1');
+    store.addLidMappings([{ lid: '99@lid', pn: '100@s.whatsapp.net' }]);
+    store.upsertChats([{ id: '100@s.whatsapp.net' }]);
+    const messages = [
+      {
+        key: { id: 'M1', remoteJid: '100@s.whatsapp.net', fromMe: false },
+        message: { conversation: 'secret' },
+        messageTimestamp: 100,
+      },
+      {
+        key: { id: 'REVOKE', remoteJid: '99@lid', fromMe: false },
+        message: { protocolMessage: { type: 0, key: { id: 'M1', remoteJid: '100@s.whatsapp.net' } } },
+        messageTimestamp: 200,
+      },
+    ] as WAMessage[];
+    const host = {
+      loadLib: () =>
+        Promise.resolve({
+          normalizeMessageContent: (m: unknown) => m,
+          getContentType: (m: object) => Object.keys(m)[0],
+          proto: { Message: { ProtocolMessage: { Type: { REVOKE: 0 } } } },
+        }),
+      normalizedSelfJid: () => 'me@s.whatsapp.net',
+      toNeutralJid: (id: string) => store.toNeutralJid(id),
+      extractEphemeralDuration: (msg: WAMessage) => store.extractEphemeralDuration(msg),
+      recordMessage: (msg: WAMessage, type: Parameters<typeof store.recordMessage>[1]) =>
+        store.recordMessage(msg, type),
+      recordMessageEdit: (...args: Parameters<typeof store.recordMessageEdit>) => store.recordMessageEdit(...args),
+      upsertContacts: () => undefined,
+      getOnHistoryMessages: () => () => undefined,
+    } as unknown as BaileysHistoryHost;
+    const history = new BaileysHistory(host);
+    await history.captureHistoryMessages(reversed ? [...messages].reverse() : messages);
+    expect(store.listChats()[0]).toMatchObject({ lastMessage: '', lastMessageType: 'revoked' });
+
+    // A revoke of an older message cannot replace a newer preview or its timestamp.
+    await history.captureHistoryMessages([
+      { key: { id: 'M2', remoteJid: '100@s.whatsapp.net' }, message: { conversation: 'newer' }, messageTimestamp: 300 },
+      messages[1],
+      {
+        key: { id: 'REACTION', remoteJid: '100@s.whatsapp.net' },
+        message: { reactionMessage: { text: 'ok', key: { id: 'M2' } } },
+        messageTimestamp: 400,
+      },
+      {
+        key: { id: 'PROTOCOL', remoteJid: '100@s.whatsapp.net' },
+        message: { protocolMessage: { type: 3 } },
+        messageTimestamp: 500,
+      },
+    ] as WAMessage[]);
+    expect(store.listChats()[0]).toMatchObject({ lastMessage: 'newer', lastMessageType: 'text' });
+  });
+});
 
 /**
  * `groupFetchAllParticipating` yields `{}` for BOTH an unanswered query and an account with no groups —

@@ -9,7 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Allow chat-restricted API keys to subscribe to chat WebSocket events.
+- Allow chat-restricted MCP keys to read and send within their chat allowlist using the REST authorization rules.
+- Carry `chatId` in `message.ack` and `message.failed` payloads so a webhook `chatId` filter scopes delivery events per chat.
 - Filter stored messages by time, direction, type or message reference, with stable message-time pagination.
+- Scope built-in message search and group detail/settings to a chat-restricted key's allowed chats; reject plugin search for these keys.
 - Expose poll choices and selection mode in message events, stored messages, history, and dashboard chats.
 - Expose optional last-message types in chat lists and SDKs.
 - Add bounded webhook failure redrive with optional payload retention.
@@ -20,6 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Emit Baileys API reaction updates, including reaction removal.
+- Restore legacy webhook failures and normalize terminal duplicates before SQLite schema synchronization.
+- Exclude retained webhook replay payloads from database backup reads.
+- Advance webhook recovery scans past live queued deliveries.
+- Apply current receiver configuration and session ownership to every webhook delivery attempt.
+- Clear revoked Baileys history messages from chat previews.
+- Preserve pending message mutations when REST storage wins an own-send echo.
+- Cancel archived media preview downloads when their components unmount.
 - Refresh Baileys pairing secrets and prevent stale QR renders during linking.
 - Upgrade proxy-addr to 2.0.8 to correct IPv4-mapped IPv6 proxy trust matching.
 - Upgrade source-map-js to 1.2.2 to validate indexed source-map offsets.

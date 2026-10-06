@@ -33,11 +33,18 @@ export function sanitizeCustomHeaders(custom: Record<string, string> | null | un
  * moment (a queued job, a direct retry, an outbox replay) runs this against a fresh row, so a removed,
  * disabled or unsubscribed webhook stops receiving the event.
  */
-export function isDeliverableWebhook<T extends { active: boolean; events: string[] }>(
+export function isDeliverableWebhook<T extends { active: boolean; events: string[]; sessionId?: string }>(
   row: T | null | undefined,
   event: string,
+  sessionId?: string,
 ): row is T {
-  return !!row && row.active && Array.isArray(row.events) && (row.events.includes(event) || row.events.includes('*'));
+  return (
+    !!row &&
+    (sessionId === undefined || row.sessionId === sessionId) &&
+    row.active &&
+    Array.isArray(row.events) &&
+    (row.events.includes(event) || row.events.includes('*'))
+  );
 }
 
 /** HMAC-SHA256 over the exact pre-serialized body, prefixed for receiver-side verification. */

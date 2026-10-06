@@ -1,6 +1,6 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, IsNull, LessThan, Not, Repository } from 'typeorm';
+import { And, In, IsNull, LessThan, Not, Raw, Repository } from 'typeorm';
 import { WebhookOutboxEvent, WebhookOutboxState } from './entities/webhook-outbox-event.entity';
 import { createLogger } from '../../common/services/logger.service';
 import { isUniqueViolation } from '../../common/utils/db-errors';
@@ -138,10 +138,24 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   }
 
   /** Unsettled rows older than the staleness window; queued jobs are checked before replay. */
-  async findStale(olderThan: Date, limit: number): Promise<ReplayableDelivery[]> {
+  async findStale(olderThan: Date, limit: number, afterId?: string): Promise<ReplayableDelivery[]> {
+    const pending = { state: In(['pending', 'queued']), payload: Not(IsNull()), createdAt: LessThan(olderThan) };
     const rows = await this.outbox.find({
-      where: { state: In(['pending', 'queued']), createdAt: LessThan(olderThan) },
-      order: { createdAt: 'ASC' },
+      where: afterId
+        ? {
+            ...pending,
+            // Compare in SQL so PostgreSQL's sub-millisecond timestamps are never rounded through Date.
+            createdAt: And(
+              LessThan(olderThan),
+              Raw(
+                alias =>
+                  `(${alias}, "id") > (SELECT "createdAt", "id" FROM "webhook_outbox_events" WHERE "id" = :afterId)`,
+                { afterId },
+              ),
+            ),
+          }
+        : pending,
+      order: { createdAt: 'ASC', id: 'ASC' },
       take: limit,
     });
     // A pending row always carries its payload; the guard is for a row whose payload was retired by

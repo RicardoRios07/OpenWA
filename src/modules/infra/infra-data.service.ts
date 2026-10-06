@@ -20,7 +20,7 @@ import { In } from 'typeorm';
 import { DateUtils } from 'typeorm/util/DateUtils';
 import type { MigrationTables, TableCounts } from './migration-tables.types';
 import { EXPORT_TABLES, EXPORT_TABLE_EXCLUSIONS, type AnyExportTable } from './export-tables';
-import { TABLE_IMPORTERS } from './table-importers';
+import { TABLE_IMPORTERS, deduplicateArchivedWebhookFailures } from './table-importers';
 
 /**
  * The ownership quartet SessionOwnershipService maintains: which process holds a session's engine and
@@ -417,7 +417,10 @@ export class InfraDataService {
       const droppedBefore = inlineMediaBudget.droppedPayloads();
       const rows: unknown[] = entry.inlineMedia
         ? await this.readInlineMediaTable(entry, entry.inlineMedia, sql => readTable(entry, sql), inlineMediaBudget)
-        : await readTable(entry, `SELECT * FROM ${entry.table}`);
+        : await readTable(
+            entry,
+            `SELECT ${entry.columns?.map(column => `"${column}"`).join(', ') ?? '*'} FROM ${entry.table}`,
+          );
       // `rows` was read for exactly this entry's table, so it holds the row type the entry's hooks
       // declare. That correlation is what the erased entry type cannot carry, and this loop is the
       // one place it is known — so the casts live here rather than at each hook.
@@ -846,7 +849,10 @@ export class InfraDataService {
         // PostgreSQL-made backup compares and sorts like rows the app wrote itself.
         const datetimeColumns = isPostgres ? undefined : sqliteDatetimeColumns(this.dataDataSource);
         restore: for (const importer of TABLE_IMPORTERS) {
-          const rows = data.tables[importer.key];
+          const rows =
+            importer.key === 'webhookDeliveryFailures'
+              ? deduplicateArchivedWebhookFailures(data.tables.webhookDeliveryFailures ?? [])
+              : data.tables[importer.key];
           if (!rows?.length) continue;
           const dateColumns = datetimeColumns?.get(importer.key) ?? [];
           for (const archivedRow of rows) {

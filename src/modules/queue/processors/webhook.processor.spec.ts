@@ -61,7 +61,13 @@ describe('WebhookProcessor', () => {
     repo = {
       update: jest.fn().mockResolvedValue({ affected: 1 }),
       // The live row matches makeJob()'s snapshot unless a test says otherwise.
-      findOne: jest.fn().mockResolvedValue({ id: 'wh-1', active: true, url: 'https://8.8.8.8/hook', events: ['*'] }),
+      findOne: jest.fn().mockResolvedValue({
+        id: 'wh-1',
+        active: true,
+        sessionId: 'sess-1',
+        url: 'https://8.8.8.8/hook',
+        events: ['*'],
+      }),
     };
     // Stateful like the real table: the recorder counts existing rows for the delivery before it
     // inserts, so a constant would leave that guard unexercised here and let a duplicated row pass.
@@ -173,7 +179,13 @@ describe('WebhookProcessor', () => {
 
   it('persists a durable delivery-failure record on the final attempt (with parsed HTTP status)', async () => {
     mockFetch.mockResolvedValue({ ok: false, status: 503, statusText: 'Service Unavailable' });
-    repo.findOne.mockResolvedValue({ id: 'wh-x', active: true, url: 'https://8.8.8.8/h', events: ['*'] });
+    repo.findOne.mockResolvedValue({
+      id: 'wh-x',
+      active: true,
+      sessionId: 'sess-1',
+      url: 'https://8.8.8.8/h',
+      events: ['*'],
+    });
 
     await expect(
       processor.process(makeJob({ maxRetries: 3, webhookId: 'wh-x', url: 'https://8.8.8.8/h' }, 2)),
@@ -300,7 +312,13 @@ describe('WebhookProcessor', () => {
   // message — the resolved internal IP is a recon oracle. The server-side logger.error keeps full detail.
   it('redacts the resolved internal IP from the webhook:error payload and DLQ row on an SSRF block', async () => {
     process.env.WEBHOOK_SSRF_PROTECT = 'true';
-    repo.findOne.mockResolvedValue({ id: 'wh-1', active: true, url: 'https://169.254.169.254/h', events: ['*'] });
+    repo.findOne.mockResolvedValue({
+      id: 'wh-1',
+      active: true,
+      sessionId: 'sess-1',
+      url: 'https://169.254.169.254/h',
+      events: ['*'],
+    });
     // final attempt (attemptsMade=0, maxRetries=1 → 1 >= 1) so the hook + DLQ fire
     await expect(processor.process(makeJob({ url: 'https://169.254.169.254/h', maxRetries: 1 }, 0))).rejects.toThrow();
 
@@ -362,12 +380,13 @@ describe('WebhookProcessor', () => {
 
   // The job is a snapshot from enqueue time; the operator may have changed the webhook since.
   describe('stale snapshot', () => {
-    const live = { id: 'wh-1', active: true, url: 'https://8.8.8.8/hook', events: ['*'] };
+    const live = { id: 'wh-1', active: true, sessionId: 'sess-1', url: 'https://8.8.8.8/hook', events: ['*'] };
 
     it.each([
       ['deleted', null],
       ['disabled', { ...live, active: false }],
       ['unsubscribed', { ...live, events: ['message.sent'] }],
+      ['reassigned', { ...live, sessionId: 'sess-2' }],
     ])('does not POST, retry or dead-letter a job for a %s webhook', async (_label, row) => {
       repo.findOne.mockResolvedValue(row);
       mockFetch.mockResolvedValue({ ok: true, status: 200 });
@@ -433,7 +452,13 @@ describe('WebhookProcessor', () => {
     it('records a dead-letter row, metric, and webhook:error for a job failed by a double stall', async () => {
       const failuresBefore = getWebhookDeliveryFailuresTotal();
       // Re-pointed since enqueue: the row names the URL a retry would have used, not the snapshot's.
-      repo.findOne.mockResolvedValue({ id: 'wh-stall', active: true, url: 'https://8.8.8.8/s', events: ['*'] });
+      repo.findOne.mockResolvedValue({
+        id: 'wh-stall',
+        active: true,
+        sessionId: 'sess-1',
+        url: 'https://8.8.8.8/s',
+        events: ['*'],
+      });
 
       await processor.onWorkerFailed(
         makeJob({ webhookId: 'wh-stall', url: 'https://8.8.8.8/old' }, 1),
@@ -462,6 +487,7 @@ describe('WebhookProcessor', () => {
     it.each([
       ['deleted', null],
       ['disabled', { id: 'wh-1', active: false, url: 'https://8.8.8.8/hook', events: ['*'] }],
+      ['reassigned', { id: 'wh-1', active: true, sessionId: 'sess-2', url: 'https://8.8.8.8/hook', events: ['*'] }],
     ])('files nothing for a job whose webhook was %s', async (_label, row) => {
       repo.findOne.mockResolvedValue(row);
 

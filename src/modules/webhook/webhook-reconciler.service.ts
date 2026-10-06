@@ -61,6 +61,7 @@ export class WebhookReconcilerService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = createLogger('WebhookReconcilerService');
   private timer?: ReturnType<typeof setInterval>;
   private sweeping = false;
+  private cursor?: string;
 
   constructor(
     @InjectRepository(Webhook, 'data') private readonly webhooks: Repository<Webhook>,
@@ -92,7 +93,14 @@ export class WebhookReconcilerService implements OnModuleInit, OnModuleDestroy {
     if (this.sweeping) return stats;
     this.sweeping = true;
     try {
-      const rows = await this.outbox.findStale(new Date(now.getTime() - opts.graceMs), opts.batchSize);
+      const cutoff = new Date(now.getTime() - opts.graceMs);
+      let rows = await this.outbox.findStale(cutoff, opts.batchSize, this.cursor);
+      if (rows.length === 0 && this.cursor) {
+        this.cursor = undefined;
+        rows = await this.outbox.findStale(cutoff, opts.batchSize);
+      }
+      // Live jobs may occupy a whole page. Advance past them without spending their replay budget.
+      this.cursor = rows.at(-1)?.id;
       stats.scanned = rows.length;
       for (const row of rows) {
         if (this.delivery.isLocallyPending(row.idempotencyKey)) {
@@ -103,7 +111,7 @@ export class WebhookReconcilerService implements OnModuleInit, OnModuleDestroy {
           continue;
         }
         const webhook = await this.webhooks.findOne({ where: { id: row.webhookId } });
-        if (!isDeliverableWebhook(webhook, row.event)) {
+        if (!isDeliverableWebhook(webhook, row.event, row.sessionId)) {
           // The subscription is gone, switched off or no longer lists this event; replaying it would
           // deliver an event the operator has already unsubscribed from. Same test as the queue
           // processor applies before every attempt.

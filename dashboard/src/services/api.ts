@@ -809,7 +809,7 @@ async function requestText(endpoint: string): Promise<string> {
 }
 
 /** Like {@link request} but returns a Blob — e.g. for status media downloads. */
-async function requestBlob(endpoint: string): Promise<Blob> {
+async function requestBlob(endpoint: string, signal?: AbortSignal): Promise<Blob> {
   const url = `${API_BASE_URL}${endpoint}`;
 
   // Get API key from sessionStorage for authentication
@@ -819,7 +819,7 @@ async function requestBlob(endpoint: string): Promise<Blob> {
     ...(apiKey ? { 'X-API-Key': apiKey } : {}),
   };
 
-  const response = await fetch(url, { headers });
+  const response = await fetch(url, { headers, signal });
 
   if (!response.ok) {
     return handleErrorResponse<Blob>(response);
@@ -898,8 +898,11 @@ export const sessionApi = {
   // MESSAGE_LIST_INLINE_MEDIA_BUDGET_BYTES; past that budget the payload arrives as the
   // `{ omitted: true, sizeBytes }` marker and the bytes are only reachable here. Served as an
   // attachment (Content-Disposition), so callers download it rather than rendering it inline.
-  getMessageMediaBlob: (id: string, chatId: string, messageId: string) =>
-    requestBlob(`/sessions/${id}/messages/${encodeURIComponent(chatId)}/${encodeURIComponent(messageId)}/media`),
+  getMessageMediaBlob: (id: string, chatId: string, messageId: string, signal?: AbortSignal) =>
+    requestBlob(
+      `/sessions/${id}/messages/${encodeURIComponent(chatId)}/${encodeURIComponent(messageId)}/media`,
+      signal,
+    ),
   getSubscribedChannels: (id: string) => request<Channel[]>(`/sessions/${id}/channels`),
   getChannelMessages: (id: string, channelId: string, limit = 50) =>
     request<ChannelMessage[]>(`/sessions/${id}/channels/${encodeURIComponent(channelId)}/messages?limit=${limit}`),

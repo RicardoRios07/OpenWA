@@ -58,7 +58,9 @@ describe('WebhookReconcilerService', () => {
       isQueueJobPending: jest.fn().mockResolvedValue(false),
       isLocallyPending: jest.fn().mockReturnValue(false),
     };
-    webhooks = { findOne: jest.fn().mockResolvedValue({ id: 'wh-1', active: true, events: ['*'] }) };
+    webhooks = {
+      findOne: jest.fn().mockResolvedValue({ id: 'wh-1', sessionId: 'sess-1', active: true, events: ['*'] }),
+    };
     service = new WebhookReconcilerService(webhooks as never, outbox as never, delivery as never);
   });
 
@@ -70,7 +72,7 @@ describe('WebhookReconcilerService', () => {
     // Deriving a fresh key would make the replay read as a second event at the receiver rather than
     // a retry of the first, which is the whole reason the key is stored rather than recomputed.
     expect(delivery.redeliver).toHaveBeenCalledWith(
-      { id: 'wh-1', active: true, events: ['*'] },
+      { id: 'wh-1', sessionId: 'sess-1', active: true, events: ['*'] },
       'sess-1',
       'message.received',
       'stored-key_wh-1',

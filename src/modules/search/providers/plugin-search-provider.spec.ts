@@ -1,4 +1,4 @@
-import { BadGatewayException, ServiceUnavailableException } from '@nestjs/common';
+import { BadGatewayException, ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
 import { MessageDirection } from '../../message/entities/message.entity';
 import { PluginSearchProvider } from './plugin-search-provider';
 import type { PluginSearchTransport } from './plugin-search-provider';
@@ -83,6 +83,31 @@ describe('PluginSearchProvider', () => {
     expect(res.total).toBe(1);
     expect(res.tookMs).toBe(3);
     expect(res.provider).toBe('plugin:p');
+  });
+
+  it.each(['empty', 'allowed', 'outside'])('refuses chat-restricted searches before RPC (%s page)', async page => {
+    const hits = page === 'empty' ? [] : [mkHit({ chatId: page === 'allowed' ? '111@c.us' : '999@g.us' })];
+    const results: SearchResults = { hits, total: 731, tookMs: 3, provider: 'plugin:p' };
+    const dispatchSearch = jest.fn().mockResolvedValue({ ok: true, results });
+    const p = new PluginSearchProvider('p', 'P', fakeTransport({ dispatchSearch }), 1000);
+
+    await expect(p.search({ q: 'hi', chatIds: ['111@c.us', '111@s.whatsapp.net'] })).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+    expect(dispatchSearch).not.toHaveBeenCalled();
+  });
+
+  it('returns no hits for an empty compiled chat scope without dispatching to the plugin', async () => {
+    const dispatchSearch = jest.fn();
+    const transport = fakeTransport({ dispatchSearch });
+    const p = new PluginSearchProvider('p', 'P', transport, 1000);
+    await expect(p.search({ q: 'hi', chatIds: [], offset: 5 })).resolves.toEqual({
+      hits: [],
+      total: 0,
+      tookMs: 0,
+      provider: 'plugin:p',
+    });
+    expect(dispatchSearch).not.toHaveBeenCalled();
   });
 
   it('preserves the plugin total when all hits are in-scope (pagination must still work)', async () => {

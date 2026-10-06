@@ -148,7 +148,7 @@ export class WebhookProcessor extends WorkerHost {
       // headers and secret, as the reconciler's replay does, so a receiver move or a rotated
       // secret or auth header applies to jobs already waiting in the queue.
       // A read error lands in the catch below and counts as a failed attempt, like a failed POST.
-      const current = await this.loadDeliverableWebhook(webhookId, event);
+      const current = await this.loadDeliverableWebhook(webhookId, event, sessionId);
       if (!current) {
         this.logger.warn('Skipping queued webhook delivery: webhook removed, disabled or unsubscribed', {
           webhookId,
@@ -190,9 +190,9 @@ export class WebhookProcessor extends WorkerHost {
   }
 
   /** The webhook row as it is now, or null when it was deleted, disabled or no longer takes `event`. */
-  private async loadDeliverableWebhook(webhookId: string, event: string): Promise<Webhook | null> {
+  private async loadDeliverableWebhook(webhookId: string, event: string, sessionId: string): Promise<Webhook | null> {
     const row = await this.webhookRepository.findOne({ where: { id: webhookId } });
-    return isDeliverableWebhook(row, event) ? row : null;
+    return isDeliverableWebhook(row, event, sessionId) ? row : null;
   }
 
   /**
@@ -360,7 +360,7 @@ export class WebhookProcessor extends WorkerHost {
     // record against the enqueue-time snapshot rather than lose the failure.
     let url = job.data.url;
     try {
-      const current = await this.loadDeliverableWebhook(webhookId, event);
+      const current = await this.loadDeliverableWebhook(webhookId, event, sessionId);
       if (!current) {
         return;
       }

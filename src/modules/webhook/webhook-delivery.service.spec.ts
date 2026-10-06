@@ -38,8 +38,9 @@ import { QUEUE_NAMES } from '../queue/queue-names';
 import { getWebhookDeliveryFailuresTotal } from '../../common/metrics/webhook-delivery-metrics';
 import { ConcurrencyLimiter } from '../../common/utils/concurrency-limiter';
 
+const storedWebhooks = new Map<string, Webhook>();
 function createMockWebhook(overrides: Partial<Webhook> = {}): Webhook {
-  return {
+  const row = {
     id: 'wh-uuid-1',
     sessionId: 'sess-1',
     url: 'https://example.com/webhook',
@@ -55,6 +56,8 @@ function createMockWebhook(overrides: Partial<Webhook> = {}): Webhook {
     session: undefined as unknown as Session,
     ...overrides,
   };
+  storedWebhooks.set(row.id, row);
+  return row;
 }
 
 // The recorder counts terminal rows with `attempts: MoreThan(0)`; honour that operator like the
@@ -79,14 +82,15 @@ describe('WebhookDeliveryService', () => {
   let insertedFailures: Array<Partial<WebhookDeliveryFailure>>;
 
   beforeEach(async () => {
+    storedWebhooks.clear();
     repository = {
       find: jest.fn(),
-      // A direct retry re-reads its webhook. By default it reads back the row dispatch loaded, so a
-      // test changes the webhook between attempts by overriding this.
-      findOne: jest.fn().mockImplementation(async (opts: { where: { id: string } }) => {
-        const rows = (await (repository.find as jest.Mock)()) as Webhook[] | undefined;
-        return rows?.find(w => w.id === opts.where.id) ?? null;
-      }),
+      // Read the seeded row independently of the dispatch subscription query.
+      findOne: jest
+        .fn()
+        .mockImplementation((opts: { where: { id: string } }) =>
+          Promise.resolve(storedWebhooks.get(opts.where.id) ?? null),
+        ),
       update: jest.fn().mockResolvedValue({ affected: 1 }),
     };
 
@@ -1860,7 +1864,7 @@ describe('WebhookDeliveryService', () => {
         return def as T;
       });
       const webhook = createMockWebhook({ retryCount: 2 });
-      (repository.findOne as jest.Mock).mockResolvedValue(null);
+      (repository.findOne as jest.Mock).mockResolvedValueOnce(webhook).mockResolvedValue(null);
       webhookQueue.add.mockRejectedValueOnce(new Error('redis down'));
       const mockFetch = undiciFetch as jest.Mock;
       (hookManager.execute as jest.Mock).mockResolvedValue({ continue: true, data: {} });
@@ -1973,7 +1977,9 @@ describe('WebhookDeliveryService', () => {
       ['unsubscribed from the event', { events: ['message.ack'] }],
     ])('stops retrying, files nothing and reports cancelled when the webhook was %s', async (_label, change) => {
       const webhook = createMockWebhook({ retryCount: 3 });
-      (repository.findOne as jest.Mock).mockResolvedValue(change && { ...webhook, ...change });
+      (repository.findOne as jest.Mock)
+        .mockResolvedValueOnce(webhook)
+        .mockResolvedValue(change && { ...webhook, ...change });
       mockFetch.mockRejectedValue(new Error('receiver down'));
       const failuresBefore = getWebhookDeliveryFailuresTotal();
 
@@ -1992,7 +1998,7 @@ describe('WebhookDeliveryService', () => {
     it('sends a retry to the current url, signed with the current secret', async () => {
       const webhook = createMockWebhook({ retryCount: 2, secret: 'old-secret-0123456789' });
       const moved = { ...webhook, url: 'https://moved.example/hook', secret: 'new-secret-0123456789' };
-      (repository.findOne as jest.Mock).mockResolvedValue(moved);
+      (repository.findOne as jest.Mock).mockResolvedValueOnce(webhook).mockResolvedValue(moved);
       mockFetch.mockRejectedValueOnce(new Error('receiver down')).mockResolvedValueOnce({ ok: true, status: 200 });
 
       await expect(service.redeliver(webhook, 'sess-1', 'message.received', 'k', {})).resolves.toBe('delivered');
@@ -2007,7 +2013,7 @@ describe('WebhookDeliveryService', () => {
 
     it('drops the signature from a retry once the secret is cleared', async () => {
       const webhook = createMockWebhook({ retryCount: 2, secret: 'old-secret-0123456789' });
-      (repository.findOne as jest.Mock).mockResolvedValue({ ...webhook, secret: null });
+      (repository.findOne as jest.Mock).mockResolvedValueOnce(webhook).mockResolvedValue({ ...webhook, secret: null });
       mockFetch.mockRejectedValueOnce(new Error('receiver down')).mockResolvedValueOnce({ ok: true, status: 200 });
 
       await service.redeliver(webhook, 'sess-1', 'message.received', 'k', {});
@@ -2019,7 +2025,7 @@ describe('WebhookDeliveryService', () => {
 
     it('counts a failed re-read as a failed attempt', async () => {
       const webhook = createMockWebhook({ retryCount: 2 });
-      (repository.findOne as jest.Mock).mockRejectedValue(new Error('db down'));
+      (repository.findOne as jest.Mock).mockResolvedValueOnce(webhook).mockRejectedValue(new Error('db down'));
       mockFetch.mockRejectedValue(new Error('receiver down'));
 
       await expect(service.redeliver(webhook, 'sess-1', 'message.received', 'k', {})).resolves.toBe('failed');
@@ -2113,12 +2119,14 @@ describe('WebhookDeliveryService', () => {
     beforeEach(() => {
       for (const key of Object.keys(hooksBySession)) delete hooksBySession[key];
       (repository.find as jest.Mock).mockImplementation((opts: { where: { sessionId: string } }) =>
-        Promise.resolve(hooksBySession[opts.where.sessionId] ?? []),
+        Promise.resolve(
+          (hooksBySession[opts.where.sessionId] ?? []).map(row => ({ ...row, sessionId: opts.where.sessionId })),
+        ),
       );
       (repository.findOne as jest.Mock).mockImplementation((opts: { where: { id: string } }) =>
         Promise.resolve(
-          Object.values(hooksBySession)
-            .flat()
+          Object.entries(hooksBySession)
+            .flatMap(([sessionId, rows]) => rows.map(row => ({ ...row, sessionId })))
             .find(w => w.id === opts.where.id) ?? null,
         ),
       );
@@ -2306,6 +2314,7 @@ describe('WebhookDeliveryService', () => {
 
     it('marks a webhook failing on a failed attempt', async () => {
       const webhook = createMockWebhook({ id: 'wh-a', retryCount: 1 });
+      hooksBySession['sess-1'] = [webhook];
       mockFetch.mockRejectedValue(new Error('receiver down'));
 
       await service.redeliver(webhook, 'sess-1', 'message.received', 'k', {});

@@ -1564,6 +1564,99 @@ describe('InfraDataController.import/export preserves every data-DB table', () =
     expect((await outboxRepo.findOneByOrFail({ idempotencyKey: 'key-1' })).state).toBe('pending');
   });
 
+  it('restores legacy terminal failures using a deterministic keeper without losing independent records', async () => {
+    await seedSession('s1');
+    const dump = await controller.exportData();
+    const base = {
+      webhookId: 'wh-1',
+      sessionId: 's1',
+      event: 'message.received',
+      url: 'https://receiver.example',
+      idempotencyKey: 'key-1',
+      deliveryId: null,
+      attempts: 3,
+      lastStatusCode: 503,
+      lastError: 'HTTP 503',
+      createdAt: '2026-10-05T00:00:00.000Z',
+    };
+    dump.tables.webhookDeliveryFailures = [
+      { ...base, id: 'a', attempts: 8 },
+      { ...base, id: 'b', payload: '{"body":"retained"}' },
+      { ...base, id: 'c', attempts: 0 },
+      { ...base, id: 'd', idempotencyKey: null },
+      { ...base, id: 'e', idempotencyKey: null },
+      { ...base, id: 'f', idempotencyKey: 'key-2', attempts: 5 },
+      { ...base, id: 'g', idempotencyKey: 'key-2', attempts: 5 },
+    ];
+    const result = await controller.importData({ tables: dump.tables });
+    expect(result.imported).toBe(true);
+    expect(result.warnings).toEqual([]);
+    const repository = ds.getRepository(WebhookDeliveryFailure);
+    expect((await repository.find({ order: { id: 'ASC' } })).map(row => row.id)).toEqual(['b', 'c', 'd', 'e', 'g']);
+    expect(result.counts.webhookDeliveryFailures).toBe(5);
+    expect(await repository.createQueryBuilder('failure').addSelect('failure.payload').getMany()).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'b', payload: null })]),
+    );
+  });
+
+  it.each(['primary-key', 'missing-url'] as const)(
+    'preserves restore rollback for a %s error in terminal failures',
+    async problem => {
+      await seedSession('s1');
+      const dump = await controller.exportData();
+      const base = {
+        id: 'same-id',
+        webhookId: 'wh-1',
+        sessionId: 's1',
+        event: 'message.received',
+        url: 'https://receiver.example',
+        deliveryId: null,
+        attempts: 3,
+        lastStatusCode: 503,
+        lastError: 'HTTP 503',
+        createdAt: '2026-10-05T00:00:00.000Z',
+      };
+      dump.tables.webhookDeliveryFailures =
+        problem === 'primary-key'
+          ? [
+              { ...base, idempotencyKey: 'key-1' },
+              { ...base, idempotencyKey: 'key-2' },
+            ]
+          : [
+              { ...base, id: 'a', idempotencyKey: 'key-1', attempts: 1, url: null as unknown as string },
+              { ...base, id: 'b', idempotencyKey: 'key-1' },
+            ];
+      const result = await controller.importData({ tables: dump.tables });
+      expect(result.imported).toBe(false);
+      expect(result.warnings.join(' ')).toMatch(/UNIQUE constraint failed|NOT NULL constraint failed/);
+      expect(await ds.getRepository(Session).count()).toBe(1);
+    },
+  );
+
+  it('projects failure audit columns before reading retained payloads and supports the pre-payload schema', async () => {
+    await seedSession('s1');
+    const repository = ds.getRepository(WebhookDeliveryFailure);
+    await repository.save({
+      webhookId: 'wh-1',
+      sessionId: 's1',
+      event: 'message.received',
+      url: 'https://receiver.example',
+      idempotencyKey: 'key-1',
+      attempts: 3,
+      lastError: 'HTTP 503',
+      payload: { body: 'x'.repeat(2 * 1024 * 1024) },
+    });
+    const query = jest.spyOn(ds, 'query');
+    const dump = await controller.exportData();
+    expect(dump.tables.webhookDeliveryFailures).toHaveLength(1);
+    expect(dump.tables.webhookDeliveryFailures[0]).not.toHaveProperty('payload');
+    const reads = query.mock.calls.filter(([sql]) => /^SELECT .*FROM webhook_delivery_failures$/i.test(sql));
+    expect(reads).toHaveLength(1);
+    expect(reads[0][0]).not.toMatch(/\*|payload/);
+    await ds.query('ALTER TABLE webhook_delivery_failures DROP COLUMN payload');
+    expect((await controller.exportData()).tables.webhookDeliveryFailures).toEqual(dump.tables.webhookDeliveryFailures);
+  });
+
   // A PostgreSQL export serializes CreateDateColumn/UpdateDateColumn values as ISO `...T...Z`, while
   // TypeORM writes and compares them on SQLite as `YYYY-MM-DD HH:MM:SS.SSS`. Stored verbatim, a
   // restored pending row never matched `createdAt < cutoff` on its own calendar day, so the replay

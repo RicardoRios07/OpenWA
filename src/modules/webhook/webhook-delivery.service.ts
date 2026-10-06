@@ -985,9 +985,9 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
    * `body` is the pre-serialized payload from preflight, the exact bytes the size gate checked, so it
    * is never re-serialized here.
    *
-   * Like a queued job, every retry re-reads the webhook row: a webhook removed, disabled or
+   * Like a queued job, every attempt re-reads the webhook row: a webhook removed, disabled or
    * unsubscribed since the dispatch gets nothing more and no failure row (resolves false), and a
-   * changed url, secret or header map applies from the next attempt. Retries back off exponentially
+   * changed url, secret or header map applies immediately. Retries back off exponentially
    * (retryDelay, then twice that, and so on), the schedule BullMQ applies to a queued job.
    */
   private async deliverWebhook(
@@ -1001,22 +1001,20 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
     let current = webhook;
     for (let attempt = 1; ; attempt++) {
       try {
-        if (attempt > 1) {
-          // Inside the try: a read error counts as a failed attempt, as it does for a queued job.
-          const row = await this.webhookRepository.findOne({ where: { id: webhook.id } });
-          if (!isDeliverableWebhook(row, payload.event)) {
-            this.logger.warn('Skipping webhook retry: webhook removed, disabled or unsubscribed', {
-              webhookId: webhook.id,
-              event: payload.event,
-              deliveryId: payload.deliveryId,
-              idempotencyKey: payload.idempotencyKey,
-              action: 'webhook_skipped_stale',
-            });
-            this.failingWebhooks.delete(webhook.id);
-            return false;
-          }
-          current = row;
+        // Inside the try: a read error counts as a failed attempt, as it does for a queued job.
+        const row = await this.webhookRepository.findOne({ where: { id: webhook.id } });
+        if (!isDeliverableWebhook(row, payload.event, payload.sessionId)) {
+          this.logger.warn('Skipping webhook delivery: webhook removed, disabled, unsubscribed or reassigned', {
+            webhookId: webhook.id,
+            event: payload.event,
+            deliveryId: payload.deliveryId,
+            idempotencyKey: payload.idempotencyKey,
+            action: 'webhook_skipped_stale',
+          });
+          this.failingWebhooks.delete(webhook.id);
+          return false;
         }
+        current = row;
         const headers = buildDeliveryHeaders(
           current,
           payload.event,

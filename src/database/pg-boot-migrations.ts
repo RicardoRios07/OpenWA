@@ -2,6 +2,7 @@ import { Client, ClientConfig } from 'pg';
 import { DataSource, DataSourceOptions } from 'typeorm';
 import { createLogger } from '../common/services/logger.service';
 import { assertDataConnectionUtc, postgresUtcExtra } from './postgres-utc';
+import { DeduplicateTerminalWebhookFailures1787200000000 } from './migrations/1787200000000-DeduplicateTerminalWebhookFailures';
 
 const logger = createLogger('PgBootMigrations');
 
@@ -50,6 +51,26 @@ export async function createBootDataSource(
 ): Promise<DataSource> {
   const createDataSource = deps.createDataSource ?? (opts => new DataSource(opts));
   const createLockClient = deps.createLockClient ?? createPgLockClient;
+
+  if (options?.type === 'better-sqlite3' && options.synchronize) {
+    const dataSource = createDataSource({ ...options, synchronize: false });
+    try {
+      await dataSource.initialize();
+      const runner = dataSource.createQueryRunner();
+      try {
+        if (await runner.hasTable('webhook_delivery_failures')) {
+          await new DeduplicateTerminalWebhookFailures1787200000000().up(runner);
+        }
+      } finally {
+        await runner.release();
+      }
+      await dataSource.synchronize();
+      return dataSource;
+    } catch (error) {
+      if (dataSource.isInitialized) await dataSource.destroy().catch(() => undefined);
+      throw error;
+    }
+  }
 
   if (options?.type !== 'postgres') {
     // useFactory always resolves a full options object; the optional parameter is the library's

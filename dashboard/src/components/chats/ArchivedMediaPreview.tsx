@@ -7,7 +7,7 @@ export type ArchivedMediaKind = 'image' | 'video' | 'audio';
 interface ArchivedMediaPreviewProps {
   kind: ArchivedMediaKind;
   /** Fetches the archived bytes (the per-message media route). Called at most once per mount. */
-  load: () => Promise<Blob>;
+  load: (signal: AbortSignal) => Promise<Blob>;
   alt?: string;
   /** Rendered instead of the preview when the fetch fails, the download button, so the bytes stay reachable. */
   fallback: ReactNode;
@@ -76,8 +76,9 @@ function ArchivedMediaPreview({ kind, load, alt, fallback, measureMedia, onMedia
   useEffect(() => {
     if (state.phase !== 'loading') return undefined;
     let cancelled = false;
+    const controller = new AbortController();
     loadRef
-      .current()
+      .current(controller.signal)
       .then(blob => {
         if (cancelled) return;
         const url = URL.createObjectURL(blob);
@@ -89,6 +90,7 @@ function ArchivedMediaPreview({ kind, load, alt, fallback, measureMedia, onMedia
       });
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [state.phase]);
 

@@ -184,7 +184,7 @@ export interface WebhookDeliveryFailureRow {
   attempts: number;
   lastStatusCode: number | null;
   lastError: string;
-  /** Replay copy of the event; read by `SELECT *` but dropped from the export (see export-tables). */
+  /** Legacy archives may carry replay data; current exports omit it at the SQL projection. */
   payload?: string | null;
   createdAt: string;
 }

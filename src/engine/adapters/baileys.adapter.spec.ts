@@ -2607,6 +2607,42 @@ describe('BaileysAdapter inbound fan-out', () => {
     expect(onMessageCreate).toHaveBeenCalledTimes(1); // the library echo added nothing
   });
 
+  it.each(['\u{1f44d}', ''])('delivers an API reaction echo with text %p', async reaction => {
+    jest
+      .requireMock<Record<string, jest.Mock>>('@whiskeysockets/baileys')
+      .getContentType.mockImplementation(realGetContentType);
+    fakeSock.user = { id: '628000@s.whatsapp.net' };
+    const target = {
+      key: { remoteJid: '628111@s.whatsapp.net', fromMe: false, id: 'TARGET' },
+      message: { conversation: 'hello' },
+    };
+    const echo = {
+      key: { remoteJid: '628111@s.whatsapp.net', fromMe: true, id: 'REACTION_ECHO' },
+      message: { reactionMessage: { key: target.key, text: reaction } },
+      messageTimestamp: Math.floor(Date.now() / 1000),
+    };
+    fakeStore.getMessage.mockResolvedValue(target);
+    fakeSock.sendMessage.mockResolvedValue(echo);
+    const onMessageReaction = jest.fn();
+    const onMessageCreate = jest.fn();
+    const adapter = newAdapter();
+    await adapter.initialize({ onMessageReaction, onMessageCreate });
+    fakeSock.fire('connection.update', { connection: 'open' });
+    await adapter.reactToMessage('628111@c.us', 'TARGET', reaction);
+    fakeSock.fire('messages.upsert', { type: 'append', messages: [echo] });
+    await new Promise(resolve => setImmediate(resolve));
+    expect(onMessageReaction).toHaveBeenCalledTimes(1);
+    expect(onMessageReaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageId: 'TARGET',
+        chatId: '628111@c.us',
+        senderId: '628000@c.us',
+        reaction,
+      }),
+    );
+    expect(onMessageCreate).not.toHaveBeenCalled();
+  });
+
   // The account's own phone kept working while the gateway was down. WhatsApp replays what it sent
   // in that window through the same 'append' tag as the API echo above, and only the id says it is
   // not ours. It is an outgoing message the session never saw, so it goes out as onMessageCreate.
@@ -2761,7 +2797,19 @@ describe('BaileysAdapter inbound fan-out', () => {
     const adapter = newAdapter();
     await adapter.initialize({ onMessageAck });
     fakeSock.fire('messages.update', [{ key: { id: 'OUT1' }, update: { status: 3 } }]);
-    expect(onMessageAck).toHaveBeenCalledWith('OUT1', 'delivered');
+    expect(onMessageAck).toHaveBeenCalledWith('OUT1', 'delivered', undefined);
+  });
+
+  it('carries the update key chat on onMessageAck, canonicalized', async () => {
+    const onMessageAck = jest.fn();
+    const adapter = newAdapter();
+    await adapter.initialize({ onMessageAck });
+    fakeSock.fire('messages.update', [
+      { key: { id: 'OUT2', remoteJid: '6281111111111@s.whatsapp.net' }, update: { status: 2 } },
+      { key: { id: 'OUT3', remoteJid: '120363000000000000@g.us' }, update: { status: 3 } },
+    ]);
+    expect(onMessageAck).toHaveBeenCalledWith('OUT2', 'sent', '6281111111111@c.us');
+    expect(onMessageAck).toHaveBeenCalledWith('OUT3', 'delivered', '120363000000000000@g.us');
   });
 
   it('inbound image: downloads media and exposes base64 + caption as body', async () => {

@@ -114,3 +114,22 @@ test('a response landing after unmount makes no object URL', async () => {
   await new Promise(r => setTimeout(r, 0));
   assert.deepEqual(created, [], 'a late response must not leak a URL nothing will revoke');
 });
+
+test('unmount aborts an archived media request still waiting for its bytes', async () => {
+  let signal: AbortSignal | undefined;
+  const { unmount } = rtl.render(
+    createElement(ArchivedMediaPreview, {
+      kind: 'image',
+      fallback,
+      load: received => {
+        signal = received;
+        return new Promise<Blob>(() => undefined);
+      },
+    }),
+  );
+  await rtl.waitFor(() => assert.ok(signal, 'the loader did not receive an abort signal'));
+  assert.equal(signal!.aborted, false);
+  unmount();
+  assert.equal(signal!.aborted, true);
+  assert.deepEqual(created, []);
+});
