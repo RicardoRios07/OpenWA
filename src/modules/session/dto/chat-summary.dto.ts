@@ -1,5 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import type { ChatKind } from '../../../engine/identity/wa-id';
+import type { MessageType } from '../../../engine/interfaces/whatsapp-engine.interface';
+import { MESSAGE_TYPES } from '../../webhook/filters/filter-types';
 
 const CHAT_KINDS: ChatKind[] = ['individual', 'group', 'channel', 'status', 'broadcast', 'unknown'];
 
@@ -25,6 +27,13 @@ export class ChatSummaryDto {
 
   @ApiPropertyOptional({ example: 'hi' })
   lastMessage?: string;
+
+  @ApiPropertyOptional({
+    enum: MESSAGE_TYPES,
+    description: 'Engine-neutral type of the last message, when available.',
+    example: 'image',
+  })
+  lastMessageType?: MessageType;
 
   @ApiProperty({ description: 'Archived state, as set via POST /sessions/{sessionId}/chats/archive.', example: false })
   archived!: boolean;

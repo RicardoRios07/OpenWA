@@ -615,7 +615,8 @@ export class MessageProjector {
     if (pending?.revoked) {
       // Nothing of the content survives, as in REVOKED_ROW_PATCH.
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const { media, quotedMessage, call, buttons, button, location, order, product, mentionedIds, ...kept } = message;
+      const { media, quotedMessage, call, buttons, button, location, order, product, poll, mentionedIds, ...kept } =
+        message;
       return { ...kept, body: '', type: 'revoked' };
     }
     return pending?.editedBody === undefined ? message : { ...message, body: pending.editedBody };

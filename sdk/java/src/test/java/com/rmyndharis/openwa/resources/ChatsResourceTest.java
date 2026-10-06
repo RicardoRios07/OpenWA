@@ -1,12 +1,15 @@
 package com.rmyndharis.openwa.resources;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rmyndharis.openwa.ClientConfig;
 import com.rmyndharis.openwa.OpenWAClient;
 import com.rmyndharis.openwa.http.HttpMethod;
 import com.rmyndharis.openwa.model.ChatState;
+import com.rmyndharis.openwa.model.ChatSummary;
+import com.rmyndharis.openwa.model.MessageType;
 import com.rmyndharis.openwa.model.ArchiveChatRequest;
 import com.rmyndharis.openwa.model.DeleteChatRequest;
 import com.rmyndharis.openwa.model.MuteChatRequest;
@@ -29,6 +32,16 @@ class ChatsResourceTest {
         client.chats.list("s");
         assertEquals("http://h/api/sessions/s/chats", tx.lastRequest().url());
         assertEquals(HttpMethod.GET, tx.lastRequest().method());
+    }
+
+    @Test
+    void listDecodesOptionalLastMessageType() {
+        tx.respond(200, "[{\"id\":\"photo@c.us\",\"lastMessageType\":\"image\"},{\"id\":\"empty@c.us\"}]");
+        var chats = client.chats.list("s");
+        assertEquals(MessageType.IMAGE, chats.get(0).lastMessageType());
+        assertNull(chats.get(1).lastMessageType());
+        var legacy = new ChatSummary("id", "name", false, 0, "hi", 1L, null, false, false, false, null);
+        assertNull(legacy.lastMessageType());
     }
 
     @Test

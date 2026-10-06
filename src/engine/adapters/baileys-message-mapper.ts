@@ -1,3 +1,4 @@
+import type { proto } from '@whiskeysockets/baileys';
 import { DeliveryStatus, IncomingMessage, MessageType } from '../interfaces/whatsapp-engine.interface';
 import { chatKind } from '../identity/wa-id';
 
@@ -912,6 +913,17 @@ export function mapBaileysStatus(status: number | null | undefined): DeliverySta
   }
 }
 
+/** Extract native poll versions from content already normalized by Baileys. */
+export function extractBaileysPoll(content: proto.IMessage): IncomingMessage['poll'] {
+  const poll = content.pollCreationMessage ?? content.pollCreationMessageV2 ?? content.pollCreationMessageV3;
+  if (!poll) return undefined;
+  const options = (poll.options ?? [])
+    .map(option => option.optionName)
+    .filter((option): option is string => typeof option === 'string');
+  if (!options.length) return undefined;
+  return { name: poll.name ?? '', options, allowMultipleAnswers: poll.selectableOptionsCount !== 1 };
+}
+
 /**
  * The subset of a Baileys `WAMessage` the adapter reads (after proto extraction) to build the
  * base of an {@link IncomingMessage}. Declared explicitly so the neutral-shape logic is
@@ -942,6 +954,7 @@ export interface BaileysIncomingFields {
   /** Pre-extracted commerce ids. Populated by the adapter for `orderMessage` / `productMessage`. */
   order?: IncomingMessage['order'];
   product?: IncomingMessage['product'];
+  poll?: IncomingMessage['poll'];
   /** Pre-extracted button/list reply. Populated by the adapter when the user tapped a control. */
   button?: IncomingMessage['button'];
   /** Pre-extracted prompt choices. Populated by the adapter for business button/list prompts. */
@@ -1050,6 +1063,8 @@ export function buildIncomingMessageFromBaileys(
   if (fields.media) {
     incoming.media = fields.media;
   }
+
+  if (fields.poll) incoming.poll = fields.poll;
 
   if (fields.location) {
     incoming.location = fields.location;

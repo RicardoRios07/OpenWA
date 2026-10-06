@@ -487,6 +487,13 @@ export class MessageSendService {
       chatId: finalDto.chatId,
       body: `📊 ${finalDto.name}`,
       type: 'poll',
+      metadata: {
+        poll: {
+          name: finalDto.name,
+          options: [...finalDto.options],
+          allowMultipleAnswers: finalDto.allowMultipleAnswers === true,
+        },
+      },
       quotedMessageId: finalDto.quotedMessageId,
     });
 

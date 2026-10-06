@@ -497,12 +497,15 @@ Get active chats for a session, most-recent first (paginated).
     "unreadCount": 2,
     "timestamp": 1719306115,
     "lastMessage": "See you tomorrow",
+    "lastMessageType": "text",
     "archived": false,
     "pinned": false,
     "muted": false
   }
 ]
 ```
+
+`lastMessageType` uses the same engine-neutral types as messages, such as `text`, `image`, `voice`, and `document`. It identifies media even when `lastMessage` has no caption. The field is omitted when the engine has no last message available; on Baileys it becomes available after history sync or a new message.
 
 `archived`, `pinned` and `muted` are the read side of the `chats/archive`, `chats/pin` and
 `chats/mute` endpoints. `muted` is the verdict; `muteExpiration`, present only when `muted` is true,
@@ -1436,6 +1439,10 @@ Returns a bare array of `MessageReaction`:
 ```
 
 **Errors:** `400` session not active · `401` missing/invalid API key · `500` engine error · `409` conflict or engine not ready (retryable) · `501` not supported on the active engine · `503` the whatsapp-web.js page died mid-read (retryable)
+
+Poll creation messages include `poll { name, options, allowMultipleAnswers }` when the engine provides the choices. Live `message.received` and `message.sent` events and whatsapp-web.js history carry it at the top level. Stored-message responses carry the same object in `metadata.poll`, including polls sent through `send-poll`. The dashboard displays these option texts. Use the exact strings in `options` when voting; their order and whitespace are preserved.
+
+Legacy stored polls may have no choices because they were captured before this field was stored. Vote counts are not included.
 
 #### POST /api/sessions/:sessionId/messages/vote-poll
 

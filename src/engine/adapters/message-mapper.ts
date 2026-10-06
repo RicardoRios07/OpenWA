@@ -81,6 +81,9 @@ export interface RawMessageFields {
   token?: string;
   /** Set on `product` messages: the shared catalog product. */
   productId?: string;
+  pollName?: string;
+  pollOptions?: Array<string | { name?: string }>;
+  allowMultipleAnswers?: boolean;
   /** Product title / description. whatsapp-web.js exposes these only for a product card. */
   title?: string;
   description?: string;
@@ -157,6 +160,19 @@ export function buildIncomingMessageBase(msg: RawMessageFields): IncomingMessage
       ...(msg.description ? { description: msg.description } : {}),
       ...(msg.businessOwnerJid ? { businessOwnerJid: msg.businessOwnerJid } : {}),
     };
+  }
+
+  if (incoming.type === 'poll' && Array.isArray(msg.pollOptions)) {
+    const options = msg.pollOptions
+      .map(option => (typeof option === 'string' ? option : option?.name))
+      .filter((option): option is string => typeof option === 'string');
+    if (options.length) {
+      incoming.poll = {
+        name: msg.pollName ?? msg.body,
+        options,
+        allowMultipleAnswers: msg.allowMultipleAnswers === true,
+      };
+    }
   }
 
   return incoming;

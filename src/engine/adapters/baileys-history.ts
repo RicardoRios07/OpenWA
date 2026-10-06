@@ -1,6 +1,6 @@
 import type * as BaileysLib from '@whiskeysockets/baileys';
 import type { Chat, Contact as BaileysContact, WAMessage, WASocket } from '@whiskeysockets/baileys';
-import { EngineEventCallbacks, IncomingMessage } from '../interfaces/whatsapp-engine.interface';
+import { EngineEventCallbacks, IncomingMessage, MessageType } from '../interfaces/whatsapp-engine.interface';
 import {
   BAILEYS_NON_CONTENT_TYPES,
   buildIncomingMessageFromBaileys,
@@ -8,6 +8,7 @@ import {
   extractBaileysButtonReply,
   extractBaileysButtons,
   extractBaileysCommerce,
+  extractBaileysPoll,
   isBaileysCatalogShare,
 } from './baileys-message-mapper';
 import { BAILEYS_QUERY_BUDGET_MS, withQueryDeadline } from './baileys-query-deadline';
@@ -28,7 +29,7 @@ export interface BaileysHistoryHost {
   /** Lazily loaded @whiskeysockets/baileys module (ESM-only; loaded on first connect, not at boot). */
   loadLib(): Promise<typeof BaileysLib>;
   /** Seed the chat's last-message preview + sort time from a history/live message. */
-  recordMessage(msg: WAMessage): void;
+  recordMessage(msg: WAMessage, type?: MessageType): void;
   upsertContacts(records: Partial<BaileysContact>[]): void;
   upsertChats(records: Partial<Chat>[]): void;
   /**
@@ -111,11 +112,10 @@ export class BaileysHistory {
           nameUpdates.push({ id: sender, notify: msg.pushName });
         }
       }
-      // Seed the chat's last-message preview + sort time (newest wins); else history-only chats
-      // would read "No messages yet".
-      this.host.recordMessage(msg);
       const incoming = this.mapHistoryMessage(b, msg);
       if (incoming) {
+        // Only content messages replace the preview; reactions and protocol updates do not.
+        this.host.recordMessage(msg, incoming.type);
         mapped.push(incoming);
       }
     }
@@ -272,6 +272,7 @@ export class BaileysHistory {
         // Same commerce mapping as the live path, so a whole-catalog share is `unknown` on both.
         order: commerce.order,
         product: commerce.product,
+        poll: extractBaileysPoll(content),
         button,
         buttons,
         isCatalogShare: isBaileysCatalogShare(content),

@@ -7,6 +7,7 @@ import { chatKind, isChannelJid } from '../identity/wa-id';
 import { WwebjsMessaging } from './wwebjs-messaging';
 import { type WwebjsEngineHost } from './wwebjs-host';
 import { isProtocolTimeout } from './wwebjs-lifecycle';
+import { mapWwebjsMessageType } from './message-mapper';
 
 /**
  * Build the chat list IN-PAGE with the same `window.WWebJS.getChatModel` whatsapp-web.js's own
@@ -116,6 +117,7 @@ export class WwebjsChats {
         timestamp: chat.timestamp || 0,
         // A location message's body is the base64 map thumbnail; don't surface it as the chat preview.
         lastMessage: chat.lastMessage?.type === MessageTypes.LOCATION ? '📍' : chat.lastMessage?.body || undefined,
+        lastMessageType: chat.lastMessage ? mapWwebjsMessageType(chat.lastMessage.type) : undefined,
         archived: Boolean(chat.archived),
         pinned: Boolean(chat.pinned),
         // Chat.isMuted is the current verdict; muteExpiration is wwjs epoch SECONDS with -1 = forever.

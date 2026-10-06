@@ -18636,6 +18636,29 @@
             "type": "string",
             "example": "hi"
           },
+          "lastMessageType": {
+            "type": "string",
+            "enum": [
+              "text",
+              "image",
+              "video",
+              "audio",
+              "voice",
+              "document",
+              "sticker",
+              "location",
+              "contact",
+              "poll",
+              "call",
+              "revoked",
+              "order",
+              "product",
+              "masked",
+              "unknown"
+            ],
+            "description": "Engine-neutral type of the last message, when available.",
+            "example": "image"
+          },
           "archived": {
             "type": "boolean",
             "description": "Archived state, as set via POST /sessions/{sessionId}/chats/archive.",
@@ -20526,6 +20549,34 @@
           "body"
         ]
       },
+      "ChatHistoryPollDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "Where?"
+          },
+          "options": {
+            "example": [
+              "Park",
+              "Beach"
+            ],
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "allowMultipleAnswers": {
+            "type": "boolean",
+            "example": false
+          }
+        },
+        "required": [
+          "name",
+          "options",
+          "allowMultipleAnswers"
+        ]
+      },
       "ChatHistoryLocationDto": {
         "type": "object",
         "properties": {
@@ -20733,6 +20784,14 @@
           },
           "quotedMessage": {
             "$ref": "#/components/schemas/ChatHistoryQuotedMessageDto"
+          },
+          "poll": {
+            "description": "Poll choices and selection mode, when available.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ChatHistoryPollDto"
+              }
+            ]
           },
           "location": {
             "$ref": "#/components/schemas/ChatHistoryLocationDto"

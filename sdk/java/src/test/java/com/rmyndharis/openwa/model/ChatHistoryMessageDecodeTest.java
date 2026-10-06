@@ -44,12 +44,24 @@ class ChatHistoryMessageDecodeTest {
     }
 
     @Test
+    void decodesPollChoicesWithoutTrimming() {
+        var m = GSON.fromJson("{\"poll\":{\"name\":\"Q\",\"options\":[\" Park \",\"Beach\"],\"allowMultipleAnswers\":false}}", ChatHistoryMessage.class);
+        assertEquals(List.of(" Park ", "Beach"), m.poll().options());
+        assertFalse(m.poll().allowMultipleAnswers());
+        var legacy = new ChatHistoryMessage("id", "from", "to", "chat", "Q", MessageType.POLL,
+            1L, false, false, null, null, null, null, null, null, null, null, null, null,
+            null, null, null, null, null, null);
+        assertNull(legacy.poll());
+    }
+
+    @Test
     void leavesAbsentOptionalsNull() {
         String json = "{\"id\":\"x\",\"from\":\"a\",\"to\":\"b\",\"chatId\":\"c\",\"body\":\"\","
             + "\"type\":\"text\",\"timestamp\":1,\"fromMe\":false,\"isGroup\":false,\"kind\":\"individual\"}";
 
         ChatHistoryMessage m = GSON.fromJson(json, ChatHistoryMessage.class);
 
+        assertNull(m.poll());
         assertNull(m.call());
         assertNull(m.contact());
         assertNull(m.ephemeralDuration());

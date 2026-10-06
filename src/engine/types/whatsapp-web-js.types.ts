@@ -140,6 +140,7 @@ export interface BusinessClient extends Omit<
           pinned?: boolean;
           isMuted?: boolean;
           muteExpiration?: number;
+          lastMessage?: { type: string };
         }
       | undefined
     >

@@ -897,6 +897,14 @@ class TestStatus:
 
 
 class TestChatsAndHealth:
+    def test_chats_preserve_optional_last_message_type(self):
+        backend = MockBackend().on("GET", "/chats", body=[
+            {"id": "photo@c.us", "lastMessageType": "image"}, {"id": "empty@c.us"},
+        ])
+        chats = make_client(backend).chats.list("s")
+        assert chats[0]["lastMessageType"] == "image"
+        assert "lastMessageType" not in chats[1]
+
     def test_chats(self):
         backend = MockBackend()
         backend.on("GET", "/chats", body=[])

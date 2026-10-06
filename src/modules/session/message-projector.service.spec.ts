@@ -941,14 +941,23 @@ describe('MessageProjector (inbound projection)', () => {
       expect(automationRules.evaluateInbound.mock.calls.map(([, m]) => (m as { id: string }).id)).toEqual(['A']);
     });
 
-    it('announces a message deleted for me while it waits for its turn as the revoked placeholder', async () => {
+    it.each([false, true])('clears a poll deleted for me while queued (fromMe=%s)', async fromMe => {
       const engine = makeEngine();
       engines.set(SESSION_ID, engine);
       const release = holdHooks();
 
       projector.handleInboundMessage(SESSION_ID, engine, makeIncoming({ id: 'A', chatId: chatA }));
-      const b = makeIncoming({ id: 'B', chatId: chatA, body: 'secret', quotedMessage: { id: 'Q', body: 'quoted' } });
-      projector.handleInboundMessage(SESSION_ID, engine, b);
+      const b = makeIncoming({
+        id: 'B',
+        chatId: chatA,
+        body: 'secret',
+        type: 'poll',
+        fromMe,
+        quotedMessage: { id: 'Q', body: 'quoted' },
+        poll: { name: 'secret', options: ['private choice'], allowMultipleAnswers: false },
+      });
+      if (fromMe) projector.handleOwnSendEcho(SESSION_ID, engine, b);
+      else projector.handleInboundMessage(SESSION_ID, engine, b);
       release.get('B')!();
       await flush();
       // The REST delete-for-me: no engine revoke event follows, so no message.revoked went out.
@@ -956,12 +965,16 @@ describe('MessageProjector (inbound projection)', () => {
       release.get('A')!();
       await flush();
 
-      expect(dispatched()).toEqual(['message.received:A', 'message.received:B']);
+      expect(dispatched()).toEqual(['message.received:A', `${fromMe ? 'message.sent' : 'message.received'}:B`]);
       const announcedB = (webhookService.dispatch.mock.calls as unknown[][]).at(-1)![2] as Record<string, unknown>;
       expect(announcedB).toMatchObject({ id: 'B', body: '', type: 'revoked' });
       expect(announcedB).not.toHaveProperty('quotedMessage');
-      expect(eventsGateway.emitMessage).toHaveBeenLastCalledWith(SESSION_ID, announcedB);
-      expect(automationRules.evaluateInbound).toHaveBeenLastCalledWith(SESSION_ID, announcedB);
+      expect(announcedB).not.toHaveProperty('poll');
+      expect(fromMe ? eventsGateway.emitMessageSent : eventsGateway.emitMessage).toHaveBeenLastCalledWith(
+        SESSION_ID,
+        announcedB,
+      );
+      if (!fromMe) expect(automationRules.evaluateInbound).toHaveBeenLastCalledWith(SESSION_ID, announcedB);
     });
 
     it('announces a message edited while it waits for its turn with the edited body', async () => {

@@ -140,8 +140,9 @@ export class BaileysAdapter implements IWhatsAppEngine {
       toUnixSeconds,
       inboundLimiter: this.inboundLimiter,
       recordKeyLidMappings: key => this.sessionStore.recordKeyLidMappings(key),
-      recordMessage: msg => this.sessionStore.recordMessage(msg),
-      recordMessageEdit: (chatId, messageId, text) => this.sessionStore.recordMessageEdit(chatId, messageId, text),
+      recordMessage: (msg, type) => this.sessionStore.recordMessage(msg, type),
+      recordMessageEdit: (chatId, messageId, text, type) =>
+        this.sessionStore.recordMessageEdit(chatId, messageId, text, type),
       putStoredMessage: msg => this.config.messageStore?.put(this.config.dbSessionId, msg),
       updateStoredMessage: (messageId, change) =>
         this.config.messageStore?.update(this.config.dbSessionId, messageId, change),

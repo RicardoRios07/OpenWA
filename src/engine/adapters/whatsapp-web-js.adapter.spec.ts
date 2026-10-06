@@ -8688,12 +8688,17 @@ describe('WhatsAppWebJsAdapter raw-id extraction hardening', () => {
   it('getChatsByLabel skips an undefined entry (deleted chat behind the label) instead of a 500', async () => {
     const getChatsByLabelId = jest
       .fn()
-      .mockResolvedValue([undefined, { id: { _serialized: '628111@c.us' }, name: 'Kept', isGroup: false }, { id: {} }]);
+      .mockResolvedValue([
+        undefined,
+        { id: { _serialized: '628111@c.us' }, name: 'Kept', isGroup: false, lastMessage: { type: 'image' } },
+        { id: {} },
+      ]);
 
     const result = await readyAdapter({ getChatsByLabelId }).getChatsByLabel('7');
 
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe('628111@c.us');
+    expect(result[0].lastMessageType).toBe('image');
   });
 
   // getNumberId returns a raw page-context Wid; on a WA Web build that renamed _serialized to $1,

@@ -17,6 +17,7 @@ import {
   LocationInput,
   MediaInput,
   MessageResult,
+  MessageType,
   PollInput,
   Product,
   Quotable,
@@ -24,7 +25,14 @@ import {
 import { toEngineParticipants } from './baileys-groups';
 import { findSelfParticipant } from './baileys-group-mapper';
 import { buildVCard } from './vcard';
-import { baileysChatJid, resolveBaileysButtonClick, setBaileysText, storedKeyInChat } from './baileys-message-mapper';
+import {
+  baileysChatJid,
+  isBaileysCatalogShare,
+  mapBaileysMessageType,
+  resolveBaileysButtonClick,
+  setBaileysText,
+  storedKeyInChat,
+} from './baileys-message-mapper';
 import { loadRemoteMediaBuffer } from '../../common/media/load-remote-media';
 import { BadRequestException, InternalServerErrorException } from '@nestjs/common';
 import { EngineNotReadyError } from '../../common/errors/engine-not-ready.error';
@@ -60,9 +68,9 @@ export interface BaileysMessagingHost {
   /** Persist a just-sent message to the store; undefined when no store is configured. */
   putStoredMessage(msg: WAMessage): Promise<void> | undefined;
   /** Make a just-sent message the chat's last-message preview and sort time (its echo is skipped). */
-  recordMessage(msg: WAMessage): void;
+  recordMessage(msg: WAMessage, type?: MessageType): void;
   /** Replace the chat preview's text when the message is still the chat's last one (edit, or '' once deleted). */
-  recordMessageEdit(chatId: string, messageId: string, text: string): void;
+  recordMessageEdit(chatId: string, messageId: string, text: string, type?: MessageType): void;
   /** Record the id of a message this session just sent, so its library echo is recognised as ours. */
   rememberOwnSend(id: string | null | undefined): void;
   /** Look up a previously-seen message from the store (the reply/forward/react/delete handle). */
@@ -263,7 +271,7 @@ export class BaileysMessaging {
           error: err instanceof Error ? err.message : String(err),
         }),
       );
-      this.host.recordMessage(sent);
+      this.host.recordMessage(sent, 'text');
       // Parity with the wwjs engine's message_create → message.sent (see emitOwnSendEcho).
       void this.emitOwnSendEcho(sent);
     }
@@ -594,7 +602,7 @@ export class BaileysMessaging {
     const previewJid = baileysChatJid(chatJid, target.key.participant, target.key.fromMe === true);
     if (forEveryone && (target.key.fromMe === true || (await this.selfIsGroupAdmin(target.key.remoteJid)) !== false)) {
       await this.send(await this.toDeliverableJid(chatId), { delete: target.key });
-      this.host.recordMessageEdit(previewJid, messageId, '');
+      this.host.recordMessageEdit(previewJid, messageId, '', 'revoked');
       // The echo of this delete is skipped as an own send, so the stored copy is emptied here, as
       // processInboundMessage does for a delete made from the phone or by the other side. Recorded
       // first, so the message stays deleted even if the store write fails or a repeat delivery of the
@@ -620,7 +628,7 @@ export class BaileysMessaging {
       ),
       'the delete-for-me',
     );
-    this.host.recordMessageEdit(previewJid, messageId, '');
+    this.host.recordMessageEdit(previewJid, messageId, '', 'revoked');
   }
 
   /**
@@ -770,6 +778,7 @@ export class BaileysMessaging {
     content: AnyMessageContent,
     options?: MiscMessageGenerationOptions,
   ): Promise<MessageResult> {
+    const b = await this.host.loadLib();
     const jid = await this.toDeliverableJid(chatId);
     const safe = this.previewSafe(content);
     const merged = this.previewSafeOptions(safe, this.withEphemeral(jid, options));
@@ -780,7 +789,21 @@ export class BaileysMessaging {
           error: err instanceof Error ? err.message : String(err),
         }),
       );
-      this.host.recordMessage(sent);
+      // Preview metadata must not turn a completed send into a retryable failure.
+      let type: MessageType | undefined;
+      try {
+        if (sent.message) {
+          const normalized = b.normalizeMessageContent(sent.message) ?? sent.message;
+          type = mapBaileysMessageType(
+            b.getContentType(normalized),
+            normalized.audioMessage?.ptt === true,
+            isBaileysCatalogShare(normalized),
+          );
+        }
+      } catch (error) {
+        this.host.logger.warn('Failed to classify sent message preview', { error: String(error) });
+      }
+      this.host.recordMessage(sent, type);
       // wwjs fires `message_create` for its own API sends, which SessionService turns into `message.sent`.
       // Baileys' own socket-sends echo back only as a `type:'append'` upsert, which handleMessagesUpsert
       // skips by the id send() recorded, so that event never fired for API sends. Emit the outbound

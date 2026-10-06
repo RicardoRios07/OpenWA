@@ -6312,10 +6312,143 @@ describe('BaileysAdapter contact + chat reads', () => {
       unreadCount: 1,
       timestamp: 1700000010,
       lastMessage: 'hi',
+      lastMessageType: 'text',
       archived: false,
       pinned: false,
       muted: false,
     });
+  });
+
+  it.each(['live', 'history', 'API'] as const)('exposes wrapped media types from %s messages', async path => {
+    const adapter = await ready();
+    const baileys = jest.requireMock<Record<string, jest.Mock>>('@whiskeysockets/baileys');
+    const messages = [
+      {
+        key: { remoteJid: '628111@s.whatsapp.net', id: 'PHOTO', fromMe: path === 'API' },
+        message: { ephemeralMessage: { message: { imageMessage: {} } } },
+        messageTimestamp: 1700000100,
+      },
+      {
+        key: { remoteJid: '628222@s.whatsapp.net', id: 'VOICE', fromMe: path === 'API' },
+        message: { audioMessage: { ptt: true } },
+        messageTimestamp: 1700000200,
+      },
+    ];
+    baileys.getContentType.mockImplementation(realGetContentType);
+    baileys.normalizeMessageContent.mockImplementation(
+      (m?: { ephemeralMessage?: { message?: unknown } }) => m?.ephemeralMessage?.message ?? m,
+    );
+    const chats = messages.map(m => ({ id: m.key.remoteJid }));
+    fakeSock.fire('chats.upsert', chats);
+    if (path === 'API') {
+      fakeSock.sendMessage.mockResolvedValueOnce(messages[0]);
+      await adapter.sendImageMessage('628111@s.whatsapp.net', { data: Buffer.from('photo'), mimetype: 'image/jpeg' });
+      fakeSock.sendMessage.mockResolvedValueOnce(messages[1]);
+      await adapter.sendAudioMessage('628222@s.whatsapp.net', {
+        data: Buffer.from('voice'),
+        mimetype: 'audio/ogg',
+        ptt: true,
+      });
+    } else if (path === 'history') {
+      fakeSock.fire('messaging-history.set', { chats, contacts: [], messages });
+    } else {
+      fakeSock.fire('messages.upsert', { type: 'notify', messages });
+    }
+    await new Promise(r => setImmediate(r));
+    await new Promise(r => setImmediate(r));
+    const listed = await adapter.getChats();
+    expect(listed.find(c => c.id === '628111@c.us')?.lastMessageType).toBe('image');
+    expect(listed.find(c => c.id === '628222@c.us')?.lastMessageType).toBe('voice');
+  });
+
+  it.each(['live', 'history', 'API'] as const)('carries wrapped poll choices through the %s path', async path => {
+    const emitted = jest.fn();
+    const history = jest.fn();
+    const adapter = newAdapter();
+    await adapter.initialize({ onMessage: emitted, onMessageCreate: emitted, onHistoryMessages: history });
+    fakeSock.fire('connection.update', { connection: 'open' });
+    const baileys = jest.requireMock<Record<string, jest.Mock>>('@whiskeysockets/baileys');
+    baileys.getContentType.mockImplementation(realGetContentType);
+    baileys.normalizeMessageContent.mockImplementation(
+      (m?: { ephemeralMessage?: { message?: unknown } }) => m?.ephemeralMessage?.message ?? m,
+    );
+    const message = {
+      key: { remoteJid: '628111@s.whatsapp.net', id: 'POLL', fromMe: path === 'API' },
+      messageTimestamp: 100,
+      message: {
+        ephemeralMessage: {
+          message: {
+            pollCreationMessageV3: {
+              name: 'Where?',
+              options: [{ optionName: ' Park ' }, { optionName: 'Beach' }],
+              selectableOptionsCount: 1,
+            },
+          },
+        },
+      },
+    };
+    if (path === 'API') {
+      fakeSock.sendMessage.mockResolvedValueOnce(message);
+      await adapter.sendPollMessage('628111@s.whatsapp.net', { name: 'Where?', options: [' Park ', 'Beach'] });
+    } else if (path === 'history') {
+      fakeSock.fire('messaging-history.set', { contacts: [], chats: [], messages: [message] });
+    } else {
+      fakeSock.fire('messages.upsert', { type: 'notify', messages: [message] });
+    }
+    await new Promise(r => setImmediate(r));
+    await new Promise(r => setImmediate(r));
+    const expected: unknown = expect.objectContaining({
+      type: 'poll',
+      poll: { name: 'Where?', options: [' Park ', 'Beach'], allowMultipleAnswers: false },
+    });
+    if (path === 'history') expect(history).toHaveBeenCalledWith([expected]);
+    else expect(emitted).toHaveBeenCalledWith(expected);
+  });
+
+  it('keeps the content preview when newer history entries only modify messages', async () => {
+    const adapter = await ready();
+    const baileys = jest.requireMock<Record<string, jest.Mock>>('@whiskeysockets/baileys');
+    baileys.getContentType.mockImplementation(realGetContentType);
+    fakeSock.fire('messaging-history.set', {
+      contacts: [],
+      chats: [{ id: '628111@s.whatsapp.net' }],
+      messages: [
+        {
+          key: { remoteJid: '628111@s.whatsapp.net', id: 'PHOTO' },
+          message: { imageMessage: {} },
+          messageTimestamp: 100,
+        },
+        {
+          key: { remoteJid: '628111@s.whatsapp.net', id: 'REACTION' },
+          message: { reactionMessage: { text: 'ok' } },
+          messageTimestamp: 200,
+        },
+        {
+          key: { remoteJid: '628111@s.whatsapp.net', id: 'PROTOCOL' },
+          message: { protocolMessage: { type: 3 } },
+          messageTimestamp: 300,
+        },
+      ],
+    });
+    await new Promise(r => setImmediate(r));
+    expect((await adapter.getChats())[0]).toMatchObject({ lastMessageType: 'image', timestamp: 100 });
+  });
+
+  it('keeps a successful send successful when preview classification fails', async () => {
+    const adapter = await ready();
+    const baileys = jest.requireMock<Record<string, jest.Mock>>('@whiskeysockets/baileys');
+    fakeSock.sendMessage.mockResolvedValueOnce({
+      key: { id: 'OUT', remoteJid: '628111@s.whatsapp.net' },
+      message: { imageMessage: {} },
+      messageTimestamp: 100,
+    });
+    baileys.normalizeMessageContent.mockImplementationOnce(() => {
+      throw new Error('unavailable metadata');
+    });
+    await expect(
+      adapter.sendImageMessage('628111@s.whatsapp.net', { data: Buffer.from('photo'), mimetype: 'image/jpeg' }),
+    ).resolves.toEqual({ id: 'OUT', timestamp: 100 });
+    expect(fakeSock.sendMessage).toHaveBeenCalledTimes(1);
   });
 
   it('populates from messaging-history.set incl. lid mappings', async () => {

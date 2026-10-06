@@ -35,6 +35,7 @@ export function mapEngineHistoryMessage(h: EngineHistoryMessage): ChatMessage {
       }
       if (h.quotedMessage) metadata.quotedMessage = h.quotedMessage;
       if (h.call) metadata.call = h.call;
+      if (h.poll) metadata.poll = h.poll;
       return Object.keys(metadata).length > 0 ? metadata : undefined;
     })(),
   };
@@ -56,7 +57,11 @@ export function mergeChatMessages(db: ChatMessage[], history: ChatMessage[]): Ch
     // The DB copy wins (authoritative status) — but a legacy row has no stable sender id, so
     // salvage the engine-history copy's author or two same-named participants collapse into one
     // attribution run in the chat view.
-    byId.set(key, hist?.author && !m.author ? { ...m, author: hist.author } : m);
+    let merged = hist?.author && !m.author ? { ...m, author: hist.author } : m;
+    if (m.type === 'poll' && !m.metadata?.poll && hist?.metadata?.poll) {
+      merged = { ...merged, metadata: { ...merged.metadata, poll: hist.metadata.poll } };
+    }
+    byId.set(key, merged);
   }
   const sorted = [...byId.values()].sort((a, b) => msgTime(a) - msgTime(b) || a.createdAt.localeCompare(b.createdAt));
   return capMediaPayloads(sorted);
@@ -244,6 +249,7 @@ export interface ChatMessageView extends ChatMessage {
     reactions?: Record<string, string>;
     call?: { video: boolean; missed: boolean };
     buttons?: Array<{ id: string; text: string }>;
+    poll?: { name: string; options: string[]; allowMultipleAnswers: boolean };
   };
 }
 
@@ -257,6 +263,7 @@ export function liveMessageMetadata(msg: {
   quotedMessage?: { id: string; body: string };
   call?: { video: boolean; missed: boolean };
   buttons?: Array<{ id: string; text: string }>;
+  poll?: { name: string; options: string[]; allowMultipleAnswers: boolean };
   metadata?: ChatMessageView['metadata'];
 }): ChatMessageView['metadata'] {
   if (msg.metadata) return msg.metadata;
@@ -264,6 +271,7 @@ export function liveMessageMetadata(msg: {
   if (msg.media) metadata.media = msg.media;
   if (msg.quotedMessage) metadata.quotedMessage = msg.quotedMessage;
   if (msg.call) metadata.call = msg.call;
+  if (msg.poll) metadata.poll = msg.poll;
   if (msg.buttons?.length) metadata.buttons = msg.buttons;
   return Object.keys(metadata).length > 0 ? metadata : undefined;
 }

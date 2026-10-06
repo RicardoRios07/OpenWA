@@ -421,6 +421,33 @@ describe('BaileysSessionStore', () => {
     });
   });
 
+  it('keeps the latest type across older messages, edits, and revokes addressed through a twin', () => {
+    store.addLidMappings([{ lid: '999@lid', pn: '628111@s.whatsapp.net' }]);
+    store.upsertChats([{ id: '999@lid' }]);
+    store.recordMessage(
+      { key: { remoteJid: '999@lid', id: 'LATEST' }, message: { imageMessage: {} }, messageTimestamp: 200 },
+      'image',
+    );
+    store.recordMessage(
+      {
+        key: { remoteJid: '628111@s.whatsapp.net', id: 'OLD' },
+        message: { conversation: 'old' },
+        messageTimestamp: 100,
+      },
+      'text',
+    );
+    store.recordMessageEdit('628111@c.us', 'LATEST', 'new caption');
+    expect(store.listChats()[0]).toMatchObject({
+      lastMessage: 'new caption',
+      lastMessageType: 'image',
+      timestamp: 200,
+    });
+    store.recordMessageEdit('628111@c.us', 'OLD', '', 'revoked');
+    expect(store.listChats()[0].lastMessageType).toBe('image');
+    store.recordMessageEdit('628111@c.us', 'LATEST', '', 'revoked');
+    expect(store.listChats()[0]).toMatchObject({ lastMessage: '', lastMessageType: 'revoked', timestamp: 200 });
+  });
+
   it('does not overwrite a newer last-message with an older one', () => {
     store.recordMessage({
       key: { remoteJid: 'c@s.whatsapp.net', id: 'NEW' },

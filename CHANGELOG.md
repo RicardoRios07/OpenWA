@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Expose poll choices and selection mode in message events, stored messages, history, and dashboard chats.
+- Expose optional last-message types in chat lists and SDKs.
 - Add bounded webhook failure redrive with optional payload retention.
 - Expose caller-supplied send idempotency keys in all five SDKs.
 - Add optional 24-hour idempotency keys to twelve single-recipient send routes.

@@ -1,5 +1,6 @@
 import { NotFoundException } from '@nestjs/common';
 import { type Client } from 'whatsapp-web.js';
+import { mapWwebjsMessageType } from './message-mapper';
 import { Label, ChatSummary } from '../interfaces/whatsapp-engine.interface';
 import { GroupChat, BusinessClient } from '../types/whatsapp-web-js.types';
 import { isChannelJid, chatKind } from '../identity/wa-id';
@@ -82,6 +83,7 @@ export class WwebjsLabels {
         kind: chatKind(id),
         unreadCount: chat.unreadCount || 0,
         timestamp: chat.timestamp || 0,
+        lastMessageType: chat.lastMessage ? mapWwebjsMessageType(chat.lastMessage.type) : undefined,
         archived: Boolean(chat.archived),
         pinned: Boolean(chat.pinned),
         muted: Boolean(chat.isMuted),

@@ -124,11 +124,29 @@ describe('the chat and group lists read the page walk', () => {
       unreadCount: 2,
       timestamp: 1_700_000_000,
       lastMessage: 'hello',
+      lastMessageType: 'text',
       archived: true,
       pinned: true,
       muted: false,
     });
     expect(summaries[1]).toMatchObject({ id: '120363@g.us', name: 'Team', isGroup: true });
+  });
+
+  it.each([
+    ['image', 'image'],
+    ['ptt', 'voice'],
+    ['audio', 'audio'],
+    ['document', 'document'],
+    ['new_engine_kind', 'unknown'],
+  ])('reports %s without needing preview text', async (rawType, type) => {
+    const { host } = makeHost([
+      { ...personal, lastMessage: { ...personal.lastMessage, type: rawType, body: '' } },
+      group,
+    ]);
+    const summaries = await new WwebjsChats(host, {} as WwebjsMessaging).getChats();
+    expect(summaries[0]).toMatchObject({ lastMessageType: type });
+    expect(summaries[0].lastMessage).toBeUndefined();
+    expect(summaries[1].lastMessageType).toBeUndefined();
   });
 
   it('getGroups keeps only groups, with participants, admin flag and linked parent', async () => {

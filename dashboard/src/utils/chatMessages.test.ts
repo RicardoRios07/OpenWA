@@ -643,3 +643,33 @@ test('a push name whose first word is invisible renders its first visible word, 
     assert.equal(resolveMentions('@6281112345', names), wrap('@Bob'));
   }
 });
+
+test('live and history poll choices survive metadata projection', () => {
+  const poll = { name: 'Q', options: ['a', 'b'], allowMultipleAnswers: true };
+  assert.deepEqual(liveMessageMetadata({ poll }), { poll });
+  const mapped = mapEngineHistoryMessage({
+    id: 'p',
+    chatId: 'c@c.us',
+    from: 'c@c.us',
+    to: 'me',
+    body: 'Q',
+    type: 'poll',
+    timestamp: 100,
+    fromMe: false,
+    isGroup: false,
+    kind: 'individual',
+    poll,
+  });
+  assert.deepEqual(mapped.metadata?.poll, poll);
+});
+
+test('legacy poll rows inherit available history choices without replacing stored state', () => {
+  const poll = { name: 'Q', options: ['a', 'b'], allowMultipleAnswers: false };
+  const historical = mapEngineHistoryMessage(hist({ type: 'poll', poll }));
+  const stored = { ...historical, status: 'delivered' as const, metadata: { reactions: { sender: 'ok' } } };
+  const merged = mergeChatMessages([stored], [historical])[0];
+  assert.equal(merged.status, 'delivered');
+  assert.deepEqual(merged.metadata, { reactions: { sender: 'ok' }, poll });
+  const revoked = mergeChatMessages([{ ...stored, type: 'revoked', body: '', metadata: undefined }], [historical])[0];
+  assert.equal(revoked.metadata?.poll, undefined);
+});

@@ -383,6 +383,17 @@ describe('ChatsResource — exact paths', () => {
   });
 });
 
+describe('ChatsResource last-message metadata', () => {
+  it('keeps media types and omitted metadata from the server response', async () => {
+    const t = new MockTransport().on('GET', /\/chats$/, {
+      body: [{ id: 'photo@c.us', lastMessageType: 'image' }, { id: 'empty@c.us' }],
+    });
+    const chats = await client(t).chats.list('s');
+    expect(chats[0].lastMessageType).toBe('image');
+    expect(chats[1].lastMessageType).toBeUndefined();
+  });
+});
+
 describe('ChatsResource.clearMessages', () => {
   it('DELETEs the chat messages sub-resource', async () => {
     const t = new MockTransport().on('DELETE', /\/chats\/.+\/messages$/, { body: { success: true } });

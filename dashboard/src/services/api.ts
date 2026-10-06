@@ -255,6 +255,7 @@ export interface Chat {
   unreadCount: number;
   timestamp: number;
   lastMessage?: string;
+  lastMessageType?: MessageType;
   archived: boolean;
   pinned: boolean;
   muted: boolean;
@@ -316,6 +317,7 @@ export interface ChatMessage {
   timestamp?: number;
   createdAt: string;
   metadata?: {
+    poll?: { name: string; options: string[]; allowMultipleAnswers: boolean };
     media?: {
       mimetype: string;
       filename?: string;
@@ -388,6 +390,7 @@ export interface EngineHistoryMessage {
     sizeBytes?: number;
     archived?: boolean;
   };
+  poll?: { name: string; options: string[]; allowMultipleAnswers: boolean };
   quotedMessage?: { id: string; body: string };
   location?: { latitude: number; longitude: number; description?: string; address?: string; url?: string };
   /** Present on `order` messages only: the placed cart, plus the single-order token for its items. */

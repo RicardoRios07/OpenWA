@@ -303,6 +303,14 @@ type ChatHistoryMessage struct {
 	Location      *MessageLocation  `json:"location,omitempty"`
 	Order         *MessageOrder     `json:"order,omitempty"`
 	Product       *MessageProduct   `json:"product,omitempty"`
+	Poll          *ChatHistoryPoll  `json:"poll,omitempty"`
+}
+
+// ChatHistoryPoll contains the poll question, choices, and selection mode.
+type ChatHistoryPoll struct {
+	Name                 string   `json:"name"`
+	Options              []string `json:"options"`
+	AllowMultipleAnswers bool     `json:"allowMultipleAnswers"`
 }
 
 // MessageOrder is the order block on a live history message, present on order messages only: the

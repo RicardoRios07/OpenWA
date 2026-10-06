@@ -9,6 +9,7 @@ import {
   PresenceState,
   CallOutcome,
   IncomingMessage,
+  MessageType,
   ReactionEvent,
   RevokedMessage,
 } from '../interfaces/whatsapp-engine.interface';
@@ -20,6 +21,7 @@ import {
   extractBaileysButtonReply,
   extractBaileysButtons,
   extractBaileysCommerce,
+  extractBaileysPoll,
   extractBaileysContext,
   extractBaileysLocation,
   isBaileysCatalogShare,
@@ -173,9 +175,9 @@ export interface BaileysEventsHost {
   /** Learn any lid->pn pair a message key carries (also writes through to the persistent table). */
   recordKeyLidMappings(key: Pick<WAMessageKey, 'remoteJid' | 'remoteJidAlt' | 'participant' | 'participantAlt'>): void;
   /** Seed the chat's last-message preview + sort time from an inbound message. */
-  recordMessage(msg: WAMessage): void;
+  recordMessage(msg: WAMessage, type?: MessageType): void;
   /** Apply a message edit to the stored body. */
-  recordMessageEdit(chatId: string, messageId: string, text: string): void;
+  recordMessageEdit(chatId: string, messageId: string, text: string, type?: MessageType): void;
   /** Persist an inbound message to the store; undefined when no store is configured. */
   putStoredMessage(msg: WAMessage): Promise<void> | undefined;
   /** Rewrite a stored message in place (see BaileysMessageStore.update); undefined without a store. */
@@ -446,7 +448,7 @@ export class BaileysEvents {
             body: '',
             timestamp: toUnixSeconds(msg.messageTimestamp),
           };
-          this.host.recordMessageEdit(chatJid, revoked.id, '');
+          this.host.recordMessageEdit(chatJid, revoked.id, '', 'revoked');
           // While the target is still being processed, the store change waits for it and lands after
           // this delete is announced, and a repeat delivery may already hold the content in the store:
           // record the delete now, checked against the target's own key.
@@ -635,9 +637,9 @@ export class BaileysEvents {
           this.host.getOnMessage()?.(incoming);
         }
       }
-      this.host.recordMessage(msg);
+      this.host.recordMessage(msg, incoming.type);
       if (deleted) {
-        this.host.recordMessageEdit(chatJid, storedId, '');
+        this.host.recordMessageEdit(chatJid, storedId, '', 'revoked');
       } else if (editedBody !== undefined && storedId !== null) {
         this.host.recordMessageEdit(chatJid, storedId, editedBody);
       }
@@ -1469,6 +1471,7 @@ export class BaileysEvents {
         quotedMessage: context.quotedMessage,
         order: commerce.order,
         product: commerce.product,
+        poll: extractBaileysPoll(normalized),
         button,
         buttons,
         isCatalogShare: isBaileysCatalogShare(normalized),

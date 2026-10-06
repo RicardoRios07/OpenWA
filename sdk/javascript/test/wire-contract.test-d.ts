@@ -139,6 +139,7 @@ interface WireChatHistoryMessage {
   font?: number;
   media?: { mimetype: string; filename?: string; data?: string; omitted?: boolean; sizeBytes?: number };
   quotedMessage?: { id: string; body: string };
+  poll?: { name: string; options: string[]; allowMultipleAnswers: boolean };
   location?: { latitude: number; longitude: number; description?: string; address?: string; url?: string };
   order?: { orderId: string; token?: string };
   product?: { productId: string; title?: string; description?: string; businessOwnerJid?: string };
@@ -182,6 +183,7 @@ const channel: Mirrors<WireChannel, ChannelRecord> = true;
 const channelMessage: Mirrors<WireChannelMessage, ChannelMessageRecord> = true;
 const catalog: Mirrors<WireCatalog, CatalogInfo> = true;
 const chatHistoryMessage: Mirrors<WireChatHistoryMessage, ChatHistoryMessage> = true;
+const poll: Mirrors<NonNullable<WireChatHistoryMessage['poll']>, NonNullable<ChatHistoryMessage['poll']>> = true;
 const readiness: Mirrors<WireReadiness, HealthReadyResponse> = true;
 
-export const contract = [label, status, channel, channelMessage, catalog, chatHistoryMessage, readiness];
+export const contract = [label, status, channel, channelMessage, catalog, chatHistoryMessage, poll, readiness];

@@ -187,6 +187,7 @@ export interface IncomingMessage {
   backgroundColor?: string;
   /** Styling of a text status/story: the WhatsApp font index. Only set by engines that expose it. */
   font?: number;
+  poll?: PollDetails;
   media?: {
     mimetype: string;
     filename?: string;
@@ -388,6 +389,13 @@ export interface LocationInput extends Quotable {
   address?: string;
 }
 
+/** Poll choices as received from the engine, without vote counts. */
+export interface PollDetails {
+  name: string;
+  options: string[];
+  allowMultipleAnswers: boolean;
+}
+
 export interface PollInput extends Quotable {
   /** Poll question / title. */
   name: string;
@@ -553,6 +561,8 @@ export interface ChatSummary {
   unreadCount: number;
   timestamp: number;
   lastMessage?: string;
+  /** Engine-neutral type of the last message, when available. */
+  lastMessageType?: MessageType;
   /** Archived state, as set via `POST /sessions/{sessionId}/chats/archive`. */
   archived: boolean;
   /** Pinned state, as set via `POST /sessions/{sessionId}/chats/pin`. */

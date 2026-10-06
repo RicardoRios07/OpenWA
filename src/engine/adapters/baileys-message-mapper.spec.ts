@@ -3,6 +3,7 @@ import {
   BaileysIncomingFields,
   baileysChatJid,
   buildIncomingMessageFromBaileys,
+  extractBaileysPoll,
   extractBaileysBody,
   extractBaileysButtonReply,
   extractBaileysButtons,
@@ -1153,5 +1154,35 @@ describe('isBaileysCatalogShare (the productMessage arm with no product)', () =>
     expect(isBaileysCatalogShare({ productMessage: { product: { productId: '2' }, catalog: { title: 'S' } } })).toBe(
       false,
     );
+  });
+});
+
+describe('native poll choice metadata', () => {
+  it.each(['pollCreationMessage', 'pollCreationMessageV2', 'pollCreationMessageV3'] as const)(
+    'reads %s without changing option texts',
+    key => {
+      expect(
+        extractBaileysPoll({
+          [key]: {
+            name: 'Where?',
+            options: [{ optionName: ' Park ' }, { optionName: 'Beach' }],
+            selectableOptionsCount: 1,
+          },
+        }),
+      ).toEqual({ name: 'Where?', options: [' Park ', 'Beach'], allowMultipleAnswers: false });
+    },
+  );
+  it('reports multiple choices and omits unavailable poll data', () => {
+    expect(
+      extractBaileysPoll({
+        pollCreationMessageV3: {
+          name: 'Q',
+          options: [{ optionName: 'a' }, { optionName: 'b' }],
+          selectableOptionsCount: 0,
+        },
+      })?.allowMultipleAnswers,
+    ).toBe(true);
+    expect(extractBaileysPoll({})).toBeUndefined();
+    expect(extractBaileysPoll({ pollCreationMessage: {} })).toBeUndefined();
   });
 });

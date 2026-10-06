@@ -592,6 +592,12 @@ class MessageContact(TypedDict, total=False):
     labels: list
 
 
+class ChatHistoryPoll(TypedDict):
+    name: str
+    options: list[str]
+    allowMultipleAnswers: bool
+
+
 # A message read live from WhatsApp by ``messages.history()`` — the engine
 # payload, richer and differently shaped than the persisted MessageRecord.
 ChatHistoryMessage = TypedDict(
@@ -619,6 +625,7 @@ ChatHistoryMessage = TypedDict(
         "font": NotRequired[int],
         "media": NotRequired[ChatHistoryMedia],
         "quotedMessage": NotRequired[QuotedMessage],
+        "poll": NotRequired[ChatHistoryPoll],
         "location": NotRequired[MessageLocation],
         "order": NotRequired[MessageOrder],
         "product": NotRequired[MessageProduct],
@@ -1039,6 +1046,7 @@ class ChatSummary(TypedDict):
     unreadCount: int
     # Server returns a plain preview string, not a message object.
     lastMessage: NotRequired[str]
+    lastMessageType: NotRequired[MessageType]
     timestamp: int
     kind: ChatKind
     archived: bool

@@ -1,5 +1,5 @@
 import type { Chat, Contact as BaileysContact, WAMessage, WAMessageKey } from '@whiskeysockets/baileys';
-import { ChatSummary, Contact } from '../interfaces/whatsapp-engine.interface';
+import { ChatSummary, Contact, MessageType } from '../interfaces/whatsapp-engine.interface';
 import { chatKind, parseWaId, toNeutralJid as canonicalizeWaId, userPart } from '../identity/wa-id';
 import type { LidMappingStore } from '../identity/lid-mapping-store.service';
 import { mergeTwinStates, type ChatStateStore, type ChatStateValue } from './baileys-chat-state-store.service';
@@ -10,6 +10,7 @@ interface LastMessage {
   key: WAMessageKey;
   timestamp: number;
   text: string;
+  type?: MessageType;
 }
 
 // Default per-map entry cap, matching the other per-session bounds (LID_MAPPING_CACHE_MAX,
@@ -417,7 +418,7 @@ export class BaileysSessionStore {
     void this.lidStore?.remember(userPart(lidJid), userPart(pnJid), this.sessionId);
   }
 
-  recordMessage(msg: WAMessage): void {
+  recordMessage(msg: WAMessage, type?: MessageType): void {
     const chatId = msg.key?.remoteJid;
     if (!chatId || !msg.key) {
       return;
@@ -438,7 +439,7 @@ export class BaileysSessionStore {
       return; // keep the newest
     }
     const text = msg.message?.conversation ?? msg.message?.extendedTextMessage?.text ?? '';
-    this.lastMessages.set(key, { key: msg.key, timestamp, text });
+    this.lastMessages.set(key, { key: msg.key, timestamp, text, type });
   }
 
   /**
@@ -446,11 +447,12 @@ export class BaileysSessionStore {
    * that chat. Editing an older message must not replace the preview or reorder the conversation. The
    * preview may sit on any twin of the chat, the one the listing reads included, so each is checked.
    */
-  recordMessageEdit(chatId: string, messageId: string, text: string): void {
+  recordMessageEdit(chatId: string, messageId: string, text: string, type?: MessageType): void {
     if (!messageId) return;
     for (const key of new Set([this.chatKey(chatId), ...this.chatTwins(chatId)])) {
       const existing = this.lastMessages.get(key);
-      if (existing?.key.id === messageId) this.lastMessages.set(key, { ...existing, text });
+      if (existing?.key.id === messageId)
+        this.lastMessages.set(key, { ...existing, text, type: type ?? existing.type });
     }
   }
 
@@ -819,6 +821,7 @@ export class BaileysSessionStore {
           ?.unreadCount ?? 0,
       timestamp: last?.timestamp ?? Math.max(...records.map(r => this.toUnixSeconds(r.conversationTimestamp))),
       lastMessage: last?.text,
+      lastMessageType: last?.type,
       archived: st ? st.archived : (c.archived ?? false),
       // Baileys reports a pin as an ORDER, not a flag: 0/absent means unpinned.
       pinned: st ? st.pinned : Boolean(c.pinned),

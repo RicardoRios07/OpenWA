@@ -280,3 +280,24 @@ describe('mapContactFields', () => {
     });
   });
 });
+
+describe('poll choice metadata', () => {
+  it.each([
+    [' Park ', 'Beach'],
+    [{ name: ' Park ' }, { name: 'Beach' }],
+  ])('preserves choices from the library representation', (...pollOptions) => {
+    const mapped = buildIncomingMessageBase({
+      id: { _serialized: 'P1' },
+      from: 'a@c.us',
+      to: 'me',
+      body: 'Where?',
+      type: 'poll_creation',
+      timestamp: 100,
+      fromMe: false,
+      pollName: 'Where?',
+      pollOptions,
+      allowMultipleAnswers: true,
+    });
+    expect(mapped.poll).toEqual({ name: 'Where?', options: [' Park ', 'Beach'], allowMultipleAnswers: true });
+  });
+});

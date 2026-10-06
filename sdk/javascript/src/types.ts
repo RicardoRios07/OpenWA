@@ -623,6 +623,7 @@ export interface ChatHistoryMessage {
     sizeBytes?: number;
   };
   quotedMessage?: { id: string; body: string };
+  poll?: { name: string; options: string[]; allowMultipleAnswers: boolean };
   location?: { latitude: number; longitude: number; description?: string; address?: string; url?: string };
   /** Present on `order` messages only: the placed cart, plus the single-order token for its items. */
   order?: { orderId: string; token?: string };
@@ -1075,6 +1076,7 @@ export interface ChatSummary {
   unreadCount: number;
   /** Preview text of the last message (the server returns a plain string, not an object). */
   lastMessage?: string;
+  lastMessageType?: MessageType;
   /** Unix seconds of the last activity. */
   timestamp: number;
   kind: ChatKind;

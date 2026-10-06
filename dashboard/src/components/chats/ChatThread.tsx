@@ -282,6 +282,7 @@ function ChatThread({
 
           const isMediaMessage = msg.type !== 'text';
           const mediaInfo = msg.metadata?.media;
+          const displayBody = msg.body || (msg.type === 'poll' ? msg.metadata?.poll?.name : undefined);
 
           const renderMedia = () => {
             if (msg.type === 'revoked') return null;
@@ -461,12 +462,22 @@ function ChatThread({
                   ) : isMasked ? (
                     <div className="message-text message-masked">{t('chats.messageMasked')}</div>
                   ) : (
-                    msg.body &&
-                    (!mediaInfo || msg.body !== mediaInfo.filename) &&
+                    displayBody &&
+                    (!mediaInfo || displayBody !== mediaInfo.filename) &&
                     msg.type !== 'location' &&
                     msg.type !== 'call' && (
-                      <MessageBody text={resolveMentions(msg.body, mentionNames)} className="message-text" />
+                      <MessageBody text={resolveMentions(displayBody, mentionNames)} className="message-text" />
                     )
+                  )}
+
+                  {!isRevoked && msg.type === 'poll' && (msg.metadata?.poll?.options?.length ?? 0) > 0 && (
+                    <ul className="message-text" aria-label={t('messageTester.pollOptions')}>
+                      {msg.metadata!.poll!.options.map((option, index) => (
+                        <li key={index}>
+                          <bdi>{option}</bdi>
+                        </li>
+                      ))}
+                    </ul>
                   )}
 
                   {/* Inbound business prompt choices; a tap calls POST .../messages/click-button. */}

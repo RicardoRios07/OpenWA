@@ -217,3 +217,26 @@ test('archive-only media previews inline from the media route; a plain omitted m
     URL.revokeObjectURL = revokeOriginal;
   }
 });
+
+test('poll messages display exact choices, including outgoing and legacy polls', () => {
+  const poll = { name: 'Where?', options: [' Park ', '<script>Beach</script>'], allowMultipleAnswers: false };
+  const { container } = renderThread('viewer', [
+    { ...PROMPT, type: 'poll', body: 'Where?', metadata: { poll } },
+    {
+      ...PROMPT,
+      id: 'out',
+      waMessageId: 'out',
+      type: 'poll',
+      direction: 'outgoing',
+      body: 'Where?',
+      metadata: { poll },
+    },
+    { ...PROMPT, id: 'legacy', waMessageId: 'legacy', type: 'poll', body: 'Legacy question', metadata: undefined },
+  ]);
+  assert.deepEqual(
+    Array.from(container.querySelectorAll('li bdi')).map(node => node.textContent),
+    [...poll.options, ...poll.options],
+  );
+  assert.equal(container.querySelector('script'), null);
+  assert.ok(container.textContent?.includes('Legacy question'));
+});

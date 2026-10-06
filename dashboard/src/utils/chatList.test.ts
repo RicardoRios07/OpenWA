@@ -26,6 +26,7 @@ test('an arriving message moves its chat to the top and refreshes the snippet', 
     ['b@c.us', 'a@c.us'],
   );
   assert.equal(chats[0].lastMessage, 'hi');
+  assert.equal(chats[0].lastMessageType, 'text');
   assert.equal(chats[0].timestamp, 200);
   assert.deepEqual(
     before.map(c => c.id),
@@ -113,7 +114,7 @@ test('an INCOMING message from an unknown @lid chat still asks for a refetch', (
 });
 
 test('promoteChatWithSnippet moves the sent-into chat to the top', () => {
-  const before = [chat('a@c.us'), chat('b@c.us')];
+  const before = [chat('a@c.us'), chat('b@c.us', { lastMessageType: 'voice' })];
 
   const after = promoteChatWithSnippet(before, 'b@c.us', '[image]', 999);
 
@@ -122,6 +123,8 @@ test('promoteChatWithSnippet moves the sent-into chat to the top', () => {
     ['b@c.us', 'a@c.us'],
   );
   assert.equal(after[0].lastMessage, '[image]');
+  assert.equal(after[0].lastMessageType, undefined);
+  assert.equal(before[1].lastMessageType, 'voice');
   assert.equal(after[0].timestamp, 999);
   assert.deepEqual(
     before.map(c => c.id),

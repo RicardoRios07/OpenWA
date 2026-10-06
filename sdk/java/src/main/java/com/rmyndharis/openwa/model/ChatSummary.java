@@ -20,4 +20,15 @@ public record ChatSummary(
     /** Whether the chat is muted right now, not the expiry behind it. */
     Boolean muted,
     /** Epoch milliseconds the mute ends, null unless muted; 0 means indefinitely. */
-    Long muteExpiration) {}
+    Long muteExpiration,
+    MessageType lastMessageType) {
+
+    /** Construct a chat summary without last-message type metadata. */
+    public ChatSummary(
+        String id, String name, Boolean isGroup, Integer unreadCount, String lastMessage,
+        Long timestamp, ChatKind kind, Boolean archived, Boolean pinned, Boolean muted,
+        Long muteExpiration) {
+        this(id, name, isGroup, unreadCount, lastMessage, timestamp, kind, archived, pinned,
+            muted, muteExpiration, null);
+    }
+}
