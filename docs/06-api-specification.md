@@ -196,7 +196,7 @@ Single-recipient send routes under `/messages` return **HTTP 201** with `{ "mess
 
 Two consequences worth knowing:
 
-1. **Baileys does not reject an unregistered recipient synchronously.** A message to a number that is not on WhatsApp still returns `201` with a valid `messageId`. Whether it later delivers, stalls, or is reported as an error reaches you asynchronously, if at all. whatsapp-web.js refuses the same send with `400` when it cannot resolve the number, which can also mean this session has never had a chat with it.
+1. **A number reported as unregistered is refused before sending.** Baileys checks a phone destination when it has no LID mapping: a negative answer returns `400`, and an unanswered lookup returns `503`. Known LIDs skip that query. whatsapp-web.js also returns `400` when it cannot resolve the recipient, which can include its first-contact limitation. Neither result guarantees that a registered recipient will receive the message.
 2. **There is no synchronous delivery confirmation on either engine** (whatsapp-web.js or Baileys), so the `201` cannot be made to mean "delivered."
 
 **Before sending to a new number**, you can confirm it is a registered WhatsApp account with `GET /api/sessions/:sessionId/contacts/check/:number` (returns `{ exists, whatsappId }`; needs an `OPERATOR` key, like the send itself; see the Contacts reference).
@@ -888,7 +888,7 @@ Two properties to design around:
 { "success": true }
 ```
 
-**Errors:** `400` validation, or session not started · `401` · `403` · `404` session not found · `501` the active engine cannot observe presence (whatsapp-web.js exposes only `sendPresenceAvailable`/`sendPresenceUnavailable`, which publish the account's _own_ presence, and emits no presence event) · `409` conflict or engine not ready (retryable)
+**Errors:** `400` validation, or session not started · `401` · `403` · `404` session not found · `501` the active engine cannot observe presence (whatsapp-web.js exposes only `sendPresenceAvailable`/`sendPresenceUnavailable`, which publish the account's _own_ presence, and emits no presence event) · `409` conflict or engine not ready (retryable) · `503` Baileys recipient lookup failed or timed out before the operation was sent
 
 #### GET /api/sessions/:sessionId/presence/:chatId
 
@@ -1292,15 +1292,16 @@ The single-recipient send routes (`send-text`, `send-template`, `send-image`, `s
 
 The key is 1-255 visible ASCII characters (a UUID works), unique per session, and is held for **24 hours** from the first request. Within that window:
 
-| Retry with the same key                                                                                        | Answer                                                                                                     |
-| -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| first request succeeded, same route and body                                                                   | the first response again, with `Idempotent-Replayed: true`; nothing is sent                                |
-| first request still running                                                                                    | `409` `IDEMPOTENCY_KEY_IN_PROGRESS`; retry after it finishes                                               |
-| first request failed during an engine send (including `4xx` or `501`), with another server error, or a timeout | `409` `IDEMPOTENCY_OUTCOME_UNKNOWN`: the message may have gone out; check the chat, then use a **new** key |
-| first request was refused with `4xx` or `501` before calling the engine                                        | the key was freed, so the retry runs as a new request                                                      |
-| different route or body (key order in the JSON does not matter)                                                | `422` `IDEMPOTENCY_KEY_REUSED`                                                                             |
+| Retry with the same key                                                                         | Answer                                                                                                     |
+| ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| first request succeeded, same route and body                                                    | the first response again, with `Idempotent-Replayed: true`; nothing is sent                                |
+| first request still running                                                                     | `409` `IDEMPOTENCY_KEY_IN_PROGRESS`; retry after it finishes                                               |
+| first request failed with an uncertain delivery outcome                                         | `409` `IDEMPOTENCY_OUTCOME_UNKNOWN`: the message may have gone out; check the chat, then use a **new** key |
+| first request was refused with `4xx` or `501` before calling the engine                         | the key was freed, so the retry runs as a new request                                                      |
+| transport explicitly reported that nothing was sent, such as a Baileys recipient lookup timeout | the key was freed, so the retry runs as a new request                                                      |
+| different route or body (key order in the JSON does not matter)                                 | `422` `IDEMPOTENCY_KEY_REUSED`                                                                             |
 
-A malformed key, or the header sent twice, gets `400` `IDEMPOTENCY_KEY_INVALID`. A request still pending ten minutes after it was claimed (its node most likely stopped) also reads as `IDEMPOTENCY_OUTCOME_UNKNOWN`. HTTP status alone does not prove that nothing was sent: an engine can report `409` after attempting delivery, so engine-stage failures retain the key conservatively. Keys are stored in the data database (`send_idempotency_keys`); concurrent processes using that database share the claim, and the session-owner proxy forwards the header. This does not change the deployment support limits in [Horizontal scaling](./13-horizontal-scaling.md). `send-bulk` does not take the header: retrying its request can create another batch. A call that outlives the 24-hour key window is outside the retry guarantee.
+A malformed key, or the header sent twice, gets `400` `IDEMPOTENCY_KEY_INVALID`. A request still pending ten minutes after it was claimed (its node most likely stopped) also reads as `IDEMPOTENCY_OUTCOME_UNKNOWN`. HTTP status alone does not prove that nothing was sent: an engine can report `409` after attempting delivery, so engine-stage failures retain the key unless transport explicitly proves that nothing was sent. Keys are stored in the data database (`send_idempotency_keys`); concurrent processes using that database share the claim, and the session-owner proxy forwards the header. This does not change the deployment support limits in [Horizontal scaling](./13-horizontal-scaling.md). `send-bulk` does not take the header: retrying its request can create another batch. A call that outlives the 24-hour key window is outside the retry guarantee.
 
 #### GET /api/sessions/:sessionId/messages
 
@@ -1316,14 +1317,32 @@ Get persisted message history for a session from the local DB (paginated, filter
 
 **Query parameters**
 
-| Name        | Type    | Required | Default | Description                                                                                                                                                                                                                             |
-| ----------- | ------- | -------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| chatId      | string  | No       | —       | Filter by chat ID. Matched across `@c.us` / `@s.whatsapp.net` dialects via the lid-mapping table. Required for a key restricted to selected chats.                                                                                      |
-| from        | string  | No       | —       | Filter by sender; matches `from` or a group message's `author`. A phone also matches any lid that resolves to it.                                                                                                                       |
-| limit       | integer | No       | 50      | Clamped to `[1,100]`; a non-finite value falls back to 50.                                                                                                                                                                              |
-| offset      | integer | No       | 0       | Clamped to `>=0`; a non-finite value falls back to 0.                                                                                                                                                                                   |
-| after       | string  | No       | —       | Keyset cursor: the `id` of the last message of the previous page. Anchors the window to a row rather than a count, so a message arriving mid-walk cannot shift it. Takes precedence over `offset`. Unknown in this session gives `400`. |
-| inlineMedia | boolean | No       | true    | Set `false` (or `0`) to omit every inline media payload, leaving each row's `{ omitted, sizeBytes }` marker and the media endpoint. The budget below is per response, so a paged walk pulls it afresh on every page.                    |
+| Name        | Type    | Required | Default   | Description                                                                                                                                                                                                                             |
+| ----------- | ------- | -------- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| chatId      | string  | No       | —         | Filter by chat ID. Matched across `@c.us` / `@s.whatsapp.net` dialects via the lid-mapping table. Required for a key restricted to selected chats.                                                                                      |
+| from        | string  | No       | —         | Filter by sender; matches `from` or a group message's `author`. A phone also matches any lid that resolves to it.                                                                                                                       |
+| limit       | integer | No       | 50        | Clamped to `[1,100]`; a non-finite value falls back to 50.                                                                                                                                                                              |
+| offset      | integer | No       | 0         | Clamped to `>=0`; a non-finite value falls back to 0.                                                                                                                                                                                   |
+| after       | string  | No       | —         | Keyset cursor: the `id` of the last message of the previous page. Anchors the window to a row rather than a count, so a message arriving mid-walk cannot shift it. Takes precedence over `offset`. Unknown in this session gives `400`. |
+| inlineMedia | boolean | No       | true      | Set `false` (or `0`) to omit every inline media payload, leaving each row's `{ omitted, sizeBytes }` marker and the media endpoint. The budget below is per response, so a paged walk pulls it afresh on every page.                    |
+| messageId   | string  | No       | (none)    | Exact WhatsApp message reference within the session and optional chat filter.                                                                                                                                                           |
+| since       | number  | No       | (none)    | Inclusive lower message-time bound, Unix epoch milliseconds.                                                                                                                                                                            |
+| until       | number  | No       | (none)    | Exclusive upper message-time bound, Unix epoch milliseconds.                                                                                                                                                                            |
+| direction   | string  | No       | (none)    | `incoming` or `outgoing`.                                                                                                                                                                                                               |
+| type        | string  | No       | (none)    | Exact stored type token, such as `text`, `image` or `voice`; no search text required.                                                                                                                                                   |
+| orderBy     | string  | No       | createdAt | Newest first by ingestion time (`createdAt`) or message time (`timestamp`).                                                                                                                                                             |
+
+Time bounds accept decimal or scientific notation from 0 to 9007199254740991 milliseconds. Blank, malformed, non-finite, unsafe or reversed bounds return `400`. They compare against stored whole-second message times, with `since` inclusive and `until` exclusive. `orderBy=timestamp` uses the message UUID as its tie-breaker and excludes unknown message times. Without these options, ingestion-time ordering and existing stored rows are preserved.
+
+With a time bound or `orderBy=timestamp`, `unknownTimestampTotal` counts rows matching all non-time filters whose message time is unknown. Those rows are excluded from `messages` and `total`. This describes stored history; exhausting a page does not prove complete remote WhatsApp history.
+
+Keep the same filters and order when continuing with `after`. When using the new filters, the anchor must belong to the selected session, chat, sender, type, direction, message reference and time window. An unknown, deleted or mismatched anchor returns `400`. Concurrent older arrivals may appear on subsequent pages; pagination does not freeze the archive.
+
+Example (stored messages for 2026-09-20 in Europe/Vienna):
+
+```http
+GET /api/sessions/:sessionId/messages?since=1789855200000&until=1789941600000&orderBy=timestamp&inlineMedia=false&limit=100
+```
 
 **Response** `200`
 
@@ -1354,11 +1373,11 @@ Get persisted message history for a session from the local DB (paginated, filter
 }
 ```
 
-Each `Message`: `{ id (uuid), sessionId, waMessageId (string|null), chatId, from, to, chatName (string|null; the sender's push name, or their saved contact name when no push name was reported), author (string|null; the real sender of a group, status or broadcast-list message, where from holds the group, status@broadcast or list id; on Baileys a list message the account received is filed under the sender, so from is the sender too), body (string|null), type, direction ('incoming'|'outgoing'), timestamp (number|null), metadata (object|null), mediaPath (string|null; storage key of archived media), mediaMimetype (string|null), status ('pending'|'sent'|'delivered'|'read'|'failed'), createdAt (ISO date) }`. Ordered by `createdAt` DESC, then by a dialect-dependent second key. The tiebreaker matters: `createdAt` is not unique (SQLite stores whole seconds, a PostgreSQL bulk write ties every row it inserts, and a history backfill carries WhatsApp's own second-resolution timestamp), and without a total order two pages of one walk can repeat a row and omit another. On SQLite the second key is `rowid`, the stored insertion sequence, so messages sharing a second come back in the order they arrived. PostgreSQL has no equivalent (`ctid` moves on every ack update), so it keeps `id`, a random uuid: the walk is equally correct there, but a same-second group is not in arrival order. Note that `offset` still addresses a position by count, so a list taking concurrent writes can shift under a walk: a message arriving mid-walk pushes every older row down one, and the next page re-serves a row the previous one already returned. Pass `after` instead to walk a live chat safely; it anchors on the last row you received, which an arriving message cannot move. The response is the raw service object (no envelope). Unlike the live `IncomingMessage` shape below, this persisted `Message` does **not** carry `kind` — re-derive the chat kind from `chatId` (see `ChatKind` / `chatKind()`) if needed. When present, `metadata` may include `media`, `quotedMessage`, `call`, `reactions`, and, for Baileys inbound business prompts, `buttons: [{ id, text }, …]` so a client (including the dashboard Chats thread) can re-render the choices after reload and tap them via [`POST .../click-button`](#post-apisessionssessionidmessagesclick-button).
+Each `Message`: `{ id (uuid), sessionId, waMessageId (string|null), chatId, from, to, chatName (string|null; the sender's push name, or their saved contact name when no push name was reported), author (string|null; the real sender of a group, status or broadcast-list message, where from holds the group, status@broadcast or list id; on Baileys a list message the account received is filed under the sender, so from is the sender too), body (string|null), type, direction ('incoming'|'outgoing'), timestamp (number|null), metadata (object|null), mediaPath (string|null; storage key of archived media), mediaMimetype (string|null), status ('pending'|'sent'|'delivered'|'read'|'failed'), createdAt (ISO date) }`. By default, ordered by `createdAt` DESC, then by a dialect-dependent second key. The tiebreaker matters: `createdAt` is not unique (SQLite stores whole seconds, a PostgreSQL bulk write ties every row it inserts, and a history backfill carries WhatsApp's own second-resolution timestamp), and without a total order two pages of one walk can repeat a row and omit another. On SQLite the second key is `rowid`, the stored insertion sequence, so messages sharing a second come back in the order they arrived. PostgreSQL has no equivalent (`ctid` moves on every ack update), so it keeps `id`, a random uuid: the walk is equally correct there, but a same-second group is not in arrival order. Note that `offset` still addresses a position by count, so a list taking concurrent writes can shift under a walk: a message arriving mid-walk pushes every older row down one, and the next page re-serves a row the previous one already returned. Pass `after` instead to walk a live chat safely; it anchors on the last row you received, which an arriving message cannot move. The response is the raw service object (no envelope). Unlike the live `IncomingMessage` shape below, this persisted `Message` does **not** carry `kind` — re-derive the chat kind from `chatId` (see `ChatKind` / `chatKind()`) if needed. When present, `metadata` may include `media`, `quotedMessage`, `call`, `reactions`, and, for Baileys inbound business prompts, `buttons: [{ id, text }, …]` so a client (including the dashboard Chats thread) can re-render the choices after reload and tap them via [`POST .../click-button`](#post-apisessionssessionidmessagesclick-button).
 
-> **Inline media is carried up to a budget, then omitted.** `MESSAGE_LIST_INLINE_MEDIA_BUDGET_BYTES` (8 MiB of encoded base64 by default) bounds how much inline media one response may hold across its rows. A row is not a bounded object, `limit` is clamped to `[1,100]` but each row can carry its base64 in `metadata.media.data`, so a page of media rows could otherwise reach hundreds of megabytes and fail the read outright. The budget is spent newest-first, matching the `createdAt` DESC order above, so a page that cannot carry everything keeps the most recent media. Past it a payload is replaced with `{ mimetype, filename?, omitted: true, sizeBytes }`, the same marker the engine emits for inbound media over `MEDIA_DOWNLOAD_MAX_BYTES`, and the bytes remain available from [`GET /messages/:chatId/:messageId/media`](#get-apisessionssessionidmessageschatidmessageidmedia). Two rules bound the edges: the newest payload is always inlined even when it alone exceeds the budget (otherwise a single large photo would be permanently unreadable through this route), and a budget of `0` means "never inline" and grants no such allowance. The knob is validated at boot, `8MiB` would parse to 8 bytes, and is forwarded by both compose files. The MCP `MessageList` tool shares this path and the same budget. A row stored under `MESSAGE_INLINE_MEDIA=archive` arrives with the marker already in place, plus `archived: true`, its bytes live only in the chat-media archive, behind the same media route (see that route for the mode).
+> **Inline media is carried up to a budget, then omitted.** `MESSAGE_LIST_INLINE_MEDIA_BUDGET_BYTES` (8 MiB of encoded base64 by default) bounds how much inline media one response may hold across its rows. A row is not a bounded object, `limit` is clamped to `[1,100]` but each row can carry its base64 in `metadata.media.data`, so a page of media rows could otherwise reach hundreds of megabytes and fail the read outright. The budget is spent newest-first, matching the selected descending order, so a page that cannot carry everything keeps the most recent media. Past it a payload is replaced with `{ mimetype, filename?, omitted: true, sizeBytes }`, the same marker the engine emits for inbound media over `MEDIA_DOWNLOAD_MAX_BYTES`, and the bytes remain available from [`GET /messages/:chatId/:messageId/media`](#get-apisessionssessionidmessageschatidmessageidmedia). Two rules bound the edges: the newest payload is always inlined even when it alone exceeds the budget (otherwise a single large photo would be permanently unreadable through this route), and a budget of `0` means "never inline" and grants no such allowance. The knob is validated at boot, `8MiB` would parse to 8 bytes, and is forwarded by both compose files. The MCP `MessageList` tool shares this path and the same budget. A row stored under `MESSAGE_INLINE_MEDIA=archive` arrives with the marker already in place, plus `archived: true`, its bytes live only in the chat-media archive, behind the same media route (see that route for the mode).
 
-**Errors:** `400` `after` names no message in this session · `401` missing/invalid API key · `403` a key restricted to selected chats sent no `chatId`, or one outside its allowlist
+**Errors:** `400` invalid filters or an unknown or mismatched cursor · `401` missing/invalid API key · `403` a key restricted to selected chats sent no `chatId`, or one outside its allowlist
 
 A blank `after` is treated as absent, the way a blank `limit` or `offset` already is, so a client
 templating a cursor it has not got yet keeps the unfiltered first page rather than a `400`.
@@ -1785,7 +1804,7 @@ rejected with `400` rather than guessing which half was meant.
 
 `messageId` is the WhatsApp message id from the engine. By default (`SIMULATE_TYPING`; set it to `false` to disable) a typing indicator and a humanising pause run before the send: 500 ms plus 45 ms per character, capped at `SIMULATE_TYPING_MAX_MS` (default 5000 ms), with +/-15% jitter.
 
-**Errors:** `400` unknown body field, validation failure, or session not active / blocked by a plugin hook · `401` missing/invalid API key · `403` key role below OPERATOR · `404` the `quotedMessageId` could not be resolved (see Quoted sends) · `500` engine error · `409` conflict or engine not ready (retryable) · `501` not supported on the active engine · `422` the `Idempotency-Key` was already used for a different request (see [Idempotent sends](#idempotent-sends))
+**Errors:** `400` unknown body field, validation failure, or session not active / blocked by a plugin hook · `401` missing/invalid API key · `403` key role below OPERATOR · `404` the `quotedMessageId` could not be resolved (see Quoted sends) · `500` engine error · `409` conflict or engine not ready (retryable) · `501` not supported on the active engine · `422` the `Idempotency-Key` was already used for a different request (see [Idempotent sends](#idempotent-sends)) · `503` Baileys recipient lookup failed or timed out before the operation was sent
 
 ##### Quoted sends
 
@@ -1874,7 +1893,7 @@ Render a stored text template (header/body/footer joined by blank lines, `{{vars
 
 Delegates to the send-text path after rendering.
 
-**Errors:** `400` unknown body field, validation failure, neither `templateId` nor `templateName` given, or session not active · `401` missing/invalid API key · `403` key role below OPERATOR · `404` session or template not found · `500` engine error · `409` conflict or engine not ready (retryable) · `422` the `Idempotency-Key` was already used for a different request (see [Idempotent sends](#idempotent-sends))
+**Errors:** `400` unknown body field, validation failure, neither `templateId` nor `templateName` given, or session not active · `401` missing/invalid API key · `403` key role below OPERATOR · `404` session or template not found · `500` engine error · `409` conflict or engine not ready (retryable) · `422` the `Idempotency-Key` was already used for a different request (see [Idempotent sends](#idempotent-sends)) · `503` Baileys recipient lookup failed or timed out before the operation was sent
 
 #### POST /api/sessions/:sessionId/messages/send-image
 
@@ -2037,7 +2056,7 @@ Send a location pin.
 { "messageId": "true_628123456789@c.us_3EB0ABCD", "timestamp": 1719312000 }
 ```
 
-**Errors:** `400` invalid coords / session not active / unknown body field · `401` missing/invalid API key · `403` key role below OPERATOR · `404` the `quotedMessageId` could not be resolved (see Quoted sends) · `500` engine error · `409` conflict or engine not ready (retryable) · `501` whatsapp-web.js cannot send a location to a channel (`<id>@newsletter`) or a status or broadcast list (`@broadcast`); nothing is sent · `422` the `Idempotency-Key` was already used for a different request (see [Idempotent sends](#idempotent-sends))
+**Errors:** `400` invalid coords / session not active / unknown body field · `401` missing/invalid API key · `403` key role below OPERATOR · `404` the `quotedMessageId` could not be resolved (see Quoted sends) · `500` engine error · `409` conflict or engine not ready (retryable) · `501` whatsapp-web.js cannot send a location to a channel (`<id>@newsletter`) or a status or broadcast list (`@broadcast`); nothing is sent · `422` the `Idempotency-Key` was already used for a different request (see [Idempotent sends](#idempotent-sends)) · `503` Baileys recipient lookup failed or timed out before the operation was sent
 
 #### POST /api/sessions/:sessionId/messages/send-contact
 
@@ -2070,7 +2089,7 @@ Send a contact card (vCard).
 { "messageId": "true_628123456789@c.us_3EB0ABCD", "timestamp": 1719312000 }
 ```
 
-**Errors:** `400` validation failure / session not active / unknown body field · `401` missing/invalid API key · `403` key role below OPERATOR · `404` the `quotedMessageId` could not be resolved (see Quoted sends) · `500` engine error · `409` conflict or engine not ready (retryable) · `501` whatsapp-web.js cannot send a contact card to a channel (`<id>@newsletter`) or a status or broadcast list (`@broadcast`); nothing is sent · `422` the `Idempotency-Key` was already used for a different request (see [Idempotent sends](#idempotent-sends))
+**Errors:** `400` validation failure / session not active / unknown body field · `401` missing/invalid API key · `403` key role below OPERATOR · `404` the `quotedMessageId` could not be resolved (see Quoted sends) · `500` engine error · `409` conflict or engine not ready (retryable) · `501` whatsapp-web.js cannot send a contact card to a channel (`<id>@newsletter`) or a status or broadcast list (`@broadcast`); nothing is sent · `422` the `Idempotency-Key` was already used for a different request (see [Idempotent sends](#idempotent-sends)) · `503` Baileys recipient lookup failed or timed out before the operation was sent
 
 #### POST /api/sessions/:sessionId/messages/send-sticker
 
@@ -2135,7 +2154,7 @@ Send a native WhatsApp poll.
 { "messageId": "true_1203630000@g.us_3EB0ABCD", "timestamp": 1719312000 }
 ```
 
-**Errors:** `400` validation failure (option count/length) / session not active / unknown body field · `401` missing/invalid API key · `403` key role below OPERATOR · `404` the `quotedMessageId` could not be resolved (see Quoted sends) · `500` engine error · `409` conflict or engine not ready (retryable) · `501` whatsapp-web.js cannot send a poll to a status or broadcast list (`@broadcast`), nor one with `quotedMessageId` to a channel (`<id>@newsletter`); nothing is sent · `422` the `Idempotency-Key` was already used for a different request (see [Idempotent sends](#idempotent-sends))
+**Errors:** `400` validation failure (option count/length) / session not active / unknown body field · `401` missing/invalid API key · `403` key role below OPERATOR · `404` the `quotedMessageId` could not be resolved (see Quoted sends) · `500` engine error · `409` conflict or engine not ready (retryable) · `501` whatsapp-web.js cannot send a poll to a status or broadcast list (`@broadcast`), nor one with `quotedMessageId` to a channel (`<id>@newsletter`); nothing is sent · `422` the `Idempotency-Key` was already used for a different request (see [Idempotent sends](#idempotent-sends)) · `503` Baileys recipient lookup failed or timed out before the operation was sent
 
 #### POST /api/sessions/:sessionId/messages/reply
 
@@ -2170,7 +2189,7 @@ Reply to a message, quoting a prior message.
 
 The quoted body is best-effort resolved from the DB for the reply preview.
 
-**Errors:** `400` validation failure / session not active / unknown body field · `401` missing/invalid API key · `403` key role below OPERATOR · `404` the quoted message is not found in this chat · `500` engine error · `409` conflict or engine not ready (retryable) · `501` whatsapp-web.js cannot send a reply to a channel (`<id>@newsletter`) or a status or broadcast list (`@broadcast`); nothing is sent · `422` the `Idempotency-Key` was already used for a different request (see [Idempotent sends](#idempotent-sends))
+**Errors:** `400` validation failure / session not active / unknown body field · `401` missing/invalid API key · `403` key role below OPERATOR · `404` the quoted message is not found in this chat · `500` engine error · `409` conflict or engine not ready (retryable) · `501` whatsapp-web.js cannot send a reply to a channel (`<id>@newsletter`) or a status or broadcast list (`@broadcast`); nothing is sent · `422` the `Idempotency-Key` was already used for a different request (see [Idempotent sends](#idempotent-sends)) · `503` Baileys recipient lookup failed or timed out before the operation was sent
 
 #### POST /api/sessions/:sessionId/messages/click-button
 
@@ -2213,7 +2232,7 @@ Tap a choice on a WhatsApp Business button / list prompt by sending the structur
 > render after the store evicts the prompt, and a tap then 404s. URL/call CTA buttons cannot be
 > clicked this way, only quick-reply style choices and list rows.
 
-**Errors:** `400` validation failure, session not active, the message is not a clickable prompt, or `buttonId` is not among its choices · `401` · `403` · `404` prompt not in the engine store / wrong chat · `501` whatsapp-web.js · `409` conflict or engine not ready (retryable) · `500` engine error
+**Errors:** `400` validation failure, session not active, the message is not a clickable prompt, or `buttonId` is not among its choices · `401` · `403` · `404` prompt not in the engine store / wrong chat · `501` whatsapp-web.js · `409` conflict or engine not ready (retryable) · `500` engine error · `503` Baileys recipient lookup failed or timed out before the operation was sent
 
 #### POST /api/sessions/:sessionId/messages/forward
 
@@ -2247,7 +2266,7 @@ Forward a message from one chat to another.
 
 `messageId` may be an empty string when the engine could not recover the forwarded copy's id.
 
-**Errors:** `400` validation failure / session not active / unknown body field · `401` missing/invalid API key · `403` key role below OPERATOR · `404` the message to forward is not found in `fromChatId` · `500` engine error · `409` conflict or engine not ready (retryable) · `422` the `Idempotency-Key` was already used for a different request (see [Idempotent sends](#idempotent-sends))
+**Errors:** `400` validation failure / session not active / unknown body field · `401` missing/invalid API key · `403` key role below OPERATOR · `404` the message to forward is not found in `fromChatId` · `500` engine error · `409` conflict or engine not ready (retryable) · `422` the `Idempotency-Key` was already used for a different request (see [Idempotent sends](#idempotent-sends)) · `503` Baileys recipient lookup failed or timed out before the operation was sent
 
 #### POST /api/sessions/:sessionId/messages/react
 

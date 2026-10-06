@@ -61,6 +61,7 @@ import {
   ENGINE_NOT_READY_409,
   PAIRING_NOT_READY_409,
   PAIRING_TRANSPORT_503,
+  RECIPIENT_LOOKUP_503,
 } from '../../common/openapi/engine-status-responses';
 
 @ApiTags('sessions')
@@ -637,6 +638,7 @@ export class SessionController {
   @ApiResponse({ status: 404, description: 'Session not found' })
   @ApiResponse({ status: 501, description: 'The active engine cannot observe presence (whatsapp-web.js)' })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
+  @ApiResponse({ status: 503, description: RECIPIENT_LOOKUP_503 })
   async subscribeToPresence(
     @Param('sessionId', ParseUUIDPipe) id: string,
     @Body() dto: SubscribePresenceDto,

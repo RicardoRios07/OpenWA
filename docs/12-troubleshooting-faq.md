@@ -703,13 +703,13 @@ curl -H "X-API-Key: $API_KEY" \
 
 **Common Causes:**
 
-| Cause                            | Symptom                                                         | Solution                                                                          |
-| -------------------------------- | --------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| Invalid phone number             | 400 error                                                       | Format: `628123456789@c.us`                                                       |
-| Rate limited                     | 429 error                                                       | Reduce sending rate                                                               |
-| Session not started or not ready | 400 (`is not active`) or 409                                    | Start or reconnect the session                                                    |
-| Media too large                  | 413 error                                                       | Compress or reduce size                                                           |
-| Number not on WhatsApp           | 400 on whatsapp-web.js; Baileys may accept it and never deliver | Verify the number first (`GET /api/sessions/{sessionId}/contacts/check/{number}`) |
+| Cause                            | Symptom                                                  | Solution                                                                          |
+| -------------------------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Invalid phone number             | 400 error                                                | Format: `628123456789@c.us`                                                       |
+| Rate limited                     | 429 error                                                | Reduce sending rate                                                               |
+| Session not started or not ready | 400 (`is not active`) or 409                             | Start or reconnect the session                                                    |
+| Media too large                  | 413 error                                                | Compress or reduce size                                                           |
+| Number not on WhatsApp           | 400 when the recipient lookup reports it as unregistered | Verify the number first (`GET /api/sessions/{sessionId}/contacts/check/{number}`) |
 
 **Phone Number Validation:**
 

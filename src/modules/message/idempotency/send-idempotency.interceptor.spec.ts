@@ -11,6 +11,7 @@ import {
 import { lastValueFrom, of, throwError } from 'rxjs';
 import { EngineNotReadyError } from '../../../common/errors/engine-not-ready.error';
 import { markEngineSendFailure } from '../../../common/errors/engine-send-failure';
+import { EngineNotSentError } from '../../../common/errors/engine-not-sent.error';
 import { SendIdempotencyInterceptor, sendFailureProvesNothingSent } from './send-idempotency.interceptor';
 import { hashSendRequest, SendIdempotencyService } from './send-idempotency.service';
 
@@ -128,6 +129,13 @@ describe('SendIdempotencyInterceptor', () => {
 
     expect(store.markFailed).toHaveBeenCalledWith('row-1');
     expect(store.release).not.toHaveBeenCalled();
+  });
+
+  it('releases the key when engine transport explicitly reports nothing was sent', async () => {
+    const error = markEngineSendFailure(new EngineNotSentError('recipient lookup timed out'));
+    await expect(run(contextFor({ 'idempotency-key': 'k-1' }), () => throwError(() => error))).rejects.toBe(error);
+    expect(store.release).toHaveBeenCalledWith('row-1');
+    expect(store.markFailed).not.toHaveBeenCalled();
   });
 
   it('still answers the send when recording its outcome fails', async () => {

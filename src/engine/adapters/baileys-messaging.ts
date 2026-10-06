@@ -40,6 +40,8 @@ import { EngineRefusedError } from '../../common/errors/engine-refused.error';
 import { MessageNotFoundError } from '../../common/errors/message-not-found.error';
 import { type createLogger } from '../../common/services/logger.service';
 import { EngineTransportError } from '../../common/errors/engine-transport.error';
+import { EngineNotSentError } from '../../common/errors/engine-not-sent.error';
+import { parseWaId, userPart } from '../identity/wa-id';
 import { BAILEYS_QUERY_BUDGET_MS, withQueryDeadline } from './baileys-query-deadline';
 
 /**
@@ -287,7 +289,11 @@ export class BaileysMessaging {
 
   async getNumberId(number: string): Promise<string | null> {
     this.host.ensureReady();
-    const results = await this.sock().onWhatsApp(number);
+    const results = await withQueryDeadline(
+      this.sock().onWhatsApp(number),
+      this.queryBudgetMs,
+      'WhatsApp did not answer the number-check query in time',
+    );
     // onWhatsApp has no else branch after `if (results)`, so it resolves undefined when the usync
     // query goes unanswered — and Baileys' query() swallows its own timeout rather than throwing.
     // An empty ARRAY is a real answer; undefined is the absence of one, and coalescing the two
@@ -702,24 +708,32 @@ export class BaileysMessaging {
    * Resolve a 1:1 phone-dialect chat id (`@c.us` / `@s.whatsapp.net`) to the contact's `@lid` when the
    * mapping is known. WhatsApp rejects PN-addressed 1:1 sends to LID-migrated accounts with ack error
    * 463 ("missing tctoken" — the privacy token is stored and honored under the LID), while the very
-   * same send addressed to the LID delivers (verified live). Groups, broadcast, already-lid and
-   * unmapped ids pass through unchanged, reproducing the previous behavior.
+   * same send addressed to the LID delivers (verified live). Unmapped phone ids still need the
+   * canonical Baileys domain; the library does not rewrite a neutral @c.us destination.
    */
   private async toDeliverableJid(chatId: string): Promise<string> {
-    if (!chatId.endsWith('@c.us') && !chatId.endsWith('@s.whatsapp.net')) {
-      return chatId;
-    }
+    const { kind, userPart: user } = parseWaId(chatId);
+    if (kind === 'lid') return `${user}@lid`;
+    if (kind !== 'user') return chatId;
+    const pn = this.host.toEngineJid(chatId);
+    const sock = this.sock();
     try {
-      const pn = this.host.toEngineJid(chatId);
-      const lid = await this.sock().signalRepository?.lidMapping?.getLIDForPN(pn);
+      const lid = await withQueryDeadline(
+        Promise.resolve(sock.signalRepository?.lidMapping?.getLIDForPN(pn)),
+        this.queryBudgetMs,
+        'WhatsApp did not answer the recipient LID lookup in time',
+      );
+      if (this.host.getSocketOrNull() !== sock) throw new EngineNotReadyError();
       // Record what the socket just told us. This resolution is the one place a cold contact's lid
       // becomes known before any message arrives, and without writing it back the session store
       // still believes the two ids are unrelated — which makes an ownership check comparing the
       // stored key's lid against a phone-dialect chatId reject a message that IS in that chat.
-      if (lid) this.host.recordLidMapping(lid, pn);
-      return lid ?? chatId;
-    } catch {
-      return chatId; // resolution is best-effort; an unmapped contact sends to the PN as before
+      if (lid) this.host.recordLidMapping(`${userPart(lid)}@lid`, pn);
+      return lid ? `${userPart(lid)}@lid` : pn;
+    } catch (error) {
+      if (this.host.getSocketOrNull() !== sock || error instanceof EngineNotReadyError) throw new EngineNotReadyError();
+      if (error instanceof EngineTransportError) throw new EngineNotSentError(error.message);
+      return pn; // LID resolution is best-effort; the phone destination must still be canonical.
     }
   }
 
@@ -831,6 +845,20 @@ export class BaileysMessaging {
     options?: Parameters<WASocket['sendMessage']>[2],
   ): Promise<WAMessage | undefined> {
     const sock = this.sock();
+    if (parseWaId(jid).kind === 'user') {
+      let numberId: string | null;
+      try {
+        numberId = await this.getNumberId(jid);
+      } catch (error) {
+        if (this.host.getSocketOrNull() !== sock) throw new EngineNotReadyError();
+        throw new EngineNotSentError(`WhatsApp could not check the recipient before send: ${String(error)}`);
+      }
+      if (this.host.getSocketOrNull() !== sock) throw new EngineNotReadyError();
+      if (!numberId) throw new BadRequestException(`WhatsApp reports recipient ${jid} is not registered`);
+      const canonical = this.host.toEngineJid(numberId);
+      if (canonical !== jid) jid = await this.toDeliverableJid(numberId);
+    }
+    if (this.host.getSocketOrNull() !== sock) throw new EngineNotReadyError();
     let sent: WAMessage | undefined;
     try {
       sent = options ? await sock.sendMessage(jid, content, options) : await sock.sendMessage(jid, content);

@@ -343,14 +343,11 @@ export class MessageResponseDto {
   @ApiProperty({
     description:
       'The message id, assigned when the gateway accepts the message for sending. A 201 here means the ' +
-      'message was handed to the WhatsApp client — it does NOT confirm delivery. On Baileys a message to a ' +
-      'number that is not on WhatsApp still returns 201 with a valid messageId (whatsapp-web.js answers ' +
-      '400); whether it later delivers, stalls, or is reported as an error ' +
-      'reaches you asynchronously, if at all. To confirm a number is on WhatsApp before ' +
-      'sending, use GET /api/sessions/{sessionId}/contacts/check/{number}; track real delivery via the ' +
-      'message `status` field (sent → delivered → read, or failed if WhatsApp reports an error for it). ' +
-      'A message resting at `sent` is not diagnostic on its own: a registered recipient whose device has ' +
-      'not come online since the send stays at `sent` too.',
+      'message was handed to the WhatsApp session; it does not confirm delivery. Baileys checks phone ' +
+      'destinations without a LID mapping and rejects a number reported as unregistered with 400. An ' +
+      'unanswered lookup returns 503 before sending. Known LIDs skip the number check. Track delivery ' +
+      'through the message status (sent, delivered, read, or failed). A message resting at sent can ' +
+      'also belong to a registered recipient whose device is offline.',
     example: 'true_628123456789@c.us_3EB0123456789',
   })
   messageId!: string;

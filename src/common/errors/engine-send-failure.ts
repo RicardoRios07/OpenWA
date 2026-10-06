@@ -1,4 +1,4 @@
-/** Errors escaping an engine send, including its failure bookkeeping, have an uncertain outcome. */
+/** Record that an error escaped an engine send, independently of its HTTP status. */
 const attemptedSendFailures = new WeakSet<object>();
 
 export function markEngineSendFailure<T>(error: T): T {

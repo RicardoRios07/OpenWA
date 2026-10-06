@@ -85,6 +85,7 @@ export const SESSION_NOT_STARTED_404 =
  * a 404 meaning that four of the six routes carrying this constant do not even declare.
  */
 export const RECIPIENT_UNREACHABLE_400 =
+  'Baileys rejects a phone number reported as unregistered. ' +
   'The request was rejected before anything was sent. Among the causes: the recipient could not be ' +
   'addressed — WhatsApp reports no deliverable id for that `chatId`, which is how it says the number ' +
   'is not on WhatsApp — as well as body validation and a session that is not active.';
@@ -93,6 +94,10 @@ export const RECIPIENT_UNREACHABLE_400 =
 export const ENGINE_REFUSED_403 =
   'WhatsApp refused the operation. The request was well formed — the refusal happened WhatsApp-side, ' +
   'most often because the account lacks the admin rights the operation requires.';
+
+export const RECIPIENT_LOOKUP_503 =
+  'Baileys could not complete the recipient lookup within the request budget. On send routes, ' +
+  'no message was handed to WhatsApp for this lookup failure.';
 
 /** `MessageNotFoundError` (404): outside the adapter's lookup window, or revoked. */
 export const MESSAGE_NOT_FOUND_404 =

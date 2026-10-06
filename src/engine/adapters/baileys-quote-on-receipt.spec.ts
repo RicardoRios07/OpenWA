@@ -77,6 +77,7 @@ describe('quoting a Baileys message the moment it is announced', () => {
     on: { edited?: () => void; revoked?: () => void } = {},
   ): { events: BaileysEvents; messaging: BaileysMessaging; sock: { sendMessage: jest.Mock } } => {
     const sock = {
+      onWhatsApp: jest.fn((jid: string) => Promise.resolve([{ jid, exists: true }])),
       sendMessage: jest
         .fn()
         .mockResolvedValue({ key: { id: 'R1', remoteJid: CHAT, fromMe: true }, messageTimestamp: 1 }),

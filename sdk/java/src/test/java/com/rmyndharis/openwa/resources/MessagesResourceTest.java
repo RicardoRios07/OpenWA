@@ -137,11 +137,19 @@ class MessagesResourceTest {
 
     @Test
     void listHitsMessagesPathWithQuery() {
-        tx.respond(200, "{\"messages\":[],\"total\":0}");
-        client.messages.list("s", ListMessagesQuery.builder().chatId("628@c.us").limit(10).build());
+        tx.respond(200, "{\"messages\":[],\"total\":0,\"unknownTimestampTotal\":2}");
+        var page = client.messages.list("s", ListMessagesQuery.builder().chatId("628@c.us").limit(10)
+            .since(1789855200000d).until(1789941600000d).direction("incoming")
+            .orderBy("timestamp").type("image").messageId("M1").build());
         assertEquals(HttpMethod.GET, tx.lastRequest().method());
         assertTrue(tx.lastRequest().url().startsWith("http://h/api/sessions/s/messages?"));
         assertTrue(tx.lastRequest().url().contains("limit=10"));
+        assertTrue(tx.lastRequest().url().contains("since=1.7898552E12"));
+        assertTrue(tx.lastRequest().url().contains("until=1.7899416E12"));
+        for (String field : List.of("direction=incoming", "orderBy=timestamp", "type=image", "messageId=M1")) {
+            assertTrue(tx.lastRequest().url().contains(field));
+        }
+        assertEquals(Integer.valueOf(2), page.unknownTimestampTotal());
     }
 
     @Test

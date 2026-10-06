@@ -128,9 +128,9 @@ export class ContactController {
     summary: 'Check if a phone number exists on WhatsApp',
     description:
       'Returns whether the number is a registered WhatsApp account and its canonical id. Use this to ' +
-      'pre-validate a recipient before sending: the Baileys send endpoints can return 201 for a number ' +
-      'that is not on WhatsApp (whatsapp-web.js answers 400), so this is the way to confirm a new number ' +
-      'is reachable before you send to it. Requires an OPERATOR key.',
+      'pre-validate a recipient before sending. Baileys also checks unmapped phone destinations before ' +
+      'sending: a number reported as unregistered is rejected with 400. A successful check does not ' +
+      'confirm message delivery. Requires an OPERATOR key.',
   })
   @ApiParam({ name: 'sessionId', description: 'Session ID' })
   @ApiParam({ name: 'number', description: 'Phone number to check (e.g., 628123456789)' })

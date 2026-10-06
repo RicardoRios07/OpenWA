@@ -2263,6 +2263,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Baileys could not complete the recipient lookup within the request budget. On send routes, no message was handed to WhatsApp for this lookup failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         },
         "summary": "Subscribe to a chat's presence",
@@ -4258,6 +4268,67 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "name": "since",
+            "required": false,
+            "in": "query",
+            "description": "Inclusive message-time lower bound, Unix epoch milliseconds (not ingestion time).",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "until",
+            "required": false,
+            "in": "query",
+            "description": "Exclusive message-time upper bound, Unix epoch milliseconds.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "direction",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "incoming",
+                "outgoing"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "orderBy",
+            "required": false,
+            "in": "query",
+            "description": "Newest first. Default createdAt preserves existing ordering; timestamp uses message time and excludes rows without a known timestamp.",
+            "schema": {
+              "enum": [
+                "createdAt",
+                "timestamp"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "type",
+            "required": false,
+            "in": "query",
+            "description": "Exact stored message type token, e.g. text, image, voice.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "messageId",
+            "required": false,
+            "in": "query",
+            "description": "Exact WhatsApp message reference; remains scoped to the session and chat.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -4272,7 +4343,7 @@
             }
           },
           "400": {
-            "description": "`after` names no message in this session. The keyset comparison would otherwise return an empty page, which reads exactly like the end of the history, so a walk resumed from a stale or foreign cursor would stop silently instead of reporting the cursor.",
+            "description": "Invalid message filters or an unknown cursor. With time, direction, type or message-reference filters, the cursor must belong to the same selection.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4430,6 +4501,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Baileys could not complete the recipient lookup within the request budget. On send routes, no message was handed to WhatsApp for this lookup failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         },
         "summary": "Send a text message",
@@ -4534,6 +4615,16 @@
           },
           "422": {
             "description": "`IDEMPOTENCY_KEY_REUSED`: the Idempotency-Key was already used with a different route or body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Baileys could not complete the recipient lookup within the request budget. On send routes, no message was handed to WhatsApp for this lookup failure.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4674,7 +4765,7 @@
             }
           },
           "503": {
-            "description": "The session routes its `url` fetches through an egress proxy, and the fetch failed or timed out before any response arrived, so the request was not carried out. The proxy or the target behind it may be at fault; the gateway cannot tell which. Retryable, but a `503` that persists while the proxy works points at the `url`. Without a session proxy the same failure answers `400`.",
+            "description": "The session routes its `url` fetches through an egress proxy, and the fetch failed or timed out before any response arrived, so the request was not carried out. The proxy or the target behind it may be at fault; the gateway cannot tell which. Retryable, but a `503` that persists while the proxy works points at the `url`. Without a session proxy the same failure answers `400`. Baileys could not complete the recipient lookup within the request budget. On send routes, no message was handed to WhatsApp for this lookup failure.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4814,7 +4905,7 @@
             }
           },
           "503": {
-            "description": "The session routes its `url` fetches through an egress proxy, and the fetch failed or timed out before any response arrived, so the request was not carried out. The proxy or the target behind it may be at fault; the gateway cannot tell which. Retryable, but a `503` that persists while the proxy works points at the `url`. Without a session proxy the same failure answers `400`.",
+            "description": "The session routes its `url` fetches through an egress proxy, and the fetch failed or timed out before any response arrived, so the request was not carried out. The proxy or the target behind it may be at fault; the gateway cannot tell which. Retryable, but a `503` that persists while the proxy works points at the `url`. Without a session proxy the same failure answers `400`. Baileys could not complete the recipient lookup within the request budget. On send routes, no message was handed to WhatsApp for this lookup failure.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4955,7 +5046,7 @@
             }
           },
           "503": {
-            "description": "The session routes its `url` fetches through an egress proxy, and the fetch failed or timed out before any response arrived, so the request was not carried out. The proxy or the target behind it may be at fault; the gateway cannot tell which. Retryable, but a `503` that persists while the proxy works points at the `url`. Without a session proxy the same failure answers `400`.",
+            "description": "The session routes its `url` fetches through an egress proxy, and the fetch failed or timed out before any response arrived, so the request was not carried out. The proxy or the target behind it may be at fault; the gateway cannot tell which. Retryable, but a `503` that persists while the proxy works points at the `url`. Without a session proxy the same failure answers `400`. Baileys could not complete the recipient lookup within the request budget. On send routes, no message was handed to WhatsApp for this lookup failure.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5096,7 +5187,7 @@
             }
           },
           "503": {
-            "description": "The session routes its `url` fetches through an egress proxy, and the fetch failed or timed out before any response arrived, so the request was not carried out. The proxy or the target behind it may be at fault; the gateway cannot tell which. Retryable, but a `503` that persists while the proxy works points at the `url`. Without a session proxy the same failure answers `400`.",
+            "description": "The session routes its `url` fetches through an egress proxy, and the fetch failed or timed out before any response arrived, so the request was not carried out. The proxy or the target behind it may be at fault; the gateway cannot tell which. Retryable, but a `503` that persists while the proxy works points at the `url`. Without a session proxy the same failure answers `400`. Baileys could not complete the recipient lookup within the request budget. On send routes, no message was handed to WhatsApp for this lookup failure.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5168,7 +5259,7 @@
             }
           },
           "400": {
-            "description": "The request was rejected before anything was sent. Among the causes: the recipient could not be addressed — WhatsApp reports no deliverable id for that `chatId`, which is how it says the number is not on WhatsApp — as well as body validation and a session that is not active.",
+            "description": "Baileys rejects a phone number reported as unregistered. The request was rejected before anything was sent. Among the causes: the recipient could not be addressed — WhatsApp reports no deliverable id for that `chatId`, which is how it says the number is not on WhatsApp — as well as body validation and a session that is not active.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5219,6 +5310,16 @@
           },
           "501": {
             "description": "whatsapp-web.js cannot send a location to a channel (`<id>@newsletter`) or a status or broadcast list (`@broadcast`); nothing is sent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Baileys could not complete the recipient lookup within the request budget. On send routes, no message was handed to WhatsApp for this lookup failure.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5289,7 +5390,7 @@
             }
           },
           "400": {
-            "description": "The request was rejected before anything was sent. Among the causes: the recipient could not be addressed — WhatsApp reports no deliverable id for that `chatId`, which is how it says the number is not on WhatsApp — as well as body validation and a session that is not active.",
+            "description": "Baileys rejects a phone number reported as unregistered. The request was rejected before anything was sent. Among the causes: the recipient could not be addressed — WhatsApp reports no deliverable id for that `chatId`, which is how it says the number is not on WhatsApp — as well as body validation and a session that is not active.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5340,6 +5441,16 @@
           },
           "501": {
             "description": "whatsapp-web.js cannot send a contact card to a channel (`<id>@newsletter`) or a status or broadcast list (`@broadcast`); nothing is sent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Baileys could not complete the recipient lookup within the request budget. On send routes, no message was handed to WhatsApp for this lookup failure.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5409,7 +5520,7 @@
             }
           },
           "400": {
-            "description": "The request was rejected before anything was sent. Among the causes: the recipient could not be addressed — WhatsApp reports no deliverable id for that `chatId`, which is how it says the number is not on WhatsApp — as well as body validation and a session that is not active.",
+            "description": "Baileys rejects a phone number reported as unregistered. The request was rejected before anything was sent. Among the causes: the recipient could not be addressed — WhatsApp reports no deliverable id for that `chatId`, which is how it says the number is not on WhatsApp — as well as body validation and a session that is not active.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5479,7 +5590,7 @@
             }
           },
           "503": {
-            "description": "The session routes its `url` fetches through an egress proxy, and the fetch failed or timed out before any response arrived, so the request was not carried out. The proxy or the target behind it may be at fault; the gateway cannot tell which. Retryable, but a `503` that persists while the proxy works points at the `url`. Without a session proxy the same failure answers `400`.",
+            "description": "The session routes its `url` fetches through an egress proxy, and the fetch failed or timed out before any response arrived, so the request was not carried out. The proxy or the target behind it may be at fault; the gateway cannot tell which. Retryable, but a `503` that persists while the proxy works points at the `url`. Without a session proxy the same failure answers `400`. Baileys could not complete the recipient lookup within the request budget. On send routes, no message was handed to WhatsApp for this lookup failure.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5553,7 +5664,7 @@
             }
           },
           "400": {
-            "description": "The request was rejected before anything was sent. Among the causes: the recipient could not be addressed — WhatsApp reports no deliverable id for that `chatId`, which is how it says the number is not on WhatsApp — as well as body validation and a session that is not active.",
+            "description": "Baileys rejects a phone number reported as unregistered. The request was rejected before anything was sent. Among the causes: the recipient could not be addressed — WhatsApp reports no deliverable id for that `chatId`, which is how it says the number is not on WhatsApp — as well as body validation and a session that is not active.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5604,6 +5715,16 @@
           },
           "501": {
             "description": "whatsapp-web.js cannot send a poll to a status or broadcast list (`@broadcast`), nor one with `quotedMessageId` to a channel (`<id>@newsletter`); nothing is sent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Baileys could not complete the recipient lookup within the request budget. On send routes, no message was handed to WhatsApp for this lookup failure.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5664,7 +5785,7 @@
             }
           },
           "400": {
-            "description": "The request was rejected before anything was sent. Among the causes: the recipient could not be addressed — WhatsApp reports no deliverable id for that `chatId`, which is how it says the number is not on WhatsApp — as well as body validation and a session that is not active.",
+            "description": "Baileys rejects a phone number reported as unregistered. The request was rejected before anything was sent. Among the causes: the recipient could not be addressed — WhatsApp reports no deliverable id for that `chatId`, which is how it says the number is not on WhatsApp — as well as body validation and a session that is not active.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5725,6 +5846,16 @@
           },
           "501": {
             "description": "whatsapp-web.js cannot send a reply to a channel (`<id>@newsletter`) or a status or broadcast list (`@broadcast`); nothing is sent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Baileys could not complete the recipient lookup within the request budget. On send routes, no message was handed to WhatsApp for this lookup failure.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5835,6 +5966,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Baileys could not complete the recipient lookup within the request budget. On send routes, no message was handed to WhatsApp for this lookup failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         },
         "summary": "Click a button on a WhatsApp Business prompt (Baileys only)",
@@ -5888,7 +6029,7 @@
             }
           },
           "400": {
-            "description": "The request was rejected before anything was sent. Among the causes: the recipient could not be addressed — WhatsApp reports no deliverable id for that `chatId`, which is how it says the number is not on WhatsApp — as well as body validation and a session that is not active.",
+            "description": "Baileys rejects a phone number reported as unregistered. The request was rejected before anything was sent. Among the causes: the recipient could not be addressed — WhatsApp reports no deliverable id for that `chatId`, which is how it says the number is not on WhatsApp — as well as body validation and a session that is not active.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5939,6 +6080,16 @@
           },
           "422": {
             "description": "`IDEMPOTENCY_KEY_REUSED`: the Idempotency-Key was already used with a different route or body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Baileys could not complete the recipient lookup within the request budget. On send routes, no message was handed to WhatsApp for this lookup failure.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6040,7 +6191,7 @@
             }
           },
           "503": {
-            "description": "The whatsapp-web.js page connection died mid-request. The change may or may not have been applied; repeating the request is safe, since it converges on the same state.",
+            "description": "Baileys could not complete the recipient lookup within the request budget. On send routes, no message was handed to WhatsApp for this lookup failure. The whatsapp-web.js page connection died mid-request. The change may or may not have been applied; repeating the request is safe, since it converges on the same state.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6630,7 +6781,7 @@
             }
           },
           "503": {
-            "description": "WhatsApp did not answer within the request budget. The change may or may not have been applied — the gateway stopped waiting for a confirmation that never came.",
+            "description": "Baileys could not complete the recipient lookup within the request budget. On send routes, no message was handed to WhatsApp for this lookup failure. WhatsApp did not answer within the request budget. The change may or may not have been applied — the gateway stopped waiting for a confirmation that never came.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6844,7 +6995,7 @@
             }
           },
           "503": {
-            "description": "The whatsapp-web.js page connection died mid-request. The pin may or may not have been applied; a retry is safe, but it restarts the pin duration from the moment it succeeds.",
+            "description": "Baileys could not complete the recipient lookup within the request budget. On send routes, no message was handed to WhatsApp for this lookup failure. The whatsapp-web.js page connection died mid-request. The pin may or may not have been applied; a retry is safe, but it restarts the pin duration from the moment it succeeds.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6946,7 +7097,7 @@
             }
           },
           "503": {
-            "description": "The whatsapp-web.js page connection died mid-request. The change may or may not have been applied; repeating the request is safe, since it converges on the same state.",
+            "description": "Baileys could not complete the recipient lookup within the request budget. On send routes, no message was handed to WhatsApp for this lookup failure. The whatsapp-web.js page connection died mid-request. The change may or may not have been applied; repeating the request is safe, since it converges on the same state.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7150,7 +7301,7 @@
             }
           },
           "503": {
-            "description": "The whatsapp-web.js page connection died mid-request. The change may or may not have been applied; repeating the request is safe, since it converges on the same state.",
+            "description": "Baileys could not complete the recipient lookup within the request budget. On send routes, no message was handed to WhatsApp for this lookup failure. The whatsapp-web.js page connection died mid-request. The change may or may not have been applied; repeating the request is safe, since it converges on the same state.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8980,7 +9131,7 @@
     },
     "/api/sessions/{sessionId}/contacts/check/{number}": {
       "get": {
-        "description": "Returns whether the number is a registered WhatsApp account and its canonical id. Use this to pre-validate a recipient before sending: the Baileys send endpoints can return 201 for a number that is not on WhatsApp (whatsapp-web.js answers 400), so this is the way to confirm a new number is reachable before you send to it. Requires an OPERATOR key.",
+        "description": "Returns whether the number is a registered WhatsApp account and its canonical id. Use this to pre-validate a recipient before sending. Baileys also checks unmapped phone destinations before sending: a number reported as unregistered is rejected with 400. A successful check does not confirm message delivery. Requires an OPERATOR key.",
         "operationId": "ContactController_checkNumber",
         "parameters": [
           {
@@ -15517,7 +15668,7 @@
             }
           },
           "400": {
-            "description": "Product has no image (a product card requires one), a plugin blocked the send, or a plugin returned an invalid productId or body.",
+            "description": "Recipient reported as unregistered, product has no image, a plugin blocked the send, or a plugin returned an invalid productId or body.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15577,7 +15728,7 @@
             }
           },
           "503": {
-            "description": "WhatsApp did not answer the catalog query within the request budget, or rate-limited it. For some business accounts WhatsApp never answers it, so a retry may not help.",
+            "description": "WhatsApp did not answer the catalog query within the request budget, or rate-limited it. For some business accounts WhatsApp never answers it, so a retry may not help. Baileys could not complete the recipient lookup within the request budget. On send routes, no message was handed to WhatsApp for this lookup failure.",
             "content": {
               "application/json": {
                 "schema": {
@@ -19752,6 +19903,10 @@
       "MessageListResponseDto": {
         "type": "object",
         "properties": {
+          "unknownTimestampTotal": {
+            "type": "number",
+            "description": "Rows matching the non-time filters with unknown message time, before time bounds. Present only for time selections; excluded from their messages and total. Stored history is not proof of complete remote history."
+          },
           "messages": {
             "description": "Newest first.",
             "type": "array",
@@ -19852,7 +20007,7 @@
         "properties": {
           "messageId": {
             "type": "string",
-            "description": "The message id, assigned when the gateway accepts the message for sending. A 201 here means the message was handed to the WhatsApp client — it does NOT confirm delivery. On Baileys a message to a number that is not on WhatsApp still returns 201 with a valid messageId (whatsapp-web.js answers 400); whether it later delivers, stalls, or is reported as an error reaches you asynchronously, if at all. To confirm a number is on WhatsApp before sending, use GET /api/sessions/{sessionId}/contacts/check/{number}; track real delivery via the message `status` field (sent → delivered → read, or failed if WhatsApp reports an error for it). A message resting at `sent` is not diagnostic on its own: a registered recipient whose device has not come online since the send stays at `sent` too.",
+            "description": "The message id, assigned when the gateway accepts the message for sending. A 201 here means the message was handed to the WhatsApp session; it does not confirm delivery. Baileys checks phone destinations without a LID mapping and rejects a number reported as unregistered with 400. An unanswered lookup returns 503 before sending. Known LIDs skip the number check. Track delivery through the message status (sent, delivered, read, or failed). A message resting at sent can also belong to a registered recipient whose device is offline.",
             "example": "true_628123456789@c.us_3EB0123456789"
           },
           "timestamp": {

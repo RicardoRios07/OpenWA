@@ -63,7 +63,7 @@ function makeMessaging(stored: unknown = PROMPT, opts: { ephemeralExpiration?: n
     key: { id: 'CLICK-1', remoteJid: '628111@s.whatsapp.net', fromMe: true },
     messageTimestamp: 1700000000,
   });
-  const sock = { sendMessage };
+  const sock = { sendMessage, onWhatsApp: jest.fn((jid: string) => Promise.resolve([{ jid, exists: true }])) };
   const getStoredMessage = jest.fn().mockResolvedValue(stored);
   const putStoredMessage = jest.fn();
   const getEphemeralExpiration = jest.fn().mockReturnValue(opts.ephemeralExpiration);
@@ -71,6 +71,7 @@ function makeMessaging(stored: unknown = PROMPT, opts: { ephemeralExpiration?: n
     ensureReady: jest.fn(),
     sessionProxyUrl: () => undefined,
     getSocket: () => sock as unknown as WASocket,
+    getSocketOrNull: () => sock as unknown as WASocket,
     logger,
     toNeutralJid: (j: string) => j.replace('@c.us', '@s.whatsapp.net'),
     toEngineJid: (j: string) => j,

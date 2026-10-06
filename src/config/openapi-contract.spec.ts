@@ -16,6 +16,23 @@ const snapshot = (): OpenAPIObject =>
   JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'openapi.json'), 'utf8')) as OpenAPIObject;
 
 describe('openapi.json structural invariants', () => {
+  it('message send responses document recipient lookup failures', () => {
+    const routes: string[] = [];
+    for (const [route, item] of Object.entries(snapshot().paths)) {
+      const responses = item.post?.responses ?? {};
+      const sendsMessage = ['200', '201'].some(status => {
+        const response = responses[status];
+        if (!response || '$ref' in response) return false;
+        const schema = response.content?.['application/json']?.schema;
+        return schema && '$ref' in schema && schema.$ref.endsWith('/MessageResponseDto');
+      });
+      if (!sendsMessage) continue;
+      routes.push(route);
+      expect(responses['503']).toBeDefined();
+    }
+    expect(routes.length).toBeGreaterThan(0);
+  });
+
   // OpenAPI 3.0 requires every template expression in a path to resolve to a declared path parameter,
   // on the path item or on the operation. A route whose handler never binds the parameter — a
   // class-level prefix nothing reads, or a wildcard read off the request — publishes the template with

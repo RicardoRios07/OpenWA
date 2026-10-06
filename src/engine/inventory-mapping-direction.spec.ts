@@ -186,9 +186,10 @@ describe('docs/29 §29.5 inventory — the interface methods a row names can rea
 
   it('does not credit one engine with a symbol only the other engine reaches', () => {
     // Every interface method has the same name in both adapters. Baileys reaches `onWhatsApp` from
-    // getNumberId alone; its send paths must not borrow the wwjs send helpers' call edges.
+    // getNumberId and the shared send path; unrelated reads must not borrow the wwjs call edges.
     expect(reachers('onWhatsApp', 'baileys').has('getNumberId')).toBe(true);
-    expect(reachers('onWhatsApp', 'baileys').has('sendTextMessage')).toBe(false);
+    expect(reachers('onWhatsApp', 'baileys').has('sendTextMessage')).toBe(true);
+    expect(reachers('onWhatsApp', 'baileys').has('getContacts')).toBe(false);
     expect(reachers('getBlockedContacts', 'wwjs').has('getContacts')).toBe(false);
   });
 

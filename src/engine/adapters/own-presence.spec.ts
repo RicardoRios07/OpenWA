@@ -89,6 +89,7 @@ describe('BaileysMessaging.setOnlinePresence', () => {
     const host = {
       ensureReady: jest.fn(),
       getSocket: () => sock as unknown as WASocket,
+      getSocketOrNull: () => sock as unknown as WASocket,
       toEngineJid: (jid: string) => jid,
       recordLidMapping: jest.fn(),
       logger,

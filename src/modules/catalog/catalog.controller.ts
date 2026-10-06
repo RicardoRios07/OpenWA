@@ -5,7 +5,11 @@ import { SendProductDto, ProductQueryDto } from './dto/send-product.dto';
 import { ChatScoped, RequireRole } from '../auth/decorators/auth.decorators';
 import { ApiKeyRole } from '../auth/entities/api-key.entity';
 import { CatalogDto, PaginatedProductsDto, ProductDto, ProductMessageResponseDto } from './dto/catalog-response.dto';
-import { ENGINE_NOT_READY_409, SESSION_NOT_STARTED_404 } from '../../common/openapi/engine-status-responses';
+import {
+  ENGINE_NOT_READY_409,
+  RECIPIENT_LOOKUP_503,
+  SESSION_NOT_STARTED_404,
+} from '../../common/openapi/engine-status-responses';
 
 /**
  * Every catalog read walks WhatsApp's business-catalog IQ, which the server simply leaves
@@ -90,15 +94,15 @@ export class CatalogController {
   @ApiResponse({
     status: 400,
     description:
-      'Product has no image (a product card requires one), a plugin blocked the send, or a plugin returned an invalid productId or body.',
+      'Recipient reported as unregistered, product has no image, a plugin blocked the send, or a plugin returned an invalid productId or body.',
   })
   @ApiResponse({
     status: 501,
     description: 'Not supported by the active engine: whatsapp-web.js cannot send product messages.',
   })
-  @ApiResponse({ status: 503, description: CATALOG_TIMEOUT_503 })
   @ApiResponse({ status: 403, description: CATALOG_REFUSED_403 })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
+  @ApiResponse({ status: 503, description: `${CATALOG_TIMEOUT_503} ${RECIPIENT_LOOKUP_503}` })
   async sendProduct(@Param('sessionId') sessionId: string, @Body() dto: SendProductDto) {
     return this.catalogService.sendProduct(sessionId, dto.chatId, dto.productId, dto.body);
   }

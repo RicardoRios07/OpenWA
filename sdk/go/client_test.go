@@ -175,12 +175,14 @@ func TestListSessionsQueryName(t *testing.T) {
 }
 
 func TestQueryEncoding(t *testing.T) {
-	rt := &recordTransport{status: 200, body: `{"messages":[],"total":0}`}
+	rt := &recordTransport{status: 200, body: `{"messages":[],"total":0,"unknownTimestampTotal":2}`}
 	c := newTestClient(t, rt)
 
-	_, err := c.Messages.List(context.Background(), "s1", &ListMessagesQuery{
+	page, err := c.Messages.List(context.Background(), "s1", &ListMessagesQuery{
 		ChatID: Ptr("628@c.us"),
 		Limit:  Ptr(10),
+		Since:  Ptr(1789855200000.5), Until: Ptr(1789941600000.0),
+		Direction: Ptr("incoming"), OrderBy: Ptr("timestamp"), Type: Ptr("image"), MessageID: Ptr("M1"),
 	})
 	if err != nil {
 		t.Fatalf("List: %v", err)
@@ -191,6 +193,14 @@ func TestQueryEncoding(t *testing.T) {
 	}
 	if _, ok := q["offset"]; ok {
 		t.Fatal("nil offset should not appear in query")
+	}
+	for key, expected := range map[string]string{"since": "1789855200000.5", "until": "1789941600000", "direction": "incoming", "orderBy": "timestamp", "type": "image", "messageId": "M1"} {
+		if q.Get(key) != expected {
+			t.Fatalf("%s = %q, want %q", key, q.Get(key), expected)
+		}
+	}
+	if page.UnknownTimestampTotal == nil || *page.UnknownTimestampTotal != 2 {
+		t.Fatalf("unknown time count = %v", page.UnknownTimestampTotal)
 	}
 }
 

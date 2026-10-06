@@ -45,11 +45,15 @@ const isWebp = (b: unknown): boolean =>
   b.subarray(8, 12).toString('ascii') === 'WEBP';
 
 function makeMessaging(): { messaging: BaileysMessaging; sock: { sendMessage: jest.Mock } } {
-  const sock = { sendMessage: jest.fn().mockResolvedValue({ key: { id: 'M1' }, messageTimestamp: 1 }) };
+  const sock = {
+    onWhatsApp: jest.fn((jid: string) => Promise.resolve([{ jid, exists: true }])),
+    sendMessage: jest.fn().mockResolvedValue({ key: { id: 'M1' }, messageTimestamp: 1 }),
+  };
   const host = {
     ensureReady: jest.fn(),
     sessionProxyUrl: () => undefined,
     getSocket: () => sock as unknown as WASocket,
+    getSocketOrNull: () => sock as unknown as WASocket,
     logger,
     toNeutralJid: (j: string) => j,
     toEngineJid: (j: string) => j,

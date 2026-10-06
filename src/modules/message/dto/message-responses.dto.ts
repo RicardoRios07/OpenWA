@@ -120,6 +120,11 @@ export class MessageListItemDto {
 }
 
 export class MessageListResponseDto {
+  @ApiPropertyOptional({
+    description:
+      'Rows matching the non-time filters with unknown message time, before time bounds. Present only for time selections; excluded from their messages and total. Stored history is not proof of complete remote history.',
+  })
+  unknownTimestampTotal?: number;
   @ApiProperty({ type: [MessageListItemDto], description: 'Newest first.' })
   messages!: MessageListItemDto[];
 

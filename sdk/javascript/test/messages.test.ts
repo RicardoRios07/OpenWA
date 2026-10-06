@@ -6,6 +6,22 @@ function client(t: MockTransport): OpenWAClient {
   return new OpenWAClient({ baseUrl: 'http://x', apiKey: 'k', fetch: t.asFetch() });
 }
 
+it('preserves message-time filters and the unknown timestamp count', async () => {
+  const t = new MockTransport().on('GET', /\/messages$/, { body: { messages: [], total: 0, unknownTimestampTotal: 2 } });
+  const page = await client(t).messages.list('s', {
+    since: 1789855200000.5, until: 1789941600000, direction: 'incoming',
+    orderBy: 'timestamp', type: 'image', messageId: 'M1',
+  });
+  const query = new URL(t.lastCall!.url).searchParams;
+  expect(query.get('since')).toBe('1789855200000.5');
+  expect(query.get('until')).toBe('1789941600000');
+  expect(query.get('direction')).toBe('incoming');
+  expect(query.get('orderBy')).toBe('timestamp');
+  expect(query.get('type')).toBe('image');
+  expect(query.get('messageId')).toBe('M1');
+  expect(page.unknownTimestampTotal).toBe(2);
+});
+
 describe('MessagesResource idempotency keys', () => {
   const sends: Array<[string, (c: OpenWAClient, key?: string) => Promise<unknown>]> = [
     ['send-text', (c, key) => c.messages.sendText('s', { chatId: 'c@c.us', text: 'hi', mentions: ['1@c.us'] }, key)],

@@ -152,11 +152,17 @@ class TestClientCore:
         assert "name=my-bot" in backend.last_call.url
 
     def test_query_params_skip_none(self):
-        backend = MockBackend().on("GET", "/messages", body=[])
-        make_client(backend).messages.list("s1", {"chatId": "a@c.us", "limit": 10})
+        backend = MockBackend().on("GET", "/messages", body={"messages": [], "total": 0, "unknownTimestampTotal": 2})
+        result = make_client(backend).messages.list("s1", {
+            "chatId": "a@c.us", "limit": 10, "since": 1789855200000.5, "until": 1789941600000,
+            "direction": "incoming", "orderBy": "timestamp", "type": "image", "messageId": "M1",
+        })
         url = backend.last_call.url
         assert "chatId=a%40c.us" in url
         assert "limit=10" in url
+        for field in ("since=1789855200000.5", "until=1789941600000", "direction=incoming", "orderBy=timestamp", "type=image", "messageId=M1"):
+            assert field in url
+        assert result["unknownTimestampTotal"] == 2
 
     def test_build_url_escapes_a_literal_percent_in_a_query_value(self):
         # httpx before 0.27.1 sent "%41" unescaped, so the gateway decoded it to "A".

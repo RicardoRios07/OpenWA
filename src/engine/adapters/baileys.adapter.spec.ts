@@ -195,6 +195,7 @@ const fakeStore = {
 beforeEach(() => {
   fakeStore.getMessage.mockReset();
   fakeSock.signalRepository = undefined;
+  fakeSock.onWhatsApp.mockReset().mockImplementation((jid: string) => Promise.resolve([{ jid, exists: true }]));
   fakeSock.groupFetchAllParticipating.mockReset();
   const baileys = jest.requireMock<Record<string, jest.Mock>>('@whiskeysockets/baileys');
   baileys.getContentType.mockReset().mockReturnValue('conversation');
@@ -1951,13 +1952,13 @@ describe('BaileysAdapter messaging', () => {
     expect(spy).toHaveBeenCalledWith([{ lid: '484848@lid', pn: '628111@s.whatsapp.net' }]);
   });
 
-  it('sendTextMessage keeps the phone jid when no LID mapping is known', async () => {
+  it('sendTextMessage uses the canonical phone jid when no LID mapping is known', async () => {
     fakeSock.sendMessage.mockResolvedValue({ key: { id: 'OUT1' }, messageTimestamp: 1700000001 });
     fakeSock.signalRepository = { lidMapping: { getLIDForPN: jest.fn().mockResolvedValue(null) } };
     const adapter = await readyAdapter();
     await adapter.sendTextMessage('628111@c.us', 'hello');
     expect(fakeSock.sendMessage).toHaveBeenCalledWith(
-      '628111@c.us',
+      '628111@s.whatsapp.net',
       { text: 'hello', linkPreview: null },
       safeSendOptions(),
     );
@@ -4275,11 +4276,11 @@ describe('BaileysAdapter store-backed ops', () => {
       await adapter.replyToMessage('628111@c.us', 'LIST1', 'got it');
       await adapter.reactToMessage('628111@c.us', 'LIST1', '👍');
       expect(fakeSock.sendMessage).toHaveBeenCalledWith(
-        '628111@c.us',
+        '628111@s.whatsapp.net',
         { text: 'got it', linkPreview: null },
         expect.objectContaining({ quoted: listMsg }),
       );
-      expect(fakeSock.sendMessage).toHaveBeenCalledWith('628111@c.us', {
+      expect(fakeSock.sendMessage).toHaveBeenCalledWith('628111@s.whatsapp.net', {
         react: { text: '👍', key: listMsg.key },
       });
     });
@@ -4655,7 +4656,7 @@ describe('BaileysAdapter store-backed ops', () => {
     const adapter = await ready();
     await expect(adapter.editMessage('628111@c.us', 'TARGET', 'x')).resolves.toBeDefined();
     expect(fakeSock.sendMessage).toHaveBeenCalledWith(
-      '628111@c.us',
+      '628111@s.whatsapp.net',
       {
         text: 'x',
         edit: ownStored.key,
