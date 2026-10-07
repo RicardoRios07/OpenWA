@@ -2170,6 +2170,26 @@ describe('BaileysAdapter inbound fan-out', () => {
     });
   });
 
+  it('handles a rejected async history consumer without an unhandled rejection', async () => {
+    const onHistoryMessages = jest.fn().mockRejectedValue(new Error('history unavailable'));
+    const adapter = newAdapter();
+    await adapter.initialize({ onHistoryMessages });
+    fakeSock.fire('messaging-history.set', {
+      contacts: [],
+      chats: [],
+      messages: [
+        {
+          key: { remoteJid: '628111@s.whatsapp.net', fromMe: false, id: 'H_FAIL' },
+          message: { conversation: 'history' },
+          messageTimestamp: 1700000000,
+        },
+      ],
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+    expect(onHistoryMessages).toHaveBeenCalledTimes(1);
+  });
+
   it('maps an ephemeral-wrapped history message to its real type and body (not unknown/empty)', async () => {
     const onHistoryMessages = jest.fn();
     const adapter = newAdapter();
@@ -2641,6 +2661,66 @@ describe('BaileysAdapter inbound fan-out', () => {
       }),
     );
     expect(onMessageCreate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['delete', '628111@s.whatsapp.net', true],
+    ['edit', '628111@s.whatsapp.net', true],
+    ['delete', '123456789@lid', true],
+    ['delete', '120363000@g.us', false],
+  ] as const)('delivers an API %s echo in %s', async (operation, chatId, fromMe) => {
+    jest
+      .requireMock<Record<string, jest.Mock>>('@whiskeysockets/baileys')
+      .getContentType.mockImplementation(realGetContentType);
+    fakeSock.user = { id: '628000@s.whatsapp.net' };
+    fakeSock.groupMetadata.mockResolvedValue({
+      id: chatId,
+      participants: [{ id: fakeSock.user.id, admin: 'admin' }],
+    });
+    const target = {
+      key: { remoteJid: chatId, fromMe, id: 'TARGET', participant: '628111@s.whatsapp.net' },
+      message: { conversation: 'hello' },
+      messageTimestamp: 1700000000,
+    };
+    const echo = {
+      key: { remoteJid: chatId, fromMe: true, id: 'MUTATION_ECHO' },
+      message: {
+        protocolMessage: {
+          key: target.key,
+          type: operation === 'delete' ? 0 : 14,
+          ...(operation === 'edit' ? { editedMessage: { conversation: 'updated' } } : {}),
+        },
+      },
+      messageTimestamp: 1700000001,
+    };
+    fakeStore.getMessage.mockResolvedValue(target);
+    fakeSock.sendMessage.mockResolvedValue(echo);
+    const onMessageRevoked = jest.fn();
+    const onMessageEdited = jest.fn();
+    const onMessageCreate = jest.fn();
+    const onMessage = jest.fn();
+    const adapter = newAdapter();
+    await adapter.initialize({ onMessageRevoked, onMessageEdited, onMessageCreate, onMessage });
+    fakeSock.fire('connection.update', { connection: 'open' });
+    if (operation === 'delete') await adapter.deleteMessage(chatId, 'TARGET', true);
+    else await adapter.editMessage(chatId, 'TARGET', 'updated');
+    expect(onMessageRevoked).not.toHaveBeenCalled();
+    expect(onMessageEdited).not.toHaveBeenCalled();
+    fakeSock.fire('messages.upsert', { type: 'append', messages: [echo] });
+    await new Promise(resolve => setImmediate(resolve));
+    const callback = operation === 'delete' ? onMessageRevoked : onMessageEdited;
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(callback).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: chatId.replace('@s.whatsapp.net', '@c.us'),
+        ...(operation === 'delete'
+          ? { id: 'TARGET', revokedId: 'TARGET', body: '' }
+          : { messageId: 'TARGET', body: 'updated' }),
+      }),
+    );
+    expect(operation === 'delete' ? onMessageEdited : onMessageRevoked).not.toHaveBeenCalled();
+    expect(onMessageCreate).not.toHaveBeenCalled();
+    expect(onMessage).not.toHaveBeenCalled();
   });
 
   // The account's own phone kept working while the gateway was down. WhatsApp replays what it sent
