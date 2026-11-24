@@ -123,6 +123,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
     gosu \
     patch \
     curl \
+    ca-certificates \
     unzip \
     procps \
     sqlite3 \
