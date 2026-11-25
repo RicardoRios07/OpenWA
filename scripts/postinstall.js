@@ -93,6 +93,15 @@ function planSteps(root, env = process.env) {
       options: { stdio: 'inherit', cwd: root, env: cleanEnv },
     });
   }
+  const authPollingPatcher = path.join(root, 'scripts', 'patch-wwebjs-auth-polling.js');
+  if (fs.existsSync(authPollingPatcher)) {
+    steps.push({
+      name: 'whatsapp-web.js auth readiness polling repair (scripts/patch-wwebjs-auth-polling.js --best-effort)',
+      command: process.execPath,
+      args: [authPollingPatcher, '--best-effort'],
+      options: { stdio: 'inherit', cwd: root, env: cleanEnv },
+    });
+  }
   const statusPatcher = path.join(root, 'scripts', 'patch-wwebjs-status.js');
   if (fs.existsSync(statusPatcher)) {
     steps.push({

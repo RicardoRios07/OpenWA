@@ -190,7 +190,7 @@ COPY package*.json ./
 # scripts/postinstall.js rides along so a bare local `npm ci` keeps working, but the
 # --ignore-scripts install below skips the hook here: the explicit fatal run right
 # after is the sole (and stricter) applier for the image.
-COPY scripts/postinstall.js scripts/atomic-write.js scripts/patch-wwebjs-newsletter-preview.js scripts/patch-wwebjs-status.js scripts/patch-wwebjs-ready-sync.js scripts/patch-wwebjs-participant-arity.js scripts/patch-wwebjs-media-id.js scripts/patch-wwebjs-send-error.js scripts/patch-wwebjs-puppeteer.js scripts/patch-baileys-appstate.js scripts/patch-baileys-newsletter-create.js scripts/patch-baileys-pairing.js scripts/patch-baileys-media-stream.js scripts/patch-baileys-media-signal.js scripts/patch-baileys-status-ack.js scripts/patch-baileys-event-buffer.js ./scripts/
+COPY scripts/postinstall.js scripts/atomic-write.js scripts/patch-wwebjs-auth-polling.js scripts/patch-wwebjs-newsletter-preview.js scripts/patch-wwebjs-status.js scripts/patch-wwebjs-ready-sync.js scripts/patch-wwebjs-participant-arity.js scripts/patch-wwebjs-media-id.js scripts/patch-wwebjs-send-error.js scripts/patch-wwebjs-puppeteer.js scripts/patch-baileys-appstate.js scripts/patch-baileys-newsletter-create.js scripts/patch-baileys-pairing.js scripts/patch-baileys-media-stream.js scripts/patch-baileys-media-signal.js scripts/patch-baileys-status-ack.js scripts/patch-baileys-event-buffer.js ./scripts/
 
 # Install production dependencies only, then apply the backports. Each patcher matches the pristine
 # library on its own and none depends on another's edits, so the order below is not load-bearing:
@@ -217,6 +217,7 @@ COPY scripts/postinstall.js scripts/atomic-write.js scripts/patch-wwebjs-newslet
 # a line of its own, ahead of the cache clean that docs/10 quotes, and
 # scripts/smoke-test-engine-libs.sh checks the built image on each architecture.
 RUN npm ci --omit=dev --ignore-scripts \
+    && node scripts/patch-wwebjs-auth-polling.js \
     && node scripts/patch-wwebjs-newsletter-preview.js \
     && node scripts/patch-wwebjs-status.js \
     && node scripts/patch-wwebjs-ready-sync.js \
