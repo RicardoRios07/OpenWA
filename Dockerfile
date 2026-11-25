@@ -122,6 +122,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
     dumb-init \
     gosu \
     curl \
+    ca-certificates \
     unzip \
     procps \
     sqlite3 \
@@ -325,7 +326,7 @@ EXPOSE 2785
 # The probe shell sees only that environment, never a PORT set in a file the app loads (a mounted
 # .env or data/.env.generated), so a non-default PORT must be passed with -e/--env. Shell form on
 # purpose: exec form would not expand it.
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=240s --retries=3 \
     CMD curl -f "http://localhost:${PORT:-2785}/api/health/ready" || exit 1
 
 # dumb-init is PID 1 and handles signal forwarding.
