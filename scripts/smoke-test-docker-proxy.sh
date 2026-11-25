@@ -54,7 +54,7 @@ echo ""
 echo "==> Verifying the proxy permits the read operations orchestration needs (from openwa-api)..."
 # openwa-api is the only container that can reach docker-proxy:2375 (internal network), so
 # the ACL is exercised from inside it. Node's global fetch (Node 18+) avoids a curl dependency.
-for endpoint in _ping containers/json info images/json volumes; do
+for endpoint in _ping containers/json images/json volumes; do
   CODE=$(docker exec openwa-api node -e "fetch('http://docker-proxy:2375/$endpoint').then(r=>console.log(r.status)).catch(()=>console.log(0))" 2>/dev/null || echo 0)
   if [ "$CODE" != "200" ]; then
     echo "FAIL: GET /$endpoint via proxy returned HTTP $CODE (expected 200)" >&2
@@ -72,7 +72,7 @@ if [ "$CODE" != "403" ]; then
 fi
 echo "PASS: GET /networks via proxy -> 403 (denied)"
 # NOTE: there is intentionally no "DELETE is rejected" check. With POST=1 the pinned proxy
-# (tecnativa/docker-socket-proxy v0.4.2) admits EVERY method to the enabled paths — its
+# (tecnativa/docker-socket-proxy v0.5.0) admits EVERY method to the enabled paths — its
 # DELETE env flag is dead config — so such a check would fail against the working
 # configuration. OpenWA itself never issues deletes (profile teardown is stop-only);
 # see SECURITY.md "Docker socket proxy — scope and residual risk".

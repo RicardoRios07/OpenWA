@@ -1,9 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { MessageProjector, PERSIST_RETRY_DELAY_MS } from './message-projector.service';
+import { LAST_ACTIVE_WRITE_WINDOW_MS, MessageProjector, PERSIST_RETRY_DELAY_MS } from './message-projector.service';
 import { EngineRegistry } from '../../engine/engine-registry.service';
-import { Not, type Repository } from 'typeorm';
+import { IsNull, Not, Or, type Repository } from 'typeorm';
 import { Message, MessageDirection, MessageStatus } from '../message/entities/message.entity';
 import { Session } from './entities/session.entity';
 import { EventsGateway } from '../events/events.gateway';
@@ -132,6 +132,88 @@ describe('MessageProjector', () => {
     });
   });
 
+  describe('edits and reactions aimed at a stored row', () => {
+    it('drops an edit the counterparty made of a message the account sent', async () => {
+      messageRepository.findOne.mockResolvedValue({ chatId: 'c1@c.us', direction: 'outgoing' });
+
+      projector.applyMessageEditQueued('s1', {
+        messageId: 'M1',
+        chatId: 'c1@c.us',
+        body: 'forged',
+        fromMe: false,
+      } as never);
+      await settle();
+      await settle();
+
+      expect(messageRepository.update).not.toHaveBeenCalled();
+      expect(webhookService.dispatch).not.toHaveBeenCalled();
+    });
+
+    it("applies the counterparty's edit of its own message", async () => {
+      messageRepository.findOne.mockResolvedValue({ chatId: 'c1@c.us', direction: 'incoming' });
+
+      projector.applyMessageEditQueued('s1', {
+        messageId: 'M1',
+        chatId: 'c1@c.us',
+        body: 'fixed typo',
+        fromMe: false,
+      } as never);
+      await settle();
+      await settle();
+
+      expect(messageRepository.update).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: 's1', waMessageId: 'M1' }),
+        { body: 'fixed typo' },
+      );
+    });
+
+    it("drops a group member's edit of another member's message", async () => {
+      messageRepository.findOne.mockResolvedValue({
+        chatId: '120363@g.us',
+        direction: 'incoming',
+        author: '628111@c.us',
+      });
+
+      projector.applyMessageEditQueued('s1', {
+        messageId: 'M1',
+        chatId: '120363@g.us',
+        body: 'forged',
+        fromMe: false,
+        author: '628222@c.us',
+      } as never);
+      await settle();
+      await settle();
+
+      expect(messageRepository.update).not.toHaveBeenCalled();
+    });
+
+    it('applies a reaction to a message a REST send stored under the other dialect of the chat id', async () => {
+      messageRepository.findOne.mockResolvedValue({ chatId: '628@s.whatsapp.net', direction: 'outgoing' });
+
+      projector.applyReactionQueued('s1', {
+        messageId: 'M1',
+        chatId: '628@c.us',
+        senderId: '628@c.us',
+        reaction: '👍',
+      });
+      await settle();
+      await settle();
+
+      expect(eventsGateway.emitMessageReaction).toHaveBeenCalledTimes(1);
+    });
+
+    it('drops a reaction that names a message of another chat', async () => {
+      messageRepository.findOne.mockResolvedValue({ chatId: '120363@g.us', direction: 'incoming' });
+
+      projector.applyReactionQueued('s1', { messageId: 'M1', chatId: 'c1@c.us', senderId: '628@c.us', reaction: '👍' });
+      await settle();
+      await settle();
+
+      expect(messageRepository.update).not.toHaveBeenCalled();
+      expect(eventsGateway.emitMessageReaction).not.toHaveBeenCalled();
+    });
+  });
+
   describe('applyReactionQueued', () => {
     it('ignores a reaction with no target message id instead of querying for one', async () => {
       // findOne DROPS an undefined condition rather than matching nothing, so reaching the repository
@@ -241,6 +323,124 @@ describe('MessageProjector', () => {
       );
     });
 
+    describe('when the engine says who made the revoke', () => {
+      const revoke = { id: 'M1', revokedId: 'M1', chatId: 'c1@c.us' } as never;
+      const row = (fields: Record<string, unknown>): void => {
+        messageRepository.findOne.mockResolvedValue({ chatId: 'c1@c.us', direction: 'incoming', ...fields });
+      };
+
+      it('drops a revoke the counterparty made of a message the account sent', async () => {
+        // WhatsApp clients ignore it, and Baileys hands it over unchecked, so the stored row must not follow.
+        row({ direction: 'outgoing' });
+
+        projector.handleMessageRevoked('s1', engine, revoke, { fromMe: false });
+        await settle();
+
+        expect(messageRepository.update).not.toHaveBeenCalled();
+        expect(webhookService.dispatch).not.toHaveBeenCalled();
+        expect(eventsGateway.emitMessageRevoked).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ['the counterparty of its own message', { direction: 'incoming' }, false],
+        ['the account from its phone of its own message', { direction: 'outgoing' }, true],
+      ])('applies a revoke made by %s', async (_who, fields, fromMe) => {
+        row(fields);
+
+        projector.handleMessageRevoked('s1', engine, revoke, { fromMe });
+        await settle();
+
+        expect(messageRepository.update).toHaveBeenCalledWith(
+          { sessionId: 's1', waMessageId: 'M1' },
+          expect.objectContaining({ type: 'revoked' }),
+        );
+        expect(eventsGateway.emitMessageRevoked).toHaveBeenCalledTimes(1);
+      });
+
+      it('applies the account deleting, from its phone, a message a REST send stored under the other dialect', async () => {
+        row({ chatId: 'c1@s.whatsapp.net', direction: 'outgoing' });
+
+        projector.handleMessageRevoked('s1', engine, revoke, { fromMe: true });
+        await settle();
+
+        expect(eventsGateway.emitMessageRevoked).toHaveBeenCalledTimes(1);
+      });
+
+      it('drops a revoke that names a message of another chat', async () => {
+        row({ chatId: '120363@g.us' });
+
+        projector.handleMessageRevoked('s1', engine, revoke, { fromMe: false });
+        await settle();
+
+        expect(messageRepository.update).not.toHaveBeenCalled();
+        expect(eventsGateway.emitMessageRevoked).not.toHaveBeenCalled();
+      });
+
+      it('still applies a group admin deleting a message the account sent', async () => {
+        row({ chatId: '120363@g.us', direction: 'outgoing' });
+
+        projector.handleMessageRevoked('s1', engine, { id: 'M1', revokedId: 'M1', chatId: '120363@g.us' } as never, {
+          fromMe: false,
+        });
+        await settle();
+
+        expect(eventsGateway.emitMessageRevoked).toHaveBeenCalledTimes(1);
+      });
+
+      describe('in a group, by a member the roster shows is no admin', () => {
+        const groupRevoke = { id: 'M1', revokedId: 'M1', chatId: '120363@g.us' } as never;
+        const member = { fromMe: false, participant: '628333@c.us', admin: false };
+
+        it.each([
+          ['a message the account sent', { direction: 'outgoing' }],
+          ['another member message', { author: '628111@c.us' }],
+        ])('drops the delete of %s', async (_what, fields) => {
+          row({ chatId: '120363@g.us', ...fields });
+
+          projector.handleMessageRevoked('s1', engine, groupRevoke, member);
+          await settle();
+
+          expect(messageRepository.update).not.toHaveBeenCalled();
+          expect(eventsGateway.emitMessageRevoked).not.toHaveBeenCalled();
+        });
+
+        it('applies the delete of their own message', async () => {
+          row({ chatId: '120363@g.us', author: '628333@c.us' });
+
+          projector.handleMessageRevoked('s1', engine, groupRevoke, member);
+          await settle();
+
+          expect(eventsGateway.emitMessageRevoked).toHaveBeenCalledTimes(1);
+        });
+      });
+
+      it('applies a revoke of a message nothing stored, as it always did', async () => {
+        messageRepository.findOne.mockResolvedValue(null);
+
+        projector.handleMessageRevoked('s1', engine, revoke, { fromMe: false });
+        await settle();
+
+        expect(eventsGateway.emitMessageRevoked).toHaveBeenCalledTimes(1);
+      });
+
+      it('writes and announces nothing when the engine is retired while the row is read', async () => {
+        let answer!: () => void;
+        messageRepository.findOne.mockReturnValue(
+          new Promise(resolve => (answer = () => resolve({ chatId: 'c1@c.us', direction: 'incoming' }))),
+        );
+
+        projector.handleMessageRevoked('s1', engine, revoke, { fromMe: false });
+        await settle();
+        engines.delete('s1');
+        answer();
+        await settle();
+
+        expect(messageRepository.update).not.toHaveBeenCalled();
+        expect(webhookService.dispatch).not.toHaveBeenCalled();
+        expect(eventsGateway.emitMessageRevoked).not.toHaveBeenCalled();
+      });
+    });
+
     it('ignores an event from an engine that no longer owns the session', async () => {
       projector.handleMessageRevoked('s1', {} as IWhatsAppEngine, { id: 'REV1' } as never);
       await settle();
@@ -262,7 +462,11 @@ describe('MessageProjector', () => {
         metadata: null,
         timestamp: 1_700_000_000,
       };
-      messageRepository.find.mockResolvedValueOnce([{ waMessageId: 'WA1', type: 'text' }]).mockResolvedValueOnce([row]);
+      messageRepository.find
+        .mockResolvedValueOnce([
+          { waMessageId: 'WA1', type: 'text', chatId: 'c1@c.us', direction: MessageDirection.INCOMING },
+        ])
+        .mockResolvedValueOnce([row]);
       const builder = {
         insert: jest.fn().mockReturnThis(),
         values: jest.fn().mockReturnThis(),
@@ -503,6 +707,39 @@ describe('MessageProjector (inbound projection)', () => {
       );
     });
 
+    it('carries the forwarded marker of a received message to the webhook and the websocket, and stores none of it', async () => {
+      const engine = makeEngine();
+      engines.set(SESSION_ID, engine);
+
+      projector.handleInboundMessage(SESSION_ID, engine, makeIncoming({ isForwarded: true, forwardingScore: 3 }));
+      await new Promise(resolve => setImmediate(resolve));
+
+      const marker = expect.objectContaining({ isForwarded: true, forwardingScore: 3 }) as unknown;
+      expect(webhookService.dispatch).toHaveBeenCalledWith(SESSION_ID, 'message.received', marker);
+      expect(eventsGateway.emitMessage).toHaveBeenCalledWith(SESSION_ID, marker);
+      expect(messageRepository.create).toHaveBeenCalledWith(expect.not.objectContaining({ isForwarded: true }));
+    });
+
+    it('announces a message delivered already deleted without its forwarded marker', async () => {
+      const engine = makeEngine();
+      engines.set(SESSION_ID, engine);
+
+      projector.handleInboundMessage(
+        SESSION_ID,
+        engine,
+        makeIncoming({ type: 'revoked', body: '', isForwarded: true, forwardingScore: 3 }),
+      );
+      await new Promise(resolve => setImmediate(resolve));
+
+      const payload = dispatchPayload(webhookService.dispatch);
+      expect(payload).toMatchObject({ type: 'revoked', body: '' });
+      expect(payload).not.toHaveProperty('isForwarded');
+      expect(payload).not.toHaveProperty('forwardingScore');
+      const [, emitted] = eventsGateway.emitMessage.mock.calls[0] as [string, Record<string, unknown>];
+      expect(emitted).not.toHaveProperty('isForwarded');
+      expect(emitted).not.toHaveProperty('forwardingScore');
+    });
+
     // HookManager threads any defined `data`, so a handler returning `data: null` ("I consumed it")
     // or an object that is not a message reaches the projector. It must still record and dispatch
     // the engine's message, not throw and erase it.
@@ -593,12 +830,13 @@ describe('MessageProjector (inbound projection)', () => {
       expect(projector.inFlightInbound('other-session', 'wamid.1')).toBeUndefined();
     });
 
-    it('lends no text to a quote once the message is revoked before its row is written', () => {
+    it('lends no text to a quote once the message is revoked before its row is written', async () => {
       const engine = makeEngine();
       engines.set(SESSION_ID, engine);
       hookManager.execute.mockImplementationOnce(() => new Promise(() => undefined));
 
       projector.handleInboundMessage(SESSION_ID, engine, makeIncoming());
+      await settle();
       projector.handleMessageRevoked(SESSION_ID, engine, { id: 'wamid.1' } as never);
 
       expect(projector.inFlightInbound(SESSION_ID, 'wamid.1')).toEqual({ chatId: '15550001111@c.us', body: '' });
@@ -661,8 +899,159 @@ describe('MessageProjector (inbound projection)', () => {
         releaseHook();
         await drain();
 
-        expect(updatesAfterInsert()).toEqual([[where, { body: 'second fix' }]]);
+        expect(updatesAfterInsert()).toEqual([
+          [{ ...where, type: Not('revoked'), body: Or(Not('second fix'), IsNull()) }, { body: 'second fix' }],
+        ]);
         expect(webhookService.dispatch).toHaveBeenCalledWith(SESSION_ID, 'message.edited', expect.anything());
+      });
+
+      it('keeps an edit from another chat out of the message while its row is not written', async () => {
+        const engine = makeEngine();
+        engines.set(SESSION_ID, engine);
+        await received(engine);
+
+        projector.applyMessageEditQueued(SESSION_ID, {
+          messageId: 'wamid.1',
+          body: 'FORGED',
+          chatId: '15559998888@c.us',
+          fromMe: false,
+        } as never);
+        await drain();
+        releaseHook();
+        await drain();
+
+        expect(messageRepository.insert).toHaveBeenCalledTimes(1);
+        expect(updatesAfterInsert()).toEqual([]);
+        expect(webhookService.dispatch).not.toHaveBeenCalledWith(
+          SESSION_ID,
+          'message.received',
+          expect.objectContaining({ body: 'FORGED' }),
+        );
+        // Nor is it announced as an edit of a message the consumer has not been given yet.
+        expect(webhookService.dispatch).not.toHaveBeenCalledWith(SESSION_ID, 'message.edited', expect.anything());
+      });
+
+      it('keeps an edit that claims to come from the account out of a message the counterparty sent', async () => {
+        const engine = makeEngine();
+        engines.set(SESSION_ID, engine);
+        await received(engine);
+
+        projector.applyMessageEditQueued(SESSION_ID, {
+          messageId: 'wamid.1',
+          body: 'FORGED',
+          chatId: '15550001111@c.us',
+          fromMe: true,
+        } as never);
+        await drain();
+        releaseHook();
+        await drain();
+
+        expect(updatesAfterInsert()).toEqual([]);
+      });
+
+      // An id names one message: a repeat of it from another chat, emitted while the first is still in its
+      // hook chain, must not take the chat the entry is judged by.
+      it('keeps the chat of the first delivery of an id when a repeat names another chat', async () => {
+        const engine = makeEngine();
+        engines.set(SESSION_ID, engine);
+        await received(engine);
+        // The repeat is emitted and its insert is out, so its entry is still the shared one when the change
+        // that names its chat arrives.
+        let finishRepeat: () => void = () => undefined;
+        messageRepository.insert.mockImplementationOnce(
+          () =>
+            new Promise(resolve => {
+              finishRepeat = () => resolve({ identifiers: [{ id: 1 }], generatedMaps: [{}] });
+            }),
+        );
+
+        projector.handleInboundMessage(
+          SESSION_ID,
+          engine,
+          makeIncoming({ chatId: '15559998888@c.us', from: '15559998888@c.us' }),
+        );
+        await drain();
+        projector.applyMessageEditQueued(SESSION_ID, {
+          messageId: 'wamid.1',
+          body: 'FORGED',
+          chatId: '15559998888@c.us',
+          fromMe: false,
+        } as never);
+        await drain();
+        releaseHook();
+        await drain();
+        finishRepeat();
+        await drain();
+
+        // What the first delivery is stored and announced with: not the text aimed through the repeat.
+        const bodies = messageRepository.insert.mock.calls.map(([row]) => (row as { body: string }).body);
+        expect(bodies).not.toContain('FORGED');
+        const announced = (webhookService.dispatch.mock.calls as Array<[string, string, { body?: string }]>)
+          .filter(([, event]) => event === 'message.received')
+          .map(([, , payload]) => payload.body);
+        expect(announced).not.toContain('FORGED');
+      });
+
+      it("keeps another member's edit out of a group message while its row is not written", async () => {
+        const engine = makeEngine();
+        engines.set(SESSION_ID, engine);
+        const group = '120363000000000001@g.us';
+        const gate = new Promise<void>(resolve => (releaseHook = resolve));
+        hookManager.execute.mockImplementationOnce(async (_event: string, data: unknown) => {
+          await gate;
+          return { continue: true, data };
+        });
+        projector.handleInboundMessage(
+          SESSION_ID,
+          engine,
+          makeIncoming({ chatId: group, from: group, isGroup: true, kind: 'group', author: '39900313301142@lid' }),
+        );
+        await new Promise(resolve => setImmediate(resolve));
+
+        projector.applyMessageEditQueued(SESSION_ID, {
+          messageId: 'wamid.1',
+          body: 'genuine edit',
+          chatId: group,
+          fromMe: false,
+          author: '39900313301142@lid',
+        } as never);
+        // The latest recorded edit is the one written, so a forged one that was kept would win.
+        projector.applyMessageEditQueued(SESSION_ID, {
+          messageId: 'wamid.1',
+          body: 'FORGED',
+          chatId: group,
+          fromMe: false,
+          author: '195700218425410@lid',
+        } as never);
+        await drain();
+        releaseHook();
+        await drain();
+
+        expect(updatesAfterInsert()).toEqual([
+          [{ ...where, type: Not('revoked'), body: Or(Not('genuine edit'), IsNull()) }, { body: 'genuine edit' }],
+        ]);
+      });
+
+      it('keeps a reaction from another chat out of the message while its row is not written', async () => {
+        const engine = makeEngine();
+        engines.set(SESSION_ID, engine);
+        await received(engine);
+
+        const storeReactions = jest.spyOn(
+          projector as unknown as { storeReactions: () => Promise<void> },
+          'storeReactions',
+        );
+        projector.applyReactionQueued(SESSION_ID, {
+          messageId: 'wamid.1',
+          chatId: '15559998888@c.us',
+          reaction: 'X',
+          senderId: '15559998888@c.us',
+        });
+        await drain();
+        releaseHook();
+        await drain();
+
+        expect(storeReactions).not.toHaveBeenCalled();
       });
 
       it('lets a revoke win over an edit', async () => {
@@ -677,6 +1066,50 @@ describe('MessageProjector (inbound projection)', () => {
         await drain();
 
         expect(updatesAfterInsert()).toEqual([[where, revokedPatch]]);
+      });
+
+      // The REST delete names the chat its caller addressed: a message still arriving under another chat
+      // is not the one deleted, whichever id it carries.
+      it('does not take back a message arriving under another chat than the REST delete names', async () => {
+        const engine = makeEngine();
+        engines.set(SESSION_ID, engine);
+        await received(engine);
+
+        await projector.recordRevoke(SESSION_ID, 'wamid.1', { kind: 'revoke', chatId: '15559998888@c.us' });
+        releaseHook();
+        await drain();
+
+        expect(messageRepository.insert).toHaveBeenCalledWith(expect.objectContaining({ body: 'hello', type: 'text' }));
+        expect(updatesAfterInsert()).toEqual([]);
+      });
+
+      it('takes back a message arriving under the chat the REST delete names', async () => {
+        const engine = makeEngine();
+        engines.set(SESSION_ID, engine);
+        await received(engine);
+
+        await projector.recordRevoke(SESSION_ID, 'wamid.1', { kind: 'revoke', chatId: '15550001111@c.us' });
+        releaseHook();
+        await drain();
+
+        expect(updatesAfterInsert()).toEqual([[where, revokedPatch]]);
+      });
+
+      it('does not give a message arriving under another chat the body of a REST edit that names a chat', async () => {
+        const engine = makeEngine();
+        engines.set(SESSION_ID, engine);
+        await received(engine);
+
+        await projector.recordOutboundMessageEdit(SESSION_ID, 'wamid.1', 'edited', {
+          kind: 'edit',
+          chatId: '15559998888@c.us',
+          fromMe: true,
+        });
+        releaseHook();
+        await drain();
+
+        expect(messageRepository.insert).toHaveBeenCalledWith(expect.objectContaining({ body: 'hello' }));
+        expect(updatesAfterInsert()).toEqual([]);
       });
 
       it('changes nothing after the insert when no revoke or edit arrived', async () => {
@@ -846,8 +1279,84 @@ describe('MessageProjector (inbound projection)', () => {
       await flush();
 
       const guarded = { ...where, type: Not('revoked') };
-      expect(messageRepository.update).toHaveBeenCalledWith(guarded, { body: 'late' });
-      expect(messageRepository.update).toHaveBeenCalledWith(guarded, { body: 'later' });
+      expect(messageRepository.update).toHaveBeenCalledWith(
+        { ...guarded, body: Or(Not('late'), IsNull()) },
+        { body: 'late' },
+      );
+      expect(messageRepository.update).toHaveBeenCalledWith(
+        { ...guarded, body: Or(Not('later'), IsNull()) },
+        { body: 'later' },
+      );
+    });
+
+    // The table holds one row per id, which may be another chat's message. The engines refuse a REST call
+    // that names a chat the message is not in, but they judge their own copy, not this row.
+    describe('a REST call that names a chat', () => {
+      const own = '15550001111@c.us';
+      const other = '15559998888@c.us';
+
+      it('leaves a row of another chat alone when it deletes', async () => {
+        messageRepository.findOne.mockResolvedValue({ chatId: other, direction: 'incoming' });
+
+        await projector.recordRevoke(SESSION_ID, 'wamid.1', { kind: 'revoke', chatId: own });
+
+        expect(messageRepository.update).not.toHaveBeenCalled();
+      });
+
+      it('clears the row of the chat it names when it deletes', async () => {
+        messageRepository.findOne.mockResolvedValue({ chatId: own, direction: 'incoming' });
+
+        await projector.recordRevoke(SESSION_ID, 'wamid.1', { kind: 'revoke', chatId: own });
+
+        expect(messageRepository.update).toHaveBeenCalledWith(where, revokedPatch);
+      });
+
+      it('clears a row stored under the other dialect of the chat it names', async () => {
+        messageRepository.findOne.mockResolvedValue({ chatId: '15550001111@s.whatsapp.net', direction: 'outgoing' });
+
+        await projector.recordRevoke(SESSION_ID, 'wamid.1', { kind: 'revoke', chatId: own });
+
+        expect(messageRepository.update).toHaveBeenCalledWith(where, revokedPatch);
+      });
+
+      it('leaves a row of another chat alone when it edits', async () => {
+        messageRepository.findOne.mockResolvedValue({ chatId: other, direction: 'outgoing' });
+
+        await projector.recordOutboundMessageEdit(SESSION_ID, 'wamid.1', 'edited', {
+          kind: 'edit',
+          chatId: own,
+          fromMe: true,
+        });
+
+        expect(messageRepository.update).not.toHaveBeenCalled();
+      });
+
+      it('leaves a received message alone when it edits, as only the own messages can be', async () => {
+        messageRepository.findOne.mockResolvedValue({ chatId: own, direction: 'incoming' });
+
+        await projector.recordOutboundMessageEdit(SESSION_ID, 'wamid.1', 'edited', {
+          kind: 'edit',
+          chatId: own,
+          fromMe: true,
+        });
+
+        expect(messageRepository.update).not.toHaveBeenCalled();
+      });
+
+      it('writes the edit onto the row of the chat it names', async () => {
+        messageRepository.findOne.mockResolvedValue({ chatId: own, direction: 'outgoing' });
+
+        await projector.recordOutboundMessageEdit(SESSION_ID, 'wamid.1', 'edited', {
+          kind: 'edit',
+          chatId: own,
+          fromMe: true,
+        });
+
+        expect(messageRepository.update).toHaveBeenCalledWith(
+          { ...where, type: Not('revoked'), body: Or(Not('edited'), IsNull()) },
+          { body: 'edited' },
+        );
+      });
     });
 
     it('clears nothing when the engine gives no message id', async () => {
@@ -893,6 +1402,7 @@ describe('MessageProjector (inbound projection)', () => {
 
       projector.handleInboundMessage(SESSION_ID, engine, makeIncoming({ id: 'A', chatId: chatA }));
       projector.handleInboundMessage(SESSION_ID, engine, makeIncoming({ id: 'B', chatId: chatA }));
+      await flush();
       // Both chains started: hooks still run concurrently.
       expect(hookManager.execute).toHaveBeenCalledTimes(2);
 
@@ -914,6 +1424,7 @@ describe('MessageProjector (inbound projection)', () => {
 
       projector.handleInboundMessage(SESSION_ID, engine, makeIncoming({ id: 'A', chatId: chatA }));
       projector.handleInboundMessage(SESSION_ID, engine, makeIncoming({ id: 'C', chatId: '15550002222@c.us' }));
+      await flush();
       release.get('C')!();
       await flush();
 
@@ -927,6 +1438,7 @@ describe('MessageProjector (inbound projection)', () => {
 
       projector.handleInboundMessage(SESSION_ID, engine, makeIncoming({ id: 'A', chatId: chatA }));
       projector.handleInboundMessage(SESSION_ID, engine, makeIncoming({ id: 'B', chatId: chatA }));
+      await flush();
       release.get('A')!(true);
       release.get('B')!();
       await flush();
@@ -942,6 +1454,7 @@ describe('MessageProjector (inbound projection)', () => {
 
       projector.handleInboundMessage(SESSION_ID, engine, makeIncoming({ id: 'A', chatId: chatA }));
       projector.handleInboundMessage(SESSION_ID, engine, makeIncoming({ id: 'B', chatId: chatA }));
+      await flush();
       release.get('B')!();
       await flush();
       engines.set(SESSION_ID, makeEngine());
@@ -959,6 +1472,7 @@ describe('MessageProjector (inbound projection)', () => {
 
       projector.handleInboundMessage(SESSION_ID, engine, makeIncoming({ id: 'A', chatId: chatA }));
       projector.handleInboundMessage(SESSION_ID, engine, makeIncoming({ id: 'B', chatId: chatA }));
+      await flush();
       release.get('B')!();
       await flush();
       projector.handleMessageRevoked(SESSION_ID, engine, { id: 'B' } as never);
@@ -995,6 +1509,7 @@ describe('MessageProjector (inbound projection)', () => {
       });
       if (fromMe) projector.handleOwnSendEcho(SESSION_ID, engine, b);
       else projector.handleInboundMessage(SESSION_ID, engine, b);
+      await flush();
       release.get('B')!();
       await flush();
       // The REST delete-for-me: no engine revoke event follows, so no message.revoked went out.
@@ -1022,6 +1537,7 @@ describe('MessageProjector (inbound projection)', () => {
 
       projector.handleInboundMessage(SESSION_ID, engine, makeIncoming({ id: 'A', chatId: chatA }));
       projector.handleInboundMessage(SESSION_ID, engine, makeIncoming({ id: 'B', chatId: chatA, body: 'typo' }));
+      await flush();
       release.get('B')!();
       await flush();
       projector.applyMessageEditQueued(SESSION_ID, { messageId: 'B', body: 'fixed' } as never);
@@ -1046,6 +1562,7 @@ describe('MessageProjector (inbound projection)', () => {
 
       projector.handleInboundMessage(SESSION_ID, engine, makeIncoming({ id: 'A', chatId: chatA }));
       projector.handleOwnSendEcho(SESSION_ID, engine, makeIncoming({ id: 'S', chatId: chatA, fromMe: true }));
+      await flush();
       release.get('S')!();
       await flush();
       expect(inserted()).toEqual([]);
@@ -1064,6 +1581,7 @@ describe('MessageProjector (inbound projection)', () => {
         const release = holdHooks();
         projector.handleInboundMessage(SESSION_ID, engine, makeIncoming({ id: 'A', chatId: chatA }));
         projector.handleOwnSendEcho(SESSION_ID, engine, makeIncoming({ id: 'S', chatId: chatA, fromMe: true }));
+        await flush();
         release.get('S')!();
         await flush();
         return { engine, releaseA: () => release.get('A')!() };
@@ -1100,7 +1618,9 @@ describe('MessageProjector (inbound projection)', () => {
         releaseA();
         await flush();
 
-        expect(updatesAfterS()).toEqual([[whereS, { body: 'fixed' }]]);
+        expect(updatesAfterS()).toEqual([
+          [{ ...whereS, type: Not('revoked'), body: Or(Not('fixed'), IsNull()) }, { body: 'fixed' }],
+        ]);
         expect(webhookService.dispatch).toHaveBeenCalledWith(
           SESSION_ID,
           'message.sent',
@@ -1138,7 +1658,9 @@ describe('MessageProjector (inbound projection)', () => {
         releaseA();
         await flush();
 
-        expect(updatesAfterS()).toEqual([[whereS, { body: 'fixed' }]]);
+        expect(updatesAfterS()).toEqual([
+          [{ ...whereS, type: Not('revoked'), body: Or(Not('fixed'), IsNull()) }, { body: 'fixed' }],
+        ]);
       });
 
       it('stores reactions that arrived before the row, without announcing them again', async () => {
@@ -1244,6 +1766,25 @@ describe('MessageProjector (inbound projection)', () => {
       expect(received()).toHaveLength(1);
     });
 
+    it('reports nothing for a duplicate of the retry, which may be the message itself', async () => {
+      const engine = makeEngine();
+      engines.set(SESSION_ID, engine);
+      messageRepository.insert.mockRejectedValueOnce(busy()).mockRejectedValueOnce(dup());
+      messageRepository.findOne.mockResolvedValue({ chatId: 'other@c.us', direction: 'incoming', author: null });
+
+      const receipt = projector.handleInboundMessage(SESSION_ID, engine, makeIncoming());
+      await flush();
+      await jest.advanceTimersByTimeAsync(PERSIST_RETRY_DELAY_MS);
+      await flush();
+
+      await expect(receipt?.settled).resolves.toBeUndefined();
+      expect(messageRepository.findOne).toHaveBeenCalledTimes(1);
+      expect(messageRepository.findOne).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { sessionId: SESSION_ID, waMessageId: 'wamid.1', type: 'revoked' } }),
+      );
+      expect(received()).toHaveLength(1);
+    });
+
     it('still clears that row when a revoke landed while its hook chain ran', async () => {
       const engine = makeEngine();
       engines.set(SESSION_ID, engine);
@@ -1297,6 +1838,97 @@ describe('MessageProjector (inbound projection)', () => {
       ]);
     });
 
+    // The retry's duplicate may be the message's own row (its first attempt committed before the error) or
+    // the row of another message under a reused id. What was recorded for the message goes only to a row
+    // that is it.
+    describe('a retry that meets the row of another message', () => {
+      const own = '15550001111@c.us';
+      const foreign = { chatId: '15559998888@c.us', direction: 'incoming', author: null };
+      const same = { chatId: own, direction: 'incoming', author: null };
+      let releaseHook!: () => void;
+
+      /** Holds the hook chain, lets `record` reach the message meanwhile, then runs the failing retry. */
+      const retried = async (
+        record: (engine: IWhatsAppEngine) => void,
+        row: Record<string, unknown>,
+        echo = false,
+      ): Promise<unknown[]> => {
+        const engine = makeEngine();
+        engines.set(SESSION_ID, engine);
+        messageRepository.insert.mockRejectedValueOnce(busy()).mockRejectedValueOnce(dup());
+        hookManager.execute.mockImplementationOnce(async (_event: string, data: unknown) => {
+          await new Promise<void>(resolve => (releaseHook = resolve));
+          return { continue: true, data };
+        });
+        const incoming = makeIncoming({ fromMe: echo });
+        if (echo) projector.handleOwnSendEcho(SESSION_ID, engine, incoming);
+        else projector.handleInboundMessage(SESSION_ID, engine, incoming);
+        await flush();
+        record(engine);
+        await flush();
+        // The row holding the id appears only now: nothing stored it when the change was recorded.
+        messageRepository.findOne.mockResolvedValue(row);
+        messageRepository.update.mockClear();
+        releaseHook();
+        await flush();
+        await jest.advanceTimersByTimeAsync(PERSIST_RETRY_DELAY_MS);
+        await flush();
+        return messageRepository.update.mock.calls as unknown[];
+      };
+
+      const changes: Array<[string, (engine: IWhatsAppEngine) => void]> = [
+        [
+          'a revoke',
+          engine =>
+            projector.handleMessageRevoked(SESSION_ID, engine, { id: 'wamid.1', chatId: own } as never, {
+              fromMe: false,
+            }),
+        ],
+        [
+          'an edit',
+          () =>
+            projector.applyMessageEditQueued(SESSION_ID, {
+              messageId: 'wamid.1',
+              body: 'late fix',
+              chatId: own,
+              fromMe: false,
+            } as never),
+        ],
+        ['an ack', engine => projector.handleMessageAck(SESSION_ID, engine, 'wamid.1', 'read')],
+        [
+          'a reaction',
+          () =>
+            projector.applyReactionQueued(SESSION_ID, {
+              messageId: 'wamid.1',
+              chatId: own,
+              reaction: 'ok',
+              senderId: 'x@c.us',
+            }),
+        ],
+      ];
+
+      it.each(changes)('leaves that row alone when the message was given %s', async (_name, record) => {
+        expect(await retried(record, foreign)).toEqual([]);
+      });
+
+      it.each(changes)('still writes %s onto the row when it is the message itself', async (_name, record) => {
+        expect((await retried(record, same)).length).toBeGreaterThan(0);
+      });
+
+      it('leaves the row of another message alone for an own-send echo too', async () => {
+        const record = (engine: IWhatsAppEngine): void =>
+          projector.handleMessageRevoked(SESSION_ID, engine, { id: 'wamid.1', chatId: own } as never, { fromMe: true });
+        expect(await retried(record, foreign, true)).toEqual([]);
+      });
+
+      it('writes the echo changes onto the row a REST send stored under the other dialect', async () => {
+        const record = (engine: IWhatsAppEngine): void =>
+          projector.handleMessageRevoked(SESSION_ID, engine, { id: 'wamid.1', chatId: own } as never, { fromMe: true });
+        const row = { chatId: '15550001111@s.whatsapp.net', direction: 'outgoing', author: null };
+        expect((await retried(record, row, true)).length).toBeGreaterThan(0);
+      });
+    });
+
     it('drops the retry when the engine is retired while it waits', async () => {
       const engine = makeEngine();
       engines.set(SESSION_ID, engine);
@@ -1324,6 +1956,220 @@ describe('MessageProjector (inbound projection)', () => {
       expect(messageRepository.insert).toHaveBeenCalledTimes(2);
       expect(persistedHooks()).toHaveLength(1);
       expect(webhookService.dispatch.mock.calls.filter(([, e]) => e === 'message.sent')).toHaveLength(1);
+    });
+  });
+
+  // The table holds one row per id, so a delivery that reuses the id of a message it holds is refused as a
+  // repeat. A re-fire of the same message is a repeat too, and the engine keeps its copy of that one; an id
+  // reused from another chat, side or author is not the message the row holds, and the engine is told so.
+  describe('a repeat of an id the table already holds', () => {
+    const dup = (): Error => Object.assign(new Error('UNIQUE constraint failed'), { code: 'SQLITE_CONSTRAINT_UNIQUE' });
+    const flush = async (): Promise<void> => {
+      for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve));
+    };
+    const received = (): unknown[] => webhookService.dispatch.mock.calls.filter(([, e]) => e === 'message.received');
+
+    /** Hand over a delivery whose insert the table refuses; `row` is what it holds under the id. */
+    const repeat = async (
+      over: Partial<IncomingMessage>,
+      row?: Record<string, unknown> | null | Error,
+    ): Promise<unknown> => {
+      const engine = makeEngine();
+      engines.set(SESSION_ID, engine);
+      messageRepository.insert.mockRejectedValueOnce(dup());
+      if (row instanceof Error) messageRepository.findOne.mockRejectedValue(row);
+      else if (row !== undefined) messageRepository.findOne.mockResolvedValue(row);
+      const receipt = projector.handleInboundMessage(SESSION_ID, engine, makeIncoming(over));
+      await flush();
+      return receipt?.settled;
+    };
+
+    it('reports a conflict when the row is another chat', async () => {
+      const outcome = await repeat({}, { chatId: '15550002222@c.us', direction: 'incoming', author: null });
+
+      expect(outcome).toEqual({ conflict: true });
+      expect(messageRepository.findOne).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { sessionId: SESSION_ID, waMessageId: 'wamid.1' } }),
+      );
+      expect(received()).toHaveLength(0);
+    });
+
+    it('reports a conflict when the row is a message the account sent', async () => {
+      const outcome = await repeat({}, { chatId: '15550001111@c.us', direction: 'outgoing', author: null });
+
+      expect(outcome).toEqual({ conflict: true });
+      expect(received()).toHaveLength(0);
+    });
+
+    it('reports a conflict when the row was written by another member of the group', async () => {
+      const outcome = await repeat(
+        { chatId: '120363000@g.us', from: '120363000@g.us', isGroup: true, kind: 'group', author: '15550002222@c.us' },
+        { chatId: '120363000@g.us', direction: 'incoming', author: '15550003333@c.us' },
+      );
+
+      expect(outcome).toEqual({ conflict: true });
+    });
+
+    it('reports nothing for a re-fire of the message the row holds', async () => {
+      const outcome = await repeat({}, { chatId: '15550001111@c.us', direction: 'incoming', author: null });
+
+      expect(outcome).toBeUndefined();
+      expect(received()).toHaveLength(0);
+    });
+
+    it('reports nothing for a re-fire of a group message by its own author', async () => {
+      const outcome = await repeat(
+        { chatId: '120363000@g.us', from: '120363000@g.us', isGroup: true, kind: 'group', author: '15550002222@c.us' },
+        { chatId: '120363000@g.us', direction: 'incoming', author: '15550002222@c.us' },
+      );
+
+      expect(outcome).toBeUndefined();
+    });
+
+    it('reports nothing when the row names the same chat in the other id dialect', async () => {
+      const outcome = await repeat(
+        { chatId: '15550001111@c.us' },
+        { chatId: '15550001111@s.whatsapp.net', direction: 'incoming', author: null },
+      );
+
+      expect(outcome).toBeUndefined();
+    });
+
+    it('reports a conflict for a LID without a reported pairing to the phone-keyed row', async () => {
+      const outcome = await repeat(
+        { chatId: '99887766@lid' },
+        { chatId: '15550001111@c.us', direction: 'incoming', author: null },
+      );
+
+      expect(outcome).toEqual({ conflict: true });
+    });
+
+    it('judges the message a hook left, as the row it would have written', async () => {
+      hookManager.execute.mockImplementation((_event: string, data: IncomingMessage) =>
+        Promise.resolve({ continue: true, data: { ...data, chatId: 'routed@c.us' } }),
+      );
+
+      const outcome = await repeat({}, { chatId: 'routed@c.us', direction: 'incoming', author: null });
+
+      expect(outcome).toBeUndefined();
+    });
+
+    it.each([
+      ['has no row to read', null],
+      ['cannot be read', new Error('SQLITE_BUSY: database is locked')],
+    ])('reports nothing when the id %s, so the engine keeps its copy', async (_name, row) => {
+      const outcome = await repeat({}, row);
+
+      expect(outcome).toBeUndefined();
+      expect(received()).toHaveLength(0);
+    });
+
+    it('reports nothing for a message whose row landed', async () => {
+      const engine = makeEngine();
+      engines.set(SESSION_ID, engine);
+
+      const receipt = projector.handleInboundMessage(SESSION_ID, engine, makeIncoming());
+      await flush();
+
+      await expect(receipt?.settled).resolves.toBeUndefined();
+      expect(messageRepository.findOne).toHaveBeenCalledTimes(1);
+      expect(messageRepository.findOne).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { sessionId: SESSION_ID, waMessageId: 'wamid.1', type: 'revoked' } }),
+      );
+      expect(received()).toHaveLength(1);
+    });
+
+    it('answers nothing for a message it never commits', () => {
+      const engine = makeEngine();
+      engines.set(SESSION_ID, engine);
+      const retired = makeEngine();
+
+      expect(projector.handleInboundMessage(SESSION_ID, retired, makeIncoming())).toBeUndefined();
+    });
+
+    it('answers nothing for an ephemeral message it skips', () => {
+      process.env.STORE_EPHEMERAL_MESSAGES = 'false';
+      try {
+        const engine = makeEngine();
+        engines.set(SESSION_ID, engine);
+
+        expect(
+          projector.handleInboundMessage(SESSION_ID, engine, makeIncoming({ ephemeralDuration: 86400 })),
+        ).toBeUndefined();
+      } finally {
+        delete process.env.STORE_EPHEMERAL_MESSAGES;
+      }
+    });
+
+    it('settles with nothing when the hook chain fails', async () => {
+      const engine = makeEngine();
+      engines.set(SESSION_ID, engine);
+      hookManager.execute.mockRejectedValueOnce(new Error('hook exploded'));
+
+      const receipt = projector.handleInboundMessage(SESSION_ID, engine, makeIncoming());
+      await flush();
+
+      await expect(receipt?.settled).resolves.toBeUndefined();
+      expect(messageRepository.insert).not.toHaveBeenCalled();
+    });
+
+    describe('a status post', () => {
+      const status = { isStatusBroadcast: true, chatId: 'status@broadcast', from: 'status@broadcast' };
+
+      it('reports a conflict when a message of a chat holds its id', async () => {
+        statusStore.ingest.mockResolvedValue({ row: {}, created: true });
+        const engine = makeEngine();
+        engines.set(SESSION_ID, engine);
+        messageRepository.findOne.mockResolvedValue({
+          chatId: '15550002222@c.us',
+          direction: 'incoming',
+          author: null,
+        });
+
+        const receipt = projector.handleInboundMessage(
+          SESSION_ID,
+          engine,
+          makeIncoming({ ...status, author: '15550001111@c.us' }),
+        );
+        await flush();
+
+        await expect(receipt?.settled).resolves.toEqual({ conflict: true });
+        expect(statusStore.ingest).toHaveBeenCalledTimes(1);
+      });
+
+      it('looks its id up when the outcome is asked for, and once, not for an engine that ignores it', async () => {
+        statusStore.ingest.mockResolvedValue({ row: {}, created: true });
+        const engine = makeEngine();
+        engines.set(SESSION_ID, engine);
+
+        const receipt = projector.handleInboundMessage(
+          SESSION_ID,
+          engine,
+          makeIncoming({ ...status, author: '15550001111@c.us' }),
+        );
+        await flush();
+        expect(statusStore.ingest).toHaveBeenCalledTimes(1);
+        expect(messageRepository.findOne).not.toHaveBeenCalled();
+
+        await expect(Promise.all([receipt?.settled, receipt?.settled])).resolves.toEqual([undefined, undefined]);
+        expect(messageRepository.findOne).toHaveBeenCalledTimes(1);
+      });
+
+      it('reports nothing for a story no message shares an id with', async () => {
+        statusStore.ingest.mockResolvedValue({ row: {}, created: true });
+        const engine = makeEngine();
+        engines.set(SESSION_ID, engine);
+
+        const receipt = projector.handleInboundMessage(
+          SESSION_ID,
+          engine,
+          makeIncoming({ ...status, author: '15550001111@c.us' }),
+        );
+        await flush();
+
+        await expect(receipt?.settled).resolves.toBeUndefined();
+        expect(statusStore.ingest).toHaveBeenCalledTimes(1);
+      });
     });
   });
 
@@ -1363,13 +2209,241 @@ describe('MessageProjector (inbound projection)', () => {
     });
   });
 
+  // lastActive is read as minutes by the session response, so a session's busiest traffic stamps its row at most
+  // once per window and engine instead of once per message.
+  describe('the session activity stamp', () => {
+    let now: number;
+    let clock: jest.SpyInstance;
+
+    beforeEach(() => {
+      now = 1_700_000_000_000;
+      clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    });
+    afterEach(() => clock.mockRestore());
+
+    const stamps = (): unknown[] =>
+      sessionRepository.update.mock.calls.filter(([, patch]) => 'lastActiveAt' in (patch as object));
+    const inbound = (engine: IWhatsAppEngine, id: string): void =>
+      void projector.handleInboundMessage(SESSION_ID, engine, makeIncoming({ id }));
+    const echo = (engine: IWhatsAppEngine, id: string): void =>
+      projector.handleOwnSendEcho(SESSION_ID, engine, makeIncoming({ id, fromMe: true }));
+
+    it('stamps once for a burst of inbound messages and own-send echoes', () => {
+      const engine = makeEngine();
+      engines.set(SESSION_ID, engine);
+
+      for (let i = 0; i < 5; i++) inbound(engine, `in-${i}`);
+      for (let i = 0; i < 5; i++) echo(engine, `out-${i}`);
+
+      expect(stamps()).toEqual([[SESSION_ID, { lastActiveAt: new Date(now) }]]);
+    });
+
+    it('stamps again once the window has passed, and not before', () => {
+      const engine = makeEngine();
+      engines.set(SESSION_ID, engine);
+      inbound(engine, 'first');
+
+      now += LAST_ACTIVE_WRITE_WINDOW_MS - 1;
+      inbound(engine, 'inside');
+      expect(stamps()).toHaveLength(1);
+
+      now += 1;
+      echo(engine, 'after');
+      expect(stamps()).toHaveLength(2);
+      expect(stamps()[1]).toEqual([SESSION_ID, { lastActiveAt: new Date(now) }]);
+    });
+
+    it('lets the next message stamp again after a write that failed', async () => {
+      const engine = makeEngine();
+      engines.set(SESSION_ID, engine);
+      sessionRepository.update.mockRejectedValueOnce(new Error('database is locked'));
+      inbound(engine, 'first');
+      await settle();
+
+      inbound(engine, 'second');
+
+      expect(stamps()).toHaveLength(2);
+    });
+
+    it('does not let a write that failed late undo the stamp of a newer one', async () => {
+      const engine = makeEngine();
+      engines.set(SESSION_ID, engine);
+      let fail!: (error: Error) => void;
+      sessionRepository.update.mockReturnValueOnce(new Promise((_, reject) => (fail = reject)));
+      inbound(engine, 'first');
+      now += LAST_ACTIVE_WRITE_WINDOW_MS;
+      inbound(engine, 'second');
+
+      fail(new Error('database is locked'));
+      await settle();
+      inbound(engine, 'third');
+
+      expect(stamps()).toHaveLength(2);
+    });
+
+    it('stamps at once for the first message of a replacement engine', () => {
+      const first = makeEngine();
+      engines.set(SESSION_ID, first);
+      inbound(first, 'before');
+
+      const replacement = makeEngine();
+      engines.set(SESSION_ID, replacement);
+      inbound(replacement, 'after');
+
+      expect(stamps()).toHaveLength(2);
+    });
+
+    it('stamps again when the clock moved back instead of waiting out the difference', () => {
+      const engine = makeEngine();
+      engines.set(SESSION_ID, engine);
+      inbound(engine, 'first');
+
+      now -= 3_600_000;
+      inbound(engine, 'later');
+
+      expect(stamps()).toHaveLength(2);
+    });
+
+    it('stamps nothing for an engine that is no longer the live one', () => {
+      const retired = makeEngine();
+      engines.set(SESSION_ID, makeEngine());
+
+      inbound(retired, 'late');
+      echo(retired, 'late-echo');
+
+      expect(stamps()).toHaveLength(0);
+    });
+  });
+
+  // A forward of a message the table holds no row for stores a placeholder of type 'forward'. When that row takes the
+  // engine id first, the own-send echo loses its insert, and its type, caption and media marker are the only copy of
+  // what was forwarded.
+  describe('an own-send echo that loses its id to a forward placeholder', () => {
+    const own = '15550001111@c.us';
+    const dup = (): Error => Object.assign(new Error('UNIQUE constraint failed'), { code: 'SQLITE_CONSTRAINT_UNIQUE' });
+    const flush = async (): Promise<void> => {
+      for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve));
+    };
+    const media = { mimetype: 'image/jpeg', omitted: true, sizeBytes: 10 };
+    const echo = (over: Partial<IncomingMessage> = {}): IncomingMessage =>
+      makeIncoming({ fromMe: true, chatId: own, to: own, type: 'image', body: 'the caption', media, ...over });
+    const placeholder = {
+      id: 'row-1',
+      type: 'forward',
+      chatId: own,
+      direction: 'outgoing',
+      author: null,
+      metadata: null,
+    };
+    const persisted = (): unknown[] => hookManager.execute.mock.calls.filter(([e]) => e === 'message:persisted');
+    const replaces = (): unknown[] =>
+      messageRepository.update.mock.calls.filter(([where]) => (where as { type?: unknown }).type === 'forward');
+
+    /** The table refuses the echo's insert; `row` is what it holds under the id, a placeholder unless `forward` is false. */
+    const deliver = async (
+      message: IncomingMessage,
+      row: Record<string, unknown> = placeholder,
+      forward = true,
+    ): Promise<void> => {
+      const engine = makeEngine();
+      engines.set(SESSION_ID, engine);
+      messageRepository.insert.mockRejectedValueOnce(dup());
+      messageRepository.update.mockResolvedValue({ affected: 1 });
+      messageRepository.findOne.mockImplementation((options: { where: { type?: unknown } }) =>
+        Promise.resolve(options.where.type === 'forward' && !forward ? null : row),
+      );
+      projector.handleOwnSendEcho(SESSION_ID, engine, message);
+      await flush();
+    };
+
+    it('replaces the placeholder with the type, caption and media marker the echo carries, and announces the row', async () => {
+      await deliver(echo());
+
+      expect(messageRepository.update).toHaveBeenCalledWith(expect.anything(), { metadata: { media } });
+      expect(replaces()).toEqual([
+        [
+          { sessionId: SESSION_ID, waMessageId: 'wamid.1', type: 'forward' },
+          { type: 'image', body: 'the caption' },
+        ],
+      ]);
+      expect(persisted()).toEqual([
+        ['message:persisted', { sessionId: SESSION_ID, message: placeholder }, expect.anything()],
+      ]);
+      // The webhook and the socket event carry the echo either way.
+      expect(webhookService.dispatch).toHaveBeenCalledWith(SESSION_ID, 'message.sent', expect.anything());
+    });
+
+    it('keeps the text of an edit that reached the message while its insert was running', async () => {
+      const engine = makeEngine();
+      engines.set(SESSION_ID, engine);
+      messageRepository.insert.mockImplementationOnce(() => {
+        projector.applyMessageEditQueued(SESSION_ID, {
+          messageId: 'wamid.1',
+          body: 'the edited caption',
+          chatId: own,
+          fromMe: true,
+        } as never);
+        return Promise.reject(dup());
+      });
+      messageRepository.update.mockResolvedValue({ affected: 1 });
+      messageRepository.findOne.mockResolvedValue(placeholder);
+
+      projector.handleOwnSendEcho(SESSION_ID, engine, echo());
+      await flush();
+
+      expect(replaces()).toEqual([
+        [
+          { sessionId: SESSION_ID, waMessageId: 'wamid.1', type: 'forward' },
+          { type: 'image', body: 'the edited caption' },
+        ],
+      ]);
+    });
+
+    it('leaves a row that is not a forward placeholder alone', async () => {
+      await deliver(echo(), { ...placeholder, type: 'image' }, false);
+
+      expect(messageRepository.update).not.toHaveBeenCalled();
+      expect(persisted()).toHaveLength(0);
+    });
+
+    it('leaves the placeholder alone when the row under the id is a message of another chat', async () => {
+      await deliver(echo(), { ...placeholder, chatId: '15559998888@c.us' });
+
+      expect(messageRepository.update).not.toHaveBeenCalled();
+      expect(persisted()).toHaveLength(0);
+    });
+
+    it('does not replace the placeholder with a message that came deleted', async () => {
+      await deliver(echo({ type: 'revoked', body: '', media: undefined }));
+
+      expect(replaces()).toEqual([]);
+    });
+
+    it('leaves the placeholder as it was when storing the media marker fails', async () => {
+      messageRepository.update.mockRejectedValueOnce(new Error('database is locked'));
+      const engine = makeEngine();
+      engines.set(SESSION_ID, engine);
+      messageRepository.insert.mockRejectedValueOnce(dup());
+      messageRepository.findOne.mockResolvedValue(placeholder);
+
+      projector.handleOwnSendEcho(SESSION_ID, engine, echo());
+      await flush();
+
+      expect(replaces()).toEqual([]);
+      expect(persisted()).toHaveLength(0);
+      expect(webhookService.dispatch).toHaveBeenCalledWith(SESSION_ID, 'message.sent', expect.anything());
+    });
+  });
+
   describe('handleMessageAck payload', () => {
-    it('carries the chat the engine named, on the socket and on both webhook events', () => {
+    it('carries the chat the engine named, on the socket and on both webhook events', async () => {
       const engine = makeEngine();
       engines.set(SESSION_ID, engine);
 
       projector.handleMessageAck(SESSION_ID, engine, 'M1', 'delivered', '120363000@g.us');
       projector.handleMessageAck(SESSION_ID, engine, 'M2', 'failed', '120363000@g.us');
+      // An ack that names its chat is announced once the stored row has been read.
+      for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve));
 
       const expected = { id: 'M1', messageId: 'M1', status: 'delivered', ack: 2, chatId: '120363000@g.us' };
       expect(eventsGateway.emitMessageAck).toHaveBeenCalledWith(SESSION_ID, expected);

@@ -80,15 +80,23 @@ done
 SIGNAL_CONTAINER=$(docker run -d --read-only --tmpfs /tmp --cap-drop ALL "$@" \
   --security-opt no-new-privileges "$IMAGE_TAG" node -e \
   'const fs=require("fs");if(process.getuid()!==997||!/^CapEff:\s+0+$/m.test(fs.readFileSync("/proc/self/status","utf8")))process.exit(1);process.on("SIGTERM",()=>process.exit(0));console.log("signal-ready");setInterval(()=>{},1000)')
-for attempt in 1 2 3 4 5; do
+# A container that exited will never print the line, so report that at once with its exit code and logs
+# instead of waiting out the deadline.
+for attempt in $(seq 1 60); do
   if docker logs "$SIGNAL_CONTAINER" | grep -q '^signal-ready$'; then
     break
   fi
-  if [ "$attempt" -eq 5 ]; then
-    echo "FAIL: the non-root signal test did not become ready" >&2
+  if [ "$(docker inspect --format '{{.State.Running}}' "$SIGNAL_CONTAINER")" != true ]; then
+    echo "FAIL: the non-root signal test exited with $(docker inspect --format '{{.State.ExitCode}}' "$SIGNAL_CONTAINER") before it was ready:" >&2
+    docker logs "$SIGNAL_CONTAINER" >&2 || true
     exit 1
   fi
-  sleep 1
+  if [ "$attempt" -eq 60 ]; then
+    echo "FAIL: the non-root signal test was not ready after 30 s" >&2
+    docker logs "$SIGNAL_CONTAINER" >&2 || true
+    exit 1
+  fi
+  sleep 0.5
 done
 docker stop --time 5 "$SIGNAL_CONTAINER" > /dev/null
 SIGNAL_EXIT=$(docker inspect --format '{{.State.ExitCode}}' "$SIGNAL_CONTAINER")

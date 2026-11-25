@@ -52,12 +52,18 @@ describe('chat-scoped WebSocket rooms', () => {
       )
       .filter(frame => frame.type === 'event');
   const flush = () => new Promise<void>(resolve => setImmediate(resolve));
-  const connect = async (id: string, chats: string[] | null, sessions: string[] | null = ['s1'], sessionId = 's1') => {
+  const connect = async (
+    id: string,
+    chats: string[] | null,
+    sessions: string[] | null = ['s1'],
+    sessionId = 's1',
+    subscribed = ['*'],
+  ) => {
     current[id] = key(id, chats, sessions);
     const client = socket(id);
     clients.push(client);
     await gateway.handleConnection(client as unknown as Socket);
-    await subscribe(client, ['*'], sessionId);
+    await subscribe(client, subscribed, sessionId);
     return client;
   };
 
@@ -123,6 +129,141 @@ describe('chat-scoped WebSocket rooms', () => {
     expect(events(unrestricted)).toHaveLength(1);
   });
 
+  it('keeps group join requests away from a restricted key, since they name people outside its chats', async () => {
+    const group = '120363000000000001@g.us';
+    const restricted = await connect('restricted', [group]);
+    const unrestricted = await connect('unrestricted', null);
+    gateway.emitGroupJoinRequest('s1', { groupId: group, participantIds: ['628999000999@c.us'] });
+    gateway.emitGroupUpdate('s1', { groupId: group, subject: 'Renamed' });
+    await flush();
+    // The REST membership-request routes refuse these keys for the same reason: a requester is, by
+    // definition, not in the allowed chats, and listing the queue names them.
+    expect(events(restricted).map(frame => frame.payload.event)).toEqual(['group.update']);
+    expect(events(unrestricted).map(frame => frame.payload.event)).toEqual(['group.join_request', 'group.update']);
+    expect(await subscribe(restricted, ['group.join_request'])).toMatchObject({
+      type: 'error',
+      code: 'FORBIDDEN_EVENTS',
+    });
+  });
+
+  it('delivers an event response only to keys whose chats include the chat it names', async () => {
+    const group = '120363000000000001@g.us';
+    const inside = await connect('inside', [group]);
+    const outside = await connect('outside', ['120363000000000002@g.us']);
+    const unrestricted = await connect('unrestricted', null);
+    gateway.emitEventResponse('s1', { chatId: group, eventMessageId: 'EVT1', response: 'going' });
+    gateway.emitEventResponse('s1', { eventMessageId: 'EVT2', response: 'going' });
+    await flush();
+    expect(events(inside).map(frame => frame.payload.data)).toEqual([
+      expect.objectContaining({ eventMessageId: 'EVT1' }),
+    ]);
+    expect(events(outside)).toHaveLength(0);
+    // An unrestricted key hears every one, a payload with no chat included.
+    expect(events(unrestricted)).toHaveLength(2);
+  });
+
+  it('delivers a poll vote only to keys whose chats include the chat it names', async () => {
+    const group = '120363000000000001@g.us';
+    const inside = await connect('inside', [group]);
+    const outside = await connect('outside', ['120363000000000002@g.us']);
+    const unrestricted = await connect('unrestricted', null);
+    const vote = { pollMessageId: 'POLL1', voterId: 'member@lid', selectedOptions: ['Yes'], timestamp: 1786000000 };
+    gateway.emitPollVote('s1', { ...vote, chatId: group });
+    gateway.emitPollVote('s1', { ...vote, chatId: '' });
+    await flush();
+    expect(events(inside).map(frame => frame.payload.event)).toEqual(['poll.vote']);
+    expect(events(inside)).toHaveLength(1);
+    expect(events(outside)).toHaveLength(0);
+    // An unrestricted key hears both, the vote that names no chat included.
+    expect(events(unrestricted)).toHaveLength(2);
+  });
+
+  it('delivers receipts only to named subscriptions within the allowed session and chat', async () => {
+    const group = '120363000000000001@g.us';
+    const named = await connect('named', [group], ['s1'], 's1', ['message.receipt']);
+    const allSessions = await connect('all-sessions', [group], null, '*', ['message.receipt']);
+    const outside = await connect('outside', ['120363000000000002@g.us'], ['s1'], 's1', ['message.receipt']);
+    const wildcard = await connect('wildcard', [group]);
+    const receipt = {
+      id: 'OUT1',
+      messageId: 'OUT1',
+      chatId: group,
+      participant: PHONE,
+      status: 'read' as const,
+      timestamp: 1700000000,
+    };
+
+    gateway.emitMessageReceipt('s1', receipt);
+    gateway.emitMessageReceipt('s2', receipt);
+    gateway.emitMessageReceipt('s1', { ...receipt, chatId: 'status@broadcast' });
+    await flush();
+
+    expect(events(named).map(frame => frame.payload.sessionId)).toEqual(['s1']);
+    expect(events(allSessions).map(frame => frame.payload.sessionId)).toEqual(['s1', 's2']);
+    expect(events(outside)).toHaveLength(0);
+    expect(events(wildcard)).toHaveLength(0);
+  });
+
+  it('refuses a subscribe that can never fit before it builds a single room name', async () => {
+    const chats = Array.from({ length: 450 }, (_, index) => `62811${String(index).padStart(7, '0')}@c.us`);
+    const restricted = await connect('restricted', chats);
+    // The room set is only consulted once the names exist, so a read after the refusal means the
+    // refused frame was still paid for in full (tens of milliseconds at a few thousand allowlist entries).
+    let reads = 0;
+    const joined = restricted.rooms;
+    Object.defineProperty(restricted, 'rooms', {
+      get: () => {
+        reads += 1;
+        return joined;
+      },
+    });
+    const chatEvents = [
+      'message.received',
+      'message.sent',
+      'message.ack',
+      'message.revoked',
+      'message.reaction',
+      'message.edited',
+      'group.join',
+      'group.leave',
+      'group.update',
+      'presence.update',
+    ];
+    const refused = await subscribe(restricted, chatEvents);
+    expect(refused).toMatchObject({ type: 'error', code: 'TOO_MANY_SUBSCRIPTIONS' });
+    expect(reads).toBe(0);
+    // The socket holds nothing, so unsubscribing cannot make this fit: the reply names what each event
+    // costs this key and the way out.
+    const { message } = refused as { message: string };
+    expect(message).toContain('every event 900 subscriptions');
+    expect(message).toContain('name fewer events or use "*"');
+    expect(message).not.toContain('unsubscribe');
+  });
+
+  it('does not suggest "*" to a key whose allowlist alone is over the cap', async () => {
+    // A list stored before allowedChats was bounded: its address forms exceed what one socket may hold,
+    // so even one event never fits and only a shorter list helps.
+    const chats = Array.from({ length: 2100 }, (_, index) => `62811${String(index).padStart(7, '0')}@c.us`);
+    const restricted = await connect('restricted', chats);
+    const refused = await subscribe(restricted, ['*']);
+    expect(refused).toMatchObject({ type: 'error', code: 'TOO_MANY_SUBSCRIPTIONS' });
+    const { message } = refused as { message: string };
+    expect(message).toContain('every event 4200 subscriptions');
+    expect(message).toContain('shorten the allowlist');
+    expect(message).not.toContain('use "*"');
+    expect(message).not.toContain('unsubscribe');
+  });
+
+  it('tells a subscriber that is over the cap because of what it already holds to unsubscribe first', async () => {
+    const chats = Array.from({ length: 450 }, (_, index) => `62811${String(index).padStart(7, '0')}@c.us`);
+    const restricted = await connect('restricted', chats);
+    // The wildcard subscription holds 900 rooms; four more events add 3600, each frame within the cap alone.
+    const fourEvents = ['message.received', 'message.sent', 'message.ack', 'message.revoked'];
+    const refused = await subscribe(restricted, fourEvents, 's1');
+    expect(refused).toMatchObject({ type: 'error', code: 'TOO_MANY_SUBSCRIPTIONS' });
+    expect((refused as { message: string }).message).toContain('unsubscribe first');
+  });
+
   it('performs no chat lookups for a local stream without restricted subscribers', async () => {
     const previous = process.env.REDIS_ENABLED;
     process.env.REDIS_ENABLED = 'false';
@@ -132,6 +273,26 @@ describe('chat-scoped WebSocket rooms', () => {
       await flush();
       expect(events(unrestricted)).toHaveLength(1);
       expect(resolveIds).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) delete process.env.REDIS_ENABLED;
+      else process.env.REDIS_ENABLED = previous;
+    }
+  });
+
+  it('publishes the chat rooms when Redis fans out, though this node tracks no restricted socket', async () => {
+    const previous = process.env.REDIS_ENABLED;
+    process.env.REDIS_ENABLED = 'true';
+    try {
+      // A restricted socket on another replica: the adapter reaches it through its rooms, but this node
+      // never tracks it. Dropping the tracking keeps the rooms the subscribe granted.
+      const remote = await connect('remote', [PHONE]);
+      gateway.handleDisconnect(remote as unknown as Socket);
+      const unrestricted = await connect('unrestricted', null);
+      gateway.emitMessage('s1', { chatId: PHONE });
+      await flush();
+      expect(resolveIds).toHaveBeenCalledWith({ allowedChats: [PHONE] });
+      expect(events(remote)).toHaveLength(1);
+      expect(events(unrestricted)).toHaveLength(1);
     } finally {
       if (previous === undefined) delete process.env.REDIS_ENABLED;
       else process.env.REDIS_ENABLED = previous;
@@ -218,6 +379,21 @@ describe('chat-scoped WebSocket rooms', () => {
     gateway.emitMessage('s2', { chatId: PHONE });
     await flush();
     expect(events(allowed)).toHaveLength(2);
+  });
+
+  // connect() subscribes with '*', which the wildcard rooms serve. Subscribing to one named event instead
+  // leaves only the room named for that event to match, on the named session and on the wildcard session.
+  it.each<[string, string, string[]]>([
+    ['a named session', 's1', ['s1:message.received']],
+    ['the wildcard session', '*', ['s1:message.received', 's2:message.received']],
+  ])('delivers a chat event to a restricted subscriber of one named event on %s', async (_label, sessionId, sent) => {
+    const allowed = await connect('allowed', [PHONE], null, sessionId, ['message.received']);
+    gateway.emitMessage('s1', { chatId: PHONE });
+    gateway.emitMessage('s2', { chatId: PHONE });
+    gateway.emitMessageEdited('s1', { chatId: PHONE, messageId: 'm1', body: 'edited' });
+    await flush();
+    const received = events(allowed).map(frame => `${frame.payload.sessionId}:${frame.payload.event}`);
+    expect(received.sort()).toEqual(sent);
   });
 
   it('grants no stream rooms to an allowlist with no chattable identities', async () => {

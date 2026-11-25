@@ -1,4 +1,11 @@
-import { Controller, Get, Req, ServiceUnavailableException } from '@nestjs/common';
+import {
+  Controller,
+  ForbiddenException,
+  Get,
+  Req,
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { HealthCheckResponseDto, LivenessResponseDto, ReadinessResponseDto } from './dto/health-response.dto';
 import { InjectDataSource } from '@nestjs/typeorm';
@@ -13,7 +20,8 @@ import { AuditService } from '../audit/audit.service';
 import { AuditAction } from '../audit/entities/audit-log.entity';
 import { SlidingWindowLimiter } from '../events/ws-rate-limit';
 import { limiterKeyForIp, resolveClientIp } from '../../common/utils/ip';
-import { bearerToken } from '../../common/security/bearer-token';
+import { presentedApiKey } from '../../common/security/bearer-token';
+import { createLogger } from '../../common/services/logger.service';
 
 interface DependencyStatus {
   status: 'up' | 'down';
@@ -26,6 +34,16 @@ interface HealthCheckResult {
 
 /** Bound each dependency probe so a hung connection can't stall the readiness check. */
 const READINESS_PROBE_TIMEOUT_MS = 3000;
+
+/** How long the verdict of one readiness probe answers the requests that follow it. */
+const READINESS_VERDICT_TTL_MS = 1000;
+
+interface ReadinessVerdict {
+  main: DependencyStatus['status'];
+  data: DependencyStatus['status'];
+  /** When the probe finished. */
+  at: number;
+}
 
 // Source the running version from package.json (same pattern as swagger.config.ts) so authenticated
 // callers (e.g. the dashboard) read it live and never show a stale build-time-baked version. Read
@@ -59,6 +77,14 @@ export class HealthController {
   // budget the probe still answers 200, without `version` and without touching the key table.
   private readonly keyValidationLimiter = new SlidingWindowLimiter(30, 60_000);
 
+  private readonly logger = createLogger('HealthController');
+
+  // A key table that cannot be read fails every presentation the same way: log it once a minute, not once a probe.
+  private readonly keyStoreFailureLogLimiter = new SlidingWindowLimiter(1, 60_000);
+
+  private verdict: ReadinessVerdict | null = null;
+  private pendingProbe: Promise<ReadinessVerdict> | null = null;
+
   @Get()
   @ApiOperation({ summary: 'Basic health check' })
   @ApiResponse({ status: 200, description: 'Application is healthy', type: HealthCheckResponseDto })
@@ -82,17 +108,29 @@ export class HealthController {
    * none presented, invalid, revoked, IP-denied — withholds the version; it never fails the check.
    */
   private async hasValidApiKey(req: Request): Promise<boolean> {
-    const xApiKey = req.headers['x-api-key'];
-    const rawKey = (typeof xApiKey === 'string' && xApiKey) || bearerToken(req.headers['authorization']);
+    const rawKey = presentedApiKey(req.headers);
     if (!rawKey) return false;
     const clientIp = resolveClientIp(req, this.configService.get<string[]>('security.trustedProxies') ?? []);
     const subject = limiterKeyForIp(clientIp);
-    if (!this.keyValidationLimiter.allow(subject)) return false;
+    const reservation = {};
+    if (!this.keyValidationLimiter.allow(subject, reservation)) return false;
     try {
       await this.authService.validateApiKey(rawKey, clientIp);
-      this.keyValidationLimiter.refund(subject);
+      this.keyValidationLimiter.refund(subject, reservation);
       return true;
     } catch (err) {
+      // Only a 401/403 refusal judged the credential. An unreadable key table gave no verdict, so it is not
+      // audited as a credential probe, but its slot stays spent (as on the WebSocket handshake) to keep the
+      // lookups against a failing store bounded, and the failure is logged for operators.
+      if (!(err instanceof UnauthorizedException || err instanceof ForbiddenException)) {
+        if (this.keyStoreFailureLogLimiter.allow('key-store')) {
+          this.logger.error(
+            'Health probe could not check the presented API key',
+            err instanceof Error ? err.stack : String(err),
+          );
+        }
+        return false;
+      }
       // A PRESENTED key that failed validation is a credential probe against an endpoint every
       // other key-validation surface audits (REST guard, WebSocket, MCP mount, Bull Board). This
       // route was the one blind spot: the failure only withheld the version, invisibly. Fire-and-
@@ -134,10 +172,7 @@ export class HealthController {
       throw new ServiceUnavailableException({ status: 'error', details: { shutdown: { status: 'draining' } } });
     }
 
-    const [main, data] = await Promise.all([
-      this.probeDatabase(this.mainDataSource),
-      this.probeDatabase(this.dataDataSource),
-    ]);
+    const { main, data } = await this.probeDatabases();
 
     const details: Record<string, DependencyStatus> = {
       mainDatabase: { status: main },
@@ -150,6 +185,26 @@ export class HealthController {
     }
 
     return { status: 'ok', details };
+  }
+
+  /**
+   * The verdict on both databases. The route is public and exempt from the throttler, so a flood of callers would
+   * otherwise queue two queries each in the connection pools, ahead of the application's own and of the load
+   * balancer's probe. Requests that arrive while a probe runs share it, and its verdict answers the next second.
+   */
+  private probeDatabases(): Promise<ReadinessVerdict> {
+    // A verdict dated in the future (the clock was set back) is not reused: the probe runs again.
+    const age = this.verdict ? Date.now() - this.verdict.at : -1;
+    if (this.verdict && age >= 0 && age < READINESS_VERDICT_TTL_MS) return Promise.resolve(this.verdict);
+    this.pendingProbe ??= Promise.all([
+      this.probeDatabase(this.mainDataSource),
+      this.probeDatabase(this.dataDataSource),
+    ])
+      .then(([main, data]) => (this.verdict = { main, data, at: Date.now() }))
+      .finally(() => {
+        this.pendingProbe = null;
+      });
+    return this.pendingProbe;
   }
 
   private async probeDatabase(dataSource: DataSource): Promise<'up' | 'down'> {

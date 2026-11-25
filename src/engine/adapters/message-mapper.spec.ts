@@ -2,6 +2,8 @@ import {
   buildIncomingMessageBase,
   mapContactFields,
   mapWwebjsMessageType,
+  POLL_MAX_OPTIONS,
+  POLL_TEXT_MAX_LENGTH,
   RawContactFields,
   RawMessageFields,
 } from './message-mapper';
@@ -120,6 +122,28 @@ describe('buildIncomingMessageBase', () => {
   it('maps mentionedIds when present', () => {
     const r = buildIncomingMessageBase({ ...base, mentionedIds: ['222@lid', '333@lid'] });
     expect(r.mentionedIds).toEqual(['222@lid', '333@lid']);
+  });
+
+  it('maps isForwarded and forwardingScore for a forwarded message', () => {
+    const r = buildIncomingMessageBase({ ...base, isForwarded: true, forwardingScore: 1 });
+    expect(r.isForwarded).toBe(true);
+    expect(r.forwardingScore).toBe(1);
+  });
+
+  it('omits forwardingScore when a forwarded message reports none (whatsapp-web.js defaults it to 0)', () => {
+    const r = buildIncomingMessageBase({ ...base, isForwarded: true, forwardingScore: 0 });
+    expect(r.isForwarded).toBe(true);
+    expect(r).not.toHaveProperty('forwardingScore');
+  });
+
+  it('omits the forward fields for a message that was not forwarded', () => {
+    for (const r of [
+      buildIncomingMessageBase(base),
+      buildIncomingMessageBase({ ...base, isForwarded: false, forwardingScore: 0 }),
+    ]) {
+      expect(r).not.toHaveProperty('isForwarded');
+      expect(r).not.toHaveProperty('forwardingScore');
+    }
   });
 
   it('omits mentionedIds when absent or empty', () => {
@@ -261,6 +285,14 @@ describe('mapContactFields', () => {
       expect('labels' in r).toBe(false);
     });
 
+    it('reads the id under the name a renamed WA Web build gives it', () => {
+      // WA Web 2.3000.x serializes a Wid as `$1` instead of `_serialized` (#747).
+      expect(mapContactFields({ id: { $1: '584145200715@c.us' }, number: '584145200715' }, true)).toEqual({
+        id: '584145200715@c.us',
+        number: '584145200715',
+      });
+    });
+
     it('returns an empty object when nothing is set', () => {
       expect(mapContactFields({}, true)).toEqual({});
     });
@@ -299,5 +331,59 @@ describe('poll choice metadata', () => {
       allowMultipleAnswers: true,
     });
     expect(mapped.poll).toEqual({ name: 'Where?', options: [' Park ', 'Beach'], allowMultipleAnswers: true });
+  });
+
+  describe('bounds', () => {
+    const poll = (over: Partial<RawMessageFields>): RawMessageFields => ({
+      id: { _serialized: 'P2' },
+      from: 'a@c.us',
+      to: 'me',
+      body: 'Where?',
+      type: 'poll_creation',
+      timestamp: 100,
+      fromMe: false,
+      pollName: 'Where?',
+      pollOptions: ['Park', 'Beach'],
+      allowMultipleAnswers: false,
+      ...over,
+    });
+
+    it('keeps a poll WhatsApp itself could send exactly as it is', () => {
+      const question = 'q'.repeat(255);
+      const options = Array.from({ length: 12 }, (_, i) => `${i}`.padEnd(100, 'o'));
+      const mapped = buildIncomingMessageBase(poll({ body: question, pollName: question, pollOptions: options }));
+      expect(mapped.poll).toEqual({ name: question, options, allowMultipleAnswers: false });
+      expect(mapped.body).toBe(question);
+    });
+
+    // The numbers are written out here, not read from the constants, so moving either by one shows up.
+    it('keeps a poll of 32 options with 1024 characters in each text whole', () => {
+      const text = (i: number) => `${i}`.padEnd(1024, 'x');
+      const pollOptions = Array.from({ length: 32 }, (_, i) => text(i));
+      const mapped = buildIncomingMessageBase(poll({ body: text(99), pollName: text(99), pollOptions }));
+      expect(mapped.poll).toEqual({ name: text(99), options: pollOptions, allowMultipleAnswers: false });
+      expect(mapped.body).toBe(text(99));
+    });
+
+    it('cuts a poll at its 33rd option and at the 1025th character of a text', () => {
+      const text = (i: number) => `${i}`.padEnd(1025, 'x');
+      const pollOptions = Array.from({ length: 33 }, (_, i) => text(i));
+      const mapped = buildIncomingMessageBase(poll({ body: text(99), pollName: text(99), pollOptions }));
+      expect(mapped.poll?.options).toEqual(pollOptions.slice(0, 32).map(option => option.slice(0, 1024)));
+      expect(mapped.poll?.name).toBe(text(99).slice(0, 1024));
+      expect(mapped.body).toBe(text(99).slice(0, 1024));
+    });
+
+    it('truncates an oversized poll, in the poll and in the body, and keeps it a poll', () => {
+      const long = 'x'.repeat(POLL_TEXT_MAX_LENGTH * 3);
+      const pollOptions = Array.from({ length: POLL_MAX_OPTIONS * 50 }, (_, i) => ({ name: `${i}${long}` }));
+      const mapped = buildIncomingMessageBase(poll({ body: long, pollName: long, pollOptions }));
+      expect(mapped.type).toBe('poll');
+      expect(mapped.poll?.options).toHaveLength(POLL_MAX_OPTIONS);
+      expect(mapped.poll?.options.every(option => option.length === POLL_TEXT_MAX_LENGTH)).toBe(true);
+      expect(mapped.poll?.options[1].startsWith('1xxx')).toBe(true);
+      expect(mapped.poll?.name).toHaveLength(POLL_TEXT_MAX_LENGTH);
+      expect(mapped.body).toHaveLength(POLL_TEXT_MAX_LENGTH);
+    });
   });
 });

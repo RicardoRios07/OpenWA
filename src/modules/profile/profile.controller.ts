@@ -69,8 +69,8 @@ export class ProfileController {
   @ApiResponse({
     status: 400,
     description:
-      'Neither url nor base64 provided, base64 without mimetype, session is not started, or the url ' +
-      'answers non-2xx, times out or cannot be reached',
+      'Neither url nor base64 provided, base64 without mimetype, session is not started, the url ' +
+      'answers non-2xx, times out or cannot be reached, or the image cannot be read (Baileys refuses an SVG)',
   })
   @ApiResponse({
     status: 403,

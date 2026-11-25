@@ -13,7 +13,7 @@ flowchart TB
 
     subgraph Defense["Defense Layers"]
         D1[Authentication]
-        D2[Encryption]
+        D2[Key Hashing, TLS at the Proxy]
         D3[Rate Limiting]
         D4[Input Validation]
         D5[Audit Logging]
@@ -67,31 +67,42 @@ Storage: SHA-256 hash only (never store plain key); `keyPrefix` keeps the first 
 
 Every key minted through the API-keys endpoints uses that format. The bootstrap seed key is the only
 exception: an explicit `API_MASTER_KEY` is taken verbatim (surrounding whitespace is stripped), and `ALLOW_DEV_API_KEY=true` opts into the
-fixed `dev-admin-key`; with neither set, the seed key is generated in the format above.
+fixed `dev-admin-key`; with neither set, the seed key is generated in the format above. The `keyPrefix` of a key seeded from
+`API_MASTER_KEY` is the fixed text `(master key)`, because every character of a chosen key is secret. A key seeded by an earlier release
+keeps its first 12 characters as the prefix, which every ADMIN key with no session or chat restriction can read in the key list, and which
+the database and its backups hold: replace it with a minted key (see the rotation note in §4.12) rather than keeping a chosen passphrase
+as the admin key. The startup banner of a later boot prints the first 8 characters of a key only when its row says the key was generated.
+A chosen key in the `owa_k1_` shape that an earlier release seeded cannot be told from a generated one once `API_MASTER_KEY` is removed
+from the environment or set to another value, and still shows them until it is replaced.
 
 ### Permission Model
 
 API keys carry **no permission strings**. Authorization is a role hierarchy on the key itself, plus
 three scoping dimensions enforced by `ApiKeyGuard`.
 
-| Role       | Rank | Meaning                                                              |
-| ---------- | ---- | -------------------------------------------------------------------- |
-| `admin`    | 3    | Satisfies every `@RequireRole` level, including API-key management   |
-| `operator` | 2    | Satisfies `operator` and `viewer` routes — the default for a new key |
-| `viewer`   | 1    | Satisfies `viewer` routes only                                       |
+| Role       | Rank | Meaning                                                                                             |
+| ---------- | ---- | --------------------------------------------------------------------------------------------------- |
+| `admin`    | 3    | Satisfies every `@RequireRole` level, including API-key management                                  |
+| `operator` | 2    | Satisfies `operator` and `viewer` routes — the default for a new key                                |
+| `viewer`   | 1    | Satisfies `viewer` routes only; includes avatar lookups, channel metadata and group invite previews |
 
 A route declares its minimum level with `@RequireRole(...)`; a key passes when its role ranks at or
 above that level (`AuthService.hasPermission`). A key below it is rejected with `403 Forbidden`.
+Profile-picture and phone-resolution reads are open to VIEWER keys; the dashboard uses them for avatars and
+contact phone labels. Channel metadata and group invite previews are also readable. Number-existence checks and phone-to-LID
+lookups require OPERATOR. These permissions still apply within the key's IP, session and chat scopes.
 
-| Scope     | Field             | Effect                                                                                                                                                             |
-| --------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Source IP | `allowedIps`      | Empty/absent = unrestricted; non-empty = fail-closed IP whitelist (see §4.3)                                                                                       |
-| Sessions  | `allowedSessions` | Empty/absent = every session; non-empty = a request carrying any other session id is rejected with `403`                                                           |
-| Chats     | `allowedChats`    | Empty/absent = every chat; non-empty = default-deny: only chat-scoped routes, and only for a listed chat, else `403`; `/events`, MCP and Bull Board refuse the key |
+| Scope     | Field             | Effect                                                                                                                                                                                                              |
+| --------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Source IP | `allowedIps`      | Empty/absent = unrestricted; non-empty = fail-closed IP whitelist (see §4.3)                                                                                                                                        |
+| Sessions  | `allowedSessions` | Empty/absent = every session; non-empty = a session named in the route path outside the list is rejected with `403`, and a `sessionId` filter in the query or body is narrowed to the list (an empty result, `200`) |
+| Chats     | `allowedChats`    | Empty/absent = every chat; non-empty = default-deny: only chat-scoped routes, MCP tools and events, only for a listed chat, else `403` (an event outside the list is never delivered); Bull Board refuses it        |
 
 The key-lifecycle routes (`/api/auth/api-keys`) are additionally fenced with `@RequireUnscopedKey()`:
 a session-scoped key is refused there whatever its role, so it cannot mint or widen credentials
-beyond its own confinement.
+beyond its own confinement. The same fence covers the other routes that act on the whole deployment:
+every `/api/infra` route, the plugin routes (except the per-session config override), `GET /api/settings`,
+`GET /api/stats/overview` and `/messages`, `POST /api/sessions` and the proxy setter. `SECURITY.md` lists them.
 
 A session's egress proxy (`proxyUrl` on `POST /api/sessions`, `PATCH /api/sessions/:sessionId/proxy`)
 is set only by an unscoped `admin` key; any other key gets `403`. The proxy is trusted egress chosen by
@@ -99,6 +110,75 @@ the administrator, so its host is deliberately not checked against internal addr
 private-network proxy sidecar works). The destinations of caller-supplied URLs fetched through it are
 still vetted by the SSRF guard. Reading the proxy (`GET /api/sessions/:sessionId/proxy`) returns only
 the masked host, type and a `hasCredentials` flag.
+
+### Recovering a lost admin key
+
+Keys are stored as one-way hashes, so a lost key cannot be read back from the database: it is either
+found where it was saved, or replaced. Try these in order. If every key stopped working at once after
+`API_KEY_PEPPER` was set or changed, follow the pepper recovery in §4.4 instead.
+
+1. **The bootstrap key file or `API_MASTER_KEY`.** Whenever `api_keys` is empty (first boot, or
+   after step 4 or the §4.4 pepper reset), the gateway seeds an ADMIN key, set to `API_MASTER_KEY`
+   when that is set, and keeps it in `data/.api-key` (or the `BOOTSTRAP_KEY_FILE` path) until that
+   key is no longer active (revoked, expired or deleted). The seeding boot prints a generated key once
+   in the startup banner and no part of an `API_MASTER_KEY`, for which the banner names the file when it could be written.
+   While the file holds a live key, the startup banner ends with `(full key in <path>)`. Read it with
+   `cat data/.api-key`, with `docker compose exec openwa-api cat /app/data/.api-key` on the compose
+   deployment, or with `kubectl exec openwa-0 -- cat /app/data/.api-key` on the Helm chart (release `openwa`). The file has no
+   trailing newline, so the shell prompt follows the key on the same line: copy only the key. The key
+   manages keys only while it still meets step 2's conditions. Once it is demoted from `admin`,
+   given any `allowedSessions` or `allowedChats`, or given `allowedIps` that exclude your address,
+   the file and the banner line remain but key management is refused; go on to step 2 or 3.
+
+2. **Another ADMIN key.** Any active, unexpired `admin` key without `allowedSessions` or
+   `allowedChats`, used from an address its `allowedIps` (when set) admits, can manage keys: mint a
+   replacement with `POST /api/auth/api-keys` (`{"name": "Admin", "role": "admin"}`; the raw key is
+   returned once, in `apiKey`), then revoke the lost one with `POST /api/auth/api-keys/:id/revoke`,
+   or do both from the dashboard's API Keys page.
+
+3. **Replace the key in the main database.** With no usable ADMIN key left, give the lost key's row
+   a new key; every other key keeps working. Stop the instance and copy the main database aside. Then
+   generate a key and its hash with the gateway's own hash function and configuration (process env,
+   `.env` and `data/.env.generated`, so the same `API_KEY_PEPPER`). Run it from the gateway's install
+   directory, the one holding `dist/` and `data/`, so it reads that install's configuration. When a
+   service manager (systemd, pm2) sets `API_KEY_PEPPER` only in its unit, export the same value in
+   the shell first, or the hash will not match:
+
+   ```bash
+   GEN="require('./dist/config/load-env'); const key = 'owa_k1_' + require('crypto').randomBytes(32).toString('hex'); console.log('key:', key); console.log('prefix:', key.slice(0, 12)); console.log('hash:', require('./dist/modules/auth/api-key-hash').hashApiKey(key, process.env.API_KEY_PEPPER))"
+   node -e "$GEN"                                               # source install, after npm run build
+   docker compose run --rm --no-deps openwa-api node -e "$GEN"  # compose deployment
+   ```
+
+   Find the row and write the new hash and prefix into it. The main database is
+   `MAIN_DATABASE_NAME`, `data/main.sqlite` by default; on the compose deployment run `sqlite3` as
+   `docker compose run --rm --no-deps openwa-api sqlite3 /app/data/main.sqlite "..."`:
+
+   ```bash
+   sqlite3 data/main.sqlite "SELECT id, name, keyPrefix, isActive, expiresAt FROM api_keys WHERE role = 'admin'"
+   sqlite3 data/main.sqlite "UPDATE api_keys SET keyHash = '<hash>', keyPrefix = '<prefix>', isActive = 1, expiresAt = NULL, allowedIps = NULL, allowedSessions = NULL, allowedChats = NULL WHERE id = '<id>'"
+   ```
+
+   On the Helm chart (release `openwa`), run the generator in the running pod before stopping it,
+   since only that pod has the release's Secret and so its `API_KEY_PEPPER`:
+   `kubectl exec openwa-0 -- node -e "$GEN"`. Then scale the StatefulSet to 0, start the
+   `openwa-restore` helper pod on the release's data PVC as
+   [11 - Runbook: Restore from Backup](./11-operational-runbooks.md#runbook-restore-from-backup)
+   does, copy the database aside and run both `sqlite3` commands there with
+   `kubectl exec openwa-restore --` against `/app/data/main.sqlite`, then delete the pod and scale
+   back to 1.
+
+   Start the instance and use the new key. The update also clears the row's revoked state, expiry,
+   and IP, session and chat restrictions, so it can manage keys again; narrow it afterwards through
+   the API if it carried any. The old key no longer authenticates.
+
+4. **Reset the key table.** When no row is worth keeping, empty `api_keys` as the pepper recovery in
+   §4.4 describes: the next boot seeds a new ADMIN key (from `API_MASTER_KEY` when set), prints a
+   generated one once and never an `API_MASTER_KEY`, and writes either to the key file. Every other
+   key must then be re-issued.
+
+Keys live in each node's own main database ([13 - Horizontal Scaling](./13-horizontal-scaling.md)),
+so on a multi-node deployment the recovery applies only to the node it ran on.
 
 ## 4.3 IP Whitelisting
 
@@ -196,7 +276,7 @@ OpenWA serves plain HTTP on its port; terminate **TLS at your reverse proxy / lo
 
 **Hardening you can apply today:** set `API_KEY_PEPPER`; restrict the data volume and database to the app's user; and encrypt at the infrastructure layer (LUKS / cloud-provider encrypted volumes / an encrypted managed Postgres) rather than relying on application-level field encryption, which is not implemented.
 
-**Setting or changing `API_KEY_PEPPER` on an existing install invalidates every key, the admin key included.** No stored hash matches any more, minting a key needs a valid ADMIN key, and a key is seeded only into an empty `api_keys` table, so nothing can be re-issued through the API. Set the pepper before first boot. On a running install: stop the instance, set the pepper, empty the table in the main database (the `MAIN_DATABASE_NAME` path, `data/main.sqlite` by default; on a source install `sqlite3 data/main.sqlite "DELETE FROM api_keys"`, on the compose deployment `docker compose run --rm --no-deps openwa-api sqlite3 /app/data/main.sqlite "DELETE FROM api_keys"`), start the instance, take the new ADMIN key from the startup banner or `data/.api-key` (or set `API_MASTER_KEY` beforehand to choose it), then re-issue the other keys.
+**Setting or changing `API_KEY_PEPPER` on an existing install invalidates every key, the admin key included.** No stored hash matches any more, minting a key needs a valid ADMIN key, and a key is seeded only into an empty `api_keys` table, so nothing can be re-issued through the API. Set the pepper before first boot. On a running install: stop the instance, set the pepper, empty the table in the main database (the `MAIN_DATABASE_NAME` path, `data/main.sqlite` by default; on a source install `sqlite3 data/main.sqlite "DELETE FROM api_keys"`, on the compose deployment `docker compose run --rm --no-deps openwa-api sqlite3 /app/data/main.sqlite "DELETE FROM api_keys"`), start the instance, take the new ADMIN key from `data/.api-key`, or from the startup banner when the gateway generated it (or set `API_MASTER_KEY` beforehand to choose it; it is never printed), then re-issue the other keys. On the Helm chart, empty the table while the StatefulSet is at 0 from the `openwa-restore` helper pod of [11 - Runbook: Restore from Backup](./11-operational-runbooks.md#runbook-restore-from-backup) (`kubectl exec openwa-restore -- sqlite3 /app/data/main.sqlite "DELETE FROM api_keys"`), delete the pod, and only then set the pepper in the release's Secret (`secretEnv.API_KEY_PEPPER`, or the `existingSecret`) and scale back to 1; a `helm upgrade` that sets the pepper also scales back to `replicaCount`. Read the new key with `kubectl exec openwa-0 -- cat /app/data/.api-key`.
 
 ## 4.5 Input Validation
 
@@ -216,13 +296,13 @@ flowchart TB
 
 ### Validation Examples
 
-| Field                        | Rules                                                                                                                                            |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `chatId`                     | Non-empty string — **no format pattern**; the engine resolves the id, so `@c.us`, `@g.us`, `@lid`, `@newsletter` and `status@broadcast` all pass |
-| `phoneNumber` (pairing code) | Pattern: `^[0-9]{6,15}$` — digits only, international format                                                                                     |
-| `url`                        | Valid URL (`require_tld: false`, so single-label hosts like `http://localhost:3000` pass); HTTPS is a recommendation, not enforced               |
-| `text`                       | Max 4096 chars (`send-text`)                                                                                                                     |
-| `sessionName`                | Alphanumeric + hyphen, 3-50 chars                                                                                                                |
+| Field                        | Rules                                                                                                                                                                                                                                                                                |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `chatId`                     | Non-empty string of at most 255 characters in the form `localpart@host`: one `@` and no whitespace, so a bare phone number is refused with `400`. The host is not checked, so `@c.us`, `@g.us`, `@lid`, `@newsletter` and `status@broadcast` all pass and the engine resolves the id |
+| `phoneNumber` (pairing code) | Pattern: `^[0-9]{6,15}$` — digits only, international format                                                                                                                                                                                                                         |
+| `url`                        | Valid URL (`require_tld: false`, so single-label hosts like `http://localhost:3000` pass); HTTPS is a recommendation, not enforced                                                                                                                                                   |
+| `text`                       | Max 4096 chars (`send-text`)                                                                                                                                                                                                                                                         |
+| `sessionName`                | Alphanumeric + hyphen, 3-50 chars                                                                                                                                                                                                                                                    |
 
 ### DTO Validation
 
@@ -231,6 +311,8 @@ flowchart TB
 export class SendTextMessageDto {
   @IsString()
   @IsNotEmpty()
+  @MaxLength(CHAT_ID_MAX_LENGTH) // 255
+  @Matches(CHAT_JID_PATTERN, { message: CHAT_JID_MESSAGE }) // /^[^\s@]+@[^\s@]+$/: localpart@host
   chatId: string;
 
   @IsString()
@@ -252,7 +334,7 @@ export class CreateWebhookDto {
   @IsArray()
   @ArrayMinSize(1)
   // The full WEBHOOK_EVENTS catalog (message.*, status.received, session.*, presence.update,
-  // group.*, call.*) plus '*' for subscribe-all.
+  // event.response, poll.vote, group.*, call.*) plus '*' for subscribe-all.
   @IsIn([...WEBHOOK_EVENTS, '*'], { each: true })
   events?: string[];
 }
@@ -310,11 +392,22 @@ The API exposes the rate-limit headers via CORS (`exposedHeaders`) so browser cl
 The windows above run at the routing layer, after a request body has been buffered, so they cannot bound memory held by slow uploads. A pre-routing middleware does: it caps the request-body bytes in flight across all connections at `INFLIGHT_BODY_BUDGET_BYTES` (default 4 x `BODY_SIZE_LIMIT`) and answers a request that would cross it with `503` and `Retry-After`, before reading its body. A request whose declared `Content-Length` could not fit even on an idle server (above the whole budget, its caller's share or the unkeyed pool) gets `413` instead, without `Retry-After`, since retrying it cannot succeed.
 
 - Requests without an active API key (public ingress webhooks, unauthenticated callers) share a pool of a quarter of the budget, never less than twice `BODY_SIZE_LIMIT` (so half of the default budget), and are charged at most `BODY_SIZE_LIMIT` each. The rest is kept for requests that carry an active key. With `INFLIGHT_BODY_BUDGET_BYTES` below three times `BODY_SIZE_LIMIT` that reserve is smaller than one full-size body, and at twice `BODY_SIZE_LIMIT` or less there is none.
-- A request with an active key may hold at most half of the budget per key, wherever it connects from. An unkeyed client (IPv6 on its /64) may hold at most half of the unkeyed pool, or one `BODY_SIZE_LIMIT` if that is larger, so one full-size body from one address leaves room for other unkeyed senders once `INFLIGHT_BODY_BUDGET_BYTES` is at least twice `BODY_SIZE_LIMIT`; below that the room left is the budget minus one `BODY_SIZE_LIMIT`, and at a budget equal to `BODY_SIZE_LIMIT` a single full-size unkeyed body refuses every other body-carrying request, ingress deliveries included, with `503` until it finishes. Behind a reverse proxy without `TRUSTED_PROXIES`, every unkeyed request, ingress included, keys on the proxy address and draws on that one share, so at the defaults a single full-size unkeyed upload refuses ingress deliveries with `503` until it finishes.
+- A request with an active key may hold at most half of the budget per key, wherever it connects from. An unkeyed client (IPv6 on its /64) may hold at most half of the unkeyed pool, or one `BODY_SIZE_LIMIT` if that is larger, so one full-size body from one address leaves room for other unkeyed senders once `INFLIGHT_BODY_BUDGET_BYTES` is at least twice `BODY_SIZE_LIMIT`; below that the room left is the budget minus one `BODY_SIZE_LIMIT`, and at a budget equal to `BODY_SIZE_LIMIT` a single full-size unkeyed body refuses every other body-carrying request, ingress deliveries included, with `503` until its body has been read. Behind a reverse proxy without `TRUSTED_PROXIES`, every unkeyed request, ingress included, keys on the proxy address and draws on that one share, so at the defaults a single full-size unkeyed upload refuses ingress deliveries with `503` until its body has been read.
 - Keys are recognised from an in-memory index of active keys, refreshed at once when this node changes a key and every 30 seconds for a direct write to this node's main database. Keys are per node, so a change made on another node never reaches it. The index only picks the tier; the API-key guard still authorises every request.
-- A request holds its declared `Content-Length` until it finishes. After a 15-second grace it must keep up the pace that lands the whole body within `REQUEST_TIMEOUT_MS` (by default 25 MiB in 300 seconds, about 85 KiB/s); a request that falls behind is dropped and its reservation released. A chunked body holds a 1 MiB placeholder, or the bytes that have arrived once they pass it, and must deliver the placeholder at the same pace (about 3.4 KiB/s by default). If that growth crosses the budget, its client's share, or (without a key) the unkeyed pool, that request is aborted.
+- A request holds its declared `Content-Length` while its body is being received and gives it back as soon as the body has been read or the response finishes first. What a handler holds of the parsed body afterwards is not counted: the budget bounds the bytes arriving on the wire, not the memory a running handler keeps. After a 15-second grace it must keep up the pace that lands the whole body within `REQUEST_TIMEOUT_MS` (by default 25 MiB in 300 seconds, about 85 KiB/s); a request that falls behind is dropped and its reservation released. A chunked body holds a 1 MiB placeholder, or the bytes that have arrived once they pass it, and must deliver the placeholder at the same pace (about 3.4 KiB/s by default). If that growth crosses the budget, its client's share, or (without a key) the unkeyed pool, that request is aborted.
 - A body that sends nothing for 15 seconds is dropped and its reservation released.
+- Each drop is logged as one warning naming the reason, the client address, the sizes and the path (at most ten a minute), and counted in `http_requests_total` as `408` for a body that stalled or fell behind and `503` for a chunked body that outgrew the budget, its client's share or the unkeyed pool. The client only sees its connection close. A client that abandons a body while it is arriving is not a drop: the body parser answers an aborted request with `400`, which is what counts (`499` for a multipart upload that a route is reading), and a body that Node's own request timeout cuts is counted the same way.
 - Requests without a body are never refused for lack of budget.
+
+### Request body width
+
+The validation pipe copies a whole body before any validator can refuse it, and it scans the keys of each object once per key, so a body padded with array items or object keys can hold the process for seconds to minutes. A step ahead of that pipe refuses such a body with `400`, naming the limit it exceeded, for about the cost of reading it:
+
+- an array of more than 10,000 items (the longest list a request field caps is 2,000, the allowed chats of an API key; the allowed IPs and sessions, the restart profiles, a plugin's sessions and any list inside a plugin's or integration instance's config have no cap of their own and stop at this limit; a session's config is held to 16 KiB as a whole);
+- an object of more than 1,000 keys (the scan makes an object quadratic in its keys; the free-form maps a request carries are a message's template variables, limited by the 4,096 characters of its text, a webhook's headers, at most 50, and the config objects, where those of plugins and integration instances have the keys their schema declares and a session's is held to 16 KiB with three recognised keys);
+- more than 250,000 array items and object keys in the whole body (the largest documented request, a bulk send of 100 messages that each tag 1,024 mentions, holds about 104,000).
+
+It checks only a body that a request DTO defines. The data import is exempt, since its tables hold as many rows as the database does, and so are the routes whose body the gateway does not validate against a DTO: integration ingress and plugin-hosted webhooks.
 
 ### WebSocket (`/events`) limits
 
@@ -325,8 +418,9 @@ Socket.IO frames never pass through the Nest enhancer pipeline, so the HTTP wind
 | Client frames (subscribe/unsubscribe/ping) — token bucket           | API key (IP, IPv6 on its /64, before auth completes)            | 60 frames/s sustained, 120-frame burst | `WS_RATE_LIMIT_FRAME_PER_SECOND` / `WS_RATE_LIMIT_FRAME_BURST`      |
 | New handshakes — sliding window, enforced **before** key validation | client IP (resolved through `TRUSTED_PROXIES`, IPv6 on its /64) | 10 per 60 s                            | `WS_RATE_LIMIT_HANDSHAKE_MAX` / `WS_RATE_LIMIT_HANDSHAKE_WINDOW_MS` |
 | Simultaneous sockets                                                | API key                                                         | 16                                     | `WS_MAX_SOCKETS_PER_KEY`                                            |
+| Size of one client frame                                            | connection                                                      | 8 KiB (a larger frame closes it)       | none, fixed in code                                                 |
 
-The frame budget is sized ~6x above legitimate traffic: the dashboard emits ~8 subscribe frames at page mount and only occasional ping/unsubscribe frames afterwards (server→client event fan-out is not limited). The handshake window stops an unauthenticated connection flood from forcing a DB `validateApiKey` per attempt; Socket.IO's exponential-backoff reconnect (~6 attempts/min per tab) stays under it. The socket cap covers multi-tab dashboards and SDK clients sharing one key. A rejected handshake or excess socket is answered with a `RATE_LIMITED` error frame and a clean disconnect; an over-budget frame gets a `RATE_LIMITED` error frame and is not dispatched. Violations are audited as `rate_limit_exceeded`, sampled to at most one row per subject+kind per minute (suppressed occurrences are counted into the next row) so the audit trail itself cannot become the flood.
+The frame budget is sized ~6x above legitimate traffic: the dashboard emits ~8 subscribe frames at page mount and only occasional ping/unsubscribe frames afterwards (server→client event fan-out is not limited). The handshake window stops an unauthenticated connection flood from forcing a DB `validateApiKey` per attempt; Socket.IO's exponential-backoff reconnect (~6 attempts/min per tab) stays under it. The socket cap covers multi-tab dashboards and SDK clients sharing one key. A rejected handshake or excess socket is answered with a `RATE_LIMITED` error frame and a clean disconnect; an over-budget frame gets a `RATE_LIMITED` error frame and is not dispatched. A frame over 8 KiB closes the connection (close code `1009`) without an answer, and a polling client learns the bound in the handshake and splits its batches to it; the longest legal frame is under 1 KiB. Violations are audited as `rate_limit_exceeded`, sampled to at most one row per subject+kind per minute (suppressed occurrences are counted into the next row) so the audit trail itself cannot become the flood.
 
 ## 4.7 CORS Configuration
 
@@ -355,10 +449,10 @@ app.enableCors({
   },
   credentials: corsPolicy.credentials, // false whenever the allowlist is a wildcard
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'X-API-Key', 'Authorization', 'X-Request-ID'],
+  allowedHeaders: ['Content-Type', 'X-API-Key', 'Authorization', 'X-Request-ID', 'Idempotency-Key'],
   // Throttlers are named, so rate-limit headers carry a per-window suffix
   // (see "Response on limit" above); there are no unsuffixed variants.
-  exposedHeaders: ['X-RateLimit-Limit-short', 'X-RateLimit-Remaining-short', '...'],
+  exposedHeaders: ['X-RateLimit-Limit-short', 'X-RateLimit-Remaining-short', '...', 'Idempotent-Replayed'],
   maxAge: 86400, // 24 hours
 });
 ```
@@ -485,8 +579,10 @@ app.use(helmet({
 > **Reality check:** persisted audit coverage currently includes API-key create/update/revoke/delete
 > (updates carry before/after authorization state), rejected authentication, session lifecycle
 > (including disconnects caused by WhatsApp unlinking the device, account restrictions and their
-> lifting, and refused rebinds), integration-instance creation, update, secret rotation, deletion,
-> redrive, and scope-binding bridge failures, send-pacing refusals (sampled) and breaker trips, the
+> lifting, and refused rebinds), a privacy id newly reported for a phone number the lid table already
+> maps to another (`phone_second_lid_reported`), integration-instance creation, update, secret rotation, deletion,
+> redrive, and scope-binding bridge failures, plugin install, update, uninstall, enable, disable, configuration and session
+> activation, webhook delivery-failure redrive batches, send-pacing refusals (sampled) and breaker trips, the
 > infra operations (config save, restart request, data export/import, storage export/import),
 > WebSocket rate-limit violations (sampled — see §4.6), and Bull Board queue mutations. Enum
 > members for API-key use, session connected, message sends, and webhook lifecycle are explicitly
@@ -531,7 +627,7 @@ flowchart TB
 
 ### Security Alerts
 
-> **Not implemented.** There is no alerting or automatic temp-block subsystem; the table below is a design target, not shipped behavior. The signals do get recorded: rejected authentication and WebSocket rate-limit violations write persisted audit rows, and an IP-restricted key used from a disallowed IP also emits a `logger.warn`; but nothing acts on them. A REST, queue-dashboard or MCP rejection that names no stored key (missing or unknown) is capped at 10 rows per client IP per minute; a rejection of a stored key (revoked, expired, IP or session refused, insufficient role) is recorded every time there. The public `/api/health` route bounds every auth-failure row it writes, stored key or not, at 10 per client IP per minute. Rate-limit violations are sampled. Forward the audit log / application log to your SIEM to build these alerts.
+> **Not implemented.** There is no alerting or automatic temp-block subsystem; the table below is a design target, not shipped behavior. The signals do get recorded: rejected authentication and WebSocket rate-limit violations write persisted audit rows, and an IP-restricted key used from a disallowed IP also emits a `logger.warn`; but nothing acts on them. A REST, queue-dashboard or MCP rejection that names no stored key (missing or unknown) is capped at 10 rows per client IP per minute; a rejection of a stored key (revoked, expired, IP or session refused, insufficient role) by the API-key guard, the queue dashboard or MCP is recorded every time. Four refusals that depend on the request body or query run after the guard and write no row: a chat-restricted key listing messages without `chatId`, a key without the ADMIN role creating a session with `proxyUrl`, a session-scoped key binding an integration instance outside its sessions, and a chat-restricted key searching through a plugin search provider. The public `/api/health` route bounds every auth-failure row it writes, stored key or not, at 10 per client IP per minute. Rate-limit violations are sampled. Forward the audit log / application log to your SIEM to build these alerts.
 
 | Event                | Severity | Intended action (roadmap) |
 | -------------------- | -------- | ------------------------- |
@@ -586,7 +682,7 @@ flowchart TB
 | Plugin instance secrets (`plugin_instances.secret`, `verifyToken`, `config`) | Database: **plaintext**; `secret`, `verifyToken` and secret-marked config are masked on API reads, but `GET /api/infra/export-data` includes them verbatim        | Per instance (regenerate-secret)                                   |
 | Session auth state                                                           | File system (data volume) — **not encrypted**                                                                                                                     | Never (tied to the WA session)                                     |
 
-> `API_MASTER_KEY` only seeds the first ADMIN key, and is read only while the key table is empty. Changing it later has no effect: the new value never authenticates and the seeded key stays valid. Rotate by minting a new ADMIN key with `POST /api/auth/api-keys` and revoking the seeded `Default Admin Key`.
+> `API_MASTER_KEY` only seeds the first ADMIN key, and is read only while the key table is empty. Changing it later has no effect: the new value never authenticates and the seeded key stays valid. A value that is set must still be at least 32 characters and not a known default on every production boot, or the boot refuses to start; unset it after rotating. Rotate by minting a new ADMIN key with `POST /api/auth/api-keys` and revoking the seeded `Default Admin Key`.
 
 > There is no application `ENCRYPTION_KEY` — OpenWA does not encrypt data at rest (see §4.4). The rotation cadences above are operational recommendations, not enforced by the app.
 
@@ -709,7 +805,8 @@ npm audit --json > audit-report.json
 
 ```yaml
 # .github/dependabot.yml, root npm ecosystem only (the file also covers /dashboard,
-# github-actions, docker and docker-compose). The comment above each ignore is omitted here.
+# /sdk/javascript, /sdk/python, /sdk/java, /sdk/php, /sdk/go, github-actions, docker and docker-compose). The comment above each
+# ignore is omitted here.
 version: 2
 updates:
   - package-ecosystem: npm
@@ -734,7 +831,7 @@ updates:
       - dependency-name: 'better-sqlite3'
         versions: ['>=14.0.0']
       - dependency-name: 'puppeteer'
-        versions: ['>24.38.0']
+        versions: ['>=26.0.0']
       - dependency-name: 'audio-decode'
         versions: ['>=3.0.0']
       - dependency-name: '@types/node'
@@ -745,15 +842,15 @@ updates:
         versions: ['>=3.2.1']
 ```
 
-Majors arrive as their own grouped PR, separate from the minor/patch group. Five ignores freeze a
-major line (TypeScript 7, better-sqlite3 14, audio-decode 3, @types/node 23 and later, NestJS 12)
-and two freeze the line in use (puppeteer above the 24.38.0 pin it shares with whatsapp-web.js,
-tar-stream from 3.2.1). Each ignore's reason and lift condition is the comment above it in
+Majors arrive as their own grouped PR, separate from the minor/patch group. Six ignores freeze a
+major line (TypeScript 7, better-sqlite3 14, puppeteer 26, audio-decode 3, @types/node 23 and later,
+NestJS 12) and one freezes the line in use (tar-stream from 3.2.1); puppeteer stays on the 25.x line
+it shares with whatsapp-web.js. Each ignore's reason and lift condition is the comment above it in
 `.github/dependabot.yml`.
 
 ### Security Scanning in CI
 
-> **Aspirational template — not in the repo.** There is no Snyk and no CodeQL workflow today. The actual dependency check is a dedicated `audit` job ("Security audit") in `ci.yml`, on push/PR. It is deliberately its own job rather than a step inside Lint: an advisory published against an unrelated dependency would otherwise abort the job before ESLint, the type-check and the drift gates ever ran. It runs `npm run check:audit` over the root tree and `npm audit --audit-level=high` over `dashboard/`. Both fence `high` rather than `critical`, because the `overrides` in `package.json` clear the root tree's existing HIGH advisories, so the threshold fences regressions. `check:audit` applies that threshold per advisory instead of all-or-nothing: an advisory with no patched version can be excused by id in `scripts/check-audit.mjs`, with its reason and its removal condition recorded beside it, rather than dropping the whole job to `critical` — and an allowlist entry whose advisory has since gone fails the job too, so an exception cannot outlive its cause. The dashboard keeps the plain form: it has nothing to excuse and stays the stricter of the two. Between releases, `.github/workflows/security-scan.yml` (Scheduled Security Scan) repeats that job every Wednesday at 03:00 UTC and on demand, together with the release Trivy scan against the published `latest` image on amd64 and arm64, and a `base-image-drift` job that fails when the Dockerfile's two `node:22-slim` FROM digests disagree, or when the pin differs from what the tag serves today and either the tag has served that image for 7 or more days, or for 3 or more days with the pin last changed 28 or more days ago. The workflow below is a recommended setup to add if you want Snyk and SAST; its scheduled `npm audit` is already covered by `security-scan.yml`.
+> **Aspirational template, not in the repo.** There is no Snyk and no CodeQL workflow today. The actual dependency check is a dedicated `audit` job ("Security audit") in `ci.yml`, on push/PR. It is deliberately its own job rather than a step inside Lint: an advisory published against an unrelated dependency would otherwise abort the job before ESLint, the type-check and the drift gates ever ran. It runs `npm run check:audit` over the root tree and `npm audit --audit-level=high` over `dashboard/` and `sdk/javascript/`. All three checks use the HIGH threshold to block HIGH and CRITICAL advisories. `check:audit` applies that threshold per advisory instead of all-or-nothing: an advisory with no patched version can be excused by id in `scripts/check-audit.mjs`, with its reason and its removal condition recorded beside it, rather than dropping the whole job to `critical`; an allowlist entry whose advisory has since gone fails the job too, so an exception cannot outlive its cause. The dashboard and the SDK keep the plain form: they have nothing to excuse and stay stricter than the root. Between releases, `.github/workflows/security-scan.yml` (Scheduled Security Scan) repeats that job every Wednesday at 03:00 UTC and on demand, together with the release Trivy scan against the published `latest` image on amd64 and arm64, and a `base-image-drift` job that fails when the Dockerfile's two `node:22-slim` FROM digests disagree, or when the pin differs from what the tag serves today and either the tag has served that image for 7 or more days, or for 3 or more days with the pin last changed 28 or more days ago. The workflow below is a recommended setup to add if you want Snyk and SAST; its scheduled `npm audit` is already covered by `security-scan.yml`.
 
 ```yaml
 # .github/workflows/security.yml
@@ -795,7 +892,7 @@ jobs:
 
 ### Allowed/Blocked Packages
 
-Security pins for transitive dependencies live in the `overrides` field of `package.json` (for example `"multer": "2.4.0"` and `"ip-address": "^10.7.1"`), and the `audit` CI job gates regressions through `npm run check:audit` (see above). No install hook fetches an unpinned package: `postinstall` runs `npm ci` against the dashboard lockfile and the repository's own patch scripts.
+Security pins for transitive dependencies live in the `overrides` field of `package.json` (for example `"multer": "2.5.0"` and `"ip-address": "^10.7.1"`), and the `audit` CI job gates regressions through `npm run check:audit` (see above). No install hook fetches an unpinned package: `postinstall` runs `npm ci` against the dashboard lockfile and the repository's own patch scripts.
 
 ### Vulnerability Response Matrix
 

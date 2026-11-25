@@ -1,6 +1,6 @@
 # OpenWA SDKs
 
-This document describes `main`. Send idempotency, webhook failure redrive, message-window filters, poll choices, and last-message types are unreleased additions after SDK 0.5.1 and require the corresponding server changes after OpenWA 0.24.0.
+This document describes SDK 0.10.0. `messages.receipts` (`Messages.Receipts` in Go) requires OpenWA 0.28.0 or later. `contacts.lid` (`Contacts.Lid` in Go) requires OpenWA 0.27.1 or later. `setMemberLabel` (`set_member_label` in Python, `SetMemberLabel` in Go), the search `match` option, and the `thumbnailUrl` and `thumbnailBase64` fields of `customLinkPreview` require OpenWA 0.27.0 or later. Send idempotency, webhook failure redrive, message-window filters, poll choices, last-message types, and the `event.response` webhook event name require OpenWA 0.25.0 or later. The `message.receipt` and `poll.vote` webhook event names require OpenWA 0.26.0 or later.
 
 Official client libraries for [OpenWA](https://github.com/rmyndharis/OpenWA), the
 open-source WhatsApp API Gateway. OpenWA is an independent project, not
@@ -26,28 +26,29 @@ resource methods; the PHP SDK has no types layer and returns plain arrays.
 
 All five SDKs expose the same fluent resource surface:
 
-| Resource    | Methods                                                                                                                                                                                                                                                                                    |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `sessions`  | list, get, getConfig, updateConfig, getProxy, updateProxy, create, delete, start, stop, logout, forceKill, getQrCode, requestPairingCode, setOnlinePresence, stats                                                                                                                         |
-| `messages`  | list, sendText, sendImage/Video/Audio/Document/Sticker, sendLocation, sendContact, sendTemplate, sendPoll, reply, clickButton, forward, react, delete, editMessage, history, reactions, media, pin, unpin, star, votePoll, sendBulk, batchStatus, cancelBatch                              |
-| `contacts`  | list, get, check, profilePicture, profilePictures, phone, upsert, delete, block, unblock, listBlocked                                                                                                                                                                                      |
-| `groups`    | list, get, create, joinGroup, joinInfo, add/remove/promote/demoteParticipants, setSubject, setDescription, get/updateGroupSettings, leave, getPicture, setPicture, deletePicture, inviteCode, revokeInviteCode, getMembershipRequests, approveMembershipRequests, rejectMembershipRequests |
-| `webhooks`  | list, listAll, deliveryFailures, redriveDeliveryFailures, get, create, update, delete, test                                                                                                                                                                                                |
-| `chats`     | list, markRead, markUnread, archive, pin, mute, clearMessages, delete, sendState, subscribePresence, getPresence                                                                                                                                                                           |
-| `labels`    | list, get, chats, forChat, upsert, delete, addToChat, removeFromChat _(WhatsApp Business)_                                                                                                                                                                                                 |
-| `channels`  | list, get, messages, create, delete, mute, subscribe, unsubscribe, demoteAdmin, transferOwnership _(Newsletters)_                                                                                                                                                                          |
-| `catalog`   | info, products, product, sendProduct _(WhatsApp Business)_                                                                                                                                                                                                                                 |
-| `status`    | list, fromContact, media, sendText, sendImage, sendVideo, sendVoice, delete _(Stories)_                                                                                                                                                                                                    |
-| `search`    | search _(Operator)_                                                                                                                                                                                                                                                                        |
-| `templates` | list, get, create, update, delete                                                                                                                                                                                                                                                          |
-| `profile`   | setProfileName, setProfileStatus, setProfilePicture, deleteProfilePicture _(OPERATOR)_                                                                                                                                                                                                     |
-| `calls`     | rejectCall, createLink _(OPERATOR)_                                                                                                                                                                                                                                                        |
-| `media`     | conversionStatus, convertVoice _(OPERATOR)_, convertVideo _(OPERATOR)_                                                                                                                                                                                                                     |
-| `health`    | check, live, ready                                                                                                                                                                                                                                                                         |
-| `auth`      | validate (`client.auth()`; `client.Auth.Validate` in Go)                                                                                                                                                                                                                                   |
+| Resource    | Methods                                                                                                                                                                                                                                                                                                    |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sessions`  | list, get, getConfig, updateConfig, getProxy, updateProxy, create, delete, start, stop, logout, forceKill, getQrCode, requestPairingCode, setOnlinePresence, stats                                                                                                                                         |
+| `messages`  | list, sendText, sendImage/Video/Audio/Document/Sticker, sendLocation, sendContact, sendTemplate, sendPoll, reply, clickButton, forward, react, delete, editMessage, history, reactions, receipts, media, pin, unpin, star, votePoll, sendBulk, batchStatus, cancelBatch                                    |
+| `contacts`  | list, get, check, profilePicture, profilePictures, phone, lid, upsert, delete, block, unblock, listBlocked                                                                                                                                                                                                 |
+| `groups`    | list, get, create, joinGroup, joinInfo, add/remove/promote/demoteParticipants, setSubject, setDescription, setMemberLabel, get/updateGroupSettings, leave, getPicture, setPicture, deletePicture, inviteCode, revokeInviteCode, getMembershipRequests, approveMembershipRequests, rejectMembershipRequests |
+| `webhooks`  | list, listAll, deliveryFailures, redriveDeliveryFailures, get, create, update, delete, test                                                                                                                                                                                                                |
+| `chats`     | list, markRead, markUnread, archive, pin, mute, clearMessages, delete, sendState, subscribePresence, getPresence                                                                                                                                                                                           |
+| `labels`    | list, get, chats, forChat, upsert, delete, addToChat, removeFromChat _(WhatsApp Business)_                                                                                                                                                                                                                 |
+| `channels`  | list, get, messages, create, delete, mute, subscribe, unsubscribe, demoteAdmin, transferOwnership _(Newsletters)_                                                                                                                                                                                          |
+| `catalog`   | info, products, product, sendProduct _(WhatsApp Business)_                                                                                                                                                                                                                                                 |
+| `status`    | list, fromContact, media, sendText, sendImage, sendVideo, sendVoice, delete _(Stories)_                                                                                                                                                                                                                    |
+| `search`    | search _(Operator)_                                                                                                                                                                                                                                                                                        |
+| `templates` | list, get, create, update, delete                                                                                                                                                                                                                                                                          |
+| `profile`   | setProfileName, setProfileStatus, setProfilePicture, deleteProfilePicture _(OPERATOR)_                                                                                                                                                                                                                     |
+| `calls`     | rejectCall, createLink _(OPERATOR)_                                                                                                                                                                                                                                                                        |
+| `media`     | conversionStatus, convertVoice _(OPERATOR)_, convertVideo _(OPERATOR)_                                                                                                                                                                                                                                     |
+| `health`    | check, live, ready                                                                                                                                                                                                                                                                                         |
+| `auth`      | validate (`client.auth()`; `client.Auth.Validate` in Go)                                                                                                                                                                                                                                                   |
 
-> ⚠️ Endpoints requiring an `OPERATOR`-level API key are noted in the inline
-> docs. Deliberately **not** exposed, matching `docs/18-sdk-design.md` exactly:
+> ⚠️ Check the per-route **Auth** lines in the [API specification](../docs/06-api-specification.md) for the required API-key role in every SDK. The JavaScript, Python and PHP method tables in the [SDK design](../docs/18-sdk-design.md) also mark role requirements.
+>
+> Deliberately **not** exposed, matching `docs/18-sdk-design.md` exactly:
 > `auth/api-keys` (key validation itself is the `auth` row above), `audit`,
 > `settings`, `stats`, `automation`, `infra`,
 > `plugins`, the `integration` management routes, `metrics`, `mcp`, `ingress`
@@ -88,7 +89,7 @@ const client = new OpenWAClient({
 
 const session = await client.sessions.create({ name: 'my-session' });
 await client.sessions.start(session.id);
-// Link the account before sending: scan sessions.getQrCode or use sessions.requestPairingCode,
+// Link the account before sending: scan sessions.getQrCode (or use sessions.requestPairingCode for a number with no linked session),
 // then wait for status 'ready'. An unlinked session answers the send with 409.
 const result = await client.messages.sendText(session.id, {
   chatId: '628123456789@c.us',
@@ -105,7 +106,7 @@ try {
   await client.messages.sendText(/* … */);
 } catch (e) {
   if (e instanceof OpenWAConflictError) {
-    /* engine not ready (409) */
+    /* a conflicting state (409): typically a session not ready, or a keyed send pending or unconfirmed */
   }
 }
 ```
@@ -129,7 +130,7 @@ client = OpenWAClient(
 
 session = client.sessions.create({"name": "my-session"})
 client.sessions.start(session["id"])
-# Link the account before sending: scan sessions.get_qr_code or use sessions.request_pairing_code,
+# Link the account before sending: scan sessions.get_qr_code (or use sessions.request_pairing_code for a number with no linked session),
 # then wait for status "ready". An unlinked session answers the send with 409.
 result = client.messages.send_text(session["id"], {
     "chatId": "628123456789@c.us",
@@ -158,7 +159,7 @@ $client = new Client([
 
 $session = $client->sessions->create(['name' => 'my-session']);
 $client->sessions->start($session['id']);
-// Link the account before sending: scan sessions->getQrCode or use sessions->requestPairingCode,
+// Link the account before sending: scan sessions->getQrCode (or use sessions->requestPairingCode for a number with no linked session),
 // then wait for status 'ready'. An unlinked session answers the send with 409.
 $result = $client->messages->sendText($session['id'], [
     'chatId' => '628123456789@c.us',
@@ -167,7 +168,7 @@ $result = $client->messages->sendText($session['id'], [
 echo $result['messageId'];
 ```
 
-Requires PHP 8.1+ and Guzzle 7. For testing, inject a Guzzle client whose
+Requires PHP 8.1+ and Guzzle 7.9+ or 8.x. For testing, inject a Guzzle client whose
 handler is a `MockHandler` — no global state, no network.
 
 ## Java
@@ -176,7 +177,7 @@ handler is a `MockHandler` — no global state, no network.
 <dependency>
   <groupId>com.rmyndharis</groupId>
   <artifactId>openwa</artifactId>
-  <version>0.5.1</version>
+  <version>0.10.0</version>
 </dependency>
 ```
 
@@ -191,7 +192,7 @@ OpenWAClient client = new OpenWAClient("http://localhost:2785", "owa_k1_…");
 
 SessionResponse session = client.sessions.create(CreateSessionRequest.builder().name("my-session").build());
 client.sessions.start(session.id());
-// Link the account before sending: scan sessions.getQrCode or use sessions.requestPairingCode,
+// Link the account before sending: scan sessions.getQrCode (or use sessions.requestPairingCode for a number with no linked session),
 // then wait for status READY. An unlinked session answers the send with 409.
 MessageResponse result = client.messages.sendText(session.id(),
     SendTextRequest.builder()
@@ -234,7 +235,7 @@ if err != nil {
 if _, err := client.Sessions.Start(ctx, session.ID); err != nil {
     log.Fatal(err)
 }
-// Link the account before sending: scan Sessions.QRCode or use Sessions.RequestPairingCode,
+// Link the account before sending: scan Sessions.QRCode (or use Sessions.RequestPairingCode for a number with no linked session),
 // then wait for status "ready". An unlinked session answers the send with 409.
 res, err := client.Messages.SendText(ctx, session.ID, openwa.SendTextRequest{
     ChatID: "628123456789@c.us",
@@ -258,25 +259,42 @@ testing, retry, tracing, or metrics. See [`go/README.md`](go/README.md).
   outside local development.
 - **No automatic retries by default.** A failed request raises/throws
   immediately; wrap calls in your own backoff if you need retries (especially
-  for `429`). The injectable transport (`fetch` / `transport` / `httpClient`) is
-  the extension point for retry or observability middleware. The Go client is
-  the exception: it ships an opt-in policy (`WithRetry(DefaultRetryPolicy())`)
-  that retries idempotent requests on network errors and `429`/`5xx`, retries a
-  `POST`/`PATCH` only on `429`/`503` (never after a network error), never
-  retries a send-pacing `429` (`code: "SEND_PACING_LIMITED"`), honors
-  `Retry-After`, and rewinds request bodies —
-  still off unless you ask for it.
+  for `429`), and replay a send answered `503` only with the same
+  `Idempotency-Key`: the message may already have gone out. The injectable
+  transport (`fetch` / `transport` / `httpClient`) is the extension point for
+  retry or observability middleware. The Go client is the exception: it ships an
+  opt-in policy (`WithRetry(DefaultRetryPolicy())`) that retries idempotent
+  requests on network errors and `429`/`5xx`, retries a `POST`/`PATCH` only on
+  `429`, or on `503` when it carries an `Idempotency-Key` or the `503` carries
+  `Retry-After` (never after a network error), never retries a send-pacing `429`
+  (`code: "SEND_PACING_LIMITED"`), honors `Retry-After`, and rewinds request
+  bodies; it is still off unless you ask for it.
 - **Webhook signatures.** Every SDK verifies a delivery's `X-OpenWA-Signature`
   against the raw request body: `verifyWebhookSignature` (JavaScript),
   `verify_webhook_signature` (Python), `VerifyWebhookSignature` (Go),
   `WebhookSignature.verify` (Java) and `WebhookSignature::verify` (PHP). The
   JavaScript, Python, Go and Java SDKs also type the delivery body as
-  `WebhookDelivery`.
+  `WebhookDelivery`. The signature carries no timestamp, so dedupe on the body's
+  `idempotencyKey` (also the `X-OpenWA-Idempotency-Key` header), which the
+  gateway's retries and redrives reuse.
 - **Redirects are never followed.** A `3xx` surfaces to the caller rather than
   being followed, so the API key is never re-sent to a redirect target.
-- **Default per-request timeout** is 30s (configurable). Path segments (chat /
-  message ids) are percent-encoded; a base-URL path prefix (e.g. behind a proxy
-  at `/v1`) is preserved.
+- **Default timeout** is 30s (configurable). `0` turns it off in the JavaScript,
+  Python and PHP clients; the Go client reads `0` as the 30s default and the Java
+  builder refuses it. The JavaScript, PHP, Go and Java clients bound the whole call,
+  response body included, except PHP on Guzzle 7's stream handler (below). The
+  Python client's is per network operation (connect, read, write, pool), so a
+  response that keeps trickling bytes is not cut off. On PHP, Guzzle 7's stream
+  handler (a host without `ext-curl`) bounds each wait instead of the whole call:
+  the wait for the response headers and each silence in the body, which can last
+  up to about twice the `timeout`. A body that keeps trickling bytes is therefore
+  not cut off. There a `0` still leaves PHP's `default_socket_timeout` (60s by
+  default) before the response headers, and that wait ends with a Guzzle
+  exception, not `OpenWATimeoutException`; see the PHP README. A timeout ends the
+  wait, not the call: the gateway may still complete the request, so retry a send
+  only with the same `Idempotency-Key` and re-read state before repeating any other
+  write. Path segments (chat / message ids) are percent-encoded; a base-URL path
+  prefix (e.g. behind a proxy at `/v1`) is preserved.
 
 ## Development
 

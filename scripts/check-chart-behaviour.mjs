@@ -36,8 +36,8 @@ const render = (...setArgs) =>
   });
 
 /** Render with `valuesYaml` as a values file (`-f -`), which parses numbers unlike `--set`. */
-const renderValues = valuesYaml =>
-  execFileSync('docker', ['run', '-i', '--rm', '-v', `${CHARTS}:/charts:ro`, HELM_IMAGE, 'template', 'ci', '/charts/openwa', '-f', '-'], {
+const renderValues = (valuesYaml, release = 'ci') =>
+  execFileSync('docker', ['run', '-i', '--rm', '-v', `${CHARTS}:/charts:ro`, HELM_IMAGE, 'template', release, '/charts/openwa', '-f', '-'], {
     encoding: 'utf8',
     input: valuesYaml,
     maxBuffer: 1 << 24,
@@ -234,6 +234,30 @@ const check = (id, ok, detail) => results.push({ id, ok, detail });
   );
 }
 
+// The ServiceMonitor's bearer token must name a key its Secret holds, or the Prometheus Operator cannot read the
+// token and no metrics arrive. The chart's own Secret stores each secretEnv entry under its variable name, which
+// the default key `token` is not, so the setup values.yaml documents is rendered and its key looked up there.
+{
+  const values = readFileSync(`${CHARTS}/openwa/values.yaml`, 'utf8');
+  const setup = /^# {3}serviceMonitor:\n(?:# {3}.*\n)+/m.exec(values)?.[0] ?? '';
+  const documented = setup.replace(/^# {3}/gm, '');
+  const out = renderValues(`${documented}secretEnv:\n  METRICS_TOKEN: a-long-random-token\n`, 'openwa');
+  const ref = mapAt(byKind(out, 'ServiceMonitor')[0] ?? '', ['bearerTokenSecret']) ?? {};
+  const secret = byKind(out, 'Secret').find(doc => nameOf(doc) === ref.name);
+  const keys = mapAt(secret ?? '', ['stringData']) ?? {};
+  check(
+    'servicemonitor-token-key-exists',
+    Boolean(setup) && Boolean(secret) && ref.key in keys,
+    !setup
+      ? 'values.yaml documents no serviceMonitor setup to scrape with'
+      : !secret
+        ? `the documented bearerTokenSecret names ${ref.name ?? 'no Secret'}, which the chart does not render`
+        : ref.key in keys
+          ? `the documented setup reads the token from ${ref.name}, key ${ref.key}`
+          : `the documented key ${ref.key} is not in Secret ${ref.name}, which holds ${Object.keys(keys).join(', ')}`,
+  );
+}
+
 // A values file is parsed as YAML, so an unquoted number reaches the templates as a float64, and
 // `quote` prints one of a million or more in exponent form. The app then reads "5.24288e+07" for a
 // byte limit (and refuses to boot) or "1.2345678e+07" for a password. `--set` parses integers as
@@ -307,6 +331,24 @@ const check = (id, ok, detail) => results.push({ id, ok, detail });
     wrong.length === 0,
     wrong.length ? `NOTES got the plain-http ingress warning wrong for: ${wrong.join(', ')}` : 'NOTES warns only when the ingress has no TLS and the CSP upgrade is on',
   );
+}
+
+// `helm upgrade --reuse-values` renders the new templates with the PREVIOUS release's values, which hold
+// none of the keys a newer chart added. A template that reads one without a default fails the upgrade
+// with a nil pointer, and so does a chart that stops rendering when a block is removed.
+{
+  let detail;
+  let ok = false;
+  try {
+    const probe = mapAt(byKind(render('--set', 'startupProbe=null'), 'StatefulSet')[0] ?? '', ['startupProbe']);
+    ok = probe?.periodSeconds === '5' && probe?.failureThreshold === '60';
+    detail = ok
+      ? 'values without the startupProbe block render with the 5 s period and 60 failures'
+      : `values without startupProbe rendered periodSeconds ${probe?.periodSeconds}, failureThreshold ${probe?.failureThreshold}`;
+  } catch (error) {
+    detail = `the chart does not render with values that predate startupProbe: ${String(error.stderr ?? error.message).split('\n')[0]}`;
+  }
+  check('renders-with-previous-release-values', ok, detail);
 }
 
 const failed = results.filter(r => !r.ok);

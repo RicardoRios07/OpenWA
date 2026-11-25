@@ -21,6 +21,7 @@ import type {
   ListMessagesQuery,
   MessageHistoryQuery,
   MessageListResponse,
+  MessageReceiptsResponse,
   MessageResponse,
   PinMessageRequest,
   ReactionRecord,
@@ -182,7 +183,7 @@ export class MessagesResource {
     });
   }
 
-  /** Get the message history for a chat (read live from WhatsApp). */
+  /** Get the message history for a chat (read live from WhatsApp). **whatsapp-web.js only**: Baileys answers 501. */
   history(sessionId: string, chatId: string, query?: MessageHistoryQuery): Promise<ChatHistoryMessage[]> {
     return this.client.request<ChatHistoryMessage[]>({
       method: 'GET',
@@ -191,11 +192,22 @@ export class MessagesResource {
     });
   }
 
-  /** Get reactions for a specific message. */
+  /** Get reactions for a specific message. **whatsapp-web.js only**: Baileys answers 501. */
   reactions(sessionId: string, chatId: string, messageId: string): Promise<ReactionRecord[]> {
     return this.client.request<ReactionRecord[]>({
       method: 'GET',
       path: `/api/sessions/${encodeSegment(sessionId)}/messages/${encodeSegment(chatId)}/${encodeSegment(messageId)}/reactions`,
+    });
+  }
+
+  /**
+   * Get who received, read and played a message the account sent; `messageId` is the full serialized id.
+   * **whatsapp-web.js only**: Baileys answers 501.
+   */
+  receipts(sessionId: string, chatId: string, messageId: string): Promise<MessageReceiptsResponse> {
+    return this.client.request<MessageReceiptsResponse>({
+      method: 'GET',
+      path: `/api/sessions/${encodeSegment(sessionId)}/messages/${encodeSegment(chatId)}/${encodeSegment(messageId)}/receipts`,
     });
   }
 

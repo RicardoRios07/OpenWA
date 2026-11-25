@@ -32,6 +32,7 @@ concurrency:
 jobs:
   test:
     name: PHP SDK tests
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -39,7 +40,7 @@ jobs:
         working-directory: sdk/php
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
         with:
           php-version: '8.2'
       - run: composer install --no-interaction --no-progress
@@ -47,6 +48,7 @@ jobs:
 
   split:
     name: Mirror sdk/php -> rmyndharis/openwa-php
+    if: github.ref == 'refs/heads/main'
     # Never mirror an untested (red) SDK to Packagist dev-main.
     needs: [test]
     runs-on: ubuntu-latest
@@ -68,9 +70,18 @@ jobs:
           fi
           git config user.name "rmyndharis"
           git config user.email "yudhi@rmyndharis.com"
+          # An unrelated main commit schedules no replacement run under the SDK path filter.
+          # Compare SDK content, retaining the tested HEAD for the split and the push.
+          git fetch --no-tags origin refs/heads/main
+          if [ "$(git rev-parse HEAD:sdk/php)" != "$(git rev-parse FETCH_HEAD:sdk/php)" ]; then
+            echo "::notice::Source main has different PHP content; leaving the mirror to its tested run"
+            exit 0
+          fi
           SPLIT_SHA="$(git subtree split --prefix=sdk/php HEAD)"
           echo "Split SHA: $SPLIT_SHA"
-          git push --force \
+          # Hooks off: nothing in this job runs project code, so none are expected, and none may run with the
+          # token in the push URL.
+          git -c core.hooksPath=/dev/null push --force \
             "https://x-access-token:${SPLIT_TOKEN}@github.com/rmyndharis/openwa-php.git" \
             "${SPLIT_SHA}:refs/heads/main"
           echo "Mirrored sdk/php -> rmyndharis/openwa-php@main"

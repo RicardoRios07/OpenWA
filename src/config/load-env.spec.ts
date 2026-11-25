@@ -48,6 +48,18 @@ describe('loadEnvironment', () => {
     }
   });
 
+  it('lets a dashboard-saved engine apply over the blank value a stock compose forwards', () => {
+    process.env.ENGINE_TYPE = '';
+    makeTempCwd({ 'data/.env.generated': 'ENGINE_TYPE=baileys\n' });
+
+    runLoader();
+
+    expect(process.env.ENGINE_TYPE).toBe('baileys');
+    // Not pinned: the host supplied nothing, so the Infrastructure page offers the setting for edit.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    expect((require('./env-precedence') as typeof import('./env-precedence')).isEnvPinned('ENGINE_TYPE')).toBe(false);
+  });
+
   it('loads REDIS_HOST from a .env file so it reaches the webhook worker connection', () => {
     delete process.env.REDIS_HOST;
     makeTempCwd({ '.env': 'REDIS_HOST=redis.internal\n', 'data/.env.generated': '' });
@@ -56,6 +68,46 @@ describe('loadEnvironment', () => {
 
     expect(process.env.REDIS_HOST).toBe('redis.internal');
     expect(workerConnectionOptions().host).toBe('redis.internal');
+  });
+
+  // dotenv reports a read failure in its result instead of throwing. A skipped read would boot on the saved
+  // configuration and the defaults, with another database and a freshly seeded admin key, so a .env that exists but
+  // cannot be read stops the boot.
+  it('fails the load, naming the file, when .env is a directory', () => {
+    const dir = makeTempCwd({ 'data/.env.generated': 'REDIS_HOST=redis.saved\n' });
+    fs.mkdirSync(path.join(dir, '.env'));
+    delete process.env.REDIS_HOST;
+    jest.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    expect(runLoader).toThrow(`Cannot read ${path.join(dir, '.env')}`);
+    expect(process.env.REDIS_HOST).toBeUndefined();
+  });
+
+  // The saved configuration is read by the same loader and fails the same way: a single-file bind mount of a host file
+  // that does not exist leaves a directory at this path, and skipping it would boot on the defaults, with another database.
+  it('fails the load, naming the file, when data/.env.generated is a directory', () => {
+    const dir = makeTempCwd({});
+    fs.mkdirSync(path.join(dir, 'data', '.env.generated'), { recursive: true });
+    jest.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    expect(runLoader).toThrow(`Cannot read ${path.join(dir, 'data', '.env.generated')}`);
+  });
+
+  // Root bypasses permission bits and Windows has no read bit to clear, so the refusal is unprovable on either.
+  const readCanBeDenied = process.getuid?.() !== 0 && process.platform !== 'win32';
+  (readCanBeDenied ? it : it.skip)('fails the load, naming the file, when .env has no read permission', () => {
+    const dir = makeTempCwd({ '.env': 'REDIS_HOST=redis.internal\n', 'data/.env.generated': '' });
+    const file = path.join(dir, '.env');
+    fs.chmodSync(file, 0o000);
+    jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    delete process.env.REDIS_HOST;
+
+    try {
+      expect(runLoader).toThrow(file);
+    } finally {
+      fs.chmodSync(file, 0o600);
+    }
+    expect(process.env.REDIS_HOST).toBeUndefined();
   });
 
   it('lets a real process env value win over the .env file (precedence preserved)', () => {
@@ -71,8 +123,10 @@ describe('loadEnvironment', () => {
     expect(workerConnectionOptions().host).toBe('host-from-process-env');
   });
 
-  // dotenv 17 prints an "injected env ... // tip: ..." line to stdout on every load unless told to be
-  // quiet. It bypasses the logger, so in production it lands as plain text in the JSON log stream.
+  // dotenv prints an "injected env" line on every load unless told to be quiet: to stdout up to dotenv 17,
+  // to stderr (console.error) from 18. It bypasses the logger, so in production it lands as plain text in
+  // the JSON log stream. Every console channel is watched, so the guard does not depend on which one the
+  // installed version writes to.
   it.each<[string, Record<string, string>]>([
     [
       'a saved configuration',
@@ -80,13 +134,17 @@ describe('loadEnvironment', () => {
     ],
     ['a first run', { '.env': 'REDIS_HOST=redis.internal\n' }],
   ])('keeps dotenv from printing its own load banner on %s', (_case, files) => {
+    delete process.env.DOTENV_QUIET;
     delete process.env.DOTENV_CONFIG_QUIET;
     makeTempCwd(files);
-    const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    const lines: string[] = [];
+    for (const channel of ['log', 'info', 'warn', 'error', 'debug'] as const) {
+      jest.spyOn(console, channel).mockImplementation((...args: unknown[]) => void lines.push(args.join(' ')));
+    }
 
     runLoader();
 
-    expect(log.mock.calls.map(args => args.join(' '))).not.toContainEqual(expect.stringContaining('injected env'));
+    expect(lines).not.toContainEqual(expect.stringContaining('injected env'));
   });
 
   // The image runs with NODE_ENV=production, where the logger emits JSON. A raw console line from the

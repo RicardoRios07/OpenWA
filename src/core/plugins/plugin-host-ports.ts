@@ -78,6 +78,8 @@ export interface PluginConversationMappingPort {
     sessionId: string,
     chatId: string,
   ): Promise<{ pluginId: string; handoverState: HandoverState } | null>;
+  /** Hand every chat a plugin took over back to the bot, once the plugin is gone and nothing can. */
+  releaseTakeovers(pluginId: string): Promise<void>;
 }
 
 /** A provisioned instance of an adapter plugin, as the instance-allowlist and ingress dispatch read it. */

@@ -3,7 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { Webhook } from './entities/webhook.entity';
 import { WebhookDeliveryFailure } from './entities/webhook-delivery-failure.entity';
 import { WebhookOutboxEvent } from './entities/webhook-outbox-event.entity';
-import { WebhookOutboxService } from './webhook-outbox.service';
+import { WebhookOutboxModule } from './webhook-outbox.module';
 import { WebhookReconcilerService } from './webhook-reconciler.service';
 import { Session } from '../session/entities/session.entity';
 import { WebhookService } from './webhook.service';
@@ -26,17 +26,12 @@ if (process.env.QUEUE_ENABLED === 'true') {
 @Module({
   imports: [
     TypeOrmModule.forFeature([Webhook, WebhookDeliveryFailure, WebhookOutboxEvent, Session], 'data'),
+    WebhookOutboxModule,
     EngineModule,
     ...queueModules,
   ],
   controllers: [WebhookController, WebhooksListController],
-  providers: [
-    WebhookService,
-    WebhookDeliveryService,
-    WebhookOutboxService,
-    WebhookReconcilerService,
-    WebhookRedriveService,
-  ],
+  providers: [WebhookService, WebhookDeliveryService, WebhookReconcilerService, WebhookRedriveService],
   exports: [WebhookService],
 })
 export class WebhookModule {}

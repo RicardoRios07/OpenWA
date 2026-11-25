@@ -42,13 +42,11 @@ updates:
       # same three grounds.
       - dependency-name: "better-sqlite3"
         versions: [">=14.0.0"]
-      # puppeteer is pinned EXACTLY at whatsapp-web.js's own pin (both 24.38.0 today). The root pin
-      # exists to hold the whole tree on the Chromium/CDP line the engine and its specs are written
-      # against, and any bump the two manifests do not agree on desyncs the mirror: a 25.x proposal
-      # already fails lint and the unit suite on wwebjs-protocol-timeout.spec.ts. Lift when
-      # whatsapp-web.js moves its pin, and move the root pin in the same commit.
+      # The root pin and $puppeteer override keep whatsapp-web.js on the tested 25.x line.
+      # Browser teardown uses the connected getter. Recheck lifecycle, protocol errors and
+      # engine smoke tests before adopting the next major.
       - dependency-name: "puppeteer"
-        versions: [">24.38.0"]
+        versions: [">=26.0.0"]
       # audio-decode v3 collides with Baileys: every 7.0.0-rc line so far (through rc14) declares
       # `peerOptional audio-decode@"^2.1.3"`, so the bump fails `npm ci` with ERESOLVE before any
       # CI job runs. The pairing is load-bearing, not incidental — Baileys uses audio-decode to
@@ -63,10 +61,10 @@ updates:
       # with the base-image Node bump.
       - dependency-name: "@types/node"
         versions: [">=23.0.0"]
-      # The NestJS 12 line cannot be adopted yet. The peers no longer block it (@bull-board/nestjs
-      # 9.10.1 and @nestjs/throttler 6.7.0 both admit ^12.0.0), but two in-repo blockers remain:
+      # The NestJS 12 line cannot be adopted yet. The peers no longer block it (the current
+      # @bull-board/nestjs and @nestjs/throttler both admit ^12.0.0), but two in-repo blockers remain:
       # @nestjs/common@12 is ESM-only and neither jest lane can load it under the current transform
-      # config (271 @nestjs/common and 35 @nestjs/testing import sites), and @nestjs/swagger 12
+      # config (many source and spec files import @nestjs/common or @nestjs/testing), and @nestjs/swagger 12
       # spells nullability per document version, which moves the committed openapi.json snapshot
       # and cascades into check:contract-shapes across five SDK clients.
       #
@@ -135,6 +133,67 @@ updates:
       # build stage, and types past 22 describe a runtime it does not run.
       - dependency-name: "@types/node"
         versions: [">=23.0.0"]
+
+  # The JavaScript SDK publishes no runtime dependencies, so every update here moves the toolchain
+  # that builds and tests it. These PRs touch sdk/**, so SDK CI gates each one.
+  - package-ecosystem: npm
+    directory: /sdk/javascript
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+      major:
+        update-types:
+          - major
+    labels:
+      - dependencies
+      - javascript
+
+  # The other SDKs ship runtime dependencies to their consumers (httpx, guzzle, gson), and their
+  # published ranges admit whatever is current, so an advisory in one of them is a PR here, not a
+  # surprise in a user's lockfile. These PRs touch sdk/**, so SDK CI gates each one. The Go client
+  # depends on the standard library alone and its go.mod has no require, so its entry keeps the
+  # one-entry-per-SDK rule and starts proposing updates once a dependency is added.
+  - package-ecosystem: pip
+    directory: /sdk/python
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+
+  - package-ecosystem: maven
+    directory: /sdk/java
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+
+  - package-ecosystem: composer
+    directory: /sdk/php
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+
+  - package-ecosystem: gomod
+    directory: /sdk/go
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
 
   # All workflow action refs are pinned to commit SHAs (with a `# vX.Y.Z` comment). Dependabot
   # understands that form: it proposes the new SHA and rewrites the version comment, so the pins

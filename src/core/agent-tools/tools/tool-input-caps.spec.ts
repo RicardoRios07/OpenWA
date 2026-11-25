@@ -3,6 +3,7 @@ import { validate } from 'class-validator';
 import type { MessageService } from '../../../modules/message/message.service';
 import type { GroupService } from '../../../modules/group/group.service';
 import {
+  CHAT_ID_MAX_LENGTH,
   MENTIONS_MAX,
   MESSAGE_TEXT_MAX_LENGTH,
   SendTextMessageDto,
@@ -26,6 +27,10 @@ import {
   GroupSubjectDto,
   ParticipantsDto,
 } from '../../../modules/group/dto/group.dto';
+import { MarkChatReadDto } from '../../../modules/session/dto/mark-chat-read.dto';
+import { MarkChatUnreadDto } from '../../../modules/session/dto/mark-chat-unread.dto';
+import { SubscribePresenceDto } from '../../../modules/session/dto/presence.dto';
+import { SendChatStateDto } from '../../../modules/session/dto/send-chat-state.dto';
 import { z } from 'zod';
 import type { AnyToolDescriptor } from '../tool-descriptor';
 import { allAgentTools } from '.';
@@ -238,5 +243,74 @@ describe('agent-tool identifiers reject an empty string', () => {
 
   it.each(idFields)('%s rejects an empty string', (_label, schema) => {
     expect(schema.safeParse('').success).toBe(false);
+  });
+});
+
+/**
+ * A chat id is stored under a btree index, which PostgreSQL cannot hold past about 2.7 KB, and the tool
+ * path calls the service directly. The REST bodies cap it; so does every tool field that names a chat.
+ */
+describe('agent-tool chat ids are capped as the REST bodies cap them', () => {
+  const chatFields = allAgentTools({} as never).flatMap(t =>
+    Object.entries((t.inputSchema as unknown as z.ZodObject<Record<string, z.ZodType>>).shape)
+      .filter(([key]) => /^(chatId|fromChatId|toChatId)$/.test(key))
+      .map(([key, schema]) => [`${t.name}.${key}`, schema] as const),
+  );
+
+  it('finds the chat id fields to check', () => {
+    expect(chatFields.map(([label]) => label)).toEqual(
+      expect.arrayContaining([
+        'MessageSendText.chatId',
+        'MessageForward.fromChatId',
+        'MessageForward.toChatId',
+        'SessionMarkChatRead.chatId',
+      ]),
+    );
+  });
+
+  // A JID of the given length, so the cap is what accepts or rejects it on the fields that also check the shape.
+  const jidOfLength = (length: number): string => `${'x'.repeat(length - 2)}@c`;
+
+  it.each(chatFields)('%s accepts an id at the cap and rejects one past it', (_label, schema) => {
+    expect(schema.safeParse(jidOfLength(CHAT_ID_MAX_LENGTH)).success).toBe(true);
+    expect(schema.safeParse(jidOfLength(CHAT_ID_MAX_LENGTH + 1)).success).toBe(false);
+  });
+});
+
+/**
+ * Three chat routes also require the form localpart@host with no whitespace, and the tools call the
+ * service directly, so without the same rule a malformed id reaches the engine as a failed call where
+ * REST answers 400. Each tool must accept and reject exactly the ids its REST body does.
+ */
+describe('MCP tool chat ids take the shape the REST bodies require', () => {
+  const tools = allAgentTools({} as never);
+  const CASES: Array<[string, new () => object, Record<string, unknown>]> = [
+    ['SessionSubscribePresence', SubscribePresenceDto, {}],
+    ['SessionMarkChatRead', MarkChatReadDto, {}],
+    ['SessionMarkChatUnread', MarkChatUnreadDto, {}],
+    ['SessionSendChatState', SendChatStateDto, { state: 'typing' }],
+  ];
+  const WELL_FORMED = ['628123@c.us', '120363@g.us', '1234@s.whatsapp.net', '9876@lid'];
+  const MALFORMED = [
+    'abc',
+    '@c.us',
+    '628123@',
+    ' 628123@c.us',
+    '628123@c.us ',
+    '628123@c.us\n',
+    'a b@c.us',
+    '@@',
+    '628123@c.us@g.us',
+  ];
+
+  it.each(CASES)('%s accepts and rejects the same chat ids as its REST body', async (name, dtoClass, extra) => {
+    const tool = tools.find(t => t.name === name)!;
+    for (const chatId of [...WELL_FORMED, ...MALFORMED]) {
+      const toolAccepts = tool.inputSchema.safeParse({ sessionId: 's1', chatId, ...extra }).success;
+      const errors = await validate(plainToInstance(dtoClass, { chatId, ...extra }, PIPE_TRANSFORM_OPTS));
+      const restAccepts = !errors.some(e => e.property === 'chatId');
+      expect({ chatId, toolAccepts }).toEqual({ chatId, toolAccepts: restAccepts });
+      expect(restAccepts).toBe(WELL_FORMED.includes(chatId));
+    }
   });
 });

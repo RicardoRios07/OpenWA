@@ -6,6 +6,7 @@ import {
   isValidPairingPhone,
   matchesStatusFilter,
   filterSessions,
+  isValidProxyUrl,
 } from './sessionForm.ts';
 
 test('a valid session name reports no issues', () => {
@@ -102,4 +103,13 @@ test('filterSessions combines the search box and the status group', () => {
     ['u2'],
     'id matches too',
   );
+});
+
+test('a proxy URL is one of the four schemes the gateway takes, and blank or malformed text is refused', () => {
+  for (const url of ['http://proxy:3128', 'https://proxy', 'socks4://10.0.0.1:1080', ' socks5://p:1 ']) {
+    assert.equal(isValidProxyUrl(url), true, url);
+  }
+  for (const url of ['', '   ', 'not a url', 'ftp://proxy', 'proxy:3128']) {
+    assert.equal(isValidProxyUrl(url), false, JSON.stringify(url));
+  }
 });

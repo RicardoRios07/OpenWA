@@ -1,5 +1,5 @@
 import { LogLevel } from '../common/services/logger.service';
-import { validateEnv } from './env.validation';
+import { s3EndpointError, validateEnv } from './env.validation';
 
 /** Regression locks for boot-time env validation (no silent coercion). */
 describe('validateEnv', () => {
@@ -84,6 +84,15 @@ describe('validateEnv', () => {
     expect(() => validateEnv({ DATABASE_PORT: 'abc' })).toThrow(/DATABASE_PORT/);
     expect(() => validateEnv({ PORT: '70000' })).toThrow(/PORT/);
     expect(() => validateEnv({ PORT: '2785' })).not.toThrow();
+  });
+
+  // main.ts listens on the raw PORT and the image healthcheck puts it in a URL verbatim, so a padded
+  // value would boot on 2785 while every probe of `http://localhost:2785 /...` fails as malformed.
+  it('rejects a PORT with surrounding whitespace and takes only an empty one as unset', () => {
+    expect(() => validateEnv({ PORT: '2785 ' })).toThrow(/PORT/);
+    expect(() => validateEnv({ PORT: ' 8080' })).toThrow(/PORT/);
+    expect(() => validateEnv({ PORT: '   ' })).toThrow(/PORT/);
+    expect(() => validateEnv({ PORT: '' })).not.toThrow();
   });
 
   it('rejects a non-numeric database timeout knob (a typo would become NaN and break the pg pool)', () => {
@@ -265,6 +274,19 @@ describe('validateEnv', () => {
     expect(() => validateEnv({ [key]: '36500' })).not.toThrow();
   });
 
+  // The same 36500-day cutoff bound, in hours. A malformed value fell back to 0 downstream, which keeps no
+  // payload on a failure row and leaves the redrive endpoint nothing to replay, with no boot error.
+  it('rejects a malformed or oversized WEBHOOK_FAILURE_PAYLOAD_RETENTION_HOURS and keeps 0 (no payload kept)', () => {
+    const key = 'WEBHOOK_FAILURE_PAYLOAD_RETENTION_HOURS';
+    for (const bad of ['24h', '-1', '1.5']) {
+      expect(() => validateEnv({ [key]: bad })).toThrow(new RegExp(`${key} must be a non-negative integer`));
+    }
+    expect(() => validateEnv({ [key]: '876001' })).toThrow(new RegExp(`${key} must be at most 876000`));
+    for (const ok of ['0', '24', '876000']) {
+      expect(() => validateEnv({ [key]: ok })).not.toThrow();
+    }
+  });
+
   it('rejects a non-positive / non-integer WEBHOOK_MAX_PAYLOAD_BYTES (0 would reject every dispatch)', () => {
     expect(() => validateEnv({ WEBHOOK_MAX_PAYLOAD_BYTES: '0' })).toThrow(/WEBHOOK_MAX_PAYLOAD_BYTES/);
     expect(() => validateEnv({ WEBHOOK_MAX_PAYLOAD_BYTES: 'abc' })).toThrow(/WEBHOOK_MAX_PAYLOAD_BYTES/);
@@ -318,6 +340,13 @@ describe('validateEnv', () => {
     expect(() => validateEnv({ DATABASE_SSL: 'require' })).toThrow(/DATABASE_SSL/);
     expect(() => validateEnv({ DATABASE_SSL_REJECT_UNAUTHORIZED: '0' })).toThrow(/DATABASE_SSL_REJECT_UNAUTHORIZED/);
     expect(() => validateEnv({ MAIN_DATABASE_SYNCHRONIZE: 'False' })).toThrow(/MAIN_DATABASE_SYNCHRONIZE/);
+    // The data connection's flag: any spelling but `true` ran the SQLite migration chain instead.
+    for (const typo of ['True', 'TRUE', '1', 'yes']) {
+      expect(() => validateEnv({ DATABASE_SYNCHRONIZE: typo })).toThrow(/DATABASE_SYNCHRONIZE must be "true"/);
+    }
+    for (const ok of ['true', 'false', '']) {
+      expect(() => validateEnv({ DATABASE_SYNCHRONIZE: ok })).not.toThrow();
+    }
     expect(() => validateEnv({ ALLOW_UNSIGNED_INGRESS: 'yes' })).toThrow(/ALLOW_UNSIGNED_INGRESS/);
     expect(() => validateEnv({ ALLOW_DEV_API_KEY: '1' })).toThrow(/ALLOW_DEV_API_KEY/);
     expect(() => validateEnv({ WEBHOOK_SSRF_PROTECT: 'off' })).toThrow(/WEBHOOK_SSRF_PROTECT/);
@@ -403,6 +432,12 @@ describe('validateEnv', () => {
     expect(() => validateEnv({ SEARCH_PROVIDER: 'none' })).not.toThrow();
     // Unset is accepted (the configuration default of 'auto' applies downstream).
     expect(() => validateEnv({})).not.toThrow();
+  });
+
+  it('rejects a SEARCH_CONTAINS_ENABLED typo instead of silently leaving contains search off', () => {
+    expect(() => validateEnv({ SEARCH_CONTAINS_ENABLED: 'yes' })).toThrow(/SEARCH_CONTAINS_ENABLED/);
+    expect(() => validateEnv({ SEARCH_CONTAINS_ENABLED: 'true' })).not.toThrow();
+    expect(() => validateEnv({ SEARCH_CONTAINS_ENABLED: '' })).not.toThrow();
   });
 
   it('rejects a LOG_LEVEL misspelling instead of silently logging at info', () => {
@@ -500,6 +535,29 @@ describe('validateEnv', () => {
     );
   });
 
+  // The bundled PostgreSQL container runs without TLS: a built-in database with DATABASE_SSL=true would retry its
+  // connection until the boot gives up, so the boot refuses it at once and names the key.
+  describe('DATABASE_SSL with the built-in PostgreSQL container', () => {
+    const builtIn = {
+      DATABASE_TYPE: 'postgres',
+      POSTGRES_BUILTIN: 'true',
+      DATABASE_HOST: 'postgres',
+      DATABASE_USERNAME: 'openwa',
+      DATABASE_PASSWORD: 'openwa',
+    };
+    it.each(['postgres', 'Postgres', 'postgres.', 'openwa-postgres'])('refuses it beside the host %j', host => {
+      expect(() => validateEnv({ ...builtIn, DATABASE_HOST: host, DATABASE_SSL: 'true' })).toThrow(
+        /DATABASE_SSL=true .*built-in PostgreSQL container/,
+      );
+    });
+    it('accepts it off, and on for another host or without the built-in flag', () => {
+      expect(() => validateEnv({ ...builtIn, DATABASE_SSL: 'false' })).not.toThrow();
+      expect(() => validateEnv({ ...builtIn, DATABASE_HOST: 'db.ext.example', DATABASE_SSL: 'true' })).not.toThrow();
+      // A server of its own named postgres (a Kubernetes Service, a compose service with TLS set up) may serve TLS.
+      expect(() => validateEnv({ ...builtIn, POSTGRES_BUILTIN: 'false', DATABASE_SSL: 'true' })).not.toThrow();
+    });
+  });
+
   it('rejects DATABASE_SYNCHRONIZE=true with DATABASE_TYPE=postgres (drops body_ts → /search 501)', () => {
     // The Postgres data connection hardcodes migrationsRun=true; an opted-in synchronize=true makes
     // TypeORM re-sync from entities on every boot, dropping the migration-created `body_ts` generated
@@ -582,6 +640,50 @@ describe('validateEnv', () => {
     expect(() => validateEnv({ NODE_URL: 'https://node-a.internal' })).not.toThrow();
   });
 
+  // Without a scheme the S3 client throws "Invalid URL" on every call and media quietly lands on local disk. That
+  // deployment runs today, so the boot reports the endpoint instead of refusing it (validateEnv never throws for
+  // it); the Infrastructure save is what refuses.
+  describe('S3_ENDPOINT', () => {
+    const s3 = (S3_ENDPOINT: string | undefined, STORAGE_TYPE = 's3') => ({ STORAGE_TYPE, S3_ENDPOINT });
+
+    it.each(['minio:9000', '127.0.0.1:9000', 'localhost:9000', 'minio', 'ftp://minio:9000'])(
+      'reports %s while S3 is the selected storage, and still lets validateEnv pass',
+      endpoint => {
+        expect(s3EndpointError(s3(endpoint))).toMatch(/^S3_ENDPOINT must be an absolute http\(s\) URL/);
+        expect(() => validateEnv(s3(endpoint))).not.toThrow();
+      },
+    );
+
+    it('says where to fix it', () => {
+      expect(s3EndpointError(s3('minio:9000'))).toMatch(
+        /environment, \.\/\.env or data\/\.env\.generated, or on the Infrastructure page/,
+      );
+    });
+
+    it('does not echo the value, which may carry credentials', () => {
+      const message = s3EndpointError(s3('AKIAKEY:hunter2@s3host:9000'));
+      expect(message).toMatch(/S3_ENDPOINT/);
+      expect(message).not.toMatch(/hunter2|AKIAKEY|s3host/);
+    });
+
+    it.each([
+      'http://minio:9000',
+      'https://s3.example.com',
+      'https://gateway.example.com/s3/',
+      ' http://minio:9000 ',
+      'HTTP://minio:9000',
+    ])('accepts %s', endpoint => {
+      expect(s3EndpointError(s3(endpoint))).toBeNull();
+    });
+
+    it('leaves an unset or blank endpoint alone, and a stale one while storage is local', () => {
+      expect(s3EndpointError(s3(undefined))).toBeNull();
+      expect(s3EndpointError(s3('  '))).toBeNull();
+      expect(s3EndpointError(s3('minio:9000', 'local'))).toBeNull();
+      expect(s3EndpointError({ S3_ENDPOINT: 'minio:9000' })).toBeNull();
+    });
+  });
+
   it('rejects a non-positive media-conversion knob instead of silently using the default', () => {
     expect(() => validateEnv({ MEDIA_CONVERSION_CONCURRENCY: '0' })).toThrow(/positive integer/);
     expect(() => validateEnv({ MEDIA_CONVERSION_TIMEOUT_MS: 'abc' })).toThrow(/positive integer/);
@@ -619,6 +721,17 @@ describe('validateEnv', () => {
     },
   );
 
+  // The prefix is joined to the queue name with a colon in every Redis key.
+  it('accepts a plain QUEUE_PREFIX, or none, and rejects one that would build ambiguous keys', () => {
+    for (const ok of ['bull', 'openwa-staging', 'prod_2.eu', 'a', '0', '', '  ']) {
+      expect(() => validateEnv({ QUEUE_PREFIX: ok })).not.toThrow();
+    }
+    for (const bad of ['a:b', 'has space', '-lead', '.lead', 'a/b', 'x'.repeat(65)]) {
+      expect(() => validateEnv({ QUEUE_PREFIX: bad })).toThrow(/QUEUE_PREFIX must be 1 to 64/);
+    }
+    expect(() => validateEnv({ QUEUE_PREFIX: 'x'.repeat(64) })).not.toThrow();
+  });
+
   // Read as an exact 'true'/'false' override; anything else falls back to the NODE_ENV default, so
   // CSP_UPGRADE_INSECURE_REQUESTS=False kept the blank-dashboard trap on in production.
   it.each([
@@ -643,13 +756,19 @@ describe('validateEnv', () => {
     expect(() => validateEnv({ REDIS_TLS: '' })).not.toThrow();
   });
 
-  it.each(['INGRESS_RETRY_DELAY_MS', 'REDIS_CACHE_DB'])('rejects a negative or non-integer %s and keeps 0', key => {
-    for (const bad of ['-1', '1.5', 'abc']) {
-      expect(() => validateEnv({ [key]: bad })).toThrow(new RegExp(`${key} must be a non-negative integer`));
-    }
-    expect(() => validateEnv({ [key]: '0' })).not.toThrow();
-    expect(() => validateEnv({ [key]: '' })).not.toThrow();
-  });
+  // BAILEYS_GROUP_METADATA_CACHE_TTL_MS: 0 switches the cache off, and the reader falls back to five minutes
+  // on `5m`, so only boot validation tells the operator the value was refused.
+  it.each(['INGRESS_RETRY_DELAY_MS', 'REDIS_CACHE_DB', 'BAILEYS_GROUP_METADATA_CACHE_TTL_MS'])(
+    'rejects a negative or non-integer %s and keeps 0',
+    key => {
+      for (const bad of ['-1', '1.5', 'abc', '5m']) {
+        expect(() => validateEnv({ [key]: bad })).toThrow(new RegExp(`${key} must be a non-negative integer`));
+      }
+      expect(() => validateEnv({ [key]: '0' })).not.toThrow();
+      expect(() => validateEnv({ [key]: '300000' })).not.toThrow();
+      expect(() => validateEnv({ [key]: '' })).not.toThrow();
+    },
+  );
 
   it('rejects a unit-suffixed CHAT_MEDIA_ARCHIVE_TTL_DAYS but keeps 0 (keep forever)', () => {
     expect(() => validateEnv({ CHAT_MEDIA_ARCHIVE_TTL_DAYS: '30d' })).toThrow(/CHAT_MEDIA_ARCHIVE_TTL_DAYS/);
@@ -664,7 +783,7 @@ describe('validateEnv', () => {
     ['TEMPLATE_RENDER_MAX_CHARS', '64k'],
     ['STORAGE_IMPORT_MAX_BYTES', '200mb'],
     ['STORAGE_IMPORT_MAX_ENTRIES', '1e5'],
-    ['STORAGE_LIST_MAX_FILES', '100k'],
+    ['STORAGE_IMPORT_MAX_TOTAL_BYTES', '10gb'],
     ['BAILEYS_MESSAGE_STORE_LIMIT', '5k'],
   ])('rejects a unit-suffixed or zero %s', (key, bad) => {
     expect(() => validateEnv({ [key]: bad })).toThrow(new RegExp(`${key} must be a positive integer`));
@@ -675,6 +794,18 @@ describe('validateEnv', () => {
   it('rejects a unit-suffixed SHUTDOWN_DELAY_MS but keeps 0 (no drain)', () => {
     expect(() => validateEnv({ SHUTDOWN_DELAY_MS: '3s' })).toThrow(/SHUTDOWN_DELAY_MS must be a non-negative integer/);
     expect(() => validateEnv({ SHUTDOWN_DELAY_MS: '0' })).not.toThrow();
+  });
+
+  it('rejects a malformed WEBHOOK_SHUTDOWN_DRAIN_MS but keeps 0 (no wait), like the other shutdown knobs', () => {
+    // A malformed value was silently replaced by 5000, which also sets the force-exit budget, so a typo
+    // such as `30s` quietly cut the drain the operator asked for.
+    for (const bad of ['30s', '-5', 'abc', '1.5']) {
+      expect(() => validateEnv({ WEBHOOK_SHUTDOWN_DRAIN_MS: bad })).toThrow(
+        /WEBHOOK_SHUTDOWN_DRAIN_MS must be a non-negative integer/,
+      );
+    }
+    expect(() => validateEnv({ WEBHOOK_SHUTDOWN_DRAIN_MS: '0' })).not.toThrow();
+    expect(() => validateEnv({ WEBHOOK_SHUTDOWN_DRAIN_MS: '12000' })).not.toThrow();
   });
 
   it.each([
@@ -776,5 +907,77 @@ describe('validateEnv', () => {
       /WEBHOOK_RETRY_DELAY must not exceed 268435455 ms/,
     );
     expect(() => validateEnv({ WEBHOOK_RETRY_DELAY: '268435455' })).not.toThrow();
+  });
+});
+
+// The bundled Redis container runs a plaintext listener with only its default user. A connection that
+// asks for TLS, or authenticates as a named user, fails on every attempt, as the bundled PostgreSQL does
+// with DATABASE_SSL=true.
+describe('validateEnv built-in Redis connection settings', () => {
+  const builtin = { REDIS_ENABLED: 'true', REDIS_BUILTIN: 'true', REDIS_HOST: 'redis' };
+
+  describe('REDIS_TLS', () => {
+    it.each(['redis', 'REDIS.', 'openwa-redis'])('rejects TLS against the bundled host %s', host => {
+      expect(() => validateEnv({ ...builtin, REDIS_HOST: host, REDIS_TLS: 'true' })).toThrow(/REDIS_TLS/);
+    });
+
+    it.each(['QUEUE_ENABLED', 'CACHE_ENABLED'])('rejects it when only %s uses Redis', consumer => {
+      expect(() => validateEnv({ ...builtin, REDIS_ENABLED: 'false', [consumer]: 'true', REDIS_TLS: 'true' })).toThrow(
+        /REDIS_TLS/,
+      );
+    });
+
+    it('says where to fix it and names the external Redis way out', () => {
+      const message = () => {
+        try {
+          validateEnv({ ...builtin, REDIS_TLS: 'true' });
+        } catch (error) {
+          return (error as Error).message;
+        }
+        return '';
+      };
+      expect(message()).toMatch(/set REDIS_TLS=false in the environment, \.\/\.env or data\/\.env\.generated/);
+      expect(message()).toMatch(
+        /use an external Redis \(REDIS_BUILTIN=false with its REDIS_HOST, also on the Infrastructure page\)/,
+      );
+    });
+
+    it('keeps TLS to an external host, and accepts plaintext or a Redis nothing uses', () => {
+      expect(() => validateEnv({ ...builtin, REDIS_HOST: 'cache.example.com', REDIS_TLS: 'true' })).not.toThrow();
+      expect(() => validateEnv({ ...builtin, REDIS_TLS: 'false' })).not.toThrow();
+      expect(() => validateEnv({ ...builtin, REDIS_ENABLED: 'false', REDIS_TLS: 'true' })).not.toThrow();
+      expect(() => validateEnv({ ...builtin, REDIS_BUILTIN: 'false', REDIS_TLS: 'true' })).not.toThrow();
+    });
+  });
+
+  describe('REDIS_USERNAME', () => {
+    it.each(['REDIS_ENABLED', 'QUEUE_ENABLED', 'CACHE_ENABLED'])('rejects a named user for %s', consumer => {
+      expect(() =>
+        validateEnv({ ...builtin, REDIS_ENABLED: 'false', [consumer]: 'true', REDIS_USERNAME: 'worker' }),
+      ).toThrow(/REDIS_USERNAME/);
+    });
+
+    // The username is passed to the server as written, so only the exact word `default` names the default user.
+    it.each(['DEFAULT', 'default ', ' '])('does not normalize the user name %j', username => {
+      expect(() => validateEnv({ ...builtin, REDIS_USERNAME: username })).toThrow(/REDIS_USERNAME/);
+    });
+
+    it.each([undefined, '', 'default'])('accepts the default user as %j', username => {
+      expect(() => validateEnv({ ...builtin, REDIS_USERNAME: username })).not.toThrow();
+    });
+
+    it('says where to fix it and names the external Redis way out', () => {
+      expect(() => validateEnv({ ...builtin, REDIS_USERNAME: 'worker' })).toThrow(
+        /remove the named username in the environment, \.\/\.env or data\/\.env\.generated, or use an external Redis \(REDIS_BUILTIN=false with its REDIS_HOST, also on the Infrastructure page\)/,
+      );
+    });
+
+    it('keeps a named user for an external host, and accepts one when Redis is not the bundled one in use', () => {
+      expect(() =>
+        validateEnv({ ...builtin, REDIS_HOST: 'cache.example.com', REDIS_USERNAME: 'worker' }),
+      ).not.toThrow();
+      expect(() => validateEnv({ ...builtin, REDIS_BUILTIN: 'false', REDIS_USERNAME: 'worker' })).not.toThrow();
+      expect(() => validateEnv({ ...builtin, REDIS_ENABLED: 'false', REDIS_USERNAME: 'worker' })).not.toThrow();
+    });
   });
 });

@@ -1,13 +1,15 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, IsNull, MoreThan, Not, Repository } from 'typeorm';
 import { Webhook } from './entities/webhook.entity';
 import { WebhookDeliveryFailure } from './entities/webhook-delivery-failure.entity';
-import { WebhookDeliveryService } from './webhook-delivery.service';
+import { DEFAULT_WEBHOOK_SHUTDOWN_DRAIN_MS, WebhookDeliveryService } from './webhook-delivery.service';
 import { isDeliverableWebhook } from './utils/deliver-once';
+import { MAX_TIMER_MS } from '../../config/configuration';
 import { resolveSessionScope } from '../../common/security/session-scope';
 import { createLogger } from '../../common/services/logger.service';
+import { WILDCARD_EXCLUDED_EVENTS } from '../../common/utils/wildcard-events';
 
 /** Rows replayed per call when the caller names no limit, and the most one call will take. */
 export const DEFAULT_WEBHOOK_REDRIVE_LIMIT = 100;
@@ -36,9 +38,12 @@ export interface WebhookRedriveResult {
   enqueued: number;
   /** The replay failed again; the row stays, with its attempt count raised. */
   failed: number;
-  /** Not replayed: the webhook was removed, disabled or unsubscribed, or a plugin cancelled it. */
+  /**
+   * Selected rows not replayed: a hook cancelled the replay, or the row or its webhook changed during the call. Rows
+   * of a removed, disabled or unsubscribed webhook are left out before the batch and not counted.
+   */
   skipped: number;
-  /** Replayable rows still in scope after this call. */
+  /** Rows the redrive would still take after this call: replayable, in scope, with an active subscribed webhook. */
   remaining: number;
 }
 
@@ -55,7 +60,7 @@ export interface WebhookRedriveResult {
  * replay only raises its attempt count.
  */
 @Injectable()
-export class WebhookRedriveService {
+export class WebhookRedriveService implements OnModuleDestroy {
   private readonly logger = createLogger('WebhookRedrive');
   /**
    * One redrive at a time on this node, so two overlapping calls (a double click, a retrying script)
@@ -63,6 +68,8 @@ export class WebhookRedriveService {
    * idempotency key, which the receiver dedups on.
    */
   private running: Promise<unknown> = Promise.resolve();
+  // Aborted on destroy: a batch in progress takes no further row.
+  private readonly stop = new AbortController();
 
   constructor(
     @InjectRepository(Webhook, 'data')
@@ -72,6 +79,37 @@ export class WebhookRedriveService {
     private readonly delivery: WebhookDeliveryService,
     private readonly configService: ConfigService,
   ) {}
+
+  /**
+   * A redrive runs inside an admitted HTTP request, which shutdown lets finish, and its replays hold
+   * no dispatch slot, so the delivery drain neither waits for nor stops them. Left alone it would go
+   * on POSTing after PluginLoaderService has unregistered the `webhook:before` hooks, sending the
+   * stored pre-hook data. Stop at the next row and wait for the replays in hand: this module is
+   * destroyed before the global plugin module, so those still run with their hooks. Rows not reached
+   * stay for a later call and are counted in `remaining`. The wait is at most WEBHOOK_SHUTDOWN_DRAIN_MS,
+   * like the delivery drain and the reconciler beside it: a replay in hand is one POST plus hooks and
+   * database writes that carry no cap of their own.
+   */
+  async onModuleDestroy(): Promise<void> {
+    this.stop.abort();
+    // Above MAX_TIMER_MS a Node timer fires after 1 ms; the delivery drain honours such a value in full.
+    const waitMs = Math.min(
+      this.configService.get<number>('webhook.shutdownDrainMs', DEFAULT_WEBHOOK_SHUTDOWN_DRAIN_MS),
+      MAX_TIMER_MS,
+    );
+    let timer: NodeJS.Timeout | undefined;
+    const settled = await Promise.race([
+      this.running.then(() => true),
+      new Promise<false>(resolve => (timer = setTimeout(resolve, waitMs, false))),
+    ]);
+    clearTimeout(timer);
+    if (!settled) {
+      this.logger.warn('Webhook redrive still running at shutdown; continuing without it', {
+        waitMs,
+        action: 'webhook_redrive_shutdown_timeout',
+      });
+    }
+  }
 
   redrive(request: WebhookRedriveRequest, allowedSessions?: string[] | null): Promise<WebhookRedriveResult> {
     const run = this.running.then(() => this.redriveBatch(request, allowedSessions));
@@ -124,18 +162,28 @@ export class WebhookRedriveService {
         ...(request.webhookId ? { webhookId: request.webhookId } : {}),
       })
       .andWhere('webhook.active = :active', { active: true })
-      .andWhere(`EXISTS (SELECT 1 FROM ${subscriptions} WHERE ${subscribedEvent} IN ('*', failure.event))`);
+      // The same rule as subscriptionCoversEvent: '*' covers every event except the opt-in ones, which a
+      // webhook must name. Selecting them for a '*'-only webhook would put rows at the head of every batch
+      // that the replay then skips without raising their attempts, so they would never leave it.
+      .andWhere(
+        `EXISTS (SELECT 1 FROM ${subscriptions} WHERE ${subscribedEvent} = failure.event` +
+          ` OR (${subscribedEvent} = '*' AND failure.event NOT IN (:...wildcardExcluded)))`,
+        { wildcardExcluded: [...WILDCARD_EXCLUDED_EVENTS] },
+      );
     const limit = Math.min(Math.max(1, request.limit ?? DEFAULT_WEBHOOK_REDRIVE_LIMIT), MAX_WEBHOOK_REDRIVE_LIMIT);
-    const rows = await query
-      .clone()
-      // `payload` is select: false on the entity; replay explicitly reads it.
-      .addSelect('failure.payload')
-      // Failed replays move behind rows with fewer attempts, so a bad receiver cannot pin a batch.
-      .orderBy('failure.attempts', 'ASC')
-      .addOrderBy('failure.createdAt', 'ASC')
-      .addOrderBy('failure.id', 'ASC')
-      .take(limit)
-      .getMany();
+    // A call still queued when shutdown starts reads no rows (or their payloads); it only counts them.
+    const rows = this.stop.signal.aborted
+      ? []
+      : await query
+          .clone()
+          // The payload is not selected here: a batch holds up to MAX_WEBHOOK_REDRIVE_LIMIT rows but runs
+          // REDRIVE_CONCURRENCY replays at a time, so each body is read as its own replay starts.
+          // Failed replays move behind rows with fewer attempts, so a bad receiver cannot pin a batch.
+          .orderBy('failure.attempts', 'ASC')
+          .addOrderBy('failure.createdAt', 'ASC')
+          .addOrderBy('failure.id', 'ASC')
+          .take(limit)
+          .getMany();
 
     if (rows.length > 0) {
       const webhookIds = [...new Set(rows.map(r => r.webhookId))];
@@ -144,7 +192,7 @@ export class WebhookRedriveService {
       );
       const queue = [...rows];
       const worker = async (): Promise<void> => {
-        for (let row = queue.shift(); row; row = queue.shift()) {
+        for (let row = queue.shift(); row && !this.stop.signal.aborted; row = queue.shift()) {
           await this.redriveRow(row, webhooks.get(row.webhookId) ?? null, result);
         }
       };
@@ -167,21 +215,26 @@ export class WebhookRedriveService {
       return;
     }
     try {
-      const outcome = await this.delivery.redeliver(
-        webhook,
-        row.sessionId,
-        row.event,
-        row.idempotencyKey,
-        row.payload ?? {},
-        { singleAttempt: true },
-      );
+      const payload = await this.readPayload(row.id);
+      if (payload === null) {
+        // The row was removed, or lost its copy, between the batch and this replay.
+        result.skipped++;
+        return;
+      }
+      const outcome = await this.delivery.redeliver(webhook, row.sessionId, row.event, row.idempotencyKey, payload, {
+        singleAttempt: true,
+      });
       if (outcome === 'delivered') result.delivered++;
       else if (outcome === 'enqueued') result.enqueued++;
-      else if (outcome === 'cancelled') result.skipped++;
-      else {
+      else if (outcome === 'cancelled') {
+        result.skipped++;
+        await this.bumpAttempts(row);
+      } else {
         result.failed++;
-        // Terminal failures update their own attempt count in the shared recorder.
-        if (outcome !== 'failed') await this.bumpAttempts(row);
+        // A failure the delivery path records raises this row's attempts itself. One it refuses before
+        // sending (a body over the payload cap after the hooks) leaves the row as it was, so the attempt is
+        // counted here; otherwise that row would head every batch.
+        if (outcome !== 'failed' || (await this.attemptsUnchanged(row))) await this.bumpAttempts(row);
       }
     } catch (error) {
       result.failed++;
@@ -194,7 +247,27 @@ export class WebhookRedriveService {
     }
   }
 
-  /** Count the failed replay on the row. Best-effort: the row is already on record either way. */
+  /** The stored event data of one row, or null when the row or its copy is gone. `payload` is select: false. */
+  private async readPayload(id: string): Promise<Record<string, unknown> | null> {
+    const row = await this.failureRepository
+      .createQueryBuilder('failure')
+      .select('failure.id')
+      .addSelect('failure.payload')
+      .where('failure.id = :id', { id })
+      .getOne();
+    return row?.payload ?? null;
+  }
+
+  /** Whether the row still carries the attempt count the batch read, that is, nothing recorded the failure. */
+  private async attemptsUnchanged(row: WebhookDeliveryFailure): Promise<boolean> {
+    const current = await this.failureRepository.findOne({
+      where: { id: row.id },
+      select: { id: true, attempts: true },
+    });
+    return current !== null && current.attempts === row.attempts;
+  }
+
+  /** Count a replay on its retained row so failed or cancelled rows cannot pin the next batch. */
   private async bumpAttempts(row: WebhookDeliveryFailure): Promise<void> {
     try {
       await this.failureRepository.increment({ id: row.id }, 'attempts', 1);

@@ -1,4 +1,4 @@
-import type { IncomingMessage } from '../interfaces/whatsapp-engine.interface';
+import type { InboundTicket, IncomingMessage } from '../interfaces/whatsapp-engine.interface';
 import { ConcurrencyLimiter } from '../../common/utils/concurrency-limiter';
 
 /** Default inbound media cap: 50 MiB. Shares MEDIA_DOWNLOAD_MAX_BYTES with the outbound download cap. */
@@ -83,10 +83,10 @@ export function inboundMediaTimeoutMs(): number {
  * bound TIME: a remote sender can trickle bytes slowly (never tripping the cap) and hold a concurrency
  * slot indefinitely — a slow-loris on the inbound pipeline. On timeout `onTimeout` runs — a best-effort
  * hook to abort the source where it's abortable (e.g. destroy a Baileys stream) — and the result resolves
- * `null`, the "no usable media" sentinel. A non-abortable source (the wwjs `downloadMedia()`) can't be
- * stopped, so that caller must instead hold its concurrency slot until the real download settles. A late
- * rejection from the abandoned download is swallowed so it can't surface as an unhandled rejection after
- * the race has already settled.
+ * `null`, the "no usable media" sentinel. A non-abortable source (the wwjs page download,
+ * `downloadCappedMedia()`) can't be stopped, so that caller must instead hold its concurrency slot until the
+ * real download settles. A late rejection from the abandoned download is swallowed so it can't surface as an
+ * unhandled rejection after the race has already settled.
  */
 export function withInboundDownloadTimeout<T>(
   promise: Promise<T>,
@@ -196,4 +196,28 @@ export function capInboundMedia(args: {
     return { mimetype: args.mimetype, filename: args.filename, omitted: true, sizeBytes: args.sizeBytes };
   }
   return { mimetype: args.mimetype, filename: args.filename, data: args.toBase64() };
+}
+
+const NO_ROOM: InboundTicket = {
+  reserve: () => false,
+  holdUntil: () => undefined,
+  drop: () => undefined,
+  revoked: false,
+};
+
+/**
+ * Admit a live message (EngineEventCallbacks.admitInbound) without letting a throw escape the event
+ * handler. A message whose admission failed still goes out, but holds no room, so its media takes the
+ * omitted marker instead of a download nothing bounds.
+ */
+export function admitInboundSafely(
+  admit: () => InboundTicket | undefined,
+  onError: (error: unknown) => void,
+): InboundTicket | undefined {
+  try {
+    return admit();
+  } catch (error) {
+    onError(error);
+    return NO_ROOM;
+  }
 }

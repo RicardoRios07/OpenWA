@@ -1,6 +1,3 @@
-// archiver v8 is ESM-only (pulled in transitively via @Global StorageModule); stub for ts-jest CJS.
-jest.mock('archiver', () => ({ TarArchive: jest.fn() }));
-
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import { getRepositoryToken } from '@nestjs/typeorm';
@@ -22,6 +19,8 @@ import { WebhookDeliveryFailure } from './../src/modules/webhook/entities/webhoo
  * which the unit specs mock away: a session-restricted ADMIN key must never read another session's rows.
  */
 describe('Session-scoped query endpoints (e2e)', () => {
+  // Text the failure rows below retain for a redrive, which the list route must never carry.
+  const RETAINED_BODY = 'retained event body';
   let app: INestApplication<App>;
   let sessA: string;
   let sessB: string;
@@ -62,6 +61,7 @@ describe('Session-scoped query endpoints (e2e)', () => {
           url: `https://${sessionId}.example/hook`,
           attempts: 3,
           lastError: 'ECONNREFUSED',
+          payload: { body: RETAINED_BODY },
         }),
       );
     }
@@ -75,11 +75,7 @@ describe('Session-scoped query endpoints (e2e)', () => {
   });
 
   afterAll(async () => {
-    try {
-      await app?.close();
-    } catch {
-      /* ignore teardown-only multi-datasource quirk */
-    }
+    await app?.close();
   });
 
   describe('GET /api/audit', () => {
@@ -166,6 +162,17 @@ describe('Session-scoped query endpoints (e2e)', () => {
       expect(sessions).toContain(sessA);
       expect(sessions).toContain(sessB);
     });
+
+    it('never returns the event body a failure row retains for a redrive', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/api/webhooks/delivery-failures')
+        .set('X-API-Key', adminKey)
+        .expect(200);
+      expect((res.body as WebhookDeliveryFailure[]).map(r => r.sessionId)).toEqual(
+        expect.arrayContaining([sessA, sessB]),
+      );
+      expect(JSON.stringify(res.body)).not.toContain(RETAINED_BODY);
+    });
   });
 
   /**
@@ -231,6 +238,51 @@ describe('Session-scoped query endpoints (e2e)', () => {
         .send({ name: 'e2e-lifecycle-renamed' })
         .expect(200);
       await request(app.getHttpServer()).post(`/api/auth/api-keys/${id}/revoke`).set('X-API-Key', adminKey).expect(200);
+      await request(app.getHttpServer()).delete(`/api/auth/api-keys/${id}`).set('X-API-Key', adminKey).expect(204);
+    });
+
+    // An object given for a list used to become an empty array, which a key stores as no restriction at all:
+    // {"allowedChats":{"628111@c.us":true}} created a key that reached every chat. It is refused instead.
+    describe.each(['allowedChats', 'allowedSessions', 'allowedIps'])('%s given as an object', field => {
+      const asObject = { [field]: { '628111@c.us': true } };
+
+      it('is refused on create, and nothing is stored', async () => {
+        const name = `e2e-object-${field}`;
+        await request(app.getHttpServer())
+          .post('/api/auth/api-keys')
+          .set('X-API-Key', adminKey)
+          .send({ name, role: 'operator', ...asObject })
+          .expect(400);
+        const listed = await request(app.getHttpServer()).get('/api/auth/api-keys').set('X-API-Key', adminKey);
+        expect((listed.body as Array<{ name: string }>).some(key => key.name === name)).toBe(false);
+      });
+
+      it('is refused on update, and the stored restriction is kept', async () => {
+        const created = await request(app.getHttpServer())
+          .post('/api/auth/api-keys')
+          .set('X-API-Key', adminKey)
+          .send({ name: `e2e-keep-${field}`, role: 'operator', allowedChats: ['628222@c.us'] })
+          .expect(201);
+        const { id } = created.body as { id: string };
+        await request(app.getHttpServer())
+          .put(`/api/auth/api-keys/${id}`)
+          .set('X-API-Key', adminKey)
+          .send(asObject)
+          .expect(400);
+        const read = await request(app.getHttpServer()).get(`/api/auth/api-keys/${id}`).set('X-API-Key', adminKey);
+        expect((read.body as { allowedChats?: string[] }).allowedChats).toEqual(['628222@c.us']);
+        await request(app.getHttpServer()).delete(`/api/auth/api-keys/${id}`).set('X-API-Key', adminKey).expect(204);
+      });
+    });
+
+    it('still stores allowedChats given as a list', async () => {
+      const created = await request(app.getHttpServer())
+        .post('/api/auth/api-keys')
+        .set('X-API-Key', adminKey)
+        .send({ name: 'e2e-list-chats', role: 'operator', allowedChats: ['628111@c.us'] })
+        .expect(201);
+      const { id } = created.body as { id: string; allowedChats?: string[] };
+      expect((created.body as { allowedChats?: string[] }).allowedChats).toEqual(['628111@c.us']);
       await request(app.getHttpServer()).delete(`/api/auth/api-keys/${id}`).set('X-API-Key', adminKey).expect(204);
     });
 

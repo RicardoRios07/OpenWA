@@ -63,6 +63,41 @@ describe('SendIdempotencyService (sqlite)', () => {
     expect(await service.claim({ ...input, requestHash: 'h2' })).toEqual({ kind: 'mismatch' });
   });
 
+  // A completed key must not answer a different message with the first message's stored response:
+  // the second message would never be sent and the client would be told it was.
+  it('refuses the key for a different body or route once the send completed', async () => {
+    const claim = await service.claim(input);
+    if (claim.kind !== 'claimed') throw new Error('expected a claim');
+    await service.complete(claim.id, { messageId: 'm1' });
+
+    expect(await service.claim({ ...input, requestHash: 'h2' })).toEqual({ kind: 'mismatch' });
+    expect(await service.claim(input)).toEqual({ kind: 'replay', body: { messageId: 'm1' } });
+  });
+
+  it('refuses the key for a different body or route after the send failed', async () => {
+    const claim = await service.claim(input);
+    if (claim.kind !== 'claimed') throw new Error('expected a claim');
+    await service.markFailed(claim.id);
+
+    expect(await service.claim({ ...input, requestHash: 'h2' })).toEqual({ kind: 'mismatch' });
+    expect(await service.claim(input)).toEqual({ kind: 'outcome_unknown' });
+  });
+
+  it('binds a key to its send for 24 hours', async () => {
+    const day = 24 * 60 * 60 * 1000;
+    // The literal, not the imported constant: every other test reads the constant, so a changed
+    // lifetime could not fail them.
+    expect(SEND_IDEMPOTENCY_TTL_MS).toBe(day);
+
+    const before = Date.now();
+    await service.claim(input);
+    const after = Date.now();
+
+    const [row] = await repo.find();
+    expect(row.expiresAt.getTime()).toBeGreaterThanOrEqual(before + day);
+    expect(row.expiresAt.getTime()).toBeLessThanOrEqual(after + day);
+  });
+
   it('frees a released key for a new claim', async () => {
     const claim = await service.claim(input);
     if (claim.kind !== 'claimed') throw new Error('expected a claim');
@@ -112,6 +147,33 @@ describe('SendIdempotencyService (sqlite)', () => {
   it('rethrows a storage error that is not a duplicate key', async () => {
     await ds.query('DROP TABLE "send_idempotency_keys"');
     await expect(service.claim(input)).rejects.toThrow(/no such table/);
+  });
+
+  // The sweep is the only cleanup for keys that are never claimed again: without it every distinct
+  // key a client ever used stays in the table, with its stored response, for good.
+  describe('hourly prune', () => {
+    const hour = 60 * 60 * 1000;
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('starts at module init, runs every hour, and stops at module destroy', () => {
+      jest.useFakeTimers();
+      const prune = jest.spyOn(service, 'pruneExpired').mockResolvedValue(0);
+
+      service.onModuleInit();
+      jest.advanceTimersByTime(hour - 1);
+      expect(prune).not.toHaveBeenCalled();
+      jest.advanceTimersByTime(1);
+      expect(prune).toHaveBeenCalledTimes(1);
+      jest.advanceTimersByTime(hour);
+      expect(prune).toHaveBeenCalledTimes(2);
+
+      service.onModuleDestroy();
+      jest.advanceTimersByTime(2 * hour);
+      expect(prune).toHaveBeenCalledTimes(2);
+    });
   });
 });
 

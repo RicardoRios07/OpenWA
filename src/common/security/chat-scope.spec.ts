@@ -95,6 +95,18 @@ describe('chat-scope', () => {
     expect(await buildExpandedChatScope([`${LID}@lid`])).toEqual(buildChatScope([`${LID}@lid`]));
   });
 
+  it('drops an item that carries no chat id from a fenced list', () => {
+    const scope = buildChatScope([`${PHONE}@c.us`]);
+    const items: Array<{ id: string | null | undefined }> = [{ id: null }, { id: undefined }, { id: `${PHONE}@c.us` }];
+    expect(filterByChatScope(scope, items, item => item.id)).toEqual([{ id: `${PHONE}@c.us` }]);
+  });
+
+  it('expands a mapped lid to both phone dialects in the filter scope', async () => {
+    const scope = await buildExpandedChatScope([`${LID}@lid`], batch);
+    expect(scope?.allowed.has(`${PHONE}@c.us`)).toBe(true);
+    expect(scope?.allowed.has(`${PHONE}@s.whatsapp.net`)).toBe(true);
+  });
+
   it('filters a list to the fenced chats, leaving an unrestricted key untouched', async () => {
     const rows = [{ id: '123@g.us' }, { id: '999@g.us' }, { id: `${PHONE}@c.us` }];
     const scope = await buildExpandedChatScope(['123@g.us'], batch);

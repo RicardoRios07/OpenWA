@@ -71,6 +71,9 @@ spec:
           # immediately, so a fast boot is recognised in ~5s instead of waiting out a fixed delay.
           # The pod therefore becomes live SOONER than it does today, not later.
           #
+          # periodSeconds and failureThreshold come from the startupProbe values (5 and 60 by default); an
+          # operator whose first boot after an upgrade builds indexes on a large table raises the threshold.
+          #
           # Kubernetes suspends the liveness and readiness probes until a startupProbe succeeds, so
           # the values below keep their meaning for steady state and stop governing boot. (That
           # suspension is documented kubelet behaviour, not something this chart's tests observe —
@@ -84,9 +87,9 @@ spec:
             httpGet:
               path: /api/health/live
               port: http
-            periodSeconds: 5
+            periodSeconds: {{ (.Values.startupProbe | default dict).periodSeconds | default 5 }}
             timeoutSeconds: 5
-            failureThreshold: 60
+            failureThreshold: {{ (.Values.startupProbe | default dict).failureThreshold | default 60 }}
           livenessProbe:
             httpGet:
               path: /api/health/live

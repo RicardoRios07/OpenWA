@@ -292,7 +292,7 @@ export class SomeService {
 
   async saveMedia(filePath: string, data: Buffer) {
     await this.storage.putFile(filePath, data); // path-safety guarded
-    await this.cache.setSessionStatus('id', 'READY'); // no-op if Redis disabled
+    const cacheUp = await this.cache.isAvailable(); // false when Redis is disabled or unreachable
   }
 }
 ```
@@ -671,7 +671,7 @@ flowchart TB
     end
 
     subgraph Storage["External Storage"]
-        S3[S3/MinIO<br/>Media backup / migration]
+        S3[S3/MinIO<br/>Live media store]
     end
 
     API --> S3
@@ -715,7 +715,8 @@ flowchart LR
 
 Responses are the **raw handler payload** — there is no `{success, data, meta}` envelope.
 A controller that returns an object sends exactly that object; a list endpoint returns a bare array.
-Errors use the NestJS default shape.
+Errors use the NestJS default shape, except on the few routes that define their own error body (the readiness
+probe, the plugin ingress and the `/mcp` endpoint).
 
 ```typescript
 // Success Response — the resource itself
@@ -748,7 +749,7 @@ flowchart TB
     end
 
     subgraph Security["Security Layers"]
-        R --> HTTPS[HTTPS/TLS]
+        R --> HTTPS[HTTPS/TLS at the reverse proxy]
         HTTPS --> CORS[CORS Check]
         CORS --> RATE[Rate Limiter]
         RATE --> AUTH[API Key Auth]
@@ -757,10 +758,12 @@ flowchart TB
     end
 
     subgraph Internal["Internal Security"]
-        APP --> ENC[Data Encryption]
-        ENC --> LOG[Audit Logging]
+        APP --> LOG[Audit Logging]
     end
 ```
+
+The gateway serves plain HTTP, so TLS is terminated at the operator's reverse proxy, and the gateway does not
+encrypt stored data itself. See [04 - Security Design](./04-security-design.md#44-data-encryption).
 
 ## 3.10 Error Handling Architecture
 
@@ -791,9 +794,11 @@ flowchart TB
     SU --> F
     S --> F
 
-    F --> R["{ statusCode, message, error }"]
+    F --> R["{ statusCode, message, error? }"]
     S --> L[Log with stack]
 ```
+
+DTO validation with detail disabled (the production default) returns `{ statusCode: 400, message: "Bad Request" }` without an `error` field; see [Error Response](./06-api-specification.md#error-response).
 
 ## 3.11 Scalability Considerations
 
@@ -917,15 +922,33 @@ export enum EngineStatus {
 export interface EngineEventCallbacks {
   onQRCode?: (qr: string) => void;
   onReady?: (phone: string, pushName: string) => void;
-  onMessage?: (message: IncomingMessage) => void;
-  onMessageCreate?: (message: IncomingMessage) => void; // outgoing (incl. linked-phone sends)
-  onMessageAck?: (messageId: string, status: DeliveryStatus) => void;
-  onMessageRevoked?: (message: RevokedMessage) => void;
+  onPushNameChanged?: (pushName: string) => void; // the account's own name synced after onReady (Baileys)
+  admitInbound?: (arrival: {
+    id: string;
+    chatId: string;
+    needsRoom: boolean;
+    status: boolean;
+    fromMe?: boolean;
+    author?: string;
+  }) => InboundTicket | undefined; // PostgreSQL: reserves room for a download before the emit, and holds a change to the chat, direction and author it names
+  onMessage?: (message: IncomingMessage, ticket?: InboundTicket) => void | InboundReceipt; // the receipt reports { conflict: true } when the id already held another message; Baileys drops its copy
+  // A change aimed at that id that reads as foreign to the engine's copy waits for the receipt: up to 3 media download
+  // timeouts for a message still being processed, then 5 minutes for the session, at most 64 changes at once. A change
+  // that cannot wait, or is still waiting when the time runs out, is dropped.
+  onMessageCreate?: (message: IncomingMessage, ticket?: InboundTicket) => void; // outgoing (incl. linked-phone sends)
+  onMessageAck?: (messageId: string, status: DeliveryStatus, chatId?: string) => void;
+  onMessageReceipt?: (event: MessageReceiptEvent) => void; // per-recipient group/status receipts (Baileys only)
+  onMessageRevoked?: (
+    message: RevokedMessage,
+    actor?: { fromMe: boolean; participant?: string; admin?: boolean },
+  ) => void; // a status post's delete names its sender, a member's group revoke names them and what the roster said (Baileys)
   onMessageReaction?: (event: ReactionEvent) => void;
   onMessageEdited?: (message: EditedMessage) => void;
+  onEventResponse?: (event: EventResponseEvent) => void; // an RSVP to a WhatsApp event; Baileys only
+  onPollVote?: (event: PollVoteEvent) => void; // a voter's new selection on a poll; whatsapp-web.js only
   onGroupEvent?: (event: GroupEvent) => void; // kind selects group.join / group.leave / group.update / group.join_request
   onCall?: (event: IncomingCallEvent) => void; // incoming call ringing; Baileys can rejectCall() while it rings
-  onHistoryMessages?: (messages: IncomingMessage[]) => void; // bulk initial sync; persist, don't dispatch
+  onHistoryMessages?: (messages: IncomingMessage[]) => void | Promise<IncomingMessage[] | void>; // bulk initial sync; persist, don't dispatch
   onDisconnected?: (reason: string) => void; // recoverable -> reconnect
   onReconnecting?: (attempt: number, nextDelayMs: number) => void; // engines that retry internally (Baileys)
   onStateChanged?: (state: EngineStatus) => void;
@@ -1307,18 +1330,21 @@ flowchart TB
 Media storage is a **single service** (`src/common/storage/storage.service.ts`) that branches
 internally on `storageType` — there is no `I*Adapter` interface, separate adapter classes, or a
 `StorageFactory`. The two backends are `local` (the default; files under `./data/media`) and `s3`.
-The main producer/consumer is the storage export/import migration and backup flow; the status store
-also writes status media through `putFile` (under `statuses/`) and sweeps orphans back out with
-`deleteFile`. Incoming and outgoing message media is returned inline to REST/webhook consumers and is
-**not** written through `StorageService` unless `CHAT_MEDIA_ARCHIVE_ENABLED=true`, which archives a copy
-under `chat-media/<sessionId>/` (media this account sent also needs `CHAT_MEDIA_ARCHIVE_OUTBOUND=true`).
+It is the live media store: the status store writes status media through `putFile` (under
+`statuses/`) and sweeps orphans back out with `deleteFile`, and the storage export/import endpoints
+move its contents between backends. Of the media, `scripts/backup.sh` archives only the local media
+directory, never the S3 bucket. Incoming and outgoing message media is returned inline to REST/webhook
+consumers and is **not** written through `StorageService` unless `CHAT_MEDIA_ARCHIVE_ENABLED=true`, which
+archives a copy under `chat-media/<sessionId>/` (media this account sent also needs
+`CHAT_MEDIA_ARCHIVE_OUTBOUND=true`).
 That copy is in addition to the inline one unless `MESSAGE_INLINE_MEDIA=archive`, which replaces the
 row's inline base64 with an `{ omitted: true, archived: true }` marker once the file reads back intact.
 On S3 every key sits under the `S3_KEY_PREFIX` root (default `media/`).
 **MinIO is not a separate type** — it is the `s3` backend. The S3 client is created from credentials
 alone, so plain AWS S3 works with no endpoint (the SDK derives one from the region); `S3_ENDPOINT` is
 for S3-compatible stores (MinIO, R2, …), and setting it is also what enables `forcePathStyle: true`.
-The public method set is `putFile` / `getFile` / `deleteFile` / `listFiles` / `iterateFiles` /
+The public method set is `putFile` / `getFile` / `openFile` (a read stream; the chat and status
+media downloads use it) / `deleteFile` / `iterateFiles` /
 `createExportStream` (export) / `importFromStream` (import), plus `getFileCount`,
 `getCurrentStorageType` and `refreshS3Availability` (re-probes the bucket; the infra status endpoint
 calls it to report S3 reachability).
@@ -1367,7 +1393,7 @@ export class StorageService {
   async getFile(filePath: string): Promise<Buffer> {
     /* mirrors putFile */
   }
-  async listFiles(): Promise<string[]> {
+  async *iterateFiles(prefix = ''): AsyncGenerator<string> {
     /* local recurse, or S3 ListObjectsV2 under <S3_KEY_PREFIX, default media/> */
   }
   // createExportStream(): tar.gz of all files; importFromStream(): extract with zip-bomb caps
@@ -1473,11 +1499,12 @@ Migrations that must run on both dialects with different SQL take the same check
 
 There is **no** cache-manager / `CacheModuleOptions` / `redisStore` setup and **no** in-memory cache.
 `CacheService` (`src/common/cache/cache.service.ts`) talks to **ioredis directly** and is gated by
-`REDIS_ENABLED` (falling back to the `cache.enabled` config flag). When caching is disabled — or Redis
-is unreachable — the service **fails open**: every read returns `null` and every write is a silent
-no-op, so the app keeps serving from its source of truth. In other words, "no cache configured" means
-**no cache** (recompute), not an in-process LRU. Cache is never the source of truth, and today no
-request path reads from it: its only consumer is the infra status probe (`isAvailable`).
+`REDIS_ENABLED` (falling back to the `cache.enabled` config flag). It stores no values: its only
+consumer is the infra status probe, which calls `isAvailable()` to learn whether Redis answers a ping
+right now. When caching is disabled, or Redis is unreachable, `isAvailable()` returns `false` instead
+of throwing, so the app keeps serving from its source of truth. In other words, "no cache configured"
+means **no cache** (recompute), not an in-process LRU. Cache is never the source of truth, and no
+request path reads from it today.
 
 ```typescript
 // src/common/cache/cache.service.ts
@@ -1497,25 +1524,6 @@ export class CacheService implements OnModuleDestroy {
     if (!this.enabled) return false; // disabled -> always "no cache"
     this.ensureClient(); // create on first use; ioredis handles (re)connecting
     return this.ping(); // reflects live state: false during an outage, true once back
-  }
-
-  // Fail-open reads/writes: unavailable Redis is a no-op, never an error to the caller.
-  async getSessionStatus(id: string): Promise<string | null> {
-    if (!(await this.isAvailable())) return null;
-    try {
-      return await this.redis!.get(`session:${id}:status`);
-    } catch {
-      return null;
-    }
-  }
-
-  async setSessionStatus(id: string, status: string): Promise<void> {
-    if (!(await this.isAvailable())) return; // no-op when disabled/unreachable
-    try {
-      await this.redis!.setex(`session:${id}:status`, /* TTL */ 300, status);
-    } catch {
-      /* logged + swallowed */
-    }
   }
 }
 ```

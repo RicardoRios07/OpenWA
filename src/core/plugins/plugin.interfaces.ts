@@ -140,7 +140,7 @@ export interface PluginConfigField {
   default?: unknown;
   enum?: unknown[]; // when present (any scalar type), the field renders as a <select>
   required?: boolean;
-  secret?: boolean; // sensitive value (e.g. API key): masked on read, preserved on an unchanged write
+  secret?: boolean; // sensitive (e.g. API key): masked on read, kept on an unchanged write, removed by null
   // Validation hints, surfaced as HTML input attributes (advisory — not hard-enforced server-side):
   min?: number; // number: value bound; string/textarea: minLength; array: min rows
   max?: number; // number: value bound; string/textarea: maxLength; array: max rows
@@ -288,9 +288,14 @@ export interface PluginIngressRoute {
    * mints a fresh delivery id on each retry attempt, so its retries would otherwise never dedup.
    * Byte-identical bodies collapse within `INGRESS_DEDUP_RETENTION_DAYS`; a provider whose retries
    * legitimately differ in the body (a fresh timestamp or nonce inside the signed payload) keeps
-   * the default, since `body` would then dedup nothing.
+   * the default, since `body` would then dedup nothing. When the body is empty the hash also covers
+   * the method and the query string, so query-borne deliveries stay apart; a delivery with neither
+   * a body nor a query has one id per route, and its repeats collapse. No scheme signs the query, so
+   * on hmac-sha256 and standard-webhooks a query-borne delivery reaches the handler unverified.
    */
   dedupOn?: 'header' | 'body';
+  /** Treat different bytes under one delivery id as new. Enable only for byte-identical provider retries. */
+  dedupBodyMismatchAsNew?: boolean;
   /** Optional synchronous-response contract (host-side preflight + ack). Additive; absent = today's
    *  default 202 fast-ack, byte-identical. Validated by validateIngressManifest. */
   response?: IngressResponseContract;
@@ -424,6 +429,9 @@ export function validateIngressManifest(manifest: PluginManifest, allowUnsignedI
       throw new Error(
         `Plugin ${manifest.id}: route '${r.route}' dedupOn must be 'header' or 'body' (got '${String(r.dedupOn)}')`,
       );
+    }
+    if (r.dedupBodyMismatchAsNew !== undefined && typeof r.dedupBodyMismatchAsNew !== 'boolean') {
+      throw new Error(`Plugin ${manifest.id}: route '${r.route}' dedupBodyMismatchAsNew must be a boolean`);
     }
     if (r.response) {
       const ackStatus = r.response.ack?.status;

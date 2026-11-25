@@ -22,6 +22,12 @@ const linkifyOptions = {
   },
 };
 
+/**
+ * Longest body handed to Linkify. Its scan of an unbroken run of domain-like characters grows with
+ * the square of the run, so a longer body renders without links instead of freezing the thread.
+ */
+const MAX_LINKED_LENGTH = 4096;
+
 function renderNode(node: MessageNode, key: number): ReactNode {
   switch (node.type) {
     case 'text':
@@ -48,9 +54,8 @@ function renderNode(node: MessageNode, key: number): ReactNode {
 function MessageBodyBase({ text, className, enableLinks = true }: Props) {
   const nodes = parseMessageBody(text);
   const rendered = <>{nodes.map(renderNode)}</>;
-  return (
-    <div className={className}>{enableLinks ? <Linkify options={linkifyOptions}>{rendered}</Linkify> : rendered}</div>
-  );
+  const linked = enableLinks && text.length <= MAX_LINKED_LENGTH;
+  return <div className={className}>{linked ? <Linkify options={linkifyOptions}>{rendered}</Linkify> : rendered}</div>;
 }
 
 export default memo(MessageBodyBase);

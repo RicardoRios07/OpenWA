@@ -1,6 +1,15 @@
-import { test } from 'node:test';
+import { test, before, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { fetchAllPages } from './fetchAllPages.ts';
+import { fetchAllPages, retryThrottled } from './fetchAllPages.ts';
+
+before(async () => {
+  const { installJsdomGlobals } = await import('../test-helpers/jsdom.ts');
+  await installJsdomGlobals();
+});
+
+beforeEach(() => {
+  sessionStorage.setItem('openwa_api_key', 'key-a');
+});
 
 /** Fake page source: holds `total` rows, but never returns more than `serverMax` per call. */
 function fakeSource(total: number, serverMax: number) {
@@ -149,4 +158,149 @@ test('a page still throttled past the one-second tier ends the walk with the row
   assert.equal(throttled, true, 'the throttle was reported as the row cap');
   assert.equal(rows.length, 1_000);
   assert.equal(attempts, calls.length + 3, 'the refused page was tried more than three times');
+});
+
+test('a walk stops once the key it started with is signed out or replaced', async () => {
+  // Each page request reads the stored key as it goes out, as the API client does.
+  const { fetchPage } = fakeSource(1_000, 200);
+  const sentWith: Array<string | null> = [];
+  const keyedPage = async (limit: number, offset: number) => {
+    sentWith.push(sessionStorage.getItem('openwa_api_key'));
+    return fetchPage(limit, offset);
+  };
+
+  // Signed out while a throttled page waits for its retry: the retry is never sent keyless.
+  let throttled = false;
+  await assert.rejects(
+    fetchAllPages(
+      async (limit, offset) => {
+        const page = await keyedPage(limit, offset);
+        if (offset === 200 && !throttled) {
+          throttled = true;
+          sessionStorage.removeItem('openwa_api_key');
+          throw httpError(429);
+        }
+        return page;
+      },
+      { retryDelayMs: 0 },
+    ),
+    /Signed out/,
+  );
+  assert.deepEqual(sentWith, ['key-a', 'key-a']);
+
+  // Signed in again with another key while a page was out: no page goes out as the new key.
+  sentWith.length = 0;
+  sessionStorage.setItem('openwa_api_key', 'key-a');
+  await assert.rejects(
+    fetchAllPages(async (limit, offset) => {
+      const page = await keyedPage(limit, offset);
+      if (offset === 200) sessionStorage.setItem('openwa_api_key', 'key-b');
+      return page;
+    }),
+    /Signed out/,
+  );
+  assert.deepEqual(sentWith, ['key-a', 'key-a']);
+
+  // Signed out while the last page was out: its rows do not come back as a finished walk.
+  sessionStorage.setItem('openwa_api_key', 'key-a');
+  await assert.rejects(
+    fetchAllPages(async (limit, offset) => {
+      const page = await fetchPage(limit, offset);
+      if (offset === 800) sessionStorage.removeItem('openwa_api_key');
+      return page;
+    }),
+    /Signed out/,
+  );
+
+  // Signed out while the last retry of a throttled page was out: the rows in hand do not come back
+  // as a throttled partial walk.
+  sessionStorage.setItem('openwa_api_key', 'key-a');
+  let refused = 0;
+  await assert.rejects(
+    fetchAllPages(
+      async (limit, offset) => {
+        if (offset === 0) return fetchPage(limit, offset);
+        if (++refused === 3) sessionStorage.removeItem('openwa_api_key');
+        throw httpError(429);
+      },
+      { retryDelayMs: 0 },
+    ),
+    /Signed out/,
+  );
+  assert.equal(refused, 3, 'the walk did not reach the last retry');
+});
+
+test('a walk does not send its retry when the key is signed out during the throttle wait', async () => {
+  const { fetchPage } = fakeSource(1_000, 200);
+  const sentWith: Array<string | null> = [];
+  let refused = false;
+  await assert.rejects(
+    fetchAllPages(
+      async (limit, offset) => {
+        sentWith.push(sessionStorage.getItem('openwa_api_key'));
+        if (offset === 200 && !refused) {
+          refused = true;
+          // The refusal settles first; the operator signs out while the walk waits to retry it.
+          setTimeout(() => sessionStorage.removeItem('openwa_api_key'), 5);
+          throw httpError(429);
+        }
+        return fetchPage(limit, offset);
+      },
+      { retryDelayMs: 40 },
+    ),
+    /Signed out/,
+  );
+  assert.deepEqual(sentWith, ['key-a', 'key-a'], 'the retry went out after the sign-out');
+});
+
+test('the throttle backoff doubles on each retry', async () => {
+  const delays: number[] = [];
+  const realSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = ((fn: () => void, ms?: number) => {
+    delays.push(ms ?? 0);
+    return realSetTimeout(fn, 0);
+  }) as typeof setTimeout;
+  try {
+    await assert.rejects(
+      retryThrottled(async () => {
+        throw httpError(429);
+      }, 40),
+      { status: 429 },
+    );
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+  }
+  assert.deepEqual(delays, [40, 80]);
+});
+
+test('a walk does not retry a 503', async () => {
+  let calls = 0;
+  await assert.rejects(
+    retryThrottled(async () => {
+      calls += 1;
+      throw httpError(503);
+    }, 5),
+    { status: 503 },
+  );
+  assert.equal(calls, 1);
+});
+
+test('a retried 503 waits at least its Retry-After, up to ten seconds, and a 429 keeps its fixed waits', async () => {
+  const delays: number[] = [];
+  const realSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = ((fn: () => void, ms?: number) => {
+    delays.push(ms ?? 0);
+    return realSetTimeout(fn, 0);
+  }) as typeof setTimeout;
+  const refuse = (code: number, retryAfterSeconds: number) => async () => {
+    throw Object.assign(httpError(code), { retryAfterSeconds });
+  };
+  try {
+    await assert.rejects(retryThrottled(refuse(503, 2), 40, [503]), { status: 503 });
+    await assert.rejects(retryThrottled(refuse(503, 3600), 40, [503]), { status: 503 });
+    await assert.rejects(retryThrottled(refuse(429, 3600), 40, [429]), { status: 429 });
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+  }
+  assert.deepEqual(delays, [2000, 2000, 10_000, 10_000, 40, 80]);
 });

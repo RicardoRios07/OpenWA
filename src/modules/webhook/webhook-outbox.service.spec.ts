@@ -12,13 +12,12 @@ const base = {
 };
 
 describe('WebhookOutboxService', () => {
-  let repo: { save: jest.Mock; create: jest.Mock; update: jest.Mock; find: jest.Mock };
+  let repo: { insert: jest.Mock; update: jest.Mock; find: jest.Mock };
   let service: WebhookOutboxService;
 
   beforeEach(() => {
     repo = {
-      create: jest.fn((v: unknown) => v),
-      save: jest.fn().mockResolvedValue(undefined),
+      insert: jest.fn().mockResolvedValue(undefined),
       update: jest.fn().mockResolvedValue(undefined),
       find: jest.fn().mockResolvedValue([]),
     };
@@ -28,12 +27,12 @@ describe('WebhookOutboxService', () => {
   it('records the delivery as pending, carrying the payload a replay needs', async () => {
     await service.open(base);
 
-    expect(repo.save).toHaveBeenCalledWith(expect.objectContaining({ ...base, state: 'pending', attempts: 0 }));
+    expect(repo.insert).toHaveBeenCalledWith(expect.objectContaining({ ...base, state: 'pending', attempts: 0 }));
   });
 
   it('treats a duplicate as the replay it is, keeping the existing row', async () => {
     const conflict = Object.assign(new Error('UNIQUE constraint failed'), { code: 'SQLITE_CONSTRAINT_UNIQUE' });
-    repo.save.mockRejectedValue(conflict);
+    repo.insert.mockRejectedValue(conflict);
 
     // A conflict on (webhookId, idempotencyKey) means this delivery is already recorded. Throwing
     // would surface as an unhandled rejection on a fire-and-forget path.
@@ -41,7 +40,7 @@ describe('WebhookOutboxService', () => {
   });
 
   it('never lets a repository failure reach a fire-and-forget caller', async () => {
-    repo.save.mockRejectedValue(new Error('disk full'));
+    repo.insert.mockRejectedValue(new Error('disk full'));
     await expect(service.open(base)).resolves.toBeUndefined();
 
     repo.update.mockRejectedValue(new Error('disk full'));

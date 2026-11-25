@@ -54,6 +54,10 @@ correctness properties (its own pending map, a bounded timeout, and a drain in t
 come for free. A timeout resolves `504` and a mid-dispatch crash resolves `502`; the ingress job treats
 either as a failed delivery and retries or dead-letters it.
 
+The status a handler returns is not read on this path. Only a handler that throws, a timeout or a worker
+crash fails a delivery, so a handler that wants a retry has to throw; returning `{ status: 500 }` completes
+the job.
+
 ## 25.3 Architecture
 
 ```mermaid
@@ -88,8 +92,9 @@ plugin never loses events; the tiers scale independently with backpressure.
 
 Alongside this async pipeline, a route may additionally declare a `response` contract — host-side
 `preflight` checks and a declarative `ack` — that shapes the synchronous HTTP response the provider sees
-**without** altering the dispatch model. The plugin still always runs async (enqueued, full DLQ/retry);
-`response` only controls what the provider receives back on the request socket. See §25.4 and §25.8.
+**without** altering the dispatch model: `response` only controls what the provider receives back on the
+request socket. Where the plugin runs is decided by the queue: with it on, the delivery is enqueued and the
+worker runs it with retries and a dead letter; with it off, it runs inline. See §25.4 and §25.8.
 
 ## 25.4 Core components
 
@@ -99,18 +104,27 @@ Alongside this async pipeline, a route may additionally declare a `response` con
   `/api/ingress/:pluginId/:instanceId/:route` (a `GET` on a route that declares `challenge` is answered
   host-side as the verification handshake; every other request is a delivery). It is public to the
   API-key guard because an external provider cannot present the gateway's API key, so it self-validates
-  (see §25.6). It never runs the plugin inline — providers enforce short acknowledgement
-  deadlines, so the controller fast-acks and defers the work to the queue. A route may additionally
+  (see §25.6). With the queue on it never runs the plugin inline: providers enforce short acknowledgement
+  deadlines, so the controller fast-acks and defers the work to the queue, and dispatches inline only while
+  Redis is unreachable. With the queue off (the default) a route without a `response` contract runs the
+  plugin inline before its `202`, for at most `INGRESS_DISPATCH_TIMEOUT_MS` (5 s), and a route with one is
+  acked first and then dispatched inline, without the queue's retries. An inline dispatch that fails files a
+  dead letter and leaves the row for the reconciler, and a delivery on a route without a `response` contract
+  for a plugin still being restored is acked at once and dispatched by the reconciler once the plugin is up
+  (§25.7). A route may additionally
   declare a host-side `response` contract that shapes that synchronous reply without making the plugin
   inline. Its `preflight` checks (today: `session-alive`) run **after** signature verification and
   **before** the dedup persist — returning `503` only for a definitively-dead concrete-scoped WhatsApp
   session (no live engine or `FAILED`), with a `Retry-After` so a provider that retries a 503 only when
   that header is present comes back; recoverable statuses and `READY` pass through to a normal
-  `202`+enqueue so the worker can still fail fast and the dedup row still holds the delivery. A declared
+  `202`+enqueue so the worker can still fail fast and the dedup row still holds the delivery. The same
+  `503` with `Retry-After`, again before the dedup persist, answers a route declaring `response` while its
+  plugin is still being restored after startup: no worker can take the delivery yet and the provider wants
+  its answer now (see §25.7 for a route without `response`). A declared
   `ack` (`status`/`body`/`headers`) replaces the default `202 accepted`. For a route declaring `response`,
   the ack is returned without awaiting enqueue so a queue-disabled deployment cannot block the provider's
   deadline; the dedup row already persisted is the durability handle. A route with no `response` is
-  byte-identical to today's default fast-ack.
+  byte-identical to today's default fast-ack, while its plugin restores included.
 - **Plugin instance** — a first-class `instanceId` namespaced under a `pluginId`. One adapter can back
   many instances (for example, one external account per WhatsApp number). Each instance owns a host-minted
   ingress secret, a resolved session scope, and a config slice. It is a serializable field threaded
@@ -120,7 +134,17 @@ Alongside this async pipeline, a route may additionally declare a `response` con
   into the plugin's **base** config with last-write-wins merging, so a sparse wildcard instance
   inherits keys a sibling projected, and hook dispatch resolves config without per-instance
   scoping. Run one enabled wildcard instance per plugin, or scope instances concretely, until the
-  projection is re-keyed per instance. Capability calls are not confined to the dispatching instance's
+  projection is re-keyed per instance. The base configuration is also the layer under every instance
+  and per-session override. An instance or override that points a `net.allowConfigHosts` key at another
+  origin than the layer beneath does not inherit that layer's `secret` fields and must bring its own; one
+  that keeps the same origin, or sets no host key, inherits them. A host key that holds no text counts as
+  another origin, and a write that moves a host key to another origin than the stored layer is bound to (its own
+  host key, or the host of the layer beneath it when it names none) gets no stored secret back for the mask, so
+  the secret has to be sent with it. An instance row loses its own secrets while a per-session override
+  has moved a host key the row leaves unset away from the base config, and a config `PATCH` of an instance
+  whose plugin is not loaded answers `409`. A plugin that reaches its destination
+  through a key outside `net.allowConfigHosts` (for example under `net.allow: ['*']`) is not covered, so
+  keep such a secret on the instance that uses it. Capability calls are not confined to the dispatching instance's
   scope either: separating tenants across instances of one plugin relies on the handler using the
   delivery's `sessionId`.
 - **`conversation.send` capability** — a normalized outbound send authored by the plugin and translated
@@ -160,8 +184,10 @@ Four tables live on the data connection, each created by a hand-authored dual-di
   rows are pruned on their own short window (`INGRESS_DEDUP_RETENTION_DAYS`, default 7 — a dedup
   oracle is not an audit log, and `<= 0` falls back to the default rather than disabling the prune
   into unbounded growth).
-- **`integration_delivery_failures`** — a dead-letter record of last resort for both directions, with a
-  redrive path (added in P1).
+- **`integration_delivery_failures`** — a dead-letter record of last resort for inbound (ingress)
+  deliveries, with a redrive path (added in P1). Only the ingress path writes it, and only as
+  `inbound`; a failed outbound call to the provider is not dead-lettered. A data import restores each
+  row's `direction` as stored, and redrive replays only `inbound` rows.
 
 ## 25.6 Security model
 
@@ -182,7 +208,12 @@ Four tables live on the data connection, each created by a hand-authored dual-di
   attempt can declare `dedupOn: "body"` to key retries on the raw body instead: byte-identical bodies
   then collapse within `INGRESS_DEDUP_RETENTION_DAYS`, the persisted delivery id and the `{id}` ack
   token become that content hash, and a provider whose retries legitimately differ in the signed body
-  should keep the default, since `body` would dedup nothing for it. Freshness is enforced whenever a route declares
+  should keep the default, since `body` would dedup nothing for it. The same content hash is the delivery id
+  whenever no usable dedup header arrives; for an empty body it also covers the method and the query string, so
+  query-borne deliveries (a GET callback, a bodiless POST) stay apart, while deliveries with neither a body nor a
+  query share one id per route and collapse within the window. On `hmac-sha256` and `standard-webhooks` such a
+  query-borne delivery reaches the handler with `verified: false`, because the signature of an empty body vouches
+  for any query sent with it. Freshness is enforced whenever a route declares
   `signature.timestampHeader`: the declared `toleranceSec` wins, and otherwise the host default
   (`INGRESS_TIMESTAMP_TOLERANCE_SEC`, default 300) applies — a declared timestamp is never accepted
   without a freshness check. Freshness alone is not replay protection, though: an **unsigned**
@@ -198,6 +229,21 @@ Four tables live on the data connection, each created by a hand-authored dual-di
   byte-identical copies within `INGRESS_DEDUP_RETENTION_DAYS` (a copy gets the route's ack and is not
   enqueued again); beyond that, handler idempotency is the only protection. The loader logs a warning
   for each such route that keeps the header-keyed default.
+  A captured signed request can also preclaim a predictable future delivery id when that header is
+  outside the signed bytes: the genuine delivery under that id is then acknowledged and suppressed
+  until the dedup marker expires. On a repeated id with different body bytes the host emits WARN
+  `ingress_dedup_body_mismatch` with `pluginId`, `instanceId` and `deliveryId`, and increments
+  `openwa_ingress_dedup_body_mismatches_total`. The default still acknowledges without dispatching:
+  providers whose retries change body bytes depend on this behavior. A historical row without a
+  payload fingerprint counts as a match.
+  A route for a provider whose retries are byte-identical may explicitly set
+  `dedupBodyMismatchAsNew: true`. A different body under an existing id then becomes a new delivery
+  with a deterministic body-specific row and queue key; its retries still collapse. The handler and
+  the `{id}` ack token retain the provider delivery id, including on queued retries, reconciliation
+  and redrive, so the handler sees the same `req.deliveryId` for both bodies; section 25.7 says how
+  such a handler keys its side effects. The flag defaults to false. Enabling it for a provider whose
+  retries change bytes can send duplicate WhatsApp messages; it does not authenticate the delivery
+  header or replace handler idempotency.
   The value of a route's declared signature header (hmac-sha256 or shared-secret) is redacted from the
   persisted and enqueued payload, like the well-known signature headers, so the plugin's handler sees
   `[redacted]` in its place.
@@ -208,7 +254,9 @@ Four tables live on the data connection, each created by a hand-authored dual-di
   instance's scope.
 - **Fail-closed by construction.** No request — including an empty-body request — is accepted by an
   authenticating scheme without the correct per-instance secret. HMAC and Standard Webhooks bind body
-  integrity; `shared-secret` authenticates only the caller header and does not bind the body.
+  integrity; `shared-secret` authenticates only the caller header and does not bind the body. No scheme
+  signs the query string or the method, so a handler must not treat either as authenticated, even when the
+  delivery arrives with `verified: true`.
   `scheme: "none"` is the only unauthenticated path, and a route declaring it **fails the whole plugin's
   load** unless the operator has explicitly opted in with `ALLOW_UNSIGNED_INGRESS=true` — manifest
   validation throws, so none of that plugin's other routes load either and its registry status is set to
@@ -220,8 +268,11 @@ Four tables live on the data connection, each created by a hand-authored dual-di
 - **Egress.** The only sanctioned outbound path remains the SSRF-guarded `ctx.net.fetch`, scoped to the
   manifest's allowed hosts; a direct Node socket opened by the worker is not covered (see [30 - Plugin
   Sandboxing](./30-plugin-sandboxing.md)).
-- **Re-entrancy.** A reply issued _inside_ an ingress handler seeds the in-flight hook set, so an adapter's
-  own outbound message hook cannot echo-loop the reply back out to the external system.
+- **Re-entrancy.** A send issued from inside a hook handler is short-circuited for the event that handler
+  is running, so a hook cannot re-fire itself. A reply issued from an ingress handler carries no hook
+  context: it runs every plugin's `message:sending` hooks, the adapter's own included, so an adapter that
+  mirrors outbound messages to its provider must recognise and skip the replies it sent itself, for example
+  by the message id the send returned.
 
 ## 25.7 Scale and durability
 
@@ -230,14 +281,45 @@ job id; per-instance fairness via a token bucket; and a dead-letter record with 
 queued worker path, an **in-process** per-conversation lock prevents concurrent starts for the same lane;
 strict FIFO is not preserved across retry/redrive, and the lock is single-node state rather than Redis or
 PostgreSQL state. When the queue is disabled, ingress dispatches inline after persisting and does not
-serialize concurrent same-conversation deliveries. Providers already deliver over unordered,
-at-least-once HTTP, so plugin handlers must be idempotent and treat ingress as a reconciliation trigger.
+serialize concurrent same-conversation deliveries. A queued delivery falls back to the same inline
+dispatch when Redis is unreachable. Before Redis has ever connected, queue calls wait for it at most
+`REDIS_CONNECT_TIMEOUT_MS` (5s when unset or 0) from the first one, then fall back at once until it
+connects. Providers already deliver over unordered, at-least-once HTTP, so plugin handlers must be
+idempotent and treat ingress as a reconciliation trigger.
+
+An inline plugin webhook handler has **5 s** (`INGRESS_DISPATCH_TIMEOUT_MS`) to finish. Queued dispatch gets `SIMULATE_TYPING_MAX_MS` plus 5 s, capped at 25 s (10 s by default), below the default 30 s BullMQ lock. The host cannot cancel a
+handler that overruns it: the attempt is recorded as failed, the conversation lock is released and the
+delivery is retried (queued) or dead-lettered (inline), while the first run goes on and its work still
+lands. A handler that calls a slow upstream, or sends media, can therefore run twice for one delivery.
+Key every side effect on the delivery id (`req.deliveryId`) and hand work that can outlast the budget to
+a background task instead of awaiting it in the handler. Even a plain text send may wait up to `SIMULATE_TYPING_MAX_MS` (5 s by default) for typing simulation before contacting the engine. Do not await message sends in hooks or webhook handlers: start the promise with a `.catch` handler and return promptly. Without the queue (`QUEUE_ENABLED` unset or false)
+every dispatch keeps the 5 s inline budget. A live delivery answers the provider only after the inline dispatch,
+and providers abandon a request within a few seconds; the replays of the reconciler and of a redrive, and the
+dispatch behind a route with a response contract, wait for no provider but run under the same budget. A handler
+that awaits a typing pause longer than that needs the queue.
+
+On a route that sets `dedupBodyMismatchAsNew` (section 25.6) the handler receives the same `req.deliveryId`
+for every body the host accepts under one provider delivery id. Key its side effects on a provider event
+identity taken from the signed body, or on `req.deliveryId` together with a hash of `req.rawBody`: keyed on
+the delivery id alone, the handler would treat the second body as a repeat and drop it. A byte-identical
+retry still shares the key.
+
+A queued, retried, reconciled or redriven delivery runs with what was decided when it was accepted: the
+verification verdict (a delivery stored before the verdict was recorded reads the route as it stands) and
+the session its instance was bound to. If the instance has been disabled or deleted, or bound to another
+session, by the time the delivery runs, the attempt fails and follows the retry and dead-letter path. A
+redrive covers only the rows written under the instance's current session binding; rows of an earlier
+binding stay in the dead-letter table.
 
 A job waiting on that lock still holds one of the `INGRESS_WORKER_CONCURRENCY` worker slots (default
 10). A burst on one lane larger than that fills every slot with same-lane waiters, and events for other
 conversations and instances queue behind the burst until it drains. Size `INGRESS_WORKER_CONCURRENCY`
 above the largest burst you expect on a single lane, and declare a `conversationId` pointer on the
-route so the lane is one conversation; without it the lane is the whole instance.
+route so the lane is one conversation; without it the lane is the whole instance. A `jsonPointer` reads
+the body by RFC 6901 tokens: `~1` stands for a slash and `~0` for a tilde in a key, an empty token names
+an empty key (so a trailing or doubled slash looks for that key), and an array takes only a plain index.
+A pointer that finds no string, number or boolean leaves the delivery on the per-instance lane; one
+written without its leading slash resolves as it always did.
 
 Persist-before-acknowledge alone is not delivery: a crash between the persist and the enqueue, or a
 fire-and-forget enqueue on a `response` route whose outcome is never recorded, would strand the row
@@ -262,12 +344,51 @@ deliver. A `pending` row found without a payload (only possible for imported/cor
 payloads are retired only with a recorded outcome) is excluded from the sweep and never replayed
 empty; nothing logs it, and it stays `pending` until `INGRESS_DEDUP_RETENTION_DAYS` prunes it.
 
+**Plugin restore window.** The gateway opens its port before a slow plugin restore has finished (see
+[19](./19-plugin-architecture.md), Restore on boot), so a delivery can arrive for a plugin that has no
+worker yet. A route declaring a `response` contract is refused with `503` and `Retry-After: 5` (§25.4),
+and the provider's retry is accepted once the plugin is up. Any other route is accepted and persisted
+as usual. A queued job goes back to the delayed set, without spending a retry attempt, until the plugin
+is up. It is held until the next multiple of `INGRESS_RETRY_DELAY_MS` (a period of at least a second), so every
+held job wakes at the same instants and the jobs of one wake come back in the order they were held. That
+order has two limits. Once the restore ends, the jobs of a wake are handled one after another, so those
+already held again come back a period later than those the worker reaches afterwards: earlier deliveries
+of a conversation can follow later ones for as long as the worker needs to go through the whole held
+backlog (milliseconds for a short one, seconds for thousands), and that backlog is handled ahead of newer
+jobs of other plugins. And BullMQ keeps insertion order for at most 4096 held jobs per millisecond: past
+that, the jobs of a wake come back ordered by their id. With the queue off the delivery is acked and not dispatched: its row stays `pending`, and the
+reconciler dispatches it on the first pass after the restore is over and the row is older than
+`INGRESS_RECONCILE_GRACE_MS`. With the defaults that is within a minute after the plugin is up for a row
+accepted at least a minute before it came up, and one to two minutes after the delivery for a later one.
+The reconciler leaves the rows of a restoring plugin out of its batch, so they do not hold back another
+plugin's. With the reconciler disabled
+(`INGRESS_RECONCILE_INTERVAL_MS=0`) nothing would replay a held row, so the delivery is dispatched at once
+and, with no worker to run it, files a dead letter that an operator can redrive.
+
 Table growth is bounded by construction rather than by operator hygiene: the per-instance ingress
 throttle caps the row-creation rate, dispatched rows slim to a marker + hash, and the two retention
 windows prune what remains — `INGRESS_DEDUP_RETENTION_DAYS` (default 7) for the dedup oracle and
-`INGRESS_RETENTION_DAYS` (default 90, `<= 0` disables) for the DLQ. There is deliberately no
-per-instance row-count cap: eviction under a flood of forged delivery ids would silently drop legit
-dedup rows and re-admit their replays, which is worse than the bounded growth it would prevent.
+`INGRESS_RETENTION_DAYS` (default 90, `<= 0` disables) for the DLQ. A `pending` row that still
+carries its payload is settled before the age prune deletes it: the prune first writes its
+dead-letter row (unless an open one exists) and marks it `failed`. A delivery stranded across
+downtime longer than the dedup window, or held by an instance disabled for that long, is therefore
+not dropped: it stays redrivable until `INGRESS_RETENTION_DAYS` prunes that dead-letter row. A row
+whose dead-letter write fails is kept for the next run. Two cases get no dead-letter row: a
+queue job that still owns the delivery takes the `dispatched` mark (closing any open dead-letter
+row), and a row whose instance or bound session was deleted is dropped, since redrive refuses a
+deleted instance and a session delete purges its dead letters. A delivery whose completed job was
+already removed from the queue, or whose job lookup failed while Redis was down (or, for a Redis
+slow to start at boot, not yet connected within that first-connect wait), is dead-lettered anyway and
+may already have been delivered: check before redriving it. The check that avoids a second open
+dead-letter row for one delivery reads before it writes, so two nodes pruning the same row at the same
+moment (replicas started together) can leave two, and redriving both delivers it twice. A dead-letter
+row the prune writes takes
+its conversation id from the plugin's current manifest route, as the live path does, so a row whose
+plugin package or route is gone, whose route declares no `conversationId` pointer, or whose pointer
+does not resolve in that delivery carries none and its redrive takes the per-instance lane. There is
+deliberately no per-instance row-count cap: eviction under a flood of forged delivery ids would
+silently drop legit dedup rows and re-admit their replays, which is worse than the bounded growth it
+would prevent.
 
 ## 25.8 The Integration SDK (v1)
 
@@ -301,8 +422,8 @@ Within major 1 the surface grows additively. A route's optional `response` contr
 (host-side checks such as `session-alive`, evaluated after signature verify), `ack{}` (`status`/`body`/
 `headers`, rendered host-side with `{rawBody}`/`{timestamp}`/`{id}` templates from the verified request),
 and an advisory `deadlineMs` — lets an adapter shape the synchronous HTTP response the provider sees; the
-plugin still always runs async, and a route with no `response` is byte-identical to today's default
-fast-ack. `ack.body` and every `ack.headers` value must be strings, `ack.status` must be a final status
+ack of such a route never waits for the plugin, which runs from the queue or, with the queue off, inline after
+the ack (§25.4), and a route with no `response` is byte-identical to today's default fast-ack. `ack.body` and every `ack.headers` value must be strings, `ack.status` must be a final status
 (200-599), and a header value may hold no control character (other than HTAB) and nothing above U+00FF,
 since Node cannot write one; a manifest that declares otherwise is refused at install and at boot, which
 leaves that plugin in error until the manifest is fixed. A declared header is dropped rather than written

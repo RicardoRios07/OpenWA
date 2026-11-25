@@ -27,7 +27,7 @@ func ExampleNew() {
 		log.Fatal(err)
 	}
 
-	// Link the account before sending: scan Sessions.QRCode or use Sessions.RequestPairingCode,
+	// Link the account before sending: scan Sessions.QRCode (or use Sessions.RequestPairingCode for a number with no linked session),
 	// then wait for status "ready". An unlinked session answers the send with 409.
 	res, err := client.Messages.SendText(ctx, session.ID, openwa.SendTextRequest{
 		ChatID: "628123456789@c.us",
@@ -50,6 +50,8 @@ func ExampleClient_typedErrors() {
 	switch {
 	case errors.Is(err, openwa.ErrConflict):
 		// Engine not ready (409) — retry after the session reaches "ready".
+		// A keyed send can also answer 409 for a pending or uncertain outcome; APIError.Code
+		// tells them apart, and an uncertain one must be checked in the chat before it is sent again.
 	case errors.Is(err, openwa.ErrNotFound):
 		// Unknown session (404).
 	case err != nil:

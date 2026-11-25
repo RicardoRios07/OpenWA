@@ -118,6 +118,40 @@ test('hostile input: openers with no closer do not rescan the rest of the messag
   assert.deepEqual(parseMessageBody('_a *b* _a'), [text('_a '), { type: 'bold', children: [text('b')] }, text(' _a')]);
 });
 
+test('hostile input: code spans with no triple backtick after them do not rescan the message each time', () => {
+  // Each span used to look for a ``` to the end of the body before the next one, which is absent:
+  // several seconds of main thread for one 64k message.
+  for (const evil of ['`a` '.repeat(16_000), '`` '.repeat(21_000)]) {
+    const started = performance.now();
+    const nodes = parseMessageBody(evil);
+    const elapsed = performance.now() - started;
+    assert.ok(elapsed < 1000, `parsing ${evil.length} chars took ${Math.round(elapsed)} ms`);
+    assert.ok(nodes.length > 0);
+  }
+  // Nor do code blocks: each block used to be followed by a search for a single backtick that ran past
+  // every later block to the end of the body, which is quadratic in the number of blocks.
+  for (const evil of [
+    '```a``` '.repeat(8_000),
+    '`'.repeat(64_000),
+    '``` '.repeat(16_000),
+    '```a``` `b` '.repeat(5_000),
+  ]) {
+    const started = performance.now();
+    const nodes = parseMessageBody(evil);
+    const elapsed = performance.now() - started;
+    assert.ok(elapsed < 250, `parsing ${evil.length} chars took ${Math.round(elapsed)} ms`);
+    assert.ok(nodes.length > 0);
+  }
+  // A triple backtick further on is still found once the spans in front of it are consumed.
+  assert.deepEqual(parseMessageBody('`a` b ```c``` `d`'), [
+    { type: 'code', value: 'a' },
+    text(' b '),
+    { type: 'codeblock', value: 'c' },
+    text(' '),
+    { type: 'code', value: 'd' },
+  ]);
+});
+
 test('a MENTION_OPEN/MENTION_CLOSE span becomes its own mention node, not text', () => {
   assert.deepEqual(parseMessageBody(`hi ${wrap('@Ravi')} there`), [
     text('hi '),
@@ -160,4 +194,12 @@ test('a mention that fills a *bold* span on its own resolves and keeps the bold'
   assert.deepEqual(parseMessageBody(`*${wrap('@Ravi')}*`), [
     { type: 'bold', children: [{ type: 'mention', value: '@Ravi' }] },
   ]);
+});
+
+test('text right after a closing triple backtick is kept', () => {
+  assert.deepEqual(parseMessageBody('```a```b'), [{ type: 'codeblock', value: 'a' }, text('b')]);
+});
+
+test('a space right after the opening marker keeps the span literal even when a closer follows', () => {
+  assert.deepEqual(parseMessageBody('* a*'), [text('* a*')]);
 });

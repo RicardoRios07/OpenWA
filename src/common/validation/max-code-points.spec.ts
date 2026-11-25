@@ -35,4 +35,12 @@ describe('varchar-backed fields are bounded in code points', () => {
     await expect(through('a'.repeat(room))).resolves.toMatchObject({ [field]: wrap('a'.repeat(room)) });
     await expect(through('a'.repeat(room + 1))).rejects.toBeInstanceOf(BadRequestException);
   });
+
+  it('counts an astral character once, not as the two UTF-16 units it takes', async () => {
+    const robot = String.fromCodePoint(0x1f916);
+    const through = (name: string): Promise<unknown> =>
+      pipe.transform({ replyText: 'hi', name }, { type: 'body', metatype: CreateAutomationRuleDto });
+    await expect(through(robot.repeat(100))).resolves.toMatchObject({ name: robot.repeat(100) });
+    await expect(through(robot.repeat(101))).rejects.toBeInstanceOf(BadRequestException);
+  });
 });

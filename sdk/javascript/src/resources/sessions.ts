@@ -121,7 +121,9 @@ export class SessionsResource {
    * operation did not complete (no send, no acknowledgement, timeout/transport error, or local
    * cleanup failure); `phone` is cleared and no success audit is written. Start the session again
    * and retry the logout; do not assume the retry reconnects automatically or lands in a
-   * guaranteed QR state.
+   * guaranteed QR state. On Baileys, a session with no linked device rejects with HTTP `409`
+   * instead: it was stopped locally, `phone` is cleared and no success audit is written. Start it
+   * to link a device, or delete it; retrying the logout cannot help.
    */
   logout(id: string): Promise<SessionResponse> {
     return this.client.request<SessionResponse>({ method: 'POST', path: `/api/sessions/${encodeSegment(id)}/logout` });
@@ -146,7 +148,10 @@ export class SessionsResource {
     return this.client.request<QrCodeResponse>({ method: 'GET', path: `/api/sessions/${encodeSegment(id)}/qr` });
   }
 
-  /** Request an 8-character pairing code for phone-based login. */
+  /**
+   * Request an 8-character pairing code for phone-based login. On whatsapp-web.js, never request one for a
+   * number that already has a linked session: WhatsApp can revoke that device. Link it by QR instead.
+   */
   requestPairingCode(id: string, body: RequestPairingCodeRequest): Promise<PairingCodeResponse> {
     return this.client.request<PairingCodeResponse>({
       method: 'POST',

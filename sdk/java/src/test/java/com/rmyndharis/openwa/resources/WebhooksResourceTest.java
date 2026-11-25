@@ -7,6 +7,7 @@ import com.rmyndharis.openwa.ClientConfig;
 import com.rmyndharis.openwa.OpenWAClient;
 import com.rmyndharis.openwa.http.HttpMethod;
 import com.rmyndharis.openwa.model.CreateWebhookRequest;
+import com.rmyndharis.openwa.model.DeliveryFailureQuery;
 import com.rmyndharis.openwa.model.RedriveWebhookDeliveriesRequest;
 import com.rmyndharis.openwa.model.UpdateWebhookRequest;
 import com.rmyndharis.openwa.model.WebhookEvent;
@@ -54,11 +55,27 @@ class WebhooksResourceTest {
     }
 
     @Test
+    void redriveDeliveryFailuresKeepsAnExplicitEmptyIdsList() {
+        // The gateway reads ids: [] as "replay nothing" and an omitted ids as "replay up to 100 rows".
+        tx.respond(200, "{\"redriven\":0,\"delivered\":0,\"enqueued\":0,\"failed\":0,\"skipped\":0,\"remaining\":3}");
+        client.webhooks.redriveDeliveryFailures(RedriveWebhookDeliveriesRequest.builder().ids(List.of()).build());
+        assertEquals("{\"ids\":[]}", tx.lastRequest().body());
+    }
+
+    @Test
     void listHitsWebhooksRoot() {
         tx.respond(200, "[]");
         client.webhooks.list("s");
         assertEquals("http://h/api/sessions/s/webhooks", tx.lastRequest().url());
         assertEquals(HttpMethod.GET, tx.lastRequest().method());
+    }
+
+    @Test
+    void listAllSendsPagingButNoSessionFilter() {
+        // GET /api/webhooks has no session filter, so the shared query's sessionId must not travel as one.
+        tx.respond(200, "[]");
+        client.webhooks.listAll(DeliveryFailureQuery.builder().sessionId("s1").limit(5).offset(10).build());
+        assertEquals("http://h/api/webhooks?limit=5&offset=10", tx.lastRequest().url());
     }
 
     @Test

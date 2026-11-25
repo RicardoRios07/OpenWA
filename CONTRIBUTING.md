@@ -18,7 +18,7 @@ See `docs/03-system-architecture.md` for the bigger picture.
 
 ## Getting started
 
-OpenWA targets **Node.js 22.19 or newer** (`engines.node`).
+OpenWA targets **Node.js 22.19 or newer** (`engines.node`). On Linux x64/arm64 hosts using glibc, source installs also need **glibc 2.34 or newer** for the shipped `better-sqlite3` prebuild, even with PostgreSQL. Use Ubuntu 22.04+, Debian 12+, RHEL 9+ or the published Docker image on an older host; `npm rebuild better-sqlite3 --build-from-source` does not replace the preferred prebuild. See [startup troubleshooting](docs/12-troubleshooting-faq.md#issue-source-install-fails-with-a-glibc_2xx-not-found-error).
 
 ```bash
 npm ci
@@ -60,7 +60,11 @@ npm run i18n:check && npm run build && npm run test:unit
 
 If you changed a DTO, a route, or an `@ApiResponse`, also run `npm run openapi:export` and
 commit the snapshot, then `npm run openapi:check` and `npm run check:contract-shapes`. The
-hand-written SDK types are compared against the schemas and will fail CI by field name.
+hand-written SDK types are compared against the schemas and will fail CI by field name. A new
+route also needs a method in each of the five SDKs and a row in `docs/18-sdk-design.md`, or an
+entry in the unexposed list of `sdk/README.md`, which `npm run check:sdk-routes`,
+`check:sdk-coverage`, `check:sdk-events` and `check:sdk-docs` verify, as CI's lint job does
+with `npm run check:versions`.
 
 - Add or update tests for behavior changes. Backend specs are colocated as `*.spec.ts`
   and run under Jest; dashboard tests are colocated as `*.test.ts` and run under

@@ -1,7 +1,12 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import type { Dirent } from 'node:fs';
+import { lstat, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
+
+/** The temp directory one conversion works in: mkdtemp appends six random characters to this prefix. */
+const CONVERSION_DIR_PREFIX = 'openwa-convert-';
+const CONVERSION_DIR = /^openwa-convert-[A-Za-z0-9]{6}$/;
 
 /** A conversion that ffmpeg refused, timed out on, or produced too much output for. */
 export class FfmpegConversionError extends Error {
@@ -30,6 +35,8 @@ export interface FfmpegRunOptions {
   timeoutMs: number;
   /** Ceiling on the produced bytes. */
   maxOutputBytes: number;
+  /** Cancellation checked immediately before a process can be started. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -177,7 +184,7 @@ export async function runFfmpeg(
   encodeArgs: string[],
   options: FfmpegRunOptions,
 ): Promise<Buffer> {
-  const dir = await mkdtemp(join(tmpdir(), 'openwa-convert-'));
+  const dir = await mkdtemp(join(tmpdir(), CONVERSION_DIR_PREFIX));
   const inputPath = join(dir, `in.${inputExtension}`);
   const outputPath = join(dir, `out.${outputExtension}`);
   try {
@@ -211,15 +218,51 @@ export async function runFfmpeg(
   }
 }
 
+/**
+ * Remove the conversion directories a gateway killed mid-conversion left in the temp dir: SIGKILL and the
+ * OOM killer run no `finally`, and a disk-backed /tmp (a Kubernetes emptyDir) outlives the container. Only a
+ * directory at least `minAgeMs` old goes, judged by its mtime, which stops changing once ffmpeg has created its
+ * output, so a conversion still running in another process that shares the temp dir is left alone. A link or a
+ * file under the same name is never touched. Best-effort: every failure goes to `warn`, nothing is thrown.
+ */
+export async function removeStaleConversionDirs(
+  minAgeMs: number,
+  warn: (message: string, error: unknown) => void,
+  now = Date.now(),
+): Promise<number> {
+  const root = tmpdir();
+  let entries: Dirent[];
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (error) {
+    warn('Could not list the temp dir for leftover conversion directories', error);
+    return 0;
+  }
+  let removed = 0;
+  for (const entry of entries) {
+    // A Dirent describes the entry itself, so a link named like a conversion directory is not a directory here.
+    if (!entry.isDirectory() || !CONVERSION_DIR.test(entry.name)) continue;
+    const dir = join(root, entry.name);
+    try {
+      if (now - (await lstat(dir)).mtimeMs < minAgeMs) continue;
+      await rm(dir, { recursive: true, force: true });
+      removed += 1;
+    } catch (error) {
+      warn(`Could not remove the leftover conversion directory ${entry.name}`, error);
+    }
+  }
+  return removed;
+}
+
 /** Process groups of the ffmpeg runs still in flight, so they can be killed when the gateway exits. */
 const runningGroups = new Set<number>();
 
 /**
  * SIGKILL every ffmpeg process group still running. Each run is detached into its own group, so a
  * Ctrl-C or a signal to the gateway's group no longer reaches it, and its timeout dies with this
- * process. Called from the media service's shutdown hook, which Nest runs before it re-raises a
- * signal (the process then dies without emitting `exit`), and registered on `exit` for every path
- * that ends in `process.exit`; `process.kill` is synchronous, so it still runs there.
+ * process. Called from the media service's shutdown hook, which runs on `app.close()`, and registered
+ * on `exit` for every path that ends in `process.exit`; `process.kill` is synchronous, so it still
+ * runs there.
  */
 export function killRunningConversions(): void {
   for (const pid of runningGroups) {
@@ -233,6 +276,32 @@ export function killRunningConversions(): void {
 }
 process.on('exit', killRunningConversions);
 
+/**
+ * What ffmpeg sees of the gateway's environment. It parses bytes a caller chose and needs no secret, so
+ * the database and Redis passwords and the API key pepper stay out of it. What remains is what finding
+ * a binary, its libraries, a home and a temp directory take, and the system root a Windows process
+ * cannot load its libraries without.
+ */
+function ffmpegEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const name of [
+    'PATH',
+    'LD_LIBRARY_PATH',
+    'DYLD_LIBRARY_PATH',
+    'HOME',
+    'TMPDIR',
+    'TEMP',
+    'TMP',
+    'LANG',
+    'LC_ALL',
+    'SystemRoot',
+  ]) {
+    const value = process.env[name];
+    if (value !== undefined) env[name] = value;
+  }
+  return env;
+}
+
 /** Spawn ffmpeg and resolve when it exits 0, else reject with whatever it wrote to stderr. */
 function execute(args: string[], options: FfmpegRunOptions): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -240,7 +309,12 @@ function execute(args: string[], options: FfmpegRunOptions): Promise<void> {
     // filename with a space or a quote is data rather than syntax.
     // `detached` puts the child at the head of its own process group, so the timeout can kill
     // everything under it (see below).
-    const child = spawn(options.ffmpegPath, args, { stdio: ['ignore', 'ignore', 'pipe'], detached: true });
+    options.signal?.throwIfAborted();
+    const child = spawn(options.ffmpegPath, args, {
+      stdio: ['ignore', 'ignore', 'pipe'],
+      detached: true,
+      env: ffmpegEnv(),
+    });
     const pid = child.pid;
     if (pid !== undefined) runningGroups.add(pid);
 

@@ -24,7 +24,7 @@ The digest is computed over the exact raw request body bytes using the webhook s
 
 ## With an OpenWA SDK
 
-From the next SDK release (after 0.5.0), each SDK ships this check. Pass the raw body, the `X-OpenWA-Signature` header value and the secret; the helper returns false for a missing, malformed or wrong signature and compares in constant time.
+Since SDK 0.5.1, each SDK ships this check. Pass the raw body, the `X-OpenWA-Signature` header value and the secret; the helper returns false for a missing, malformed or wrong signature and compares in constant time.
 
 | SDK        | Call                                                    |
 | ---------- | ------------------------------------------------------- |

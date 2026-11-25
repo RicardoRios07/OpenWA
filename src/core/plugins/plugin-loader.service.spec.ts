@@ -116,7 +116,7 @@ describe('dispatchConversationMedia', () => {
 
 import * as fs from 'fs';
 import * as os from 'os';
-import { PluginLoaderService } from './plugin-loader.service';
+import { PLUGIN_SHUTDOWN_WAIT_MS, PluginLoaderService } from './plugin-loader.service';
 import { ConfigService } from '@nestjs/config';
 import { ModuleRef } from '@nestjs/core';
 import { HookManager } from '../hooks';
@@ -398,6 +398,199 @@ describe('PluginLoaderService — graceful shutdown (onModuleDestroy)', () => {
     // The failing plugin's onDisable error didn't block the other from being disabled.
     expect(okDisable).toHaveBeenCalledTimes(1);
     expect(loader.getPlugin('ok-plg')?.status).toBe(PluginStatus.DISABLED);
+  });
+
+  it('waits for an enable already in flight and disables it, so its onDisable still runs', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => (release = resolve));
+    const onDisable = jest.fn(() => Promise.resolve());
+    loader.registerBuiltInPlugin(ext('slow-plg'), { onEnable: () => gate, onDisable });
+
+    const enabling = loader.enablePlugin('slow-plg');
+    const destroying = loader.onModuleDestroy();
+    release();
+    await enabling;
+    await destroying;
+
+    expect(onDisable).toHaveBeenCalledTimes(1);
+    expect(loader.getPlugin('slow-plg')?.status).toBe(PluginStatus.DISABLED);
+  });
+
+  // Shutdown waits on every enable it has recorded, so a settled one left in the set is waited on for the
+  // life of the process and the set grows by one entry per enable.
+  it.each([
+    ['succeeds', () => Promise.resolve()],
+    ['fails', () => Promise.reject(new Error('onEnable failed'))],
+  ])('stops tracking an enable once it %s', async (_outcome, onEnable) => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => (release = resolve));
+    loader.registerBuiltInPlugin(ext('tracked-plg'), { onEnable: () => gate.then(onEnable) });
+
+    const enabling = loader.enablePlugin('tracked-plg').catch(() => undefined);
+    expect(loader['pendingEnables'].size).toBe(1);
+
+    release();
+    await enabling;
+    expect(loader['pendingEnables'].size).toBe(0);
+  });
+
+  it('disables running plugins without waiting for an enable still in flight', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => (release = resolve));
+    const runningDisable = jest.fn(() => Promise.resolve());
+    const slowDisable = jest.fn(() => Promise.resolve());
+    loader.registerBuiltInPlugin(ext('running-plg'), { onDisable: runningDisable });
+    loader.registerBuiltInPlugin(ext('slow-plg'), { onEnable: () => gate, onDisable: slowDisable });
+    await loader.enablePlugin('running-plg');
+
+    const enabling = loader.enablePlugin('slow-plg');
+    const destroying = loader.onModuleDestroy();
+    await new Promise(resolve => setImmediate(resolve));
+
+    // The running plugin's onDisable runs while the other enable is still held.
+    expect(runningDisable).toHaveBeenCalledTimes(1);
+    expect(slowDisable).not.toHaveBeenCalled();
+
+    release();
+    await enabling;
+    await destroying;
+
+    expect(runningDisable).toHaveBeenCalledTimes(1);
+    expect(slowDisable).toHaveBeenCalledTimes(1);
+    expect(loader.getPlugin('running-plg')?.status).toBe(PluginStatus.DISABLED);
+    expect(loader.getPlugin('slow-plg')?.status).toBe(PluginStatus.DISABLED);
+  });
+
+  it('joins a disable already in flight instead of running onDisable twice', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => (release = resolve));
+    const onDisable = jest.fn(() => gate);
+    loader.registerBuiltInPlugin(ext('busy-plg'), { onDisable });
+    await loader.enablePlugin('busy-plg');
+
+    const disabling = loader.disablePlugin('busy-plg');
+    const destroying = loader.onModuleDestroy();
+    release();
+    await disabling;
+    await destroying;
+
+    expect(onDisable).toHaveBeenCalledTimes(1);
+    expect(loader.getPlugin('busy-plg')?.status).toBe(PluginStatus.DISABLED);
+  });
+
+  it('joins the disable of an unload already in flight', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => (release = resolve));
+    const onDisable = jest.fn(() => gate);
+    const onUnload = jest.fn(() => Promise.resolve());
+    loader.registerBuiltInPlugin(ext('gone-plg'), { onDisable, onUnload });
+    await loader.enablePlugin('gone-plg');
+
+    const unloading = loader.unloadPlugin('gone-plg');
+    const destroying = loader.onModuleDestroy();
+    release();
+    await unloading;
+    await destroying;
+
+    expect(onDisable).toHaveBeenCalledTimes(1);
+    expect(onUnload).toHaveBeenCalledTimes(1);
+    expect(loader.getPlugin('gone-plg')).toBeUndefined();
+  });
+
+  describe('time cap', () => {
+    beforeEach(() => jest.useFakeTimers());
+    afterEach(() => jest.useRealTimers());
+
+    const never = (): Promise<void> => new Promise<void>(() => undefined);
+
+    it('disables plugins in parallel and returns at PLUGIN_SHUTDOWN_WAIT_MS when onDisable never settles', async () => {
+      const a = jest.fn(never);
+      const b = jest.fn(never);
+      loader.registerBuiltInPlugin(ext('a-plg'), { onDisable: a });
+      loader.registerBuiltInPlugin(ext('b-plg'), { onDisable: b });
+      await loader.enablePlugin('a-plg');
+      await loader.enablePlugin('b-plg');
+      const warn = jest.spyOn(loader['logger'], 'warn').mockImplementation(() => undefined);
+
+      let done = false;
+      void loader.onModuleDestroy().then(() => (done = true));
+      await jest.advanceTimersByTimeAsync(0);
+      expect(a).toHaveBeenCalledTimes(1);
+      expect(b).toHaveBeenCalledTimes(1);
+
+      await jest.advanceTimersByTimeAsync(PLUGIN_SHUTDOWN_WAIT_MS - 1);
+      expect(done).toBe(false);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(done).toBe(true);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('time cap'),
+        expect.objectContaining({ action: 'plugin_shutdown_timeout' }),
+      );
+    });
+
+    it('stops waiting for an enable that never settles at the same cap', async () => {
+      loader.registerBuiltInPlugin(ext('stuck-plg'), { onEnable: never });
+      void loader.enablePlugin('stuck-plg').catch(() => undefined);
+      jest.spyOn(loader['logger'], 'warn').mockImplementation(() => undefined);
+
+      let done = false;
+      void loader.onModuleDestroy().then(() => (done = true));
+      await jest.advanceTimersByTimeAsync(PLUGIN_SHUTDOWN_WAIT_MS - 1);
+      expect(done).toBe(false);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(done).toBe(true);
+    });
+
+    it('still disables an enable that lands at 2 s and returns then, without the warning', async () => {
+      const onDisable = jest.fn(() => Promise.resolve());
+      loader.registerBuiltInPlugin(ext('late-plg'), {
+        onEnable: () => new Promise<void>(resolve => setTimeout(resolve, 2000)),
+        onDisable,
+      });
+      void loader.enablePlugin('late-plg');
+      const warn = jest.spyOn(loader['logger'], 'warn').mockImplementation(() => undefined);
+
+      let done = false;
+      void loader.onModuleDestroy().then(() => (done = true));
+      await jest.advanceTimersByTimeAsync(1999);
+      expect(done).toBe(false);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(done).toBe(true);
+      expect(onDisable).toHaveBeenCalledTimes(1);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('leaves no timer behind after a teardown that finishes within the cap', async () => {
+      loader.registerBuiltInPlugin(ext('ok-plg'), { onDisable: () => Promise.resolve() });
+      await loader.enablePlugin('ok-plg');
+
+      await loader.onModuleDestroy();
+
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it('does not let one failing onDisable stop the others', async () => {
+      const ok = jest.fn(() => Promise.resolve());
+      loader.registerBuiltInPlugin(ext('bad-plg'), { onDisable: () => Promise.reject(new Error('flush failed')) });
+      loader.registerBuiltInPlugin(ext('ok-plg'), { onDisable: ok });
+      await loader.enablePlugin('bad-plg');
+      await loader.enablePlugin('ok-plg');
+      jest.spyOn(loader['logger'], 'error').mockImplementation(() => undefined);
+
+      await expect(loader.onModuleDestroy()).resolves.toBeUndefined();
+      expect(ok).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('refuses an enable once teardown has begun', async () => {
+    const onEnable = jest.fn(() => Promise.resolve());
+    loader.registerBuiltInPlugin(ext('late-plg'), { onEnable });
+
+    await loader.onModuleDestroy();
+
+    await expect(loader.enablePlugin('late-plg')).rejects.toThrow(/shutting down/);
+    expect(onEnable).not.toHaveBeenCalled();
+    expect(loader.getPlugin('late-plg')?.status).not.toBe(PluginStatus.ENABLED);
   });
 });
 

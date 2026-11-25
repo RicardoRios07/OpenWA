@@ -1,6 +1,7 @@
+import { DECORATORS } from '@nestjs/swagger';
 import { plainToInstance } from 'class-transformer';
 import { validate, ValidationError } from 'class-validator';
-import { CreateWebhookDto, UpdateWebhookDto } from './webhook.dto';
+import { CreateWebhookDto, RedriveWebhookDeliveriesDto, UpdateWebhookDto } from './webhook.dto';
 
 /** Regression locks: webhook `events[]` must be constrained to known types + '*'. */
 function errorsFor<T extends object>(cls: new () => T, obj: object): Promise<ValidationError[]> {
@@ -215,5 +216,22 @@ describe('webhook DTO url validation', () => {
       const errs = await errorsFor(cls, { url });
       expect(errs.some(e => e.property === 'url')).toBe(true);
     }
+  });
+});
+
+// The validators cap the redrive selection; the schema has to say so, or a client generated from it
+// sends a list the server answers with a 400.
+describe('RedriveWebhookDeliveriesDto published schema', () => {
+  const published = (key: string): Record<string, unknown> | undefined =>
+    Reflect.getMetadata(DECORATORS.API_MODEL_PROPERTIES, RedriveWebhookDeliveriesDto.prototype, key) as
+      Record<string, unknown> | undefined;
+
+  it('publishes the bounds of the id list and the limit that the validators enforce', async () => {
+    expect(published('ids')).toMatchObject({ maxItems: 500, items: { type: 'string', maxLength: 128 } });
+    expect(published('limit')).toMatchObject({ minimum: 1, maximum: 500 });
+
+    const ids = Array.from({ length: 501 }, (_, i) => `id-${i}`);
+    expect((await errorsFor(RedriveWebhookDeliveriesDto, { ids })).some(e => e.property === 'ids')).toBe(true);
+    expect(await errorsFor(RedriveWebhookDeliveriesDto, { ids: ids.slice(0, 500), limit: 500 })).toHaveLength(0);
   });
 });

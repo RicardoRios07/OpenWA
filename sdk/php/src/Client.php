@@ -42,7 +42,7 @@ use OpenWA\Resources\WebhooksResource;
  * // Sessions are addressed by the UUID that create() returns, not by name.
  * $session = $client->sessions->create(['name' => 'my-session']);
  * $client->sessions->start($session['id']);
- * // Link the account before sending: scan sessions->getQrCode or use sessions->requestPairingCode,
+ * // Link the account before sending: scan sessions->getQrCode (or use sessions->requestPairingCode for a number with no linked session),
  * // then wait for status 'ready'. An unlinked session answers the send with 409.
  * $result = $client->messages->sendText($session['id'], [
  *     'chatId' => '628123456789@c.us',
@@ -80,28 +80,43 @@ class Client
      *     apiKey:string,
      *     timeout?:float,
      *     httpClient?:?\GuzzleHttp\ClientInterface|null,
-     *     defaultHeaders?:array<string,string>,
+     *     defaultHeaders?:array<string,scalar|null|non-empty-array<array-key,scalar|null>>,
      *     allowInsecureHttp?:bool
      * } $config
      *
-     * @throws OpenWAException If baseUrl or apiKey is missing.
+     * @throws OpenWAException If baseUrl or apiKey is missing, the key holds a control or non-ASCII
+     *         character (a surrounding space or newline is trimmed), or a default header name is not an
+     *         HTTP token or its value holds such a character.
      */
-    public function __construct(array $config)
+    public function __construct(#[\SensitiveParameter] array $config)
     {
         if (empty($config['baseUrl'])) {
             throw new OpenWAException('OpenWA Client: baseUrl is required');
         }
-        if (empty($config['apiKey'])) {
+        // A key read from a secret file usually ends in a newline, which the HTTP layer refuses with an error
+        // that quotes the whole key. Trim it, and refuse a control or non-ASCII character left inside: the
+        // gateway takes any printable ASCII, a space included, and the other clients send it as it is.
+        $apiKey = is_string($config['apiKey'] ?? null) ? trim($config['apiKey']) : ($config['apiKey'] ?? '');
+        if (empty($apiKey)) {
             throw new OpenWAException('OpenWA Client: apiKey is required');
+        }
+        if (!is_string($apiKey) || preg_match('/\A[\x20-\x7e]+\z/', $apiKey) !== 1) {
+            throw new OpenWAException(
+                'OpenWA Client: apiKey contains a control or non-ASCII character; check for a stray newline'
+            );
         }
 
         if (empty($config['allowInsecureHttp'])) {
             self::warnIfInsecureHttp($config['baseUrl']);
         }
 
+        // Before the executor exists: its constructor frame holds the key, which a trace shows in part on
+        // PHP before 8.2, where #[\SensitiveParameter] does nothing.
+        HttpExecutor::checkDefaultHeaders(is_array($config['defaultHeaders'] ?? null) ? $config['defaultHeaders'] : []);
+
         $this->http = new HttpExecutor(
             $config['baseUrl'],
-            $config['apiKey'],
+            $apiKey,
             $config['timeout'] ?? 30.0,
             $config['httpClient'] ?? null,
             $config['defaultHeaders'] ?? [],
@@ -165,6 +180,6 @@ class Client
      */
     public function request(string $method, string $path, array $query = [], mixed $body = null): mixed
     {
-        return $this->http->request($method, $path, $query, $body);
+        return $this->http->request($method, $path, $query, $body, null, true);
     }
 }

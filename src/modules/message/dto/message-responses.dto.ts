@@ -313,6 +313,18 @@ export class ChatHistoryMessageDto {
   @ApiPropertyOptional({ type: [String], description: 'WIDs @mentioned in the message.' })
   mentionedIds?: string[];
 
+  @ApiPropertyOptional({
+    description: 'True when the sender forwarded this message rather than writing it. Absent otherwise.',
+    example: true,
+  })
+  isForwarded?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'How many times the message has been forwarded. Set with `isForwarded`.',
+    example: 1,
+  })
+  forwardingScore?: number;
+
   @ApiPropertyOptional({ type: ChatHistoryCallDto, description: 'Set for `call` messages.' })
   call?: ChatHistoryCallDto;
 
@@ -374,4 +386,33 @@ export class MessageReactionDto {
 
   @ApiProperty({ type: [MessageReactionSenderDto], description: 'Who placed this emoji.' })
   senders!: MessageReactionSenderDto[];
+}
+
+export class MessageReceiptParticipantDto {
+  @ApiProperty({ example: '628123456789@c.us', description: 'Participant WhatsApp ID' })
+  participant!: string;
+
+  @ApiProperty({ description: 'Unix seconds the receipt occurred.', example: 1700000010 })
+  timestamp!: number;
+}
+
+/** OpenAPI mirror of the engine `MessageReceipts` served by the receipts route. */
+export class MessageReceiptsResponseDto {
+  @ApiProperty({ type: [MessageReceiptParticipantDto], description: 'Participants who received the message' })
+  delivery!: MessageReceiptParticipantDto[];
+
+  @ApiPropertyOptional({ description: 'Number of participants remaining to receive', example: 0 })
+  deliveryRemaining?: number;
+
+  @ApiProperty({ type: [MessageReceiptParticipantDto], description: 'Participants who read the message' })
+  read!: MessageReceiptParticipantDto[];
+
+  @ApiPropertyOptional({ description: 'Number of participants remaining to read', example: 0 })
+  readRemaining?: number;
+
+  @ApiProperty({ type: [MessageReceiptParticipantDto], description: 'Participants who played the audio/voice message' })
+  played!: MessageReceiptParticipantDto[];
+
+  @ApiPropertyOptional({ description: 'Number of participants remaining to play', example: 0 })
+  playedRemaining?: number;
 }

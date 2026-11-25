@@ -1,6 +1,6 @@
 # OpenWA Java SDK
 
-This document describes `main`. Send idempotency, webhook failure redrive, message-window filters, poll choices, and last-message types are unreleased additions after SDK 0.5.1 and require the corresponding server changes after OpenWA 0.24.0.
+This document describes SDK 0.10.0. `messages.receipts` requires OpenWA 0.28.0 or later. `contacts.lid` requires OpenWA 0.27.1 or later. `groups.setMemberLabel`, the `match` field of `SearchQuery`, and the `thumbnailUrl` and `thumbnailBase64` components of `CustomLinkPreview` require OpenWA 0.27.0 or later. Send idempotency, webhook failure redrive, message-window filters, poll choices, last-message types, and the `event.response` webhook event name require OpenWA 0.25.0 or later. The `message.receipt` and `poll.vote` webhook event names require OpenWA 0.26.0 or later.
 
 Official Java client for [OpenWA](https://github.com/rmyndharis/OpenWA), the
 open-source WhatsApp API Gateway. OpenWA is an independent project, not
@@ -19,14 +19,14 @@ Java 17+, one runtime dependency ([Gson](https://github.com/google/gson)).
 <dependency>
   <groupId>com.rmyndharis</groupId>
   <artifactId>openwa</artifactId>
-  <version>0.5.1</version>
+  <version>0.10.0</version>
 </dependency>
 ```
 
 **Gradle**
 
 ```groovy
-implementation 'com.rmyndharis:openwa:0.5.1'
+implementation 'com.rmyndharis:openwa:0.10.0'
 ```
 
 ## Quickstart
@@ -45,7 +45,7 @@ OpenWAClient client = new OpenWAClient("http://localhost:2785", "owa_k1_…");
 SessionResponse session = client.sessions.create(CreateSessionRequest.builder().name("my-session").build());
 client.sessions.start(session.id());
 
-// Link the account before sending: scan sessions.getQrCode or use sessions.requestPairingCode,
+// Link the account before sending: scan sessions.getQrCode (or use sessions.requestPairingCode for a number with no linked session),
 // then wait for status READY. An unlinked session answers the send with 409.
 MessageResponse result = client.messages.sendText(session.id(),
     SendTextRequest.builder()
@@ -69,6 +69,12 @@ OpenWAClient client = new OpenWAClient(ClientConfig.builder()
     .timeout(Duration.ofSeconds(15))
     .build());
 ```
+
+An `OpenWAClient` keeps no per-call state, so one instance can serve every thread
+when its transport can (the default one can): build one per base URL and API key
+and reuse it. Each client starts its own `HttpClient`, with a selector thread and
+a connection pool, so a client per request costs a thread and loses connection
+reuse.
 
 ## Resources
 
@@ -108,25 +114,26 @@ import com.rmyndharis.openwa.errors.OpenWANotFoundError;
 try {
     client.messages.sendText(sessionId, body);
 } catch (OpenWAConflictError e) {
-    // 409 — engine not ready
+    // 409 — a conflicting state: typically the engine is not ready, or a keyed send is pending or uncertain;
+    // e.code() tells them apart (see Send idempotency)
 } catch (OpenWANotFoundError e) {
     // 404 — session or chat not found
 }
 ```
 
-| Class                           | HTTP | Meaning                                                     |
-| ------------------------------- | ---- | ----------------------------------------------------------- |
-| `OpenWAAuthError`               | 401  | Missing or invalid API key                                  |
-| `OpenWAForbiddenError`          | 403  | API key role or scope, or WhatsApp itself, refuses the call |
-| `OpenWANotFoundError`           | 404  | Resource not found                                          |
-| `OpenWAConflictError`           | 409  | Engine not ready                                            |
-| `OpenWARateLimitError`          | 429  | Rate limited                                                |
-| `OpenWANotImplementedError`     | 501  | Active engine does not support the call                     |
-| `OpenWAServiceUnavailableError` | 503  | Engine did not confirm in time                              |
-| `OpenWAApiError`                | —    | Any other non-2xx (carries `.status()`)                     |
-| `OpenWATimeoutError`            | —    | Request exceeded the configured timeout                     |
+| Class                           | HTTP | Meaning                                                                                 |
+| ------------------------------- | ---- | --------------------------------------------------------------------------------------- |
+| `OpenWAAuthError`               | 401  | Missing or invalid API key                                                              |
+| `OpenWAForbiddenError`          | 403  | API key role or scope, or WhatsApp itself, refuses the call                             |
+| `OpenWANotFoundError`           | 404  | Resource not found                                                                      |
+| `OpenWAConflictError`           | 409  | Conflicting state, typically engine not ready, or an idempotency outcome (see `code()`) |
+| `OpenWARateLimitError`          | 429  | Rate limited                                                                            |
+| `OpenWANotImplementedError`     | 501  | Active engine does not support the call                                                 |
+| `OpenWAServiceUnavailableError` | 503  | Could not complete now: transport failure, draining, or WhatsApp throttle or timeout    |
+| `OpenWAApiError`                | —    | Any other non-2xx (carries `.status()`)                                                 |
+| `OpenWATimeoutError`            | —    | Request exceeded the configured timeout; the gateway may still complete the request     |
 
-All extend `OpenWAError` (a `RuntimeException`). 503 is transient, but a catalog 503 can persist because WhatsApp may never answer that query, so bound any retry. A 429 from the global rate limiter lifts when its window expires (seconds for the per-second tier, up to an hour for the hourly tier by default), and `retryAfterSeconds()` carries its `Retry-After` header. A 429 whose `code()` is `"SEND_PACING_LIMITED"` is usually not transient: do not retry it before `retryAfterSeconds()`, which then comes from the body: a few seconds when only sends still in flight caused it, the rest of the failure breaker's cooldown (`SEND_PACING_BREAKER_COOLDOWN_MS`, 15 minutes by default) after a run of send failures, otherwise up to the next UTC day. `headers()` returns the response headers. A 503 does not prove a write was never carried out: the engine answers it when WhatsApp did not confirm in time, and the change may still have been applied, so re-read the state before repeating it. In a routed deployment a forward that fails before reaching the owner node answers 503, one that fails after the request reached it answers 502 or 504, and a 503 from the owner itself is relayed unchanged.
+All extend `OpenWAError` (a `RuntimeException`). 503 means the gateway could not complete the request right now: the path to WhatsApp failed, the gateway is draining or short of a dependency, or, on Baileys, WhatsApp throttled (code 429) or timed out (code 408) the request. Back off and retry later instead of at once, because repeating a throttled request straight away prolongs the throttle; a catalog 503 can persist because WhatsApp may never answer that query, so bound any retry. A 429 from the global rate limiter lifts when its window expires (seconds for the per-second tier, up to an hour for the hourly tier by default), and `retryAfterSeconds()` carries its `Retry-After` header. A 429 whose `code()` is `"SEND_PACING_LIMITED"` is usually not transient: do not retry it before `retryAfterSeconds()`, which then comes from the body: a few seconds when only sends still in flight caused it, the rest of the failure breaker's cooldown (`SEND_PACING_BREAKER_COOLDOWN_MS`, 15 minutes by default) after a run of send failures, otherwise up to the next UTC day. `headers()` returns the response headers. A 503 does not always prove a write was never carried out: when WhatsApp timed out, the change may still have been applied, so re-read the state before repeating it. A throttle on a send or a single write was turned away before it ran, so nothing was sent or applied; a send also sent nothing when its recipient lookup failed, its connection closed before the message was written, or its media or preview image URL could not be fetched through the session's proxy. Each of these frees a keyed send's `Idempotency-Key`. A group settings update with several fields applies them one at a time, so a 503 on a later field, a throttle included, leaves the earlier ones applied; its message lists them after `already applied:`, so re-read the settings before retrying, or send one field per request. In a routed deployment a forward that fails before reaching the owner node answers 503, one that fails after the request reached it answers 502 or 504, and a 503 from the owner itself is relayed unchanged.
 
 ## Receiving webhooks
 
@@ -155,6 +162,12 @@ WebhookDelivery delivery =
 // Process delivery.event() and delivery.data() here.
 ```
 
+The signature covers the body only and carries no timestamp, so a captured
+delivery still verifies when it is sent again. Dedupe on
+`delivery.idempotencyKey()` (also the `X-OpenWA-Idempotency-Key` header): the
+gateway's own retries and an operator's redrive of a failed delivery reuse it, so
+a key you have already handled is the same event arriving again.
+
 ## Reliability & security
 
 - **Use HTTPS in production.** The API key is sent as `X-API-Key` on every
@@ -166,13 +179,18 @@ WebhookDelivery delivery =
 - **Redirects are never followed.** A `3xx` surfaces as an `OpenWAApiError`
   rather than being followed, so the API key is never re-sent to a redirect
   target.
-- **Default per-request timeout** is 30 s (configurable). Path segments (chat /
-  message ids) are percent-encoded; a base-URL path prefix (e.g. behind a proxy
-  at `/v1`) is preserved.
+- **Default per-request timeout** is 30 s (configurable). It bounds the whole
+  exchange, response body included, so raise `timeout` for large
+  `messages.media` or `status.media` downloads over a slow link. Path segments
+  (chat / message ids) are percent-encoded; a base-URL path prefix (e.g. behind
+  a proxy at `/v1`) is preserved.
 - **Empty and dot ids are refused.** An empty, `.` or `..` id throws
   `IllegalArgumentException` and nothing is sent, so a proxy that resolves dot
-  segments cannot turn the call into one on the parent resource. The raw
-  `request*` methods refuse a `.` or `..` segment the same way, and a path
+  segments cannot turn the call into one on the parent resource. So does an id
+  with a `.` or `..` part between slashes, such as `../x`: sent as `..%2Fx`, it
+  would reach another route behind a proxy that decodes `%2F` before it resolves
+  dot segments. The raw `request*` methods refuse a `.` or `..` segment the same
+  way (also after an encoded slash), and a path
   that does not begin with `/`, but send an empty one (a trailing slash) as
   written.
 
@@ -203,7 +221,8 @@ One-time setup (repository secrets):
 - `GPG_PRIVATE_KEY` — ASCII-armored signing key.
 - `GPG_PASSPHRASE` — passphrase for that key.
 
-All four secrets are checked before anything is built, and a missing one **fails
+A `verify` job runs the tests with none of them. The `publish` job that follows
+checks all four secrets before it builds anything, and a missing one **fails
 the run**. That is deliberate: skipping the deploy and reporting green is
 indistinguishable from a real release in the run list, so configure the secrets
 before tagging rather than tagging to see what happens.
@@ -211,14 +230,14 @@ before tagging rather than tagging to see what happens.
 Cutting a release:
 
 1. Bump `<version>` in `pom.xml` and land it on `main`.
-2. Tag that commit `java-sdk-v<version>` (e.g. `java-sdk-v0.5.1`) and push the
+2. Tag that commit `java-sdk-v<version>` (e.g. `java-sdk-v0.10.0`) and push the
    tag. The SDK has its own version line — the monorepo's `v*` tags are the app
    version and never trigger an SDK publish.
 3. The workflow builds, signs, and publishes; Central syncs within a few hours.
 
 ## Send idempotency
 
-The example below requires the unreleased SDK changes on `main`; SDK 0.5.1 does not expose this per-send key argument. The server must also include the send idempotency changes after OpenWA 0.24.0.
+The example below requires SDK 0.6.0 or later and OpenWA 0.25.0 or later. SDK 0.5.1 does not expose this per-send key argument.
 
 Supply a unique caller-owned key for one logical send and reuse it when retrying that same call. Keys contain 1-255 visible ASCII characters; unrelated calls must use different keys. The SDK forwards the key without changing its retry policy or generating one automatically.
 
@@ -226,4 +245,4 @@ Supply a unique caller-owned key for one logical send and reuse it when retrying
 client.messages.sendText(sessionId, new SendTextRequest("628123@c.us", "Hello"), "order-123");
 ```
 
-The gateway supports text, image, video, audio, document, sticker, location, contact, template, poll, reply and forward sends. Completed calls replay their response; pending or uncertain outcomes return 409, and a changed request with the same key returns 422. The gateway retains keys for 24 hours. Bulk, product and button operations have no such guarantee. Omit the key to preserve existing behavior.
+The gateway supports text, image, video, audio, document, sticker, location, contact, template, poll, reply and forward sends. Completed calls replay their response; a 409 with the error `code` `IDEMPOTENCY_KEY_IN_PROGRESS` means the first request is still running, so retry with the same key later; a 409 `IDEMPOTENCY_OUTCOME_UNKNOWN` means the message may have been sent, so check the chat and, if it did not arrive, send again with a new key (the `code` tells them apart from the 409 for a session that is not connected). A changed request with the same key returns 422. The gateway retains keys for 24 hours. Bulk, product and button operations have no such guarantee. Omit the key to preserve existing behavior.

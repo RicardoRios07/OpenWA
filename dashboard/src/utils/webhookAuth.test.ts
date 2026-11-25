@@ -99,3 +99,9 @@ test('a generated secret is 64 hex characters and passes the length check', () =
   assert.equal(secretError(secret), null);
   assert.notEqual(generateSecret(), secret);
 });
+
+test('a header value is refused above U+00FF and accepted at it, which goes out as one Latin-1 byte', () => {
+  const edge = String.fromCharCode(0xff);
+  assert.equal(err([{ name: 'X-A', value: `a${edge}` }]), null);
+  assert.notEqual(err([{ name: 'X-A', value: `a${String.fromCharCode(0x100)}` }]), null);
+});

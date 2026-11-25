@@ -1,3 +1,4 @@
+import { ShutdownService } from '../../common/services/shutdown.service';
 import { Injectable, OnApplicationBootstrap, OnModuleInit, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ModuleRef } from '@nestjs/core';
@@ -14,8 +15,9 @@ import {
   PluginStatus,
   PluginType,
 } from './plugin.interfaces';
-import { PluginStorageService } from './plugin-storage.service';
+import { PluginStorageService, type RegistryWriteOptions } from './plugin-storage.service';
 import { PluginHostServices } from './plugin-host-services';
+import type { PluginConversationMappingPort } from './plugin-host-ports';
 import { PluginCapabilityContext } from './plugin-capability-context';
 import { PluginSandboxBridge } from './plugin-sandbox-bridge';
 import { PluginPackageScanner } from './plugin-package-scanner';
@@ -52,6 +54,16 @@ const SANDBOX_MAX_INFLIGHT_CAPS = 32;
  * a bound, not an atomicity guarantee). Default; plugins.capTimeoutMs (PLUGIN_CAP_TIMEOUT_MS) overrides.
  */
 const SANDBOX_CAP_TIMEOUT_MS = 30000;
+
+/** Total time the plugin shutdown phase may take (disable pass, in-flight enables, second pass). See shutdown-budget.ts. */
+export const PLUGIN_SHUTDOWN_WAIT_MS = 10_000;
+
+/**
+ * Longest the boot waits for the operator-enabled plugins to be restored before the gateway starts
+ * listening. Under the Docker health check's retries and the Helm startup probe, and above what a healthy
+ * plugin needs. See onApplicationBootstrap for what a plugin that is still restoring misses meanwhile.
+ */
+export const PLUGIN_RESTORE_BOOT_BUDGET_MS = 60_000;
 
 /**
  * How long a worker has to answer the liveness ping the host sends after a dispatch times out. A worker
@@ -133,6 +145,10 @@ export class PluginLoaderService implements OnModuleInit, OnApplicationBootstrap
   private readonly lifecycle: PluginLifecycle;
   /** Owns the removal job — uninstall of an installed user plugin. */
   private readonly uninstaller: PluginUninstaller;
+  /** Set when shutdown teardown begins; from then on no enable may start. */
+  private shuttingDown = false;
+  /** Enables in flight, awaited by onModuleDestroy so one that lands during teardown is still disabled. */
+  private readonly pendingEnables = new Set<Promise<void>>();
 
   constructor(
     private readonly configService: ConfigService,
@@ -146,6 +162,10 @@ export class PluginLoaderService implements OnModuleInit, OnApplicationBootstrap
     // that construct this service with the 4 prior args still compile; when absent, canonicalChatId
     // degrades to identity (no @lid resolution).
     @Optional() private readonly lidMappingStore?: LidMappingStoreService,
+    // The gateway-wide drain flag. The loader's own `shuttingDown` flips only when PluginsModule is
+    // destroyed, last of the global modules, so the boot restore would otherwise keep enabling plugins
+    // through the grace and every earlier destroy stage.
+    @Optional() private readonly shutdownService?: ShutdownService,
   ) {
     // Same default the `plugins.dir` key is built from, so this fallback cannot drift away from the
     // tree PluginStorageService keeps the registry and each plugin's ctx.storage in.
@@ -228,11 +248,26 @@ export class PluginLoaderService implements OnModuleInit, OnApplicationBootstrap
       this.pluginsDir,
       pluginId => this.lifecycle.unloadPlugin(pluginId),
       this.legacyPluginsDir,
+      pluginId => this.releaseTakeovers(pluginId),
     );
   }
 
   onModuleInit(): void {
     this.scanner.scanAtBoot();
+    // Marked now, though restored at bootstrap: the BullMQ workers start in between, and a queued ingress job
+    // they take for one of these plugins must be held (isRestorePending), not dispatched to a missing worker.
+    this.queueRestore();
+  }
+
+  /** Hand back the chats a plugin took over. A host without the conversation store has none to hand back. */
+  private releaseTakeovers(pluginId: string): Promise<void> {
+    let port: PluginConversationMappingPort;
+    try {
+      port = this.hostServices.getConversationMappingPort();
+    } catch {
+      return Promise.resolve();
+    }
+    return port.releaseTakeovers(pluginId);
   }
 
   /**
@@ -245,24 +280,87 @@ export class PluginLoaderService implements OnModuleInit, OnApplicationBootstrap
    * code executes. Built-ins are skipped: an engine is enabled by EngineFactory against the configured
    * engine.type, and enabling a non-active engine here would be rejected anyway.
    *
-   * Best-effort and sequential, like the shutdown teardown: a plugin that cannot come back is logged
-   * and left in ERROR, and never holds up the gateway.
+   * Best-effort and sequential: a plugin that cannot come back is logged and left in ERROR. The HTTP
+   * port opens only after this hook returns, and one plugin can take up to 90 s here (load, onLoad and
+   * onEnable are each bounded at 30 s), so the wait is capped at PLUGIN_RESTORE_BOOT_BUDGET_MS. Plugins not
+   * yet restored when it ends keep coming up, in order, in the background. The trade-off is deliberate:
+   * until they are up, the hooks they own (a send moderation veto, for one) are not active, so a request
+   * that arrives in that window is not seen by them. Without the cap, plugins whose backends are down after
+   * an outage kept the whole gateway from listening and could fail its health checks into a restart loop.
+   * A plugin the restore has not finished with also takes no lifecycle change from the operator meanwhile
+   * (isRestorePending).
    */
   async onApplicationBootstrap(): Promise<void> {
-    const restorable = this.getAllPlugins().filter(
-      p => !p.builtIn && this.pluginStorage.getPluginEntry(p.manifest.id)?.enabledByOperator === true,
-    );
-    for (const plugin of restorable) {
-      const pluginId = plugin.manifest.id;
-      try {
-        await this.enablePlugin(pluginId);
-      } catch (error) {
-        this.logger.error(
-          `Failed to restore plugin ${pluginId} on startup; it stays disabled until re-enabled`,
-          error instanceof Error ? error.message : String(error),
-          { pluginId, action: 'plugin_restore_failed' },
-        );
+    const restoring = this.restorePlugins();
+    let timer: NodeJS.Timeout | undefined;
+    const settled = await Promise.race([
+      restoring.then(() => true),
+      new Promise<false>(resolve => {
+        timer = setTimeout(resolve, PLUGIN_RESTORE_BOOT_BUDGET_MS, false);
+      }),
+    ]);
+    clearTimeout(timer);
+    if (!settled) {
+      this.logger.warn(
+        'Plugin restore is still running; the gateway starts listening and the remaining plugins come up in the background',
+        { waitMs: PLUGIN_RESTORE_BOOT_BUDGET_MS, action: 'plugin_restore_deferred' },
+      );
+    }
+  }
+
+  /** Plugins the boot restore has queued (from module init on) or is enabling, so no lifecycle change interleaves. */
+  private readonly restorePending = new Set<string>();
+
+  /**
+   * Whether the boot restore still has this plugin ahead of it or in flight. When the restore outlasts the
+   * boot wait it runs while requests are served, and it enables outside the per-plugin operation chain of
+   * PluginsService: a disable would be answered "not enabled" and then overtaken by the enable, and an
+   * uninstall would leave a live worker without a map entry. PluginsService refuses such a change until the
+   * restore is done with the plugin, which is what the closed port did before the boot wait was capped.
+   */
+  isRestorePending(id: string): boolean {
+    return this.restorePending.has(id);
+  }
+
+  /** The ids {@link isRestorePending} answers true for, for a caller that has to leave them out of a query. */
+  restorePendingIds(): string[] {
+    return [...this.restorePending];
+  }
+
+  /** Mark the plugins the operator had enabled as restoring, and return their ids in restore order. */
+  private queueRestore(): string[] {
+    const ids = this.getAllPlugins()
+      .filter(p => !p.builtIn && this.pluginStorage.getPluginEntry(p.manifest.id)?.enabledByOperator === true)
+      .map(p => p.manifest.id);
+    for (const id of ids) this.restorePending.add(id);
+    return ids;
+  }
+
+  private async restorePlugins(): Promise<void> {
+    const restorable = this.queueRestore();
+    try {
+      for (let i = 0; i < restorable.length; i++) {
+        if (this.shuttingDown || this.shutdownService?.isShuttingDown()) {
+          this.logger.log(`Plugin restore stopped at ${i} of ${restorable.length} plugin(s): shutting down`, {
+            action: 'plugin_restore_aborted',
+          });
+          return;
+        }
+        const pluginId = restorable[i];
+        try {
+          await this.enablePlugin(pluginId);
+        } catch (error) {
+          this.logger.error(
+            `Failed to restore plugin ${pluginId} on startup; it stays disabled until re-enabled`,
+            error instanceof Error ? error.message : String(error),
+            { pluginId, action: 'plugin_restore_failed' },
+          );
+        } finally {
+          this.restorePending.delete(pluginId);
+        }
       }
+    } finally {
+      this.restorePending.clear();
     }
   }
 
@@ -270,21 +368,56 @@ export class PluginLoaderService implements OnModuleInit, OnApplicationBootstrap
    * Graceful shutdown (SIGTERM → app.close()): run onDisable for every enabled plugin so it can flush
    * buffers, close connections, and persist state. Previously onDisable only ran via the REST disable
    * and uninstall paths, so a normal restart/deploy/scale-down skipped it and stateful plugins lost
-   * in-flight work. Best-effort and sequential: one plugin's failure must not block the others.
+   * in-flight work. Best-effort: plugins are disabled in parallel and one plugin's failure must not
+   * block the others.
+   *
+   * Running plugins are disabled first, so a slow enable still in flight cannot hold back their onDisable.
+   * Then the in-flight enables are awaited and a second pass disables the plugins that finished enabling
+   * mid-teardown, instead of leaving them running with onDisable never called. Later enables are refused.
+   *
+   * The whole phase shares one cap, PLUGIN_SHUTDOWN_WAIT_MS, because a sandboxed plugin's lifecycle call
+   * alone is bounded at 30 s and the destroy hooks after this one (database close, lease release) have
+   * to finish inside the kill deadline. A sandbox worker still running at the cap dies with the process.
    */
   async onModuleDestroy(): Promise<void> {
-    const enabled = this.getAllPlugins().filter(p => p.status === PluginStatus.ENABLED);
-    for (const plugin of enabled) {
-      try {
-        await this.disablePlugin(plugin.manifest.id);
-      } catch (error) {
-        this.logger.error(
-          `Failed to disable plugin ${plugin.manifest.id} during shutdown`,
-          error instanceof Error ? error.message : String(error),
-          { pluginId: plugin.manifest.id, action: 'plugin_shutdown_disable_failed' },
-        );
-      }
+    this.shuttingDown = true;
+    let timer: NodeJS.Timeout | undefined;
+    const done = await Promise.race([
+      this.disableForShutdown().then(() => true),
+      new Promise<false>(resolve => {
+        timer = setTimeout(resolve, PLUGIN_SHUTDOWN_WAIT_MS, false);
+      }),
+    ]);
+    clearTimeout(timer);
+    if (!done) {
+      this.logger.warn('Plugin shutdown still running at its time cap; continuing without it', {
+        waitMs: PLUGIN_SHUTDOWN_WAIT_MS,
+        action: 'plugin_shutdown_timeout',
+      });
     }
+  }
+
+  private async disableForShutdown(): Promise<void> {
+    await this.disableEnabledPlugins();
+    await Promise.allSettled(this.pendingEnables);
+    await this.disableEnabledPlugins();
+  }
+
+  private async disableEnabledPlugins(): Promise<void> {
+    const enabled = this.getAllPlugins().filter(p => p.status === PluginStatus.ENABLED);
+    await Promise.allSettled(
+      enabled.map(async plugin => {
+        try {
+          await this.disablePlugin(plugin.manifest.id);
+        } catch (error) {
+          this.logger.error(
+            `Failed to disable plugin ${plugin.manifest.id} during shutdown`,
+            error instanceof Error ? error.message : String(error),
+            { pluginId: plugin.manifest.id, action: 'plugin_shutdown_disable_failed' },
+          );
+        }
+      }),
+    );
   }
 
   /**
@@ -312,8 +445,22 @@ export class PluginLoaderService implements OnModuleInit, OnApplicationBootstrap
     return this.scanner.loadPlugin(pluginPath);
   }
 
-  enablePlugin(pluginId: string): Promise<void> {
-    return this.lifecycle.enablePlugin(pluginId);
+  /** True once shutdown teardown has begun; enablePlugin refuses from then on. */
+  isShuttingDown(): boolean {
+    return this.shuttingDown;
+  }
+
+  async enablePlugin(pluginId: string): Promise<void> {
+    if (this.shuttingDown) {
+      throw new Error(`Plugin ${pluginId} cannot be enabled while the gateway is shutting down`);
+    }
+    const enabling = this.lifecycle.enablePlugin(pluginId);
+    this.pendingEnables.add(enabling);
+    try {
+      await enabling;
+    } finally {
+      this.pendingEnables.delete(enabling);
+    }
   }
 
   disablePlugin(pluginId: string, opts?: { unload?: boolean }): Promise<void> {
@@ -346,20 +493,25 @@ export class PluginLoaderService implements OnModuleInit, OnApplicationBootstrap
     return this.pluginStorage.getPluginEntry(pluginId)?.builtIn ?? false;
   }
 
-  uninstallPlugin(pluginId: string): Promise<void> {
+  uninstallPlugin(pluginId: string): Promise<{ registryEntryKept: boolean }> {
     return this.uninstaller.uninstallPlugin(pluginId);
   }
 
-  updatePluginConfig(pluginId: string, config: Record<string, unknown>): void {
-    this.lifecycle.updatePluginConfig(pluginId, config);
+  updatePluginConfig(pluginId: string, config: Record<string, unknown>, opts?: RegistryWriteOptions): void {
+    this.lifecycle.updatePluginConfig(pluginId, config, opts);
   }
 
-  setPluginSessions(pluginId: string, sessions: string[]): PluginInstance {
-    return this.lifecycle.setPluginSessions(pluginId, sessions);
+  setPluginSessions(pluginId: string, sessions: string[], opts?: RegistryWriteOptions): PluginInstance {
+    return this.lifecycle.setPluginSessions(pluginId, sessions, opts);
   }
 
-  setPluginSessionConfig(pluginId: string, sessionId: string, config: Record<string, unknown>): PluginInstance {
-    return this.lifecycle.setPluginSessionConfig(pluginId, sessionId, config);
+  setPluginSessionConfig(
+    pluginId: string,
+    sessionId: string,
+    config: Record<string, unknown>,
+    opts?: RegistryWriteOptions,
+  ): PluginInstance {
+    return this.lifecycle.setPluginSessionConfig(pluginId, sessionId, config, opts);
   }
 
   /** Health across both tiers; the sandbox-routing implementation lives in PluginSandboxBridge. */
@@ -369,10 +521,10 @@ export class PluginLoaderService implements OnModuleInit, OnApplicationBootstrap
 
   /**
    * Ingress dispatch into the plugin's live sandbox worker; implemented by PluginSandboxBridge.
-   * The public contract (callers: IngressProcessor, IngressEnqueueService) is unchanged.
+   * Queued dispatch gets a longer processing budget after the provider is acknowledged.
    */
-  dispatchWebhookForInstance(d: IngressJobData): Promise<void> {
-    return this.sandboxBridge.dispatchWebhookForInstance(d);
+  dispatchWebhookForInstance(d: IngressJobData, options?: { queued?: boolean }): Promise<void> {
+    return this.sandboxBridge.dispatchWebhookForInstance(d, options);
   }
 
   /**
@@ -386,7 +538,7 @@ export class PluginLoaderService implements OnModuleInit, OnApplicationBootstrap
     onLog?: (level: PluginLogLevel, message: string, meta?: Record<string, unknown>) => void,
     runWithHookGuard?: (inFlightEvents: string[], run: () => Promise<unknown>) => Promise<unknown>,
     onSearchProviderRegister?: () => void,
-    onWorkerExit?: (code: number, intentional: boolean) => void,
+    onWorkerExit?: (code: number, intentional: boolean, reason?: string) => void,
     onUnresponsive?: () => void,
   ): PluginWorkerHost {
     const workerEntry = path.join(__dirname, 'sandbox', 'worker-bootstrap.js');
@@ -421,10 +573,6 @@ export class PluginLoaderService implements OnModuleInit, OnApplicationBootstrap
 
   getPluginsByType(type: PluginType): PluginInstance[] {
     return this.getAllPlugins().filter(p => p.manifest.type === type);
-  }
-
-  getEnabledPlugins(): PluginInstance[] {
-    return this.getAllPlugins().filter(p => p.status === PluginStatus.ENABLED);
   }
 
   isPluginEnabled(pluginId: string): boolean {

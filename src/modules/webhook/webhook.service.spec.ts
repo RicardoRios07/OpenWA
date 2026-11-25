@@ -11,10 +11,12 @@ jest.mock('undici', () => {
 });
 
 import { createHmac } from 'crypto';
+import { setFlagsFromString } from 'v8';
+import { runInNewContext } from 'vm';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { getQueueToken } from '@nestjs/bullmq';
-import { FindOperator, In, Repository } from 'typeorm';
+import { DataSource, FindOperator, In, Repository } from 'typeorm';
 import { NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { fetch as undiciFetch } from 'undici';
@@ -28,7 +30,7 @@ import { LidMappingStoreService } from '../../engine/identity/lid-mapping-store.
 import { userPart } from '../../engine/identity/wa-id';
 import { HookManager } from '../../core/hooks';
 import { QUEUE_NAMES } from '../queue/queue-names';
-import { Session } from '../session/entities/session.entity';
+import { Session, SessionStatus } from '../session/entities/session.entity';
 
 function createMockWebhook(overrides: Partial<Webhook> = {}): Webhook {
   return {
@@ -471,6 +473,25 @@ describe('WebhookService', () => {
     });
   });
 
+  describe('opt-in subscription invalidation', () => {
+    it('drops the cached opt-in subscriptions after a create, an update and a delete', async () => {
+      const delivery = testingModule.get<WebhookDeliveryService>(WebhookDeliveryService);
+      const invalidate = jest.spyOn(delivery, 'invalidateOptInSubscriptions');
+      const webhook = createMockWebhook();
+      (repository.create as jest.Mock).mockReturnValue(webhook);
+      (repository.save as jest.Mock).mockResolvedValue(webhook);
+      (repository.findOne as jest.Mock).mockResolvedValue(webhook);
+      (repository.update as jest.Mock).mockResolvedValue({ affected: 1 });
+      (repository.remove as jest.Mock).mockResolvedValue(webhook);
+
+      await service.create('sess-1', { url: 'https://example.com/webhook', events: ['message.receipt'] });
+      await service.update('sess-1', 'wh-uuid-1', { events: ['message.received'] });
+      await service.delete('sess-1', 'wh-uuid-1');
+
+      expect(invalidate.mock.calls).toEqual([['sess-1'], ['sess-1'], ['sess-1']]);
+    });
+  });
+
   // ── dispatch (direct mode — queue disabled) ───────────────────────
 
   describe('delivery-failure retention', () => {
@@ -567,6 +588,50 @@ describe('WebhookService', () => {
       expect(dispatchSpy).toHaveBeenCalledTimes(1);
       expect(dispatchSpy).toHaveBeenCalledWith('sess-1', 'message.received', { x: 1 });
       expect(repository.find).not.toHaveBeenCalled(); // the engine, not the facade, loads webhooks
+    });
+
+    it('lets go of an over-cap media event while its delivery waits on the receiver', async () => {
+      // Process-wide: later suites in this jest worker also see a global gc in new vm contexts.
+      setFlagsFromString('--expose-gc');
+      const gc = runInNewContext('gc') as () => void;
+      const mockFetch = undiciFetch as jest.Mock;
+      const webhook = createMockWebhook();
+      (repository.find as jest.Mock).mockResolvedValue([webhook]);
+      (repository.findOne as jest.Mock).mockResolvedValue(webhook);
+      (hookManager.execute as jest.Mock).mockResolvedValue({ continue: true, data: {} });
+      let answer!: (response: Response) => void;
+      const posted = new Promise<void>(reached =>
+        mockFetch.mockImplementationOnce(() => {
+          reached();
+          return new Promise<Response>(resolve => (answer = resolve));
+        }),
+      );
+      try {
+        // Over the default 1 MiB inline cap, so the engine sheds it before fan-out.
+        let media: Record<string, unknown> | undefined = {
+          mimetype: 'image/jpeg',
+          data: Buffer.alloc(1024 * 1024 + 1, 5).toString('base64'),
+        };
+        const original = new WeakRef(media);
+        const dispatched = service.dispatch('sess-1', 'message.received', { from: 'x@c.us', media });
+        media = undefined;
+
+        await posted;
+        await new Promise(resolve => setImmediate(resolve));
+        gc();
+        // Only the marker copy may stay reachable while the receiver hangs: a frame that still
+        // holds the caller's event keeps every parked delivery's full blob in memory.
+        expect(original.deref() === undefined).toBe(true);
+
+        answer(new Response('ok', { status: 200 }));
+        await dispatched;
+        const body = JSON.parse((mockFetch.mock.calls[0] as [unknown, { body: string }])[1].body) as {
+          data: { media: Record<string, unknown> };
+        };
+        expect(body.data.media).toEqual({ mimetype: 'image/jpeg', omitted: true, sizeBytes: 1024 * 1024 + 1 });
+      } finally {
+        mockFetch.mockReset();
+      }
     });
   });
 
@@ -682,16 +747,25 @@ describe('WebhookService', () => {
       (configService.get as jest.Mock).mockImplementation((key: string, def?: unknown) =>
         key === 'webhook.failurePayloadRetentionHours' ? 24 : def,
       );
-      (failureRepository.find as jest.Mock)
-        .mockResolvedValueOnce([{ id: 'f1' }, { id: 'f2' }])
-        .mockResolvedValueOnce([{ id: 'f2' }]);
+      const page = [
+        { id: 'f1', webhookId: 'w1', sessionId: 's1' },
+        { id: 'f2', webhookId: 'w1', sessionId: 's1' },
+      ];
+      (failureRepository.find as jest.Mock).mockResolvedValueOnce(page).mockResolvedValueOnce([{ id: 'f2' }]);
+      (repository.find as jest.Mock).mockResolvedValue([{ id: 'w1', sessionId: 's1' }]);
 
       const out = await service.listDeliveryFailures({});
 
       expect(out).toEqual([
-        { id: 'f1', replayable: false },
-        { id: 'f2', replayable: true },
+        { ...page[0], replayable: false },
+        { ...page[1], replayable: true },
       ]);
+      // The webhooks of the rows that hold a payload are read once, id and session only.
+      expect(repository.find).toHaveBeenCalledTimes(1);
+      expect(repository.find).toHaveBeenCalledWith({
+        select: { id: true, sessionId: true },
+        where: { id: In(['w1']) },
+      });
       const second = ((failureRepository.find as jest.Mock).mock.calls as unknown[][])[1][0] as {
         select: Record<string, boolean>;
         where: Record<string, unknown>;
@@ -712,5 +786,60 @@ describe('WebhookService', () => {
       await expect(service.listDeliveryFailures({})).resolves.toEqual([]);
       expect(failureRepository.find).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+// SQLite serves every repository from one connection, so a transaction the save opened would hold what other callers
+// wrote while it was open, and the rollback of its failed insert would undo those writes.
+describe('WebhookService.create beside other writes on one connection', () => {
+  let ds: DataSource;
+  let service: WebhookService;
+
+  beforeEach(async () => {
+    ds = new DataSource({
+      type: 'better-sqlite3',
+      database: ':memory:',
+      entities: [Session, Webhook],
+      synchronize: true,
+    });
+    await ds.initialize();
+    await ds.getRepository(Session).save({ id: 'sessB', name: 'sessB', status: SessionStatus.READY, config: {} });
+    service = new WebhookService(
+      ds.getRepository(Webhook),
+      {} as never,
+      ds.getRepository(Session),
+      new ConfigService({}),
+      { invalidateOptInSubscriptions: jest.fn() } as never,
+    );
+  });
+
+  afterEach(async () => {
+    await ds.destroy();
+  });
+
+  it('keeps a write made beside a create whose session is deleted after the check', async () => {
+    const sessions = ds.getRepository(Session);
+    jest.spyOn(sessions, 'exists').mockResolvedValue(true);
+    let steps = 0;
+    let beside: Promise<unknown> = Promise.resolve();
+    ds.subscribers.push({
+      listenTo: () => Webhook,
+      beforeInsert: () => {
+        beside = (async () => {
+          for (let i = 0; i < steps; i += 1) await Promise.resolve();
+          await sessions.update('sessB', { status: SessionStatus.FAILED });
+        })();
+      },
+    });
+
+    for (; steps <= 10; steps += 1) {
+      await sessions.update('sessB', { status: SessionStatus.READY });
+      await expect(service.create('gone', { url: 'https://example.com/webhook' })).rejects.toThrow(/FOREIGN KEY/);
+      await beside;
+      expect({ steps, status: (await sessions.findOneByOrFail({ id: 'sessB' })).status }).toEqual({
+        steps,
+        status: SessionStatus.FAILED,
+      });
+    }
   });
 });

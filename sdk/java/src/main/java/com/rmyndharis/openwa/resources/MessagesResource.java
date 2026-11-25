@@ -15,6 +15,7 @@ import com.rmyndharis.openwa.model.ForwardMessageRequest;
 import com.rmyndharis.openwa.model.ListMessagesQuery;
 import com.rmyndharis.openwa.model.MessageHistoryQuery;
 import com.rmyndharis.openwa.model.MessageListResponse;
+import com.rmyndharis.openwa.model.MessageReceiptsResponse;
 import com.rmyndharis.openwa.model.MessageResponse;
 import com.rmyndharis.openwa.model.PinMessageRequest;
 import com.rmyndharis.openwa.model.ReactMessageRequest;
@@ -300,7 +301,10 @@ public final class MessagesResource {
             SuccessResult.class);
     }
 
-    /** Get the message history for a chat (read live from WhatsApp). */
+    /**
+     * Get the message history for a chat (read live from WhatsApp). whatsapp-web.js only; Baileys
+     * answers {@code 501}.
+     */
     public List<ChatHistoryMessage> history(String sessionId, String chatId, MessageHistoryQuery query) {
         return client.requestList(
             HttpMethod.GET,
@@ -313,6 +317,7 @@ public final class MessagesResource {
     /**
      * Fetch a message's stored media bytes: the archived file when one exists, else the inline
      * copy on the message row (covers media sent by this account); 404 when neither holds bytes.
+     * The client timeout bounds the whole download.
      */
     public BinaryResponse media(String sessionId, String chatId, String messageId) {
         return client.requestBytes(
@@ -327,7 +332,7 @@ public final class MessagesResource {
             null);
     }
 
-    /** Get reactions for a specific message. */
+    /** Get reactions for a specific message. whatsapp-web.js only; Baileys answers {@code 501}. */
     public List<ReactionRecord> reactions(String sessionId, String chatId, String messageId) {
         return client.requestList(
             HttpMethod.GET,
@@ -341,6 +346,25 @@ public final class MessagesResource {
             null,
             null,
             ReactionRecord.class);
+    }
+
+    /**
+     * Get who received, read and played a message the account sent. whatsapp-web.js only; Baileys
+     * answers {@code 501}.
+     */
+    public MessageReceiptsResponse receipts(String sessionId, String chatId, String messageId) {
+        return client.request(
+            HttpMethod.GET,
+            "/api/sessions/"
+                + encodeSegment(sessionId)
+                + "/messages/"
+                + encodeSegment(chatId)
+                + "/"
+                + encodeSegment(messageId)
+                + "/receipts",
+            null,
+            null,
+            MessageReceiptsResponse.class);
     }
 
     /**

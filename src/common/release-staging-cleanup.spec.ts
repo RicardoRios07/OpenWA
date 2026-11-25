@@ -27,6 +27,31 @@ describe('release staging-tag cleanup', () => {
     const deleting = (job?.steps ?? []).filter(step => /-X DELETE/.test(step.run ?? ''));
     // Vacuity guard: a renamed job or a reworded command would leave nothing to check.
     expect(deleting.length).toBeGreaterThan(0);
-    for (const step of deleting) expect(step.if).toBe("needs.promote.result == 'skipped'");
+    for (const step of deleting) expect(step.if).toContain("needs.promote.result == 'skipped'");
+  });
+
+  // "Re-run failed jobs" runs boot-smoke and image-scan again against the staging tag. A gate that failed
+  // on a transient fault (the vulnerability database download, a QEMU timeout) could never pass on a
+  // re-run once cleanup had deleted the image it pulls, and only a rebuild of everything recovered it.
+  it('keeps the staging image a re-run of a failed gate pulls', () => {
+    const deleting = (job?.steps ?? []).filter(step => /-X DELETE/.test(step.run ?? ''));
+    expect(deleting.length).toBeGreaterThan(0);
+    for (const step of deleting) expect(step.if).toContain("needs.docker.result != 'success'");
+  });
+
+  // Both conditions have to hold at once: an `||` between them, or a negation around them, deletes the
+  // staging image on every failed gate or after a promote that ran, each of which the two checks above
+  // would still pass as substrings.
+  it('deletes only when promote was skipped and the build itself did not succeed', () => {
+    const deleting = (job?.steps ?? []).filter(step => /-X DELETE/.test(step.run ?? ''));
+    expect(deleting.length).toBeGreaterThan(0);
+    for (const step of deleting) {
+      expect(
+        (step.if ?? '')
+          .split('&&')
+          .map(term => term.trim())
+          .sort(),
+      ).toEqual(["needs.docker.result != 'success'", "needs.promote.result == 'skipped'"].sort());
+    }
   });
 });

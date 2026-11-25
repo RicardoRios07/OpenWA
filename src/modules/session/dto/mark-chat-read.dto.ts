@@ -1,5 +1,16 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { ArrayMaxSize, ArrayNotEmpty, IsArray, IsNotEmpty, IsString, Matches, ValidateIf } from 'class-validator';
+import {
+  ArrayMaxSize,
+  ArrayNotEmpty,
+  IsArray,
+  IsNotEmpty,
+  IsString,
+  Matches,
+  ValidateIf,
+  MaxLength,
+} from 'class-validator';
+import { CHAT_ID_MAX_LENGTH, CHAT_JID_MESSAGE, CHAT_JID_PATTERN } from '../../message/dto/send-message.dto';
+import { ToStrictString, ToStrictArray } from '../../../common/utils/strict-boolean';
 
 /**
  * Ceiling on one request's receipt batch, so a single call cannot hand the engine an unbounded key
@@ -20,17 +31,18 @@ export const MARK_READ_MESSAGE_ID_MESSAGE = 'each messageIds entry must be a non
 
 export class MarkChatReadDto {
   @ApiProperty({
-    description: "Chat ID in the active engine's native format (e.g. 1234567890@c.us on whatsapp-web.js)",
+    maxLength: CHAT_ID_MAX_LENGTH,
+    description: 'Chat ID in the neutral form the gateway returns, on either engine (e.g. 1234567890@c.us)',
     example: '1234567890@c.us',
   })
+  @ToStrictString()
   @IsString()
   @IsNotEmpty()
+  @MaxLength(CHAT_ID_MAX_LENGTH)
   // Engine-neutral structural check (localpart@host, no whitespace) so a different engine's JID
   // scheme (e.g. Baileys 1234@s.whatsapp.net) is accepted too; the adapter validates/normalises
   // further for its own engine. Keeps the early-400 on obvious garbage without coupling to wwebjs.
-  @Matches(/^[^\s@]+@[^\s@]+$/, {
-    message: 'chatId must be a valid chat JID in the form localpart@host',
-  })
+  @Matches(CHAT_JID_PATTERN, { message: CHAT_JID_MESSAGE })
   chatId!: string;
 
   @ApiPropertyOptional({
@@ -54,6 +66,7 @@ export class MarkChatReadDto {
   // `"messageIds": null` reached the engine unchecked and dereferenced there as a 500. Absent stays
   // absent; present-but-null falls through to @IsArray and answers 400.
   @ValidateIf((_object, value) => value !== undefined)
+  @ToStrictArray()
   @IsArray()
   // An empty array asks for nothing to be acknowledged. Rejected rather than accepted, because the
   // engine reads a missing list as "the newest message" and the two must not collapse: a caller that

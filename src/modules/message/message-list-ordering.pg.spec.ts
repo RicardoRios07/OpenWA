@@ -2,7 +2,7 @@
    skipped in the default test job, so its lines would be unread and skew the global coverage gate. */
 import 'reflect-metadata';
 import { randomUUID } from 'crypto';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, Repository, SelectQueryBuilder } from 'typeorm';
 import { MessageService } from './message.service';
 import { Message, MessageDirection } from './entities/message.entity';
 import type { EngineRegistry } from '../../engine/engine-registry.service';
@@ -247,6 +247,65 @@ const POSTGRES_ENABLED = process.env.DATABASE_TYPE === 'postgres';
 
     expect(served).toHaveLength(ROWS / 10);
     expect(served).toEqual(unfiltered);
+  });
+
+  /**
+   * The message-time order of a user chat keeps the plain sort key here, so the planner may read the
+   * (sessionId, timestamp, id) index in order. The SQLite key, an expression over the column, leaves it
+   * no ordered path: it must sort. The cost-based choice between the two depends on table statistics,
+   * so the plan is read with sorting disabled for the planner, which makes the answer exact: a plain
+   * key plans with no Sort node, an expression over the column cannot.
+   */
+  it('plans the message-time order of a user chat on the time index, with no sort step', async () => {
+    const sessionId = 'sess-chat-plan';
+    type PlanNode = { 'Node Type': string; 'Index Name'?: string; Plans?: PlanNode[] };
+    const planNodes = (node: PlanNode): PlanNode[] => [node, ...(node.Plans ?? []).flatMap(planNodes)];
+    const stored: Array<[string, number]> = [
+      ['1001@c.us', 1000],
+      ['1001@s.whatsapp.net', 1001],
+      ['1001@c.us', 1002],
+      ['2002@c.us', 1003],
+    ];
+    const builders = jest.spyOn(repository, 'createQueryBuilder');
+    const runner = ds.createQueryRunner();
+    try {
+      await new AddMessageWindowIndexes1790812800000().up(runner);
+      await repository.insert(
+        stored.map(([chatId, timestamp]) => ({
+          id: randomUUID(),
+          sessionId,
+          chatId,
+          from: chatId,
+          to: 'me@c.us',
+          timestamp,
+        })),
+      );
+      builders.mockClear();
+      const page = await service.getMessages(sessionId, {
+        chatId: '1001@c.us',
+        orderBy: 'timestamp',
+        since: 1000_000,
+        until: 1060_000,
+      });
+      expect(page.messages.map(m => m.timestamp)).toEqual([1002, 1001, 1000]);
+
+      // The first builder is the page statement itself, left in the state it was executed in.
+      const [sql, params] = (builders.mock.results[0].value as SelectQueryBuilder<Message>).getQueryAndParameters();
+      await runner.startTransaction();
+      await runner.query('SET LOCAL enable_sort = off');
+      const [{ 'QUERY PLAN': plans }] = (await runner.query(`EXPLAIN (FORMAT JSON) ${sql}`, params)) as Array<{
+        'QUERY PLAN': Array<{ Plan: PlanNode }>;
+      }>;
+      const nodes = planNodes(plans[0].Plan);
+
+      expect(nodes.map(node => node['Index Name'])).toContain('IDX_messages_session_timestamp_id');
+      expect(nodes.map(node => node['Node Type'])).not.toContain('Sort');
+    } finally {
+      builders.mockRestore();
+      if (runner.isTransactionActive) await runner.rollbackTransaction();
+      await runner.release();
+      await repository.delete({ sessionId });
+    }
   });
 
   /**

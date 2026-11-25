@@ -15,8 +15,11 @@ helm install openwa ./charts/openwa \
   --set secretEnv.API_MASTER_KEY=$(openssl rand -base64 32)
 ```
 
-With `secretEnv.API_MASTER_KEY` left empty the app bootstraps a key into
-`/app/data/.api-key` on the PVC; the post-install NOTES show how to read it.
+The app seeds the first admin key into an empty key table, on the first boot on a volume or after the table was
+emptied, and stores it in `/app/data/.api-key` on the PVC: the `secretEnv.API_MASTER_KEY` you had set then, which
+it never prints, or a generated key when that was left empty. Setting it later, on a release that already has
+keys, seeds nothing, though a value under 32 characters or a known placeholder still stops the boot. The
+post-install NOTES show how to read the key.
 
 ## Configuration
 
@@ -35,6 +38,17 @@ Or bring your own Secret: `--set existingSecret=my-openwa-secret`.
 
 The container port is fixed at 2785; do not set PORT in env (probes and the
 Service targetPort are pinned to it) — service.port changes the Service port.
+
+The kubelet startup probe allows `startupProbe.periodSeconds` x (`startupProbe.failureThreshold` - 1)
+seconds for a boot, 295 by default. The first boot after an upgrade can build indexes on a large
+`messages` table and convert its legacy message types before the port opens: raise
+`startupProbe.failureThreshold`, or run the migrations first
+([docs/14-migration-guide.md](../../docs/14-migration-guide.md), section 14.5).
+
+Upgrade with `helm upgrade openwa ./charts/openwa --reset-then-reuse-values` (Helm 3.14 or later), or with
+`-f values.yaml`. Plain `--reuse-values` renders the new templates with the old release's defaults, which
+for a release installed from 0.24.0 keeps a 45 s `terminationGracePeriodSeconds` and a capability list
+without `KILL`, so every pod stop ends in `SIGKILL`.
 
 All other values (`persistence`, `resources`, `ingress`, `serviceMonitor`, …) are
 documented inline in [values.yaml](values.yaml). The chart does NOT bundle

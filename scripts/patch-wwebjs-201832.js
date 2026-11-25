@@ -10,8 +10,10 @@
  * `Base._normalizeId()` helper and reapplies it across the model constructors.
  * This script backports that fix into node_modules at image build time.
  *
- * Self-removing: it no-ops once the installed whatsapp-web.js already defines
- * `Base._normalizeId` (i.e. upstream shipped #201832 and OpenWA bumped its dep).
+ * Self-removing: it no-ops once every site it writes already carries this
+ * backport's text, as a release that ships #201832 as merged does. A release that
+ * fixes the ids another way is refused, with a message that says so, until the
+ * backport is retired by hand.
  *
  * Why `patch` first and not `git apply`: a bare `git -C node_modules/whatsapp-web.js
  * apply` silently no-ops ("Skipped / 0 files changed") because the parent repo's
@@ -25,6 +27,11 @@
  * dropped. Any OTHER reject means the installed shape drifted from the backport's
  * expected base; we abort the build loudly rather than ship a silently partial
  * patch.
+ *
+ * The PR's one typings hunk (index.d.ts, a method signature joined onto one line) is left out of
+ * wwebjs-201832.patch. It changes no behavior; as the first file `patch` wrote it would be the only
+ * marker of an interrupted run that tests formatting instead of the fix; and a release that merely
+ * reformatted its typings would reject it and fail the install.
  */
 'use strict';
 
@@ -42,7 +49,7 @@ const EXPECTED_REJECTS = new Set(['src/structures/Contact.js.rej']);
 // unnoticed. `patch` always writes a .rej for a hunk it couldn't place, but a hunk placed at the
 // WRONG offset would be silent — these assertions are what close that gap.
 //
-// This list must cover every file the patch normalizes, not just the structure constructors, because
+// This list must cover every file the patch writes, not just the structure constructors, because
 // the skip branch below uses it to decide a half-patched tree apart from an upstream fix. `patch`
 // applies the diff in file order and Utils.js is applied LAST, one file after Message.js — which is
 // what the skip branch keys on. Omitting a file here means a run that died in that window leaves a
@@ -80,6 +87,25 @@ function siteLanded(wwjsDir, rel) {
 }
 
 /**
+ * The REQUIRED_SITES a backport this patcher began did not reach, by relative path. The tree is judged
+ * ours when at least one site carries the text its marker looks for: with none the backport never
+ * started, or upstream fixed the tree its own way. A run killed part-way leaves any prefix of the eleven
+ * files, so no single file can stand for the rest. A file that cannot be read is not counted, since an
+ * install that cannot be inspected is not evidence of a broken one.
+ */
+function missingSites(wwjsDir = DEFAULT_WWJS) {
+  const landed = rel => {
+    try {
+      return siteLanded(wwjsDir, rel);
+    } catch {
+      return undefined;
+    }
+  };
+  if (!REQUIRED_SITES.some(([rel]) => landed(rel) === true)) return [];
+  return REQUIRED_SITES.filter(([rel]) => landed(rel) === false).map(([rel]) => rel);
+}
+
+/**
  * Flag an error raised against a tree that is no longer pristine — either this run wrote to it, or a
  * previous run left it half-patched. `--best-effort` degrades on a pre-flight failure (no `patch`
  * binary — nothing ran, tree untouched) but must never swallow one of these: `patch` applies hunks as
@@ -89,6 +115,21 @@ function siteLanded(wwjsDir, rel) {
 function partialTree(err) {
   err.leftPartialTree = true;
   return err;
+}
+
+/**
+ * True only when the tree provably carries nothing this patcher writes: no REQUIRED_SITES marker and no
+ * patch artifact. An applier that failed before its first write (a tree the user cannot write) leaves
+ * exactly that, while one that failed part-way leaves a marker or an artifact behind, or a file missing:
+ * `git apply` deletes the files it rewrites, where it can, before writing any of them back. Anything that
+ * cannot be read proves nothing, so it answers false.
+ */
+function treeUntouched(wwjsDir) {
+  try {
+    return !REQUIRED_SITES.some(([rel]) => siteLanded(wwjsDir, rel)) && findArtifacts(wwjsDir).length === 0;
+  } catch {
+    return false;
+  }
 }
 
 function findArtifacts(root, dir = root) {
@@ -125,8 +166,8 @@ function findArtifacts(root, dir = root) {
  * has CRLF.
  *
  * Neither applier accepts CRLF: a unified diff line must start with ' ', '+', '-' or '@', and a bare
- * \r is none of those, so both stop at line 7 of this patch — its first empty context line (`git
- * apply`: "corrupt patch at line 7"; `patch`: "malformed patch at line 7"). Windows checks the file out
+ * \r is none of those, so both stop at line 12 of this patch — its first empty context line (`git
+ * apply`: "corrupt patch at line 12"; `patch`: "malformed patch at line 12"). Windows checks the file out
  * that way whenever `core.autocrlf` is on, which is its default, so the git fallback added for Windows
  * could never actually run there and took `npm install` down with it (#889).
  *
@@ -184,9 +225,59 @@ function applyWithGit(wwjsDir, patchFile) {
     // Degrade only when nothing can have been written: ENOENT means git never executed at all, and a
     // 128 whose message is one of git's pre-write refusals means it rejected the input before applying
     // anything. Any other failure — including a 128 raised midway through writing results — has to be
-    // treated as a partial tree. A rejected hunk is exit 1, which returned above.
-    throw gitApplyLeftTreeUntouched(e) ? err : partialTree(err);
+    // treated as a partial tree, unless the tree provably kept nothing of this run: a tree the user cannot
+    // write fails git at its first file, as it does `patch`. A rejected hunk is exit 1, which returned above.
+    throw gitApplyLeftTreeUntouched(e) || treeUntouched(wwjsDir) ? err : partialTree(err);
   }
+}
+
+/**
+ * Why a tree whose Message.js already reads ids the new way is still refused. A run of this patcher writes the
+ * files in the patch's order, so one cut short leaves every missing site after every landed one, and a reinstall
+ * cures it. A missing site before a landed one, or no site of ours at all, is a release (or an edit) that changed
+ * the ids its own way: a reinstall brings it straight back, so the message must not send the operator there.
+ * A patch artifact left in the tree says a run of this patcher failed here (a drifted release applies the hunks it
+ * can and rejects the rest), which is the case a reinstall does help with, to see why. Without the patch file there
+ * is no order to compare, so the plain half-patched text stands.
+ */
+function standDownRefusal(patchFile, missing, artifacts = []) {
+  const reinstall = 'Reinstall the dependency (`rm -rf node_modules/whatsapp-web.js && npm ci`) and re-run.';
+  if (artifacts.length) {
+    return (
+      `whatsapp-web.js is PARTIALLY patched: ${missing.join(', ')} did not land, and a run of this patcher that ` +
+      `failed here left ${artifacts.join(', ')}. ${reinstall} A run on the clean tree reports why it failed; if that ` +
+      'is version skew, re-base scripts/wwebjs-201832.patch on the installed release.'
+    );
+  }
+  let order;
+  try {
+    order = [...fs.readFileSync(patchFile, 'utf8').matchAll(/^diff --git a\/(\S+) /gm)].map(m => m[1]);
+  } catch {
+    return `whatsapp-web.js is PARTIALLY patched: ${missing.join(', ')} did not land. ${reinstall}`;
+  }
+  const landed = REQUIRED_SITES.map(([rel]) => rel).filter(rel => !missing.includes(rel));
+  const lastLanded = Math.max(-1, ...landed.map(rel => order.indexOf(rel)));
+  const advice =
+    'Reinstalling will not change that. If the installed release fixes #201832 at every site, retire this ' +
+    'backport; otherwise re-base scripts/wwebjs-201832.patch on it.';
+  if (!landed.length) {
+    return (
+      'whatsapp-web.js reads message ids its own way: Message.js uses `_normalizeId(` or `$1`, but none of ' +
+      `this backport's sites are present, which no run of this patcher leaves. ${advice}`
+    );
+  }
+  if (missing.some(rel => order.indexOf(rel) < lastLanded)) {
+    return (
+      'whatsapp-web.js is PARTIALLY patched in a way no interrupted run of this patcher leaves: the backport is ' +
+      `missing from ${missing.join(', ')} while ${order[lastLanded]} has it, and a run writes the files in the ` +
+      `patch's order. ${advice}`
+    );
+  }
+  return (
+    `whatsapp-web.js is PARTIALLY patched: ${missing.join(', ')} did not land. A previous run left the tree ` +
+    'half-patched; it cannot repair itself. Reinstall the dependency (`rm -rf node_modules/whatsapp-web.js && npm ci`) ' +
+    'and re-run. If the installed version genuinely ships its own fix, drop this backport instead.'
+  );
 }
 
 function applyBackport(wwjsDir = DEFAULT_WWJS, patchFile = DEFAULT_PATCH) {
@@ -198,8 +289,9 @@ function applyBackport(wwjsDir = DEFAULT_WWJS, patchFile = DEFAULT_PATCH) {
   // aside. Detect on the id-normalizing READ in the Message constructor rather than on Base.js's
   // helper: Message.js is the load-bearing site (OpenWA reads `msg.id._serialized` in ~40 places),
   // and keying off Base.js alone would treat a half-patched tree — helper present, constructor not —
-  // as "already fixed" and ship it. Matched loosely (`Base._normalizeId(` OR an inline `$1` fallback)
-  // so a future upstream release that fixes this differently still stands the patcher down.
+  // as "already fixed" and ship it. Matched loosely (`Base._normalizeId(` OR an inline `$1` fallback),
+  // then every site must carry this backport's own text: a release that fixes this differently is refused
+  // below, naming it as such, rather than stood down on.
   const msgJs = path.join(wwjsDir, 'src', 'structures', 'Message.js');
   if (!fs.existsSync(msgJs)) {
     // A dep tree with Base.js but no Message.js is version skew vs the backport base — say so,
@@ -214,25 +306,33 @@ function applyBackport(wwjsDir = DEFAULT_WWJS, patchFile = DEFAULT_PATCH) {
   const msgSrc = fs.readFileSync(msgJs, 'utf8');
   if (/_normalizeId\(|\.\$1/.test(msgSrc)) {
     // Message.js normalizing is necessary but NOT sufficient to stand down. `patch` writes as it goes and
-    // Message.js is patched early, so a run that died part-way through lands here too — and skipping would
+    // Message.js is the second to last file it writes, so a run that died after it lands here too (and one
+    // that died before it is caught below), and skipping would
     // latch that half-patched tree in permanently, because every later run takes this same branch and never
     // reaches the assertions below. An upstream release that fixes this lands every site at once; a crashed
     // run does not. Proving the tree is whole is what tells the two apart.
-    const missing = REQUIRED_SITES.filter(([rel]) => !siteLanded(wwjsDir, rel));
+    const missing = REQUIRED_SITES.filter(([rel]) => !siteLanded(wwjsDir, rel)).map(([rel]) => rel);
     if (missing.length) {
       // `partialTree`, so `--best-effort` cannot warn past this. The tree this detects is precisely the
       // one that flag must never wave through: half-patched, self-disable reading it as healthy, and
       // unrepairable by any later run.
-      throw partialTree(
-        new Error(
-          'whatsapp-web.js is PARTIALLY patched — Message.js normalizes ids but ' +
-            `${missing.map(([rel]) => rel).join(', ')} did not land. A previous run left the tree half-patched; ` +
-            'it cannot repair itself. Reinstall the dependency (`rm -rf node_modules/whatsapp-web.js && npm ci`) ' +
-            'and re-run. If the installed version genuinely ships its own fix, drop this backport instead.',
-        ),
-      );
+      throw partialTree(new Error(standDownRefusal(patchFile, missing, findArtifacts(wwjsDir))));
     }
     return { skipped: true, reason: 'installed whatsapp-web.js already normalizes message ids' };
+  }
+
+  // A run that died before Message.js (the 10th of 11 files) left the earlier files patched and this one
+  // not. Applying the diff again would reject every hunk that already landed, litter the tree with .rej
+  // files and report version skew for what is an interrupted install.
+  const landedBefore = missingSites(wwjsDir);
+  if (landedBefore.length) {
+    throw partialTree(
+      new Error(
+        'whatsapp-web.js is PARTIALLY patched: an earlier run was interrupted and ' +
+          `${landedBefore.join(', ')} did not land. The tree cannot repair itself. Reinstall the dependency ` +
+          '(`rm -rf node_modules/whatsapp-web.js && npm ci`) and re-run.',
+      ),
+    );
   }
 
   // Apply the real upstream diff via `patch` (no git-discovery interference).
@@ -264,9 +364,16 @@ function applyBackport(wwjsDir = DEFAULT_WWJS, patchFile = DEFAULT_PATCH) {
       // the assertions below misreport it as version skew.
       if (e.code === 'ENOENT') {
         applyWithGit(wwjsDir, lfPatch);
+      } else if (e.status === 1 && treeUntouched(wwjsDir)) {
+        // A rejected hunk always leaves its .rej, so an exit 1 that changed nothing is a `patch` that could not
+        // run as asked (BusyBox's applet refuses these options with exit 1): apply with git, as when it is absent.
+        applyWithGit(wwjsDir, lfPatch);
       } else if (e.status !== 1) {
         const detail = e.stderr ? String(e.stderr).trim() : e.message;
-        throw partialTree(new Error(`\`patch\` failed (${e.code ?? `exit ${e.status}`}): ${detail}`));
+        const err = new Error(`\`patch\` failed (${e.code ?? `exit ${e.status}`}): ${detail}`);
+        // A refusal before the first write (a tree the user cannot write) leaves it pristine, which
+        // `--best-effort` may degrade on; only a tree that kept something of this run is partial.
+        throw treeUntouched(wwjsDir) ? err : partialTree(err);
       }
     }
   });
@@ -331,6 +438,8 @@ if (require.main === module) {
 
 module.exports = {
   applyBackport,
+  missingSites,
+  REQUIRED_SITES,
   normalizeArtifactPath,
   gitApplyLeftTreeUntouched,
   DEFAULT_WWJS,

@@ -22,7 +22,7 @@ Every request carries the key in the `X-API-Key` header — REST auth is **heade
 
 ### Responses
 
-Responses are the **raw payload** — no `{ success, data }` envelope. A resource route returns the object directly; a list route returns a bare JSON array. Errors return the NestJS default shape `{ "statusCode", "message", "error" }`. Add `Content-Type: application/json` only when sending a body.
+Responses are the **raw payload** — no `{ success, data }` envelope. A resource route returns the object directly; most list routes return a bare JSON array, and the object-shaped ones are messages (`{ messages, total, unknownTimestampTotal? }`), status (`{ statuses }`), search (`{ hits, total, tookMs, provider }`), catalog products (`{ products, pagination }`) and audit (`{ data, total }`). Errors return `{ "statusCode", "message", "error"? }`, where `error` is optional, unless a route defines its own error body (the readiness probe's `503` is `{ "status", "details" }`, some plugin ingress rejections use a short plain-text body and `/mcp` transport errors, with its `405` for `GET` and `DELETE`, use a JSON-RPC error); a DTO validation `400` with detail disabled (the production default) returns `{ "statusCode": 400, "message": "Bad Request" }` without it, as described in [Error Response](./06-api-specification.md#error-response). Add `Content-Type: application/json` only when sending a body.
 
 ### Sections
 
@@ -32,7 +32,7 @@ Sessions · Messages · Webhooks · Groups · Contacts · Chats · Labels · Cha
 
 All examples assume `BASE` and `API_KEY` are exported (see 07.1). Paths are prefixed with `/api`.
 
-The `:sessionId` path segment is always the session **UUID** returned by `POST /api/sessions` — never the session name. Session routes (07.3) use `:id` for that same UUID; everywhere else `:id` is a different resource's id — a template, webhook, API key or plugin — and never a session. Export the session UUID once alongside the other variables:
+The `:sessionId` path segment is always the session **UUID** returned by `POST /api/sessions`, never the session name. The session routes in 07.3 use the same `:sessionId`; `:id` elsewhere is always another resource's id (a template, webhook, API key or plugin), never a session. Export the session UUID once alongside the other variables:
 
 ```bash
 export SESSION_ID=8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a
@@ -185,7 +185,7 @@ curl -X POST "$BASE/api/sessions/8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a/force-kill
 
 #### POST /api/sessions/:sessionId/pairing-code
 
-Request an 8-char pairing code via phone number (OPERATOR).
+Request an 8-char pairing code via phone number (OPERATOR). On whatsapp-web.js, request a code only for a number you are prepared to re-link: a request for a number that already has a linked session has been observed to end with WhatsApp revoking that device. The gateway answers `409` for a number that is the stored phone of another of its sessions, and cannot see a link made elsewhere. Baileys was not affected in the same tests and is not refused; link by QR when a session of that number must stay up.
 
 ```bash
 curl -X POST "$BASE/api/sessions/8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a/pairing-code" \
@@ -243,8 +243,9 @@ curl -X POST "$BASE/api/sessions/8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a/chats/read
   -d '{ "chatId": "1234567890@c.us", "messageIds": ["3EB0C767D26B8A3F1A2B"] }'
 ```
 
-`messageIds` is optional and holds up to 100 ids. Omit it and only the newest received message the engine
-still holds in memory is acknowledged, which on Baileys leaves the earlier messages of a burst unread.
+`messageIds` is optional and holds up to 100 ids. Omit it and only the newest received message is
+acknowledged: the one the engine holds in memory, else, on Baileys after a restart, the newest received
+message the gateway stored. On Baileys that leaves the earlier messages of a burst unread.
 
 #### POST /api/sessions/:sessionId/chats/unread
 
@@ -278,7 +279,7 @@ curl -X POST "$BASE/api/sessions/8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a/chats/arch
 
 #### POST /api/sessions/:sessionId/chats/mute
 
-Mute a chat until an epoch-**milliseconds** timestamp, or send `"muteUntil":null` to unmute (OPERATOR).
+Mute a chat until an epoch-**milliseconds** timestamp (at most `9007199254740991`; a larger one is a `400`), or send `"muteUntil":null` to unmute (OPERATOR).
 
 ```bash
 curl -X POST "$BASE/api/sessions/8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a/chats/mute" \
@@ -342,7 +343,7 @@ curl "$BASE/api/sessions/$SESSION_ID/messages?chatId=628123456789@c.us&limit=20&
 
 #### GET /api/sessions/:sessionId/messages/:chatId/history
 
-Fetch chat history live from WhatsApp, bypassing the DB.
+Fetch chat history live from WhatsApp, bypassing the DB. whatsapp-web.js only: Baileys answers `501`.
 
 ```bash
 curl "$BASE/api/sessions/$SESSION_ID/messages/628123456789@c.us/history?limit=100&deep=true" \
@@ -351,7 +352,7 @@ curl "$BASE/api/sessions/$SESSION_ID/messages/628123456789@c.us/history?limit=10
 
 #### GET /api/sessions/:sessionId/messages/:chatId/:messageId/reactions
 
-Get reactions for a message, grouped by emoji.
+Get reactions for a message, grouped by emoji. whatsapp-web.js only: Baileys answers `501`.
 
 ```bash
 curl "$BASE/api/sessions/$SESSION_ID/messages/628123456789@c.us/true_628123456789@c.us_3EB0ABCD/reactions" \
@@ -400,7 +401,7 @@ curl -X POST "$BASE/api/sessions/$SESSION_ID/messages/unpin" \
 
 Download a message's stored media: the archived file when one exists (`CHAT_MEDIA_ARCHIVE_ENABLED`,
 plus `CHAT_MEDIA_ARCHIVE_OUTBOUND` for media this account sent), else the inline copy on the message
-row — which covers media sent by this account either way; `404` when neither holds bytes.
+row — which covers media sent by this account either way, except a send made by `url`, whose bytes the gateway does not store (on whatsapp-web.js the own-send echo may still hold them, so that route can answer `200` or `404`); `404` when neither holds bytes.
 
 ```bash
 curl "$BASE/api/sessions/$SESSION_ID/messages/628123456789@c.us/true_628123456789@c.us_3EB0ABCD/media" \
@@ -654,6 +655,15 @@ curl -X GET "$BASE/api/sessions/$SESSION_ID/contacts/12345678901234@lid/phone" \
   -H "X-API-Key: $API_KEY"
 ```
 
+#### GET /api/sessions/:sessionId/contacts/:number/lid
+
+Look up the `@lid` WhatsApp holds for a phone number, without sending a message (`lid` is `null` when it holds none). Requires an `OPERATOR` key.
+
+```bash
+curl -X GET "$BASE/api/sessions/$SESSION_ID/contacts/628123456789/lid" \
+  -H "X-API-Key: $API_KEY"
+```
+
 #### PUT /api/sessions/:sessionId/contacts/:contactId
 
 Save or edit an addressbook contact.
@@ -724,7 +734,7 @@ curl -X GET "$BASE/api/sessions/$SESSION_ID/groups/120363021234567890@g.us/invit
 
 #### POST /api/sessions/:sessionId/groups
 
-Create a new group with an initial set of participants (OPERATOR).
+Create a new group with an initial set of participants (OPERATOR). Baileys only: whatsapp-web.js answers `501`.
 
 ```bash
 curl -X POST "$BASE/api/sessions/$SESSION_ID/groups" \
@@ -797,6 +807,17 @@ curl -X PUT "$BASE/api/sessions/$SESSION_ID/groups/120363021234567890@g.us/descr
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "description": "Internal coordination group." }'
+```
+
+#### PUT /api/sessions/:sessionId/groups/:groupId/member-label
+
+Set this account's member label in the group, up to 30 UTF-16 code units (an emoji outside the Basic Multilingual Plane counts as two); an empty string clears it (OPERATOR, Baileys only: whatsapp-web.js answers `501`).
+
+```bash
+curl -X PUT "$BASE/api/sessions/$SESSION_ID/groups/120363021234567890@g.us/member-label" \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "label": "Site A Management" }'
 ```
 
 #### POST /api/sessions/:sessionId/groups/:groupId/leave
@@ -936,11 +957,11 @@ curl -X DELETE "$BASE/api/sessions/$SESSION_ID/templates/$TEMPLATE_ID" \
 
 ### 07.8 Catalog & Channels
 
-The catalog routes work on the **Baileys** engine (WhatsApp Business accounts) — `getCatalog`/`getProducts`/`getProduct` read the session's own catalog and `sendProduct` sends a native product card. On **whatsapp-web.js** they raise `EngineNotSupportedError` (`501 Not Implemented`) — the library has no catalog API at all; on that engine the readiness check runs first, so a session that exists but is not yet READY returns `409` instead. The per-engine gaps are listed in `docs/29-engine-capability-matrix.md`. The channel routes that follow are a separate group with real engine support.
+The catalog routes work on the **Baileys** engine (WhatsApp Business accounts) — `getCatalog`/`getProducts`/`getProduct` read the session's own catalog and `sendProduct` sends a native product card. On **whatsapp-web.js** they raise `EngineNotSupportedError` (`501 Not Implemented`) — the library has no catalog API at all; on that engine the readiness check runs first, so a session that exists but is not yet READY returns `409` instead. The per-engine gaps are listed in `docs/29-engine-capability-matrix.md`. The channel routes that follow are a separate group, and each engine answers `501` for some of them: whatsapp-web.js for `subscribe`, admin demotion and ownership transfer, Baileys for listing subscribed channels and reading a channel's messages.
 
 #### GET /api/sessions/:sessionId/catalog
 
-Get business catalog info for the session. On Baileys returns the first catalog collection's metadata (`200`, or `null` when the business has no collections); on whatsapp-web.js returns `501`.
+Get business catalog info for the session. On Baileys returns the first catalog collection's metadata (`200`, or an empty `200` body when the business has no collections); on whatsapp-web.js returns `501`.
 
 ```bash
 curl -X GET "$BASE/api/sessions/$SESSION_ID/catalog" \
@@ -958,7 +979,7 @@ curl -X GET "$BASE/api/sessions/$SESSION_ID/catalog/products?page=1&limit=20" \
 
 #### GET /api/sessions/:sessionId/catalog/products/:productId
 
-Get a specific catalog product by id. On Baileys returns the product (`200`) or `null` for an unknown id; on whatsapp-web.js returns `501`.
+Get a specific catalog product by id. On Baileys returns the product (`200`) or an empty `200` body for an unknown id; on whatsapp-web.js returns `501`.
 
 ```bash
 curl -X GET "$BASE/api/sessions/$SESSION_ID/catalog/products/PROD_12345" \
@@ -1026,7 +1047,7 @@ curl -X DELETE "$BASE/api/sessions/$SESSION_ID/channels/120363000000000000@newsl
 ### 07.9 Labels & Status
 
 ```bash
-# List all labels for a session (WhatsApp Business only)
+# List all labels for a session (WhatsApp Business only; Baileys answers 501 for the label reads: list, get and a chat's labels)
 curl -X GET "$BASE/api/sessions/$SESSION_ID/labels" \
   -H "X-API-Key: $API_KEY"
 ```
@@ -1385,7 +1406,7 @@ ADMIN-only operations (except the public health check and the MCP transport). As
 
 #### GET /api/infra/health
 
-Public liveness probe.
+Public liveness probe. It answers `503` from the moment shutdown teardown begins; `GET /api/health/live` keeps answering.
 
 ```bash
 curl "$BASE/api/infra/health"
@@ -1738,7 +1759,10 @@ cannot be widened via the query. See doc 26 for the provider contract.
 
 Search messages across sessions. `q` is required (non-empty after trim); optional filters are
 `sessionId`, `chatId`, `direction` (`incoming` | `outgoing`), `type`, `from`, `dateFrom`/`dateTo`
-(epoch ms), plus `limit` (default 50, clamped to `SEARCH_LIMIT_MAX` = 100) and `offset`. Hit
+(epoch ms), plus `limit` (default 50, clamped to `SEARCH_LIMIT_MAX` = 100) and `offset` (at most
+100000). `match` is `word` (the default, whole words) or `contains` (any part of a word, ignoring case
+and accents), which answers `501` unless the server sets `SEARCH_CONTAINS_ENABLED=true` and `400` without a term of 3 or more characters or with more than 64 characters in its terms. `q` is at most 1000 characters and 32 words with no NUL character, and any other answers `400`. A key restricted to
+selected chats gets `403` for a `chatId` outside its list and for a plugin search provider. Hit
 `snippet` fields carry `<mark>` highlight markers — render them as text, never as HTML.
 
 ```bash
@@ -1765,8 +1789,8 @@ curl "$BASE/api/sessions/$SESSION_ID/media/convert" \
 #### POST /api/sessions/:sessionId/media/convert/voice
 
 Convert audio (or a video's audio track) into a WhatsApp voice note — Ogg/Opus, mono, 48 kHz
-(OPERATOR). Exactly one of `url` / `base64`. Post the returned `base64` to `messages/send-audio`
-with `ptt: true` (or to `status/send-voice`).
+(OPERATOR). At least one of `url` / `base64`; when both are given, `base64` is used. Post the
+returned `base64` to `messages/send-audio` with `ptt: true` (or to `status/send-voice`).
 
 ```bash
 curl -X POST "$BASE/api/sessions/$SESSION_ID/media/convert/voice" \

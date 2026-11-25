@@ -261,7 +261,7 @@ describe('configuration — webhook fan-out knobs are fail-safe', () => {
 describe('configuration search namespace', () => {
   // Save/restore the SEARCH_* env vars so a CI .env that sets them cannot flake the default-value
   // assertions below (mirrors the mutate-and-restore pattern used for PLUGIN_DOWNLOAD_MAX_BYTES etc.).
-  const keys = ['SEARCH_ENABLED', 'SEARCH_PROVIDER'];
+  const keys = ['SEARCH_ENABLED', 'SEARCH_PROVIDER', 'SEARCH_CONTAINS_ENABLED'];
   const orig: Record<string, string | undefined> = {};
   beforeEach(() => keys.forEach(k => (orig[k] = process.env[k])));
   afterEach(() =>
@@ -274,7 +274,7 @@ describe('configuration search namespace', () => {
   it('exposes search defaults', () => {
     keys.forEach(k => delete process.env[k]);
     const cfg = configuration();
-    expect(cfg.search).toEqual({ enabled: true, provider: 'auto' });
+    expect(cfg.search).toEqual({ enabled: true, provider: 'auto', containsEnabled: false });
   });
 });
 
@@ -361,6 +361,50 @@ describe('configuration — webhook shutdown drain is fail-safe', () => {
       process.env.WEBHOOK_SHUTDOWN_DRAIN_MS = bad;
       expect(configuration().webhook.shutdownDrainMs).toBe(5000);
     }
+  });
+});
+
+describe('configuration: webhook failure payload retention', () => {
+  const orig = process.env.WEBHOOK_FAILURE_PAYLOAD_RETENTION_HOURS;
+  afterEach(() => {
+    if (orig === undefined) delete process.env.WEBHOOK_FAILURE_PAYLOAD_RETENTION_HOURS;
+    else process.env.WEBHOOK_FAILURE_PAYLOAD_RETENTION_HOURS = orig;
+  });
+
+  // 0 keeps no message body on a failure row, so a changed default would start persisting every
+  // failed delivery's event data on every deployment that never opted in.
+  it('keeps no payload by default and honors an hours override', () => {
+    delete process.env.WEBHOOK_FAILURE_PAYLOAD_RETENTION_HOURS;
+    expect(configuration().webhook.failurePayloadRetentionHours).toBe(0);
+    process.env.WEBHOOK_FAILURE_PAYLOAD_RETENTION_HOURS = '24';
+    expect(configuration().webhook.failurePayloadRetentionHours).toBe(24);
+  });
+
+  it('falls back to keeping nothing on a value it cannot read', () => {
+    for (const bad of ['', '24h', '-1', '1.5']) {
+      process.env.WEBHOOK_FAILURE_PAYLOAD_RETENTION_HOURS = bad;
+      expect(configuration().webhook.failurePayloadRetentionHours).toBe(0);
+    }
+  });
+});
+
+describe('configuration: chat media inline mode', () => {
+  const orig = process.env.MESSAGE_INLINE_MEDIA;
+  afterEach(() => {
+    if (orig === undefined) delete process.env.MESSAGE_INLINE_MEDIA;
+    else process.env.MESSAGE_INLINE_MEDIA = orig;
+  });
+
+  // Archive mode replaces the stored inline copy, so only the exact word turns it on.
+  it('stays inline unless the value is exactly archive', () => {
+    delete process.env.MESSAGE_INLINE_MEDIA;
+    expect(configuration().chatMedia.inlineMode).toBe('inline');
+    for (const other of ['inline', 'Archive', 'ARCHIVE', ' archive', 'archive ', 'true']) {
+      process.env.MESSAGE_INLINE_MEDIA = other;
+      expect(configuration().chatMedia.inlineMode).toBe('inline');
+    }
+    process.env.MESSAGE_INLINE_MEDIA = 'archive';
+    expect(configuration().chatMedia.inlineMode).toBe('archive');
   });
 });
 

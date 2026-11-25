@@ -1,6 +1,3 @@
-// archiver v8 is ESM-only; stub it so ts-jest can load the module graph.
-jest.mock('archiver', () => ({ TarArchive: jest.fn() }));
-
 // Enable the MCP server before AppModule is imported.
 process.env.MCP_ENABLED = 'true';
 
@@ -13,6 +10,7 @@ import { applyGlobalValidation } from '../src/config/app-validation';
 import { AuthService } from '../src/modules/auth/auth.service';
 import { ApiKeyRole } from '../src/modules/auth/entities/api-key.entity';
 import { SessionService } from '../src/modules/session/session.service';
+import { MessageService } from '../src/modules/message/message.service';
 
 // --- MCP protocol helpers ---
 
@@ -90,11 +88,7 @@ describe('MCP server (e2e)', () => {
   }, 30_000);
 
   afterAll(async () => {
-    try {
-      await app?.close();
-    } catch {
-      /* ignore TypeORM multi-datasource teardown quirk */
-    }
+    await app?.close();
   });
 
   // ---------------------------------------------------------------------------
@@ -208,7 +202,7 @@ describe('MCP server (e2e)', () => {
       const result = parseMcpResponse(res).result as { isError?: boolean; content: Array<{ text: string }> };
       expect(result.isError).not.toBe(true);
       expect(JSON.parse(result.content[0].text)).toEqual([{ id: '628123@c.us' }]);
-      expect(list).toHaveBeenCalledWith(scopedSession);
+      expect(list).toHaveBeenCalledWith(scopedSession, undefined);
     } finally {
       list.mockRestore();
     }
@@ -282,29 +276,131 @@ describe('MCP server (e2e)', () => {
     expect(del.headers['allow']).toBe('POST');
   });
 
-  // ---------------------------------------------------------------------------
-  // 5. MCP_READONLY mode — write tools hidden from catalogue
-  //    Tested at integration level: the `readOnly` flag path in mcp.server.ts
-  //    calls registry.list({ readOnly: true }), which is unit-tested in
-  //    tool-registry.spec.ts. A second full app boot is not cost-effective here;
-  //    we note the gap and mark as pending.
-  // ---------------------------------------------------------------------------
-  it.todo('MCP_READONLY=true hides write tools — requires second app boot');
+  it('a session-restricted key cannot invoke a tool for another session', async () => {
+    const { rawKey } = await app.get(AuthService).createApiKey({
+      name: 'e2e-mcp-session',
+      role: ApiKeyRole.VIEWER,
+      allowedSessions: [scopedSession],
+    });
+    const chats = jest.spyOn(app.get(SessionService), 'getChats').mockResolvedValue([]);
+    const call = (sessionId: string) =>
+      request(app.getHttpServer())
+        .post('/mcp')
+        .set(MCP_HEADERS)
+        .set('X-API-Key', rawKey)
+        .send(jsonRpcRequest('tools/call', { name: 'SessionGetChats', arguments: { sessionId } }));
+    try {
+      const allowed = await call(scopedSession);
+      expect(allowed.status).toBe(200);
+      expect((parseMcpResponse(allowed).result as { isError?: boolean }).isError).not.toBe(true);
+      expect(chats).toHaveBeenCalledWith(scopedSession, { limit: undefined, offset: undefined });
+      chats.mockClear();
 
-  // ---------------------------------------------------------------------------
-  // 6. Rate limiter at 429
-  //    The per-key limiter is fully covered by mcp-rate-limit.spec.ts.
-  //    Triggering it in e2e needs > 60 same-key tool calls in 60s, making the
-  //    suite slow. The wiring (mountMcpServer → rateLimiter.check) is 3 lines
-  //    with no branching. Marking as pending.
-  // ---------------------------------------------------------------------------
-  it.todo('rate limiter returns 429-equivalent tool error past cap — see mcp-rate-limit.spec.ts');
+      const denied = await call('22222222-2222-4222-8222-222222222222');
+      expect(denied.status).toBe(200);
+      const result = parseMcpResponse(denied).result as { isError: boolean; content: Array<{ text: string }> };
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.content[0].text)).toMatchObject({ message: 'API key not authorized for this session' });
+      expect(chats).not.toHaveBeenCalled();
+    } finally {
+      chats.mockRestore();
+    }
+  });
+});
 
-  // ---------------------------------------------------------------------------
-  // 7. Session-scoped key scoping
-  //    Requires a created session + a key with allowedSessions set. The full
-  //    session lifecycle (QR scan, WhatsApp connect) is not automatable in e2e.
-  //    Covered by invokeTool unit test (tool-invoker.spec.ts).
-  // ---------------------------------------------------------------------------
-  it.todo('session-scoped key calling another sessions tool is rejected — see tool-invoker.spec.ts');
+describe('MCP read-only mode and tool rate limits (e2e)', () => {
+  let app: INestApplication<App>;
+  const savedEnv = {
+    MCP_READONLY: process.env.MCP_READONLY,
+    MCP_RATE_LIMIT_MAX: process.env.MCP_RATE_LIMIT_MAX,
+  };
+
+  beforeAll(async () => {
+    process.env.MCP_READONLY = 'true';
+    process.env.MCP_RATE_LIMIT_MAX = '2';
+    const moduleFixture = await Test.createTestingModule({ imports: [AppModule] }).compile();
+    app = moduleFixture.createNestApplication();
+    applyGlobalValidation(app);
+    await app.init();
+  }, 30_000);
+
+  afterAll(async () => {
+    try {
+      await app?.close();
+    } finally {
+      for (const [key, value] of Object.entries(savedEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
+  it('hides write tools and refuses a direct write call even with an admin key', async () => {
+    const { rawKey } = await app.get(AuthService).createApiKey({ name: 'e2e-mcp-readonly', role: ApiKeyRole.ADMIN });
+    const send = jest.spyOn(app.get(MessageService), 'sendText');
+    try {
+      const listed = await request(app.getHttpServer())
+        .post('/mcp')
+        .set(MCP_HEADERS)
+        .set('X-API-Key', rawKey)
+        .send(jsonRpcRequest('tools/list'));
+      expect(listed.status).toBe(200);
+      const tools = (parseMcpResponse(listed).result as { tools: Array<{ name: string }> }).tools;
+      expect(tools.map(tool => tool.name)).toContain('SessionFindAll');
+      expect(tools.map(tool => tool.name)).not.toContain('MessageSendText');
+
+      const called = await request(app.getHttpServer())
+        .post('/mcp')
+        .set(MCP_HEADERS)
+        .set('X-API-Key', rawKey)
+        .send(
+          jsonRpcRequest('tools/call', {
+            name: 'MessageSendText',
+            arguments: { sessionId: '11111111-1111-4111-8111-111111111111', chatId: '628123@c.us', text: 'test' },
+          }),
+        );
+      expect(called.status).toBe(200);
+      const result = parseMcpResponse(called).result as { isError: boolean; content: Array<{ text: string }> };
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toMatch(/Tool MessageSendText not found/i);
+      expect(send).not.toHaveBeenCalled();
+    } finally {
+      send.mockRestore();
+    }
+  });
+
+  it('returns an in-band rate-limit error before the handler and keeps another key usable', async () => {
+    const auth = app.get(AuthService);
+    const first = await auth.createApiKey({ name: 'e2e-mcp-rate-first', role: ApiKeyRole.VIEWER });
+    const second = await auth.createApiKey({ name: 'e2e-mcp-rate-second', role: ApiKeyRole.VIEWER });
+    const stats = jest.spyOn(app.get(SessionService), 'getStats');
+    const call = (key: string) =>
+      request(app.getHttpServer())
+        .post('/mcp')
+        .set(MCP_HEADERS)
+        .set('X-API-Key', key)
+        .send(jsonRpcRequest('tools/call', { name: 'SessionGetStats', arguments: {} }));
+    try {
+      for (let i = 0; i < 2; i++) {
+        const response = await call(first.rawKey);
+        expect(response.status).toBe(200);
+        expect((parseMcpResponse(response).result as { isError?: boolean }).isError).not.toBe(true);
+      }
+      expect(stats).toHaveBeenCalledTimes(2);
+
+      const limited = await call(first.rawKey);
+      expect(limited.status).toBe(200);
+      const result = parseMcpResponse(limited).result as { isError: boolean; content: Array<{ text: string }> };
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.content[0].text)).toMatchObject({ message: 'MCP rate limit exceeded' });
+      expect(stats).toHaveBeenCalledTimes(2);
+
+      const independent = await call(second.rawKey);
+      expect(independent.status).toBe(200);
+      expect((parseMcpResponse(independent).result as { isError?: boolean }).isError).not.toBe(true);
+      expect(stats).toHaveBeenCalledTimes(3);
+    } finally {
+      stats.mockRestore();
+    }
+  });
 });

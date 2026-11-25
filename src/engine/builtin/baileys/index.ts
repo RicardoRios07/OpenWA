@@ -9,6 +9,7 @@ import { BaileysAdapter } from '../../adapters/baileys.adapter';
 import { BaileysMessageStore } from '../../types/baileys.types';
 import { LidMappingStore } from '../../identity/lid-mapping-store.service';
 import { ChatStateStore } from '../../adapters/baileys-chat-state-store.service';
+import { StoredChatPreviewSource } from '../../adapters/baileys-stored-chat-previews.service';
 
 export class BaileysPlugin implements IEnginePlugin {
   type = PluginType.ENGINE as const;
@@ -22,6 +23,7 @@ export class BaileysPlugin implements IEnginePlugin {
     private readonly registeredConfig?: Record<string, unknown>,
     private readonly lidMappingStore?: LidMappingStore,
     private readonly chatStateStore?: ChatStateStore,
+    private readonly storedChatPreviews?: StoredChatPreviewSource,
   ) {}
 
   onLoad(context: PluginContext): Promise<void> {
@@ -44,7 +46,6 @@ export class BaileysPlugin implements IEnginePlugin {
     const sessionId = config.sessionId as string;
     const dbSessionId = config.dbSessionId as string;
     const proxyUrl = config.proxyUrl as string | undefined;
-    const proxyType = config.proxyType as 'http' | 'https' | 'socks4' | 'socks5' | undefined;
 
     // Baileys' own config namespace, read from the opaque per-engine blob the factory supplies via
     // context.config (the `engine` sub-tree in configuration.ts). Per-call config carries
@@ -58,10 +59,10 @@ export class BaileysPlugin implements IEnginePlugin {
       dbSessionId,
       authDir,
       proxyUrl,
-      proxyType,
       messageStore: this.messageStore,
       lidMappingStore: this.lidMappingStore,
       chatStateStore: this.chatStateStore,
+      storedChatPreviews: this.storedChatPreviews,
     });
   }
 

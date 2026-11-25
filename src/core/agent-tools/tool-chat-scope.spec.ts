@@ -14,6 +14,7 @@ import { contactTools } from './tools/contact.tools';
 import { groupTools } from './tools/group.tools';
 import { labelTools } from './tools/label.tools';
 import { invokeTool } from './tool-invoker';
+import * as chatScopeModule from '../../common/security/chat-scope';
 import { defineTool, type AnyToolDescriptor } from './tool-descriptor';
 
 const CHAT = '628111000111@c.us';
@@ -73,6 +74,22 @@ describe('chat-restricted tool calls', () => {
     expect(sendText).not.toHaveBeenCalled();
   });
 
+  it('refuses a tool declared with an empty chat scope and never calls its handler', async () => {
+    const handler = jest.fn();
+    const descriptor = defineTool({
+      name: 'AccountWideByMistake',
+      description: 'Declares a chat scope that names no chat field',
+      tier: 'read',
+      chatScope: [],
+      inputSchema: z.object({}),
+      handler,
+    });
+    await expect(call(descriptor, {})).rejects.toThrow(
+      new ForbiddenException('API key is restricted to selected chats'),
+    );
+    expect(handler).not.toHaveBeenCalled();
+  });
+
   it('authorizes the parsed destination and records a scope refusal before the handler', async () => {
     const handler = jest.fn();
     const rejected = jest.fn();
@@ -107,6 +124,16 @@ describe('chat-restricted tool calls', () => {
     ).resolves.toEqual({ messageId: 'm2' });
   });
 
+  it('compiles the allowlist once for a call that names two chats', async () => {
+    const compile = jest.spyOn(chatScopeModule, 'buildChatScope');
+    try {
+      await call(tool('MessageForward'), { sessionId: 's1', fromChatId: CHAT, toChatId: CHAT, messageId: 'm1' });
+      expect(compile).toHaveBeenCalledTimes(1);
+    } finally {
+      compile.mockRestore();
+    }
+  });
+
   it('refuses ordinary send quotes but permits a reply bound to its allowed chat', async () => {
     const input = { sessionId: 's1', chatId: CHAT, text: 'hello', quotedMessageId: 'quoted' };
     await expect(call(tool('MessageSendText'), input)).rejects.toBeInstanceOf(ForbiddenException);
@@ -126,7 +153,7 @@ describe('chat-restricted tool calls', () => {
       t => t.name === 'SessionGetChats',
     )!;
     await expect(call(descriptor, { sessionId: 's1', limit: 1 })).resolves.toEqual([{ id: CHAT }]);
-    expect(listChats).toHaveBeenCalledWith('s1');
+    expect(listChats).toHaveBeenCalledWith('s1', undefined);
     expect(getChats).not.toHaveBeenCalled();
   });
 
@@ -147,7 +174,8 @@ describe('chat-restricted tool calls', () => {
           { sessionId: 's1', limit: 1, offset: 1 },
         ),
       ).resolves.toEqual([allowed[1]]);
-      expect(list).toHaveBeenCalledWith('s1');
+      // The contact listing takes the offset too, so the later pages of a walk share one engine read.
+      expect(list).toHaveBeenCalledWith(...(name === 'ContactFindAll' ? ['s1', 1] : ['s1']));
       expect(paged).not.toHaveBeenCalled();
     },
   );

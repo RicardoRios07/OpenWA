@@ -97,11 +97,18 @@ describe('bannerKeyLine (startup banner key masking)', () => {
   });
 
   it('masks the key on subsequent boots — the full secret is never re-logged', () => {
-    const line = bannerKeyLine(FULL, false);
+    const line = bannerKeyLine(FULL, false, FULL.slice(0, 12));
     expect(line).not.toContain('0123456789abcdef'); // the secret tail must not appear
     expect(line.startsWith('owa_k1_0')).toBe(true); // a short fingerprint is fine
-    expect(line).toMatch(/data\/\.api-key/); // points the operator to the real source
+    expect(line).toMatch(/data[\\/]\.api-key/); // points the operator to the real source
     expect(line).not.toContain('dashboard'); // the dashboard only ever shows a key's prefix
+  });
+
+  // The tag is only known to be a tag when the stored row says the key was generated.
+  it('prints no fingerprint unless the stored prefix says the key was generated', () => {
+    for (const stored of [undefined, null, '', '(master key)', 'Acme-Prod-Ga']) {
+      expect(bannerKeyLine(FULL, false, stored)).toMatch(/^\(full key in .*\.api-key\)$/);
+    }
   });
 
   it('names the bootstrap key file BOOTSTRAP_KEY_FILE points at', () => {
@@ -115,8 +122,24 @@ describe('bannerKeyLine (startup banner key masking)', () => {
     }
   });
 
-  it('passes a placeholder through unchanged', () => {
-    expect(bannerKeyLine('(check dashboard for keys)', false)).toBe('(check dashboard for keys)');
+  it('points at the dashboard when there is no key to name', () => {
+    expect(bannerKeyLine(null, false)).toBe('(check dashboard for keys)');
+  });
+
+  // A key is told from the placeholder by where it came from, not by how it starts: an API_MASTER_KEY may begin
+  // with any character, an opening parenthesis and the placeholder's own words included.
+  it('never takes a key for the placeholder by its first character', () => {
+    for (const key of ['(Acme-Prod-Gateway-Master-2026-Q4!', '(check dashboard for keys)']) {
+      expect(bannerKeyLine(key, false)).toMatch(/^\(full key in .*\.api-key\)$/);
+    }
+  });
+
+  // An API_MASTER_KEY is taken verbatim, so its first characters are part of the secret, not a fixed tag.
+  it('prints no part of an operator-chosen key on later boots', () => {
+    const master = 'Acme-Prod-Gateway-Master-2026-Q4!';
+    const line = bannerKeyLine(master, false);
+    expect(line).not.toContain(master.slice(0, 4));
+    expect(line).toMatch(/^\(full key in .*\.api-key\)$/);
   });
 });
 
@@ -1172,6 +1195,31 @@ describe('AuthService', () => {
       expect(bannerText()).toContain('(check dashboard for keys)');
     });
 
+    // /api/docs answers 404 whenever Swagger is off, which is the default under NODE_ENV=production.
+    it.each([
+      ['off by default in production', { NODE_ENV: 'production' }, false],
+      ['on in production when enabled', { NODE_ENV: 'production', ENABLE_SWAGGER: 'true' }, true],
+      ['on by default outside production', { NODE_ENV: 'development' }, true],
+      ['off outside production when disabled', { NODE_ENV: 'development', ENABLE_SWAGGER: 'false' }, false],
+    ])('boot prints the API docs URL only when it is served: %s', async (_label, env, served) => {
+      const saved = { NODE_ENV: process.env.NODE_ENV, ENABLE_SWAGGER: process.env.ENABLE_SWAGGER };
+      delete process.env.ENABLE_SWAGGER;
+      Object.assign(process.env, env);
+      try {
+        (repository.count as jest.Mock).mockResolvedValue(1);
+
+        await service.onModuleInit();
+
+        expect(bannerText()).toContain('Dashboard:');
+        expect(bannerText().includes('/api/docs')).toBe(served);
+      } finally {
+        for (const [name, value] of Object.entries(saved)) {
+          if (value === undefined) delete process.env[name];
+          else process.env[name] = value;
+        }
+      }
+    });
+
     it('boot keeps a live bootstrap key: file untouched, banner shows the masked fingerprint', async () => {
       (repository.count as jest.Mock).mockResolvedValue(1);
       existsSpy.mockReturnValue(true);
@@ -1181,7 +1229,82 @@ describe('AuthService', () => {
       await service.onModuleInit();
 
       expect(unlinkSpy).not.toHaveBeenCalled();
-      expect(bannerText()).toMatch(/\(full key in \S*data\/\.api-key\)/);
+      expect(bannerText()).toMatch(/\(full key in \S*data[\\/]\.api-key\)/);
+    });
+
+    it('seeds a default admin key and the written key successfully authenticates against the persisted hash', async () => {
+      const savedEnv = {
+        API_MASTER_KEY: process.env.API_MASTER_KEY,
+        ALLOW_DEV_API_KEY: process.env.ALLOW_DEV_API_KEY,
+        BOOTSTRAP_KEY_FILE: process.env.BOOTSTRAP_KEY_FILE,
+      };
+      delete process.env.API_MASTER_KEY;
+      delete process.env.ALLOW_DEV_API_KEY;
+      process.env.BOOTSTRAP_KEY_FILE = '/isolated/virtual/path/.api-key';
+
+      const chmodSpy = jest.spyOn(fs, 'chmodSync').mockImplementation(() => undefined);
+      let capturedWrittenKey = '';
+      const writeSpy = jest.spyOn(fs, 'writeFileSync').mockImplementation((_file, data) => {
+        if (typeof data === 'string') {
+          capturedWrittenKey = data;
+        } else if (Buffer.isBuffer(data)) {
+          capturedWrittenKey = data.toString('utf-8');
+        }
+        return undefined;
+      });
+
+      let persistedEntity: ApiKey | undefined;
+      (repository.count as jest.Mock).mockResolvedValue(0);
+      (repository.create as jest.Mock).mockImplementation((dto: Partial<ApiKey>) => {
+        return createMockApiKey({
+          name: dto.name,
+          keyHash: dto.keyHash,
+          keyPrefix: dto.keyPrefix,
+          role: dto.role,
+          isActive: true,
+        });
+      });
+      (repository.save as jest.Mock).mockImplementation((entity: ApiKey) => {
+        persistedEntity = entity;
+        return Promise.resolve(entity);
+      });
+
+      try {
+        await service.onModuleInit();
+
+        expect(keyIndex.refreshSoon).toHaveBeenCalled();
+        expect(writeSpy).toHaveBeenCalledWith(
+          '/isolated/virtual/path/.api-key',
+          expect.stringMatching(/^owa_k1_[a-f0-9]{64}$/),
+          expect.objectContaining({ mode: 0o600 }),
+        );
+        expect(capturedWrittenKey).toMatch(/^owa_k1_[a-f0-9]{64}$/);
+        expect(bannerText()).toContain('API Key (newly created)');
+
+        (repository.findOne as jest.Mock).mockImplementation((options?: { where?: { keyHash?: string } }) => {
+          if (persistedEntity && options?.where?.keyHash === persistedEntity.keyHash) {
+            return Promise.resolve(persistedEntity);
+          }
+          return Promise.resolve(null);
+        });
+
+        const validated = await service.validateApiKey(capturedWrittenKey);
+        expect(validated).toBeDefined();
+        expect(validated.role).toBe(ApiKeyRole.ADMIN);
+        expect(validated.name).toBe('Default Admin Key');
+
+        // Negative check: a mismatched hash fails validation with Invalid API key (401)
+        expect(persistedEntity).toBeDefined();
+        persistedEntity!.keyHash = 'tampered-or-wrong-hash';
+        await expect(service.validateApiKey(capturedWrittenKey)).rejects.toThrow('Invalid API key');
+      } finally {
+        for (const [key, val] of Object.entries(savedEnv)) {
+          if (val === undefined) delete process.env[key];
+          else process.env[key] = val;
+        }
+        chmodSpy.mockRestore();
+        writeSpy.mockRestore();
+      }
     });
   });
 

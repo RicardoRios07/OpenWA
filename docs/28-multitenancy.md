@@ -119,7 +119,7 @@ without schema change.
 
 - **Linked-device identity**: the engine's browser display name (the `BAILEYS_BROWSER` tuple)
   resolves per session: `session.config.browserName` → `tenant.branding.deviceName` → global
-  `BAILEYS_BROWSER_NAME` env → `'OpenWA'`. This supersedes the global-only env approach for
+  `BAILEYS_BROWSER_NAME` env → `'Ubuntu'`. This supersedes the global-only env approach for
   white-label tenants while keeping a global fallback.
 - **Dashboard**: `tenant.branding` (display name, logo URL, optional accent color within the
   existing token system) applied at login and in the shell; global defaults when absent.

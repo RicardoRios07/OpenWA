@@ -1,22 +1,39 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { createLogger } from './logger.service';
+import {
+  DEFAULT_SHUTDOWN_DELAY_MS,
+  DEFAULT_WEBHOOK_SHUTDOWN_DRAIN_MS,
+  shutdownTeardownLimitMs,
+} from './shutdown-budget';
 
-/** Default grace before teardown; capped so a misconfigured value can't exceed a typical SIGKILL window. */
-const DEFAULT_SHUTDOWN_DELAY_MS = 3000;
+// The delay counts 1:1 against the kill deadline; see shutdown-budget.ts.
 const MAX_SHUTDOWN_DELAY_MS = 30_000;
 
 @Injectable()
 export class ShutdownService {
   private readonly logger = createLogger('ShutdownService');
   private destroyCallback: (() => Promise<void>) | null = null;
+  private readonly shutdownListeners: Array<() => void> = [];
   private shuttingDown = false;
   private shutdownScheduled = false;
+  private tearingDown = false;
+
+  constructor(@Optional() private readonly config?: ConfigService) {}
 
   /**
    * Set the shutdown callback (called from main.ts after app creation)
    */
   setShutdownCallback(callback: () => Promise<void>): void {
     this.destroyCallback = callback;
+  }
+
+  /**
+   * Run `listener` when shutdown begins, before the grace and every destroy hook. It runs inside the
+   * signal handler, so it must not throw or block.
+   */
+  onShutdown(listener: () => void): void {
+    this.shutdownListeners.push(listener);
   }
 
   /**
@@ -27,11 +44,21 @@ export class ShutdownService {
     return this.shuttingDown;
   }
 
+  /**
+   * True once the grace has elapsed and teardown has started. Nest keeps the HTTP listener open
+   * until every destroy hook has finished, so the request gate in configure-app.ts refuses new
+   * requests from this point on.
+   */
+  isTearingDown(): boolean {
+    return this.tearingDown;
+  }
+
   /** Flip the draining flag (idempotent). Safe to call synchronously from a signal handler. */
   markShuttingDown(): void {
     if (!this.shuttingDown) {
       this.shuttingDown = true;
       this.logger.log('Entering draining state — readiness now reports 503');
+      for (const listener of this.shutdownListeners) listener();
     }
   }
 
@@ -52,12 +79,25 @@ export class ShutdownService {
 
     setTimeout(() => {
       this.logger.log('Initiating shutdown...');
+      this.tearingDown = true;
+      // The only bound on the waits that have none of their own (the database waits, queue and pool
+      // close), and the only one on the admin-restart path, where no orchestrator kill follows. Armed
+      // here, after the grace, so a raised SHUTDOWN_DELAY_MS moves it with the kill deadline; see
+      // shutdown-budget.ts. Not unref'd: a teardown parked on a promise that holds no handle would let
+      // the loop drain and the process exit 0 with the remaining hooks never run.
+      const budgetMs = shutdownTeardownLimitMs(
+        this.config?.get<number>('webhook.shutdownDrainMs') ?? DEFAULT_WEBHOOK_SHUTDOWN_DRAIN_MS,
+      );
+      const forceExit = setTimeout(() => {
+        this.logger.error('Shutdown teardown exceeded its budget, forcing exit', undefined, { budgetMs });
+        process.exit(1);
+      }, budgetMs);
       const doShutdown = async () => {
         // The exit status mirrors the teardown outcome: 0 when teardown completed, 1 when it
-        // failed — an orchestrator (k8s, systemd, docker restart policies) must not read a
-        // resource-leaking shutdown as a clean one. (A teardown that HANGS never reaches this
-        // exit at all; that case is bounded externally by the second-signal force-exit in
-        // main.ts or the orchestrator's SIGKILL deadline.)
+        // failed, so an orchestrator (k8s, systemd, docker restart policies) must not read a
+        // resource-leaking shutdown as a clean one. A teardown that hangs is cut by the force-exit
+        // timer above, or by a repeat SIGTERM or SIGINT 1 s or more after the first (stop-signals.ts;
+        // a repeat inside that window is the same signal delivered twice and is ignored, as is a SIGHUP).
         let exitCode = 0;
         try {
           if (this.destroyCallback) {
@@ -70,6 +110,7 @@ export class ShutdownService {
             error instanceof Error ? error.message : String(error),
           );
         } finally {
+          clearTimeout(forceExit);
           process.exit(exitCode);
         }
       };

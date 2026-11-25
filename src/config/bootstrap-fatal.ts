@@ -60,8 +60,10 @@ export async function runBootstrapOrExit(bootstrap: () => Promise<unknown>, deps
       const closeApp = deps.closeApp;
       await Promise.race([
         Promise.resolve().then(() => closeApp()),
+        // Not unref'd: a teardown parked on a promise that holds no handle would let the loop drain, and
+        // the process would exit 0 on its own before the exit below ran.
         new Promise<void>(resolve => {
-          setTimeout(resolve, deps.closeTimeoutMs ?? DEFAULT_BOOTSTRAP_CLOSE_TIMEOUT_MS).unref();
+          setTimeout(resolve, deps.closeTimeoutMs ?? DEFAULT_BOOTSTRAP_CLOSE_TIMEOUT_MS);
         }),
       ]);
     } catch {

@@ -124,11 +124,19 @@ const ERROR_RESPONSE: SchemaObject = {
         'SESSION_STOP_INCOMPLETE, SESSION_LOGOUT_INCOMPLETE and SESSION_FORCE_KILL_INCOMPLETE (502), ' +
         'SEND_PACING_LIMITED (429), ' +
         'ENGINE_PAGE_ERROR (500, whatsapp-web.js: WhatsApp Web threw inside the page during a send or status post), ' +
-        'IMPORT_ALREADY_RUNNING, EXPORT_IN_PROGRESS, IMPORT_WOULD_ORPHAN_ENGINES and IMPORT_NESTED_TRANSACTION (409).',
+        'IMPORT_ALREADY_RUNNING, EXPORT_IN_PROGRESS, IMPORT_WOULD_ORPHAN_ENGINES and IMPORT_NESTED_TRANSACTION (409), ' +
+        'IDEMPOTENCY_KEY_INVALID (400), IDEMPOTENCY_KEY_REUSED (422), ' +
+        'IDEMPOTENCY_KEY_IN_PROGRESS and IDEMPOTENCY_OUTCOME_UNKNOWN (409), ' +
+        'POLL_OPTION_NOT_FOUND (400, whatsapp-web.js vote-poll).',
     },
     retryAfterSeconds: {
       type: 'integer',
       description: 'With SEND_PACING_LIMITED: seconds until the session accepts sends again.',
+    },
+    validOptions: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'With POLL_OPTION_NOT_FOUND: the option texts the poll offers.',
     },
     pageError: {
       type: 'object',
@@ -212,7 +220,9 @@ export function createSwaggerConfig(): Omit<OpenAPIObject, 'paths'> {
           'hold in flight for this caller even when idle. The body is not read; retrying it unchanged ' +
           'cannot succeed.\n' +
           '- `503 Service Unavailable` with `Retry-After` — the gateway already has too much ' +
-          'request body data in flight. The body is not read; retry after the given delay.\n\n' +
+          'request body data in flight (the body is not read; retry after the given delay), or, without ' +
+          '`Retry-After`, shutdown teardown has begun: every route except `/api/health` and ' +
+          '`/api/health/*` then answers it with `Connection: close`.\n\n' +
           'Every operation that takes an API key can also answer `429 Too Many Requests` (the per-IP ' +
           'rate-limit windows; with send pacing on, a send can also be refused with `code: ' +
           'SEND_PACING_LIMITED` and `retryAfterSeconds`) and `500 Internal Server Error` (an ' +

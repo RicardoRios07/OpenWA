@@ -1,10 +1,11 @@
 import { HttpException, BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { EngineRegistry } from '../../engine/engine-registry.service';
 import { createLogger } from '../../common/services/logger.service';
-import { IWhatsAppEngine } from '../../engine/interfaces/whatsapp-engine.interface';
+import { Contact, IWhatsAppEngine } from '../../engine/interfaces/whatsapp-engine.interface';
 import { paginate, ListOptions } from '../../common/utils/paginate';
+import { ListingMemo } from '../../common/utils/listing-memo';
 import { EngineNotReadyError } from '../../common/errors/engine-not-ready.error';
-import { isIndividualWid, parseWaId, toNeutralJid } from '../../engine/identity/wa-id';
+import { isIndividualWid, parseWaId, toNeutralJid, userPart } from '../../engine/identity/wa-id';
 
 /**
  * Owns engine access for contact operations so the "session not started" guard and
@@ -13,23 +14,31 @@ import { isIndividualWid, parseWaId, toNeutralJid } from '../../engine/identity/
 @Injectable()
 export class ContactService {
   private readonly logger = createLogger('ContactService');
+  /** The contact listing the pages of one walk share. Every addressbook or block write drops it. */
+  private readonly listings = new ListingMemo<Contact>();
 
-  constructor(private readonly engines: EngineRegistry) {}
+  constructor(private readonly engines: EngineRegistry) {
+    engines.onRetire(id => this.listings.drop(id));
+  }
 
   private getEngine(sessionId: string): IWhatsAppEngine {
     // EngineRegistry.require()'s default is this exact 400 "Session is not started".
     return this.engines.require(sessionId);
   }
 
-  /** Every contact WITHOUT the response window, for callers that filter before paging. */
-  listContacts(sessionId: string) {
+  /**
+   * Every contact WITHOUT the response window, for callers that filter before paging. `offset` is the
+   * window the caller is about to take: a later page reuses the list its walk's first page read.
+   */
+  listContacts(sessionId: string, offset?: number) {
     // getEngine throws synchronously (keeps the "session not started" guard a sync 400).
-    return this.getEngine(sessionId).getContacts();
+    const engine = this.getEngine(sessionId);
+    return this.listings.read(sessionId, offset, () => engine.getContacts());
   }
 
   getContacts(sessionId: string, opts: ListOptions = {}) {
     // The engine returns the full set and we bound the HTTP response window via paginate().
-    return this.listContacts(sessionId).then(contacts => paginate(contacts, opts.limit, opts.offset));
+    return this.listContacts(sessionId, opts.offset).then(contacts => paginate(contacts, opts.limit, opts.offset));
   }
 
   async getContactById(sessionId: string, contactId: string) {
@@ -45,8 +54,19 @@ export class ContactService {
     return this.getEngine(sessionId).getBlockedContacts();
   }
 
+  /**
+   * Whether a phone number is registered, and the id WhatsApp holds for it. The engines are asked about the DIGITS of
+   * `number`: whatsapp-web.js appends `@c.us` unless the value already ends with it, so a typed `+62 812-7000-8896` or
+   * an `@s.whatsapp.net` id reached its page as a malformed wid, and Baileys put the typed characters in its contact
+   * query. An id of another dialect is refused, as the LID lookup does, and so is a value with no digits at all.
+   */
   getNumberId(sessionId: string, number: string) {
-    return this.getEngine(sessionId).getNumberId(number);
+    this.assertPhoneNumber(number);
+    const digits = userPart(number).replace(/\D/g, '');
+    if (!digits) {
+      throw new BadRequestException(`${number} holds no digits; pass a phone number such as 628123456789`);
+    }
+    return this.getEngine(sessionId).getNumberId(digits);
   }
 
   /**
@@ -71,6 +91,30 @@ export class ContactService {
     }
   }
 
+  /**
+   * Unlike {@link resolveContactPhone}, a failed lookup is not swallowed: a null here would claim "no lid".
+   * The engines keep nothing but the digits of `number`.
+   */
+  getContactLid(sessionId: string, number: string) {
+    this.assertPhoneNumber(number);
+    return this.getEngine(sessionId).getContactLid(number);
+  }
+
+  /**
+   * The input of the number check and the LID lookup is a PHONE NUMBER, typed any way (`+62 812-7000-8896`) or as a
+   * phone id (`628…@c.us`). An id of another dialect only looks like one: the digits of a privacy id or a group id
+   * are no phone number, and the engines keep nothing but digits, so a lookup would spend a query on a stranger's
+   * number and answer for it. It is refused before an engine is asked.
+   */
+  private assertPhoneNumber(number: string): void {
+    if (number.includes('@') && parseWaId(number).kind !== 'user') {
+      throw new BadRequestException(
+        `${number} does not name a phone number; pass a phone number or a phone-based contact id such as 628123456789@c.us` +
+          (parseWaId(number).kind === 'lid' ? ', or resolve a privacy id with GET contacts/{contactId}/phone' : ''),
+      );
+    }
+  }
+
   getProfilePicture(sessionId: string, contactId: string) {
     return this.getEngine(sessionId).getProfilePicture(contactId);
   }
@@ -84,9 +128,11 @@ export class ContactService {
   /**
    * Batch-resolve profile picture URLs for a list of contact ids (the dashboard's chat-list avatars
    * — one HTTP call instead of N, so the per-IP throttle isn't exhausted by a sidebar full of
-   * parallel fetches). Engine lookups run 5 at a time with a per-id deadline; a per-id failure or
-   * timeout yields null for that id (hidden/no picture), never aborts the batch. The exception is
-   * EngineNotReadyError: it describes the session, not the id, so it fails the whole request with
+   * parallel fetches). Engine lookups run 5 at a time with a per-id deadline. A timeout yields null
+   * for that id and ends the walk: the ids of the later chunks are left out of the answer, like those
+   * past the cap, so a caller asks for them again instead of reading null as "no picture", and
+   * unfinished lookups never overlap new engine work. Ordinary per-id failures yield null and the
+   * batch continues. EngineNotReadyError describes the session, not the id, so it fails the whole request with
    * 409 after the current chunk and the remaining chunks are not started. Answering 200 with every
    * avatar null would be cached by the dashboard as "no pictures". Ids beyond
    * PROFILE_PICTURES_MAX_IDS are ignored.
@@ -99,15 +145,16 @@ export class ContactService {
     let notReady: EngineNotReadyError | undefined;
     for (let i = 0; i < capped.length; i += CHUNK) {
       const chunk = capped.slice(i, i + CHUNK);
+      let timedOut = false;
       const results = await Promise.all(
         chunk.map((id): Promise<readonly [string, string | null]> => {
           // Per-id deadline: a hanging lookup (bad/unreachable id) resolves null instead of
           // stalling the whole batch; the timer is cleared the moment the engine settles.
           return new Promise<readonly [string, string | null]>(resolve => {
-            const timer = setTimeout(
-              () => resolve([id, null] as const),
-              ContactService.PROFILE_PICTURE_LOOKUP_TIMEOUT_MS,
-            );
+            const timer = setTimeout(() => {
+              timedOut = true;
+              resolve([id, null] as const);
+            }, ContactService.PROFILE_PICTURE_LOOKUP_TIMEOUT_MS);
             engine.getProfilePicture(id).then(
               url => {
                 clearTimeout(timer);
@@ -126,6 +173,7 @@ export class ContactService {
       for (const [id, url] of results) {
         pictures[id] = url;
       }
+      if (timedOut) break;
     }
     return pictures;
   }
@@ -139,7 +187,9 @@ export class ContactService {
    */
   blockContact(sessionId: string, contactId: string) {
     this.assertBlockable(contactId);
-    return this.getEngine(sessionId).blockContact(this.toAddressableId(contactId));
+    return this.getEngine(sessionId)
+      .blockContact(this.toAddressableId(contactId))
+      .finally(() => this.listings.drop(sessionId));
   }
 
   /**
@@ -219,16 +269,24 @@ export class ContactService {
 
   upsertContact(sessionId: string, contactId: string, firstName: string, lastName?: string) {
     this.assertAddressable(contactId);
-    return this.getEngine(sessionId).upsertContact(this.toAddressableId(contactId), firstName, lastName);
+    // The DTO lets a JSON null through as "no last name". The engines default an omitted one to '' (a default
+    // parameter ignores null), so null would otherwise reach the page-side save as a value.
+    return this.getEngine(sessionId)
+      .upsertContact(this.toAddressableId(contactId), firstName, lastName ?? undefined)
+      .finally(() => this.listings.drop(sessionId));
   }
 
   deleteContact(sessionId: string, contactId: string) {
     this.assertAddressable(contactId);
-    return this.getEngine(sessionId).deleteContact(this.toAddressableId(contactId));
+    return this.getEngine(sessionId)
+      .deleteContact(this.toAddressableId(contactId))
+      .finally(() => this.listings.drop(sessionId));
   }
 
   unblockContact(sessionId: string, contactId: string) {
     this.assertBlockable(contactId);
-    return this.getEngine(sessionId).unblockContact(this.toAddressableId(contactId));
+    return this.getEngine(sessionId)
+      .unblockContact(this.toAddressableId(contactId))
+      .finally(() => this.listings.drop(sessionId));
   }
 }

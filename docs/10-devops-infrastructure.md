@@ -56,7 +56,7 @@ RUN npm ci --omit=dev --ignore-scripts \
     && npm cache clean --force
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:2785/api/health/ready || exit 1
+    CMD curl -f "http://localhost:${PORT:-2785}/api/health/ready" || exit 1
 
 # dumb-init is PID 1; the entrypoint runs as root, fixes /app/data ownership, then drops to the
 # openwa user with gosu before it execs the command.
@@ -68,6 +68,12 @@ The image deliberately has no `USER openwa` directive and no `chown -R` over `/a
 walks every production dependency (#1045), so the entrypoint re-owns only the writable data volume
 and then drops privileges. Chromium comes from Chrome for Testing on amd64 and from Debian's
 `chromium` package on arm64; see the `Dockerfile` for the multi-arch build.
+
+The healthcheck probes the `PORT` of the container environment, falling back to 2785. To run the
+image on another port, pass `PORT` as an environment variable (`docker run -e PORT=8080 ...`): the
+probe never reads a mounted `.env` or `data/.env.generated`, so a `PORT` set only in one of those
+files moves the app but not the probe, and the container stays `unhealthy`. Boot refuses a `PORT`
+with surrounding whitespace, which the probe URL would carry verbatim.
 
 ### Docker Compose (Development)
 
@@ -161,6 +167,9 @@ version: '3.8'
 services:
   app:
     image: ghcr.io/rmyndharis/openwa:latest
+    # Teardown takes up to 63 s with every datastore on; raise this by the amount SHUTDOWN_DELAY_MS or
+    # WEBHOOK_SHUTDOWN_DRAIN_MS exceeds its default, or Docker's 10 s default kills the container mid-teardown.
+    stop_grace_period: 75s
     deploy:
       replicas: 1
       resources:
@@ -372,7 +381,7 @@ LOG_FORMAT=json
 # DATABASE_NAME=openwa
 # DATABASE_USERNAME=user
 # DATABASE_PASSWORD=pass
-# DATABASE_POOL_SIZE=20
+# DATABASE_POOL_SIZE=10
 # DATABASE_SSL=false
 
 # ===========================================
@@ -422,12 +431,13 @@ LOG_FORMAT=json
 # CACHE & QUEUE
 # ===========================================
 # Both are opt-in and both need a reachable Redis, configured with the discrete host/port pair
-# (there is no REDIS_URL). Defaults: no cache at all (CacheService is a no-op and every read falls
+# (there is no REDIS_URL). Defaults: no cache at all (CacheService stores nothing and every read falls
 # through to the database — there is no in-memory tier) and inline (non-queued) dispatch.
 # REDIS_ENABLED=false
 # REDIS_HOST=localhost
 # REDIS_PORT=6379
-# REDIS_TLS=false      # true for a Redis that requires TLS (not the built-in container); every client
+# REDIS_TLS=false      # true for a Redis that requires TLS (not the built-in container: the boot refuses REDIS_TLS=true
+#                      # and a named REDIS_USERNAME beside it, as it serves plain TCP and only the default user); every client
 #                      # (cache, rate limits, queue, WebSocket fan-out) uses it. Private CA: NODE_EXTRA_CA_CERTS in the launch
 #                      # environment (shell, systemd, compose environment:), not in .env
 # REDIS_CACHE_DB=1     # logical database for the cache
@@ -435,6 +445,15 @@ LOG_FORMAT=json
 # for the queue alone therefore also enables the cache.
 # CACHE_ENABLED=true
 # QUEUE_ENABLED=true   # process webhooks/ingress through the BullMQ queue
+# Deployments that use the queue on one shared Redis need a distinct QUEUE_PREFIX each (default bull; up
+# to 64 letters, digits, dots, underscores or hyphens, starting with a letter or digit). A queue is named
+# only by its prefix and name, so two deployments on the same prefix take each other's webhook jobs and
+# complete them without delivering.
+# Replicas of one deployment share a value; changing it on a live deployment leaves the jobs queued under
+# the old prefix unprocessed. The prefix covers the queues only: with REDIS_ENABLED=true the rate-limit
+# counters and the WebSocket fan-out channel are shared as well, and events reach the clients of every
+# deployment on that Redis, so give each such deployment a Redis of its own.
+# QUEUE_PREFIX=bull
 
 # ===========================================
 # WHATSAPP ENGINE
@@ -486,7 +505,18 @@ WEBHOOK_DISPATCH_MAX_QUEUED=1000
 # The failing state and the cap are held per process, not per cluster.
 # The first 2xx from the webhook lifts it. With the queue disabled, a session parks at most a
 # quarter of WEBHOOK_DISPATCH_MAX_QUEUED behind that limit and sheds the rest, so other sessions
-# keep room.
+# keep room. Opt-in events such as message.receipt are bounded per receiving webhook instead: a
+# quarter of WEBHOOK_DISPATCH_CONCURRENCY deliveries run at once, divided among the session's
+# webhooks that name the event, and three quarters of
+# WEBHOOK_DISPATCH_MAX_QUEUED events wait; further ones are dropped, not replayed, and counted in
+# openwa_webhook_delivery_failures_total. A webhook whose receiver never answers holds only its own
+# places, but the pool is shared: a session holds at most a quarter of it at once (four at the
+# defaults) however many of its webhooks name the event, and another session's events wait for a slot
+# once such sessions together hold all of them, which is four sessions at the defaults. There is
+# no process-wide cap on the events waiting.
+# Each running, parked or backoff-waiting inline delivery holds its event's inline media
+# (up to 4/3 x WEBHOOK_MEDIA_INLINE_MAX_BYTES as base64), about 1.3 GiB per process at the defaults
+# when every slot is taken; lower these caps or enable the queue to reduce it.
 # WEBHOOK_DEGRADED_SESSION_CONCURRENCY=
 # Delivery attempts (total, including the first) are set per webhook with the retryCount API field (default 3, range 0-5).
 
@@ -879,10 +909,8 @@ export class HealthController {
     if (this.shutdownService.isShuttingDown()) {
       throw new ServiceUnavailableException({ status: 'error', details: { shutdown: { status: 'draining' } } });
     }
-    const [main, data] = await Promise.all([
-      this.probeDatabase(this.mainDataSource),
-      this.probeDatabase(this.dataDataSource),
-    ]);
+    // Both SELECT 1 probes run in parallel; requests that arrive together share them and the verdict answers the next second.
+    const { main, data } = await this.probeDatabases();
     const details = { mainDatabase: { status: main }, dataDatabase: { status: data } };
     if (main === 'down' || data === 'down') {
       throw new ServiceUnavailableException({ status: 'error', details });
@@ -892,6 +920,8 @@ export class HealthController {
 }
 ```
 
+The readiness route is public and exempt from the throttler, so a flood of callers must not become a flood of queries: requests that arrive while the two probes run share them, and their verdict answers the next second. The draining check is made on every request and is never served from a verdict.
+
 ### Prometheus Metrics Implementation
 
 The metrics surface is small, so OpenWA emits Prometheus text exposition format (v0.0.4) **by hand** —
@@ -900,12 +930,26 @@ aggregate overview from `StatsService` plus `process.memoryUsage()`, memoizes th
 short TTL (~5s, so back-to-back scrapes don't repeat the DB scan), and exposes it at
 `GET /api/metrics`.
 
+A scrape waits at most 2 seconds for that overview. When the read fails, the database-derived series are
+left out and `openwa_stats_available` reads 0, and the result the last good read kept is discarded. When it is
+still pending after that, the scrape serves the last result it kept, up to 5 minutes after that read started, and
+`openwa_stats_available` stays 1; the late result fills the memo and is kept for the next scrape. With no result
+that recent, such as the first scrape after start, or a read that has hung for more than 5 minutes after the last
+good one, the series are left out and the gauge reads 0. A read still pending after 5 minutes is given up on and the
+next scrape starts a new one. The process, HTTP, webhook and queue series are served as usual. While a read is
+still within its 5 minutes it is shared by the scrapes that arrive meanwhile, so they answer without waiting again
+and add no query of their own. With `STATS_CACHE_TTL_MS=0` each give-up starts a new overview query while the
+abandoned one stays pending in the database; at the default the replacement joins the overview flight already
+running. The 2 seconds bound the wait, not the query: nothing cancels it in the database.
+
 Access is **disabled by default**: the endpoint returns **404** unless `METRICS_TOKEN` is set. When
 set, scrapers must send `Authorization: Bearer <token>` (compared with `timingSafeEqual`); a missing or
 wrong token returns 401. After 10 failed attempts from one client IP within a minute, that client is
 answered 429 (even with the correct token) until the window slides; a successful scrape does not count
 against the limit. The token is **separate** from the API key — the route is `@Public()` (skips
-the API-key guard) and `@SkipThrottle()`.
+the API-key guard) and `@SkipThrottle()`. A production boot refuses a `METRICS_TOKEN` that is the
+`.env.example` placeholder or a known weak value such as `test` or `change-me`, because the route is
+public; there is no length floor, so choose a long random value or leave it unset.
 
 ```typescript
 // metrics/metrics.service.ts (dependency-free; emits text v0.0.4 by hand)
@@ -918,7 +962,7 @@ export class MetricsService {
 
   async render(): Promise<string> {
     // Guarded: an unreachable data database must cost the DB-derived series, not the whole scrape.
-    // `overview` is null on failure, which is what openwa_stats_available reports.
+    // `overview` is null on failure or after the 2-second wait, which is what openwa_stats_available reports.
     const overview = await this.readOverviewOrNull();
     const mem = process.memoryUsage();
     const lines: string[] = [];
@@ -945,37 +989,53 @@ export class MetricsService {
 
 **Exported metric names** (the complete set — nothing else is emitted):
 
-| Metric                                       | Type      | Labels                              | Meaning                                                                                                                     |
-| -------------------------------------------- | --------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `openwa_up`                                  | gauge     | —                                   | Always `1` when scraped                                                                                                     |
-| `openwa_process_uptime_seconds`              | gauge     | —                                   | Process uptime                                                                                                              |
-| `openwa_process_resident_memory_bytes`       | gauge     | —                                   | RSS                                                                                                                         |
-| `openwa_process_heap_used_bytes`             | gauge     | —                                   | V8 heap used                                                                                                                |
-| `openwa_event_loop_delay_p99_seconds`        | gauge     | none                                | p99 event-loop delay since the previous uncached scrape                                                                     |
-| `openwa_event_loop_delay_max_seconds`        | gauge     | none                                | Maximum event-loop delay since the previous uncached scrape                                                                 |
-| `openwa_unhandled_rejections_total`          | counter   | `kind`                              | Unhandled promise rejections since process start (`other` or `page_context_lost`)                                           |
-| `openwa_queue_jobs`                          | gauge     | `queue`, `state`                    | BullMQ jobs per queue in `wait`/`active`/`delayed`/`failed` (cluster-wide, from Redis)                                      |
-| `openwa_stats_available`                     | gauge     | —                                   | 1 when the last overview read of the database-derived series below succeeded, 0 if it failed                                |
-| `openwa_sessions_total`                      | gauge     | —                                   | Configured sessions                                                                                                         |
-| `openwa_sessions_active`                     | gauge     | —                                   | READY (active) sessions                                                                                                     |
-| `openwa_sessions`                            | gauge     | `status`                            | Session count per status                                                                                                    |
-| `openwa_messages_total`                      | gauge     | `direction` (`incoming`/`outgoing`) | Current stored messages by direction                                                                                        |
-| `openwa_messages_failed_total`               | gauge     | —                                   | Current messages in FAILED state                                                                                            |
-| `openwa_webhook_delivery_failures_total`     | counter   | —                                   | Webhook delivery failures since process start: retries exhausted, never sent, or stopped by shutdown between direct retries |
-| `openwa_session_reconnect_attempts_total`    | counter   | —                                   | Reconnect attempts scheduled across all sessions since process start                                                        |
-| `openwa_session_reconnect_loop_alerts_total` | counter   | —                                   | Reconnect-loop alerts emitted since process start                                                                           |
-| `openwa_sessions_restricted`                 | gauge     | —                                   | Sessions whose account WhatsApp is currently restricting                                                                    |
-| `openwa_send_pacing_refusals_total`          | counter   | `reason`                            | Sends refused by the pacing governor since process start                                                                    |
-| `http_requests_total`                        | counter   | `method`, `route`, `status`         | HTTP requests served, by method, route and status                                                                           |
-| `http_request_duration_seconds`              | histogram | `method`, `route`                   | HTTP request duration (`_bucket` / `_sum` / `_count`)                                                                       |
+| Metric                                       | Type      | Labels                              | Meaning                                                                                                                                                                                            |
+| -------------------------------------------- | --------- | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `openwa_up`                                  | gauge     | —                                   | Always `1` when scraped                                                                                                                                                                            |
+| `openwa_process_uptime_seconds`              | gauge     | —                                   | Process uptime                                                                                                                                                                                     |
+| `openwa_process_resident_memory_bytes`       | gauge     | —                                   | RSS                                                                                                                                                                                                |
+| `openwa_process_heap_used_bytes`             | gauge     | —                                   | V8 heap used                                                                                                                                                                                       |
+| `openwa_event_loop_delay_p99_seconds`        | gauge     | none                                | p99 event-loop delay since the previous uncached scrape                                                                                                                                            |
+| `openwa_event_loop_delay_max_seconds`        | gauge     | none                                | Maximum event-loop delay since the previous uncached scrape                                                                                                                                        |
+| `openwa_unhandled_rejections_total`          | counter   | `kind`                              | Unhandled promise rejections since process start (`other` or `page_context_lost`)                                                                                                                  |
+| `openwa_queue_jobs`                          | gauge     | `queue`, `state`                    | BullMQ jobs per queue in `wait`/`active`/`delayed`/`failed` (cluster-wide, from Redis)                                                                                                             |
+| `openwa_stats_available`                     | gauge     | —                                   | 1 when the last overview read of the database-derived series below succeeded or a kept result under 5 minutes old stands in, else 0                                                                |
+| `openwa_sessions_total`                      | gauge     | —                                   | Configured sessions                                                                                                                                                                                |
+| `openwa_sessions_active`                     | gauge     | —                                   | READY (active) sessions                                                                                                                                                                            |
+| `openwa_sessions`                            | gauge     | `status`                            | Session count per status                                                                                                                                                                           |
+| `openwa_messages_total`                      | gauge     | `direction` (`incoming`/`outgoing`) | Current stored messages by direction                                                                                                                                                               |
+| `openwa_messages_failed_total`               | gauge     | —                                   | Current messages in FAILED state                                                                                                                                                                   |
+| `openwa_webhook_delivery_failures_total`     | counter   | —                                   | Webhook delivery failures since process start: retries exhausted, never sent, or stopped by shutdown between direct retries                                                                        |
+| `openwa_ingress_dedup_body_mismatches_total` | counter   | none                                | Ingress requests with different body bytes under an existing delivery id since process start                                                                                                       |
+| `openwa_session_reconnect_attempts_total`    | counter   | —                                   | Reconnect attempts scheduled across all sessions since process start                                                                                                                               |
+| `openwa_session_reconnect_loop_alerts_total` | counter   | —                                   | Reconnect-loop alerts emitted since process start                                                                                                                                                  |
+| `openwa_sessions_restricted`                 | gauge     | —                                   | Sessions whose account WhatsApp is currently restricting                                                                                                                                           |
+| `openwa_send_pacing_refusals_total`          | counter   | `reason`                            | Sends refused by the pacing governor since process start                                                                                                                                           |
+| `http_requests_total`                        | counter   | `method`, `route`, `status`         | API (`/api`) requests by method, route and status, refusals and preflights included (`(unmatched)`); `499` if the client left during handling, `408`/`503` for a dropped body; Bull Board excluded |
+| `http_request_duration_seconds`              | histogram | `method`, `route`                   | HTTP request duration (`_bucket` / `_sum` / `_count`)                                                                                                                                              |
 
 The last two are deliberately **unprefixed** so a generic RED dashboard or alert rule matches them
 without knowing anything about OpenWA. They come from `src/common/metrics/request-metrics.ts`, which
 `render()` splices into the same output.
 
+The `status` label is the status the gateway sent. A request that ends without one is counted under the status
+below, so a dropped upload is not mistaken for a success: `499` when the client closed the connection while the
+gateway was still working on the request and had sent nothing (this replaces the status that was set on the response
+before the handler ran, usually `200` or `201`), `408` when the gateway dropped a body that stalled or fell behind the
+pace `REQUEST_TIMEOUT_MS` allows, and `503` when it dropped a chunked body that outgrew its share of the in-flight body
+budget, the budget itself or the unkeyed pool. A drop is counted under its own status, not under the error the cut
+upload then raised (a multipart upload answers `500` on the dead connection). A drop cuts the connection, so the client
+sees it close, not these codes; the gateway also logs one warning naming the reason, the client address, the sizes and
+the path (at most ten a minute). A client that abandons a JSON or form body while it is still arriving is counted `400`,
+the answer the body parser writes for an aborted request; the same client leaving a multipart upload that a route is
+reading is counted `499`. A request that Node cuts at `REQUEST_TIMEOUT_MS` while its body is arriving is counted like a
+client that left, `400` or `499` by the same rule (the `408` Node writes goes straight to the socket, past these
+series). A request cut off before routing is counted under `(unmatched)`. A response that had already started when the
+request was cut keeps the status it sent.
+
 Not every row appears on every scrape, and the difference matters when you write alerts. The
 database-derived series (`openwa_sessions*`, `openwa_messages*`) are **omitted entirely** when the
-overview cannot be read — `openwa_stats_available` is what tells the two cases apart, so alert on it
+overview read failed, or is late with no result from the last 5 minutes — `openwa_stats_available` is what tells the two cases apart, so alert on it
 rather than reading a missing series as zero. `openwa_send_pacing_refusals_total` appears only once
 the governor has refused something. `openwa_queue_jobs` appears only with `QUEUE_ENABLED=true`, and a
 queue whose counts cannot be read within 2 s is left out of that scrape. For these, `absent()` is the
@@ -984,8 +1044,19 @@ correct alerting primitive.
 Two rows need care when aggregating. `openwa_queue_jobs` is read from the shared Redis, so every node
 reports the same cluster-wide value: aggregate it with `max`, not `sum`. The event-loop delay window
 runs from the previous uncached render (renders are cached for 5 s), so with several scrapers it is
-shared between them. `openwa_unhandled_rejections_total{kind="page_context_lost"}` counts the expected
-whatsapp-web.js navigation rejections; alert on `kind="other"`.
+shared between them, and scrapes that arrive while a render is running share that render. `openwa_unhandled_rejections_total{kind="page_context_lost"}` counts the expected
+Puppeteer rejections a page navigation or an engine teardown leaves without an owner; alert on
+`kind="other"`. A whatsapp-web.js session reports a failed re-inject into its reloaded page itself, as a
+`page_reinject_failed` warning naming the session, so that one is not counted here. A re-inject that
+loads its helpers but then fails to attach the event listeners raises neither signal and emits no
+`ready`. The patched client resets its `eventsAttached` marker whenever a page without the helpers
+starts attaching, so the liveness probe does not take the helpers alone as a recovered reload: the
+session stays `READY` with sends working until the 3-minute recovery bound after the reload has
+passed, and the watchdog then restarts it after two failed probes in a row (a minute apart). An
+install whose ready-sync patch is missing or still the earlier version (the startup log names it)
+cannot tell a page that lost its listeners from a healthy one and keeps the older behavior: inbound
+messages can stop arriving until the session is restarted or WhatsApp Web reloads its page again (the
+new page runs the whole inject again, listeners included).
 
 `src/common/docs-metrics-list.spec.ts` compares this table against the metric names declared in
 `metrics.service.ts` and `request-metrics.ts`, and checks that every helper `render()` splices in is
@@ -995,14 +1066,16 @@ seen, so keep new renderers on that composition.
 
 > **The database-derived series can be absent.** `openwa_sessions_*`, `openwa_messages_*` and the per-status
 > breakdown come from `StatsService.getOverview()`, which is memoized for `STATS_CACHE_TTL_MS` (default 30 s,
-> shared with `GET /api/stats/overview`) behind the 5 s render cache. If that read fails — an outage, a statement
-> timeout, pool exhaustion, a `SQLITE_BUSY` under load — they are OMITTED rather than reported as zero, and
-> `openwa_stats_available` goes to 0. The process, HTTP and webhook series keep being served, so `up` stays 1
+> shared with `GET /api/stats/overview`) behind the 5 s render cache. If that read fails, or takes over 2 s with no result from the last 5 minutes to serve — an
+> outage, a statement timeout, pool exhaustion, a `SQLITE_BUSY` under load — they are OMITTED rather than reported
+> as zero, and `openwa_stats_available` goes to 0. The process, HTTP and webhook series keep being served, so `up` stays 1
 > and still means "the process is alive". Alert on `openwa_stats_available == 0` for the degradation itself;
 > an alert written as `openwa_sessions_active == 0` would never fire for it, and one written with `absent()`
 > would. Because of the two caches, `openwa_stats_available` can keep reporting 1, and the series their last
-> values, for up to `STATS_CACHE_TTL_MS` + 5 s after the data database fails, so expect an alert on it to fire
-> up to that much later; a `for:` adds to that delay rather than offsetting it. `STATS_CACHE_TTL_MS=0` makes
+> values, for up to `STATS_CACHE_TTL_MS` + 5 s after the data database fails. When the database stops answering
+> instead of failing, the last kept result stands in for the late read, so it can keep reporting 1 for up to 5
+> minutes after the last good read started. Expect an alert on it to fire up to that much later; a `for:` adds to
+> that delay rather than offsetting it. `STATS_CACHE_TTL_MS=0` makes
 > the signal live at the cost of a full overview query per render.
 
 ### Grafana Dashboard Definition
@@ -1071,7 +1144,22 @@ configured for stdout alone drops exactly the lines you most want. `LOG_LEVEL`
 (`error|warn|info|debug|verbose`) sets verbosity and `LOG_FORMAT` (`json|pretty`) the rendering,
 defaulting to `json` under `NODE_ENV=production` and `pretty` elsewhere. Metadata whose **key name**
 looks like a secret (password, token, api-key, authorization, …) keeps the key and has its **value**
-replaced with `[REDACTED]` before the line is written.
+replaced with `[REDACTED]` before the line is written, at any depth. A log call never throws on its
+metadata: an object that contains itself is written with `[Circular]` in its place, and below the fifth
+level at most 1000 more objects and arrays are copied, the rest written as `[Truncated]`. So is an array,
+Map, Set or object with more entries than that allowance has left (a list of 1000 numbers at the sixth
+level), and, at any level, an array, Map or Set of more than a million entries. A Map is counted as the arrays
+it is written as: its list of pairs, and each pair an array of two, which below the fifth level is one more of
+those 1000. At every level one call copies at most two million entries in all (the keys of its objects plus the
+lengths of its arrays, so three to a Map's pair: one of more than 666,666 pairs loses its last pairs) and writes at
+most 2^26 (about 67 million) characters of string values, key names and BigInt text (sixteen to the digit, as
+a long BigInt's text costs that much more to build, so one of more than 2^22 digits is `[Truncated]` even alone); a
+value referenced again is counted again at each use, and what no longer fits is written as `[Truncated]`.
+A value that keeps its data outside its own properties is written readably, at any depth: an Error as its
+`name`, `message` and `stack` before its own properties, a Date as its ISO text (`Invalid Date` when it holds
+none), a boxed string, number or boolean as its value, a Buffer or typed array as its `type` and `length`, never
+its bytes, a Map as an array of `[key, value]` pairs (the value of a secret-named string key redacted) and a Set
+as an array of its values.
 
 The same logger is installed as Nest's framework logger, so framework lines (route mapping, unhandled
 exception stacks from the exception handler) follow `LOG_LEVEL` and `LOG_FORMAT` and carry the

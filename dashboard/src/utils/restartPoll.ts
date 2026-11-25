@@ -1,8 +1,8 @@
 /**
  * How many one-second readiness polls to allow before a restart is declared failed.
  *
- * The poll used to latch onto the OLD process — `/infra/health` answers 200 throughout the drain and
- * the engine teardown that follows — so it "succeeded" in about three seconds and the fixed 60-attempt
+ * The poll used to latch onto the OLD process: `/infra/health` answers 200 for the whole drain, while
+ * the old process is still up, so it "succeeded" in about three seconds and the fixed 60-attempt
  * deadline was never approached. Polling readiness instead means the poll genuinely waits for the new
  * process, and the deadline becomes the thing that decides whether the operator sees the dashboard or
  * an error screen.

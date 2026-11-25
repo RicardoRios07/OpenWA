@@ -14,7 +14,7 @@ transport) and exposes domain resources as properties::
     # Sessions are addressed by the UUID that create() returns, not by name.
     session = client.sessions.create({"name": "my-session"})
     client.sessions.start(session["id"])
-    # Link the account before sending: scan sessions.get_qr_code or use sessions.request_pairing_code,
+    # Link the account before sending: scan sessions.get_qr_code (or use sessions.request_pairing_code for a number with no linked session),
     # then wait for status "ready". An unlinked session answers the send with 409.
     client.messages.send_text(session["id"], {
         "chatId": "628123456789@c.us",
@@ -85,14 +85,24 @@ class OpenWAClient:
         base_url: str,
         api_key: str,
         *,
-        timeout: float = 30.0,
+        # Seconds per network operation (connect, read, write, pool), not for the whole call: a response
+        # that keeps trickling bytes is not cut off. 0 or None means no timeout.
+        timeout: float | httpx.Timeout | tuple[float | None, float | None, float | None, float | None] | None = 30.0,
         default_headers: Mapping[str, str] | None = None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         if not base_url:
             raise ValueError("OpenWAClient: base_url is required")
+        # A key read from a secret file usually ends in a newline, which the HTTP layer refuses with an error
+        # that quotes the whole key. Trim it, and refuse a control or non-ASCII character left inside: the
+        # gateway takes any printable ASCII, a space included, and the other clients send it as it is.
+        api_key = api_key.strip() if isinstance(api_key, str) else api_key
         if not api_key:
             raise ValueError("OpenWAClient: api_key is required")
+        if not isinstance(api_key, str) or not all(" " <= char <= "~" for char in api_key):
+            raise ValueError(
+                "OpenWAClient: api_key contains a control or non-ASCII character; check for a stray newline"
+            )
         _warn_if_insecure_http(base_url)
         self._http = HttpExecutor(
             base_url=base_url,
@@ -182,9 +192,13 @@ class OpenWAClient:
         *,
         query: Mapping[str, Any] | None = None,
         body: Any = None,
+        idempotency_key: str | None = None,
     ) -> Any:
-        """Issue a raw request against the API (advanced use). ``path`` begins with ``/``."""
-        return self._http.request(method, path, query=query, body=body)
+        """Issue a raw request against the API (advanced use). ``path`` begins with ``/``.
+
+        ``idempotency_key`` is sent as ``Idempotency-Key``, which the gateway honors on its keyed send routes.
+        """
+        return self._http.request(method, path, query=query, body=body, idempotency_key=idempotency_key)
 
     # ── Lifecycle ────────────────────────────────────────────────────
 

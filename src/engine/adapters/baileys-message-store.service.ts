@@ -7,11 +7,7 @@ import { BaileysStoredMessage } from './baileys-stored-message.entity';
 import { BaileysMessageStore } from '../types/baileys.types';
 import { createLogger } from '../../common/services/logger.service';
 import { KeyedMutationQueue } from '../../common/utils/keyed-mutation-queue';
-
-function positiveIntFromEnv(name: string, fallback: number): number {
-  const parsed = Number.parseInt(process.env[name] ?? '', 10);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
+import { positiveIntFromEnv } from '../../common/utils/env-int';
 
 /**
  * True when a write failed because the parent `sessions` row is absent (a foreign-key violation),
@@ -93,6 +89,23 @@ export class BaileysMessageStoreService implements BaileysMessageStore {
         { sessionId, waMessageId: messageId },
         { serializedMessage: JSON.stringify(next, BufferJSON.replacer) },
       );
+    });
+  }
+
+  /**
+   * Delete a stored message while `shouldRemove` accepts the copy held when the delete runs: a copy
+   * written or rewritten since the caller looked is judged as it is now. An id the store does not hold
+   * stays absent. Queued behind any put() or update() of the same id already called.
+   */
+  remove(sessionId: string, messageId: string, shouldRemove: (stored: WAMessage) => boolean): Promise<void> {
+    if (!messageId) {
+      return Promise.resolve();
+    }
+    return this.track(sessionId, messageId, async () => {
+      const stored = await this.readStored(sessionId, messageId);
+      if (stored && shouldRemove(stored)) {
+        await this.repo.delete({ sessionId, waMessageId: messageId });
+      }
     });
   }
 

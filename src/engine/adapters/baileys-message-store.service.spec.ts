@@ -402,6 +402,89 @@ describe('BaileysMessageStoreService', () => {
     });
   });
 
+  describe('remove', () => {
+    it('deletes the accepted copy of that session only', async () => {
+      await seedSession('s1');
+      await seedSession('s2');
+      await service.put('s1', msg('M1'));
+      await service.put('s1', msg('M2'));
+      await service.put('s2', msg('M1'));
+
+      await service.remove('s1', 'M1', () => true);
+
+      expect(await service.getMessage('s1', 'M1')).toBeNull();
+      expect(await service.getMessage('s1', 'M2')).not.toBeNull();
+      expect(await service.getMessage('s2', 'M1')).not.toBeNull();
+    });
+
+    it('keeps a copy the caller declines, and leaves an id the store does not hold absent', async () => {
+      await seedSession('s1');
+      await service.put('s1', msg('M1'));
+      const accept = jest.fn(() => false);
+
+      await service.remove('s1', 'M1', accept);
+      await service.remove('s1', 'NOPE', accept);
+
+      expect(accept).toHaveBeenCalledTimes(1); // only for the row that exists
+      expect((accept.mock.calls as unknown as Array<[WAMessage]>)[0][0].key.id).toBe('M1');
+      expect((await service.getMessage('s1', 'M1'))?.message?.conversation).toBe('M1');
+    });
+
+    it('judges the copy held when it runs, behind a put of the same id still in flight', async () => {
+      await seedSession('s1');
+      const seen: unknown[] = [];
+      await Promise.all([
+        service.put('s1', msg('M1')),
+        Promise.resolve().then(() =>
+          service.remove('s1', 'M1', stored => {
+            seen.push(stored.message?.conversation);
+            return true;
+          }),
+        ),
+      ]);
+
+      expect(seen).toEqual(['M1']);
+      expect(await service.getMessage('s1', 'M1')).toBeNull();
+    });
+
+    it('a read issued while the delete is in flight sees the copy gone', async () => {
+      await seedSession('s1');
+      await service.put('s1', msg('M1'));
+      let release!: () => void;
+      const gate = new Promise<void>(resolve => (release = resolve));
+      const real = repo.delete.bind(repo);
+      jest.spyOn(repo, 'delete').mockImplementationOnce(async (...args: Parameters<typeof real>) => {
+        await gate;
+        return real(...args);
+      });
+
+      const removal = service.remove('s1', 'M1', () => true);
+      const read = service.getMessage('s1', 'M1');
+      await ticks();
+      release();
+      await removal;
+
+      expect(await read).toBeNull();
+    });
+
+    // An id the caller could not read must not reach the ORM, which drops an undefined condition and
+    // would match an arbitrary row of the session.
+    it.each([
+      ['empty', ''],
+      ['missing', undefined as unknown as string],
+    ])('does nothing for a %s id', async (_name, id) => {
+      await seedSession('s1');
+      await service.put('s1', msg('M1'));
+      await service.put('s1', msg('M2'));
+      const accept = jest.fn(() => true);
+
+      await service.remove('s1', id, accept);
+
+      expect(accept).not.toHaveBeenCalled();
+      expect(await repo.count({ where: { sessionId: 's1' } })).toBe(2);
+    });
+  });
+
   it('clearSession removes only that session', async () => {
     await seedSession('s1');
     await seedSession('s2');

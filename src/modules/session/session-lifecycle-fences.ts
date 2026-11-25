@@ -3,6 +3,9 @@ import { EngineRegistry } from '../../engine/engine-registry.service';
 import { IWhatsAppEngine } from '../../engine/interfaces/whatsapp-engine.interface';
 import { type createLogger } from '../../common/services/logger.service';
 
+/** Per-engine teardown deadline. Shutdown tears engines down in parallel, so it counts once. See shutdown-budget.ts. */
+export const ENGINE_TEARDOWN_TIMEOUT_MS = 10_000;
+
 /**
  * The credential-teardown / initial-status fences extracted from SessionEngineLifecycle. Plain
  * class (NOT a NestJS provider — the lifecycle's constructor signature is frozen by specs), built
@@ -88,7 +91,7 @@ export class SessionLifecycleFences {
       await Promise.race([
         raw,
         new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error(`engine.${label}() timed out`)), 10_000);
+          timer = setTimeout(() => reject(new Error(`engine.${label}() timed out`)), ENGINE_TEARDOWN_TIMEOUT_MS);
         }),
       ]);
       return true;
@@ -173,8 +176,9 @@ export class SessionLifecycleFences {
    * Wait for the captured `engine`'s exact in-flight `updateStatus(INITIALIZING)` write to settle.
    * Called by every retiring lifecycle control (stop/logout/delete/forceKill) AFTER the stop mark is
    * set and reconnect cancelled, and BEFORE teardown / the final DISCONNECTED write / parent-row
-   * deletion. This keeps the control action the final persisted owner: a delayed INITIALIZING write
-   * always settles first, so it can never land after the DISCONNECTED write or the row removal.
+   * deletion. A write that settles within the deadline precedes the control's final mutation.
+   * Retirement proceeds at the deadline; a late initial-status reply separately checks its captured
+   * engine before announcing, so it cannot emit after that engine has retired.
    *
    * Identity-checked on the engine object: a control action that captured engine A awaits ONLY A's
    * pending promise, never a replacement B's entry (and never deletes it). A bounded wait mirrors

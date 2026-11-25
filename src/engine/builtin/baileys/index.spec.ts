@@ -8,6 +8,7 @@ import { BaileysPlugin } from './index';
 import { BaileysAdapter } from '../../adapters/baileys.adapter';
 import type { LidMappingStore } from '../../identity/lid-mapping-store.service';
 import type { ChatStateStore } from '../../adapters/baileys-chat-state-store.service';
+import type { StoredChatPreviewSource } from '../../adapters/baileys-stored-chat-previews.service';
 
 describe('BaileysPlugin.createEngine (opaque config)', () => {
   beforeEach(() => jest.clearAllMocks());
@@ -19,7 +20,7 @@ describe('BaileysPlugin.createEngine (opaque config)', () => {
       logger: { log: jest.fn() },
     } as unknown as PluginContext);
 
-    plugin.createEngine({ sessionId: 'sess-1', dbSessionId: 'db-1', proxyUrl: 'http://p', proxyType: 'http' });
+    plugin.createEngine({ sessionId: 'sess-1', dbSessionId: 'db-1', proxyUrl: 'http://p' });
 
     expect(BaileysAdapter).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -27,7 +28,6 @@ describe('BaileysPlugin.createEngine (opaque config)', () => {
         dbSessionId: 'db-1',
         authDir: '/data/baileys',
         proxyUrl: 'http://p',
-        proxyType: 'http',
       }),
     );
   });
@@ -69,6 +69,7 @@ describe('BaileysPlugin.createEngine (opaque config)', () => {
       getMessage: jest.fn(),
       getMessages: jest.fn(),
       update: jest.fn(),
+      remove: jest.fn(),
       clearSession: jest.fn(),
     };
     const plugin = new BaileysPlugin(store);
@@ -83,6 +84,15 @@ describe('BaileysPlugin.createEngine (opaque config)', () => {
     const chatStateStore = {} as ChatStateStore;
     new BaileysPlugin(undefined, undefined, lidMappingStore, chatStateStore).createEngine({ sessionId: 'sess-1' });
     expect(BaileysAdapter).toHaveBeenCalledWith(expect.objectContaining({ lidMappingStore, chatStateStore }));
+  });
+
+  // Optional too: a dropped hop would leave the chat list of a restarted engine empty again.
+  it('passes the stored chat previews to the adapter', () => {
+    const storedChatPreviews = {} as StoredChatPreviewSource;
+    new BaileysPlugin(undefined, undefined, undefined, undefined, storedChatPreviews).createEngine({
+      sessionId: 'sess-1',
+    });
+    expect(BaileysAdapter).toHaveBeenCalledWith(expect.objectContaining({ storedChatPreviews }));
   });
 
   it('Uses the constructor-supplied engine config when onLoad never ran (enable-failure path)', () => {

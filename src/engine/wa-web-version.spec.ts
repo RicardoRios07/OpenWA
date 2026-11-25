@@ -8,6 +8,7 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   __resetWebVersionCache,
+  getEffectiveWebVersionInfo,
   PINNED_HTML_TIMEOUT_MS,
   pickSettledWebVersion,
   resolveCurrentWebVersion,
@@ -87,6 +88,22 @@ describe('pickSettledWebVersion', () => {
       entry('2.3000.GOOD-alpha', settled() + 1000, 50 * 86_400_000, false),
     ];
     expect(pickSettledWebVersion(versions, now, null)).toBe('2.3000.GOOD-alpha');
+  });
+
+  it('passes over builds in the skip set and picks the next older settled build', () => {
+    const versions = [
+      entry('2.3000.BAD-alpha', settled(), 50 * 86_400_000), // newest qualifying, but its page was not the app
+      entry('2.3000.GOOD-alpha', settled() + 3_600_000, 50 * 86_400_000),
+    ];
+    expect(pickSettledWebVersion(versions, now, null)).toBe('2.3000.BAD-alpha');
+    expect(pickSettledWebVersion(versions, now, null, new Set(['2.3000.BAD-alpha']))).toBe('2.3000.GOOD-alpha');
+  });
+
+  it('does not fall back to a currentVersion in the skip set', () => {
+    const skip = new Set(['2.3000.BAD-alpha']);
+    expect(pickSettledWebVersion([], now, '2.3000.BAD-alpha', skip)).toBeNull();
+    expect(pickSettledWebVersion(undefined, now, '2.3000.BAD-alpha', skip)).toBeNull();
+    expect(pickSettledWebVersion([], now, '2.3000.OK-alpha', skip)).toBe('2.3000.OK-alpha');
   });
 });
 
@@ -429,5 +446,249 @@ describe('resolveWebVersionPin with a cache directory', () => {
       webVersionCache: { type: 'remote' },
     });
     expect(fetcher).not.toHaveBeenCalled();
+  });
+});
+
+describe('resolveWebVersionPin when a registry build is the logged-out page', () => {
+  const ORIGINAL_ENV = process.env.WWEBJS_WEB_VERSION;
+  const APP = `<!DOCTYPE html><html id="whatsapp-web" lang="en"><head></head><body>${'x'.repeat(2048)}</body></html>`;
+  const LOGGED_OUT = `<!DOCTYPE html><html lang="en" id="whatsapp-web-logged-out"><head></head><body>${'x'.repeat(2048)}</body></html>`;
+  const NEWEST = '2.3000.1053060988-alpha';
+  const NEWER = '2.3000.1052966331-alpha';
+  const OLDER = '2.3000.1052897873-alpha';
+  const htmlUrl = (build: string) =>
+    `https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/${build}.html`;
+  let dir: string;
+
+  // The builds are listed newest first, a day apart, so the picker names them in that order.
+  const registry = (builds: string[]) => ({
+    ok: true,
+    status: 200,
+    json: () =>
+      Promise.resolve({
+        currentVersion: builds[0],
+        versions: builds.map((version, i) => ({
+          version,
+          beta: false,
+          released: new Date(Date.now() - (1 + i) * 86_400_000).toISOString(),
+          expire: '2099-01-01T00:00:00Z',
+        })),
+      }),
+  });
+  const host = (builds: string[], pages: Record<string, string>) =>
+    jest.fn((url: string) => {
+      if (url === WA_VERSION_REGISTRY_URL) return Promise.resolve(registry(builds));
+      const build = Object.keys(pages).find(b => url === htmlUrl(b));
+      return Promise.resolve({
+        ok: build !== undefined,
+        status: build === undefined ? 404 : 200,
+        text: () => Promise.resolve(build === undefined ? '' : pages[build]),
+      });
+    });
+  const warnings = (action: string): Record<string, unknown>[] =>
+    (mockWarn.mock.calls as [string, Record<string, unknown>][])
+      .filter(([, meta]) => meta?.action === action)
+      .map(([, meta]) => meta);
+
+  beforeEach(() => {
+    __resetWebVersionCache();
+    mockWarn.mockClear();
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-web-loggedout-'));
+    delete process.env.WWEBJS_WEB_VERSION;
+  });
+  afterEach(() => {
+    __resetWebVersionCache();
+    fs.rmSync(dir, { recursive: true, force: true });
+    if (ORIGINAL_ENV === undefined) delete process.env.WWEBJS_WEB_VERSION;
+    else process.env.WWEBJS_WEB_VERSION = ORIGINAL_ENV;
+  });
+
+  it('pins the next older settled build when the newest one is the logged-out page', async () => {
+    const fetcher = host([NEWEST, NEWER, OLDER], { [NEWEST]: LOGGED_OUT, [NEWER]: APP, [OLDER]: APP });
+
+    await expect(resolveWebVersionPin(fetcher as never, dir)).resolves.toEqual({
+      webVersion: NEWER,
+      webVersionCache: { type: 'local', path: dir, strict: true },
+    });
+    expect(fs.readdirSync(dir)).toEqual([`${NEWER}.html`]);
+    expect(warnings('web_version_html_rejected')).toEqual([expect.objectContaining({ webVersion: NEWEST })]);
+    expect(warnings('web_version_html_unavailable')).toEqual([]);
+    expect(getEffectiveWebVersionInfo()).toEqual({ version: NEWER, source: 'auto' });
+  });
+
+  it('does not fetch the logged-out build again on the next start', async () => {
+    const fetcher = host([NEWEST, NEWER], { [NEWEST]: LOGGED_OUT, [NEWER]: APP });
+
+    await resolveWebVersionPin(fetcher as never, dir);
+    await expect(resolveWebVersionPin(fetcher as never, dir)).resolves.toMatchObject({ webVersion: NEWER });
+
+    expect(fetcher.mock.calls.filter(([url]) => url === htmlUrl(NEWEST))).toHaveLength(1);
+    expect(warnings('web_version_html_rejected')).toHaveLength(1);
+  });
+
+  it('pins the next build from the same registry read when the registry cannot be read again', async () => {
+    // The read that named the logged-out build is the only one that succeeds: the fallback must not need another.
+    const pages = host([NEWEST, NEWER, OLDER], { [NEWEST]: LOGGED_OUT, [NEWER]: APP, [OLDER]: APP });
+    let reads = 0;
+    const fetcher = jest.fn((url: string) => {
+      if (url !== WA_VERSION_REGISTRY_URL) return pages(url);
+      reads += 1;
+      return reads === 1 ? pages(url) : Promise.reject(new Error('registry unreachable'));
+    });
+
+    await expect(resolveWebVersionPin(fetcher as never, dir)).resolves.toMatchObject({ webVersion: NEWER });
+    expect(reads).toBe(1);
+    expect(fs.readdirSync(dir)).toEqual([`${NEWER}.html`]);
+  });
+
+  it('keeps skipping the rejected build after the daily refresh re-reads the registry', async () => {
+    const DAY = 86_400_000;
+    let now = Date.now();
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const fetcher = host([NEWEST, NEWER], { [NEWEST]: LOGGED_OUT, [NEWER]: APP });
+      await expect(resolveWebVersionPin(fetcher as never, dir)).resolves.toMatchObject({ webVersion: NEWER });
+
+      now += DAY;
+      await expect(resolveWebVersionPin(fetcher as never, dir)).resolves.toMatchObject({ webVersion: NEWER });
+      expect(fetcher.mock.calls.filter(([url]) => url === htmlUrl(NEWEST))).toHaveLength(1);
+      expect(warnings('web_version_html_rejected')).toHaveLength(1);
+    } finally {
+      jest.restoreAllMocks();
+    }
+  });
+
+  it('reads the registry again when the only build of the last read was the logged-out page', async () => {
+    // No candidate is left to fall back to, so the next resolve has to read the registry; the rejected build stays out.
+    const FRESH = '2.3000.1053100000-alpha';
+    let reads = 0;
+    const pages = host([FRESH, NEWEST], { [FRESH]: APP, [NEWEST]: LOGGED_OUT });
+    const fetcher = jest.fn((url: string) => {
+      if (url !== WA_VERSION_REGISTRY_URL) return pages(url);
+      reads += 1;
+      return Promise.resolve(registry(reads === 1 ? [NEWEST] : [FRESH, NEWEST]));
+    });
+
+    await expect(resolveWebVersionPin(fetcher as never, dir)).resolves.toMatchObject({ webVersion: FRESH });
+    expect(reads).toBe(2);
+    expect(fs.readdirSync(dir)).toEqual([`${FRESH}.html`]);
+  });
+
+  it('shares one rejection between sessions that start together', async () => {
+    const fetcher = host([NEWEST, NEWER], { [NEWEST]: LOGGED_OUT, [NEWER]: APP });
+
+    const pins = await Promise.all([
+      resolveWebVersionPin(fetcher as never, dir),
+      resolveWebVersionPin(fetcher as never, dir),
+      resolveWebVersionPin(fetcher as never, dir),
+    ]);
+
+    expect(pins.map(pin => pin?.webVersion)).toEqual([NEWER, NEWER, NEWER]);
+    expect(fetcher.mock.calls.filter(([url]) => url === htmlUrl(NEWEST))).toHaveLength(1);
+    expect(warnings('web_version_html_rejected')).toHaveLength(1);
+  });
+
+  it('gives up after three logged-out builds and drops the pin', async () => {
+    const builds = [NEWEST, NEWER, OLDER, '2.3000.1052866173-alpha'];
+    const fetcher = host(builds, Object.fromEntries(builds.map(b => [b, LOGGED_OUT])));
+
+    await expect(resolveWebVersionPin(fetcher as never, dir)).resolves.toBeUndefined();
+
+    const pages = fetcher.mock.calls.map(([url]) => url).filter(url => url !== WA_VERSION_REGISTRY_URL);
+    expect(pages).toEqual([htmlUrl(NEWEST), htmlUrl(NEWER), htmlUrl(OLDER)]);
+    expect(warnings('web_version_html_rejected')).toHaveLength(2);
+    expect(warnings('web_version_html_unavailable')).toEqual([
+      expect.objectContaining({ webVersion: OLDER, reason: expect.stringContaining('logged-out') as unknown }),
+    ]);
+    expect(fs.readdirSync(dir)).toEqual([]);
+    // Out of builds, no rejected page is left reported as the resolved build; the next start reads the registry.
+    expect(getEffectiveWebVersionInfo()).toEqual({ version: null, source: 'auto' });
+  });
+
+  it('does not swap an exact build the operator set', async () => {
+    process.env.WWEBJS_WEB_VERSION = NEWEST;
+    const fetcher = host([NEWEST, NEWER], { [NEWEST]: LOGGED_OUT, [NEWER]: APP });
+
+    await expect(resolveWebVersionPin(fetcher as never, dir)).resolves.toBeUndefined();
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(warnings('web_version_html_unavailable')).toEqual([expect.objectContaining({ webVersion: NEWEST })]);
+    expect(warnings('web_version_html_rejected')).toEqual([]);
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
+
+  it.each([
+    ['single quotes and another attribute first', `<html lang="en" id='whatsapp-web-logged-out' dir="ltr">`],
+    ['upper case', `<HTML ID="whatsapp-web-logged-out">`],
+    ['spaces around the equals sign', `<html id = "whatsapp-web-logged-out">`],
+    ['an unquoted value', `<html id=whatsapp-web-logged-out>`],
+  ])('refuses the page with %s', async (_label, root) => {
+    process.env.WWEBJS_WEB_VERSION = NEWEST;
+    const page = `<!DOCTYPE html>${root}<head></head><body>${'x'.repeat(2048)}</body></html>`;
+
+    await expect(resolveWebVersionPin(host([NEWEST], { [NEWEST]: page }) as never, dir)).resolves.toBeUndefined();
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
+
+  it('keeps an app page that only mentions the logged-out id', async () => {
+    process.env.WWEBJS_WEB_VERSION = NEWEST;
+    const page = `<!DOCTYPE html><html id="whatsapp-web"><head><style>#whatsapp-web-logged-out{display:none}</style></head><body data-id="whatsapp-web-logged-out">${'x'.repeat(2048)}</body></html>`;
+
+    await expect(resolveWebVersionPin(host([NEWEST], { [NEWEST]: page }) as never, dir)).resolves.toMatchObject({
+      webVersion: NEWEST,
+    });
+    expect(fs.readdirSync(dir)).toEqual([`${NEWEST}.html`]);
+  });
+});
+
+/**
+ * The status reports the build the gateway resolves for sessions to pin, not the outcome of any one start: a
+ * session whose pinned HTML cannot be loaded starts unpinned and logs it, and the reading stays what was resolved.
+ * The infrastructure status and its documentation word it that way, and the dashboard shows the value as it is.
+ */
+describe('the build reported for sessions to pin', () => {
+  const ORIGINAL_ENV = process.env.WWEBJS_WEB_VERSION;
+  const BUILD = '2.3000.1047000000-alpha';
+  const HTML = `<!DOCTYPE html><html><head></head><body>${'x'.repeat(2048)}</body></html>`;
+  let dir: string;
+
+  const html = (ok: boolean) => ({ ok, status: ok ? 200 : 404, text: () => Promise.resolve(ok ? HTML : '') });
+  const registry = { ok: true, status: 200, json: () => Promise.resolve({ currentVersion: BUILD }) };
+  const host = (htmlOk: boolean) =>
+    jest.fn((url: string) => Promise.resolve(url === WA_VERSION_REGISTRY_URL ? registry : html(htmlOk)));
+
+  beforeEach(() => {
+    __resetWebVersionCache();
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-web-reported-'));
+  });
+  afterEach(() => {
+    __resetWebVersionCache();
+    fs.rmSync(dir, { recursive: true, force: true });
+    if (ORIGINAL_ENV === undefined) delete process.env.WWEBJS_WEB_VERSION;
+    else process.env.WWEBJS_WEB_VERSION = ORIGINAL_ENV;
+  });
+
+  it('stays the resolved registry build while the pinned HTML cannot be loaded, and after it can', async () => {
+    delete process.env.WWEBJS_WEB_VERSION;
+
+    await expect(resolveWebVersionPin(host(false) as never, dir)).resolves.toBeUndefined();
+    expect(getEffectiveWebVersionInfo()).toEqual({ version: BUILD, source: 'auto' });
+
+    await expect(resolveWebVersionPin(host(true) as never, dir)).resolves.toMatchObject({ webVersion: BUILD });
+    expect(getEffectiveWebVersionInfo()).toEqual({ version: BUILD, source: 'auto' });
+  });
+
+  it('stays the operator-set build while its HTML cannot be loaded', async () => {
+    process.env.WWEBJS_WEB_VERSION = '2.3000.1047000001-alpha';
+
+    await expect(resolveWebVersionPin(host(false) as never, dir)).resolves.toBeUndefined();
+
+    expect(getEffectiveWebVersionInfo()).toEqual({ version: '2.3000.1047000001-alpha', source: 'pinned' });
+  });
+
+  it('reports no build when the first-party build is chosen', () => {
+    process.env.WWEBJS_WEB_VERSION = 'off';
+
+    expect(getEffectiveWebVersionInfo()).toEqual({ version: null, source: 'native' });
   });
 });

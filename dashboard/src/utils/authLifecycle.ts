@@ -22,6 +22,16 @@ export function clearActorState(...caches: ClearableCache[]): void {
   for (const cache of caches) cache.clear();
 }
 
+/**
+ * Captures the stored API key now and returns a check that holds only while it is still the stored
+ * one. Logout cancels nothing in flight, so a download started before it must not save its file once
+ * the key is gone or another sign-in's has replaced it.
+ */
+export function keepsSameKey(): () => boolean {
+  const key = sessionStorage.getItem('openwa_api_key');
+  return () => sessionStorage.getItem('openwa_api_key') === key;
+}
+
 const IP_REFUSALS: ReadonlySet<string> = new Set(['IP address not allowed', 'Client IP could not be determined']);
 
 /**

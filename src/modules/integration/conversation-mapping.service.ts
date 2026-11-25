@@ -49,7 +49,15 @@ export class ConversationMappingService implements PluginConversationMappingPort
     }
     try {
       const handoverState = await this.inheritedHandover(key);
-      await this.repo.save(this.repo.create({ ...key, providerConversationId, handoverState, ...patch }));
+      // A bare INSERT, not save(): save() wraps it in a transaction, and on SQLite's single shared
+      // connection the rollback of the unique violation handled below would also discard any other
+      // write made while it was open.
+      await this.repo.insert({
+        ...key,
+        providerConversationId,
+        handoverState,
+        ...patch,
+      } as QueryDeepPartialEntity<ConversationMapping>);
       // A hand-back on the other form between the read above and this insert did not reach the new row;
       // read again now that the row exists (a later decision updates it directly).
       if (!patch?.handoverState && handoverState !== 'bot') {
@@ -87,6 +95,14 @@ export class ConversationMappingService implements PluginConversationMappingPort
       if (isUniqueViolation(err)) throw new ConversationMappingConflict(key, providerConversationId);
       throw err;
     }
+  }
+
+  /**
+   * A takeover is scoped to the chat, not to the plugin, and silences every other plugin there. The
+   * mappings stay, so a plugin installed again keeps its provider conversations; only the takeovers go.
+   */
+  async releaseTakeovers(pluginId: string): Promise<void> {
+    await this.repo.update({ pluginId, handoverState: In(['human', 'closed']) }, { handoverState: 'bot' });
   }
 
   get(key: MappingKey): Promise<ConversationMapping | null> {

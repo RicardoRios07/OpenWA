@@ -1,11 +1,14 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { IntegrationDeliveryFailure } from './entities/integration-delivery-failure.entity';
 import { IngressEvent } from './entities/ingress-event.entity';
 import { IngressEnqueueService } from './ingress-enqueue.service';
 import { IngressJobData } from '../queue/processors/ingress.processor';
 import { KeyedAsyncLock } from './ordering-lock';
+import { INGRESS_SHUTDOWN_WAIT_MS } from './integration.constants';
+import { createLogger } from '../../common/services/logger.service';
+import { isAllSessionsScope } from '../../core/plugins/plugin-activation';
 
 const REDRIVE_BATCH_SIZE = 100;
 
@@ -20,8 +23,12 @@ interface StoredDlqPayload {
 }
 
 @Injectable()
-export class RedriveService {
+export class RedriveService implements OnModuleDestroy {
+  private readonly logger = createLogger('IntegrationRedrive');
   private readonly lock = new KeyedAsyncLock();
+  // Aborted on destroy: a batch in progress takes no further row.
+  private readonly stop = new AbortController();
+  private readonly inFlight = new Set<Promise<unknown>>();
 
   constructor(
     @InjectRepository(IntegrationDeliveryFailure, 'data') private readonly repo: Repository<IntegrationDeliveryFailure>,
@@ -29,54 +36,116 @@ export class RedriveService {
     private readonly ingressEnqueue: IngressEnqueueService,
   ) {}
 
+  /**
+   * A redrive runs inside an admitted HTTP request, which shutdown lets finish, and nothing else waits
+   * for it: left alone it would go on replaying while the plugins are disabled and the database closes,
+   * raising the attempts of rows no live plugin ever saw. Stop at the next row and wait for the replay
+   * in hand, as the webhook redrive and the ingress reconciler do. Rows not reached stay open and are
+   * counted in `remaining`.
+   */
+  async onModuleDestroy(): Promise<void> {
+    this.stop.abort();
+    if (this.inFlight.size === 0) return;
+    let timer: NodeJS.Timeout | undefined;
+    const settled = await Promise.race([
+      Promise.allSettled([...this.inFlight]).then(() => true),
+      new Promise<false>(resolve => (timer = setTimeout(resolve, INGRESS_SHUTDOWN_WAIT_MS, false))),
+    ]);
+    clearTimeout(timer);
+    if (!settled) {
+      this.logger.warn('Ingress redrive still running at shutdown; continuing without it', {
+        waitMs: INGRESS_SHUTDOWN_WAIT_MS,
+        action: 'ingress_redrive_shutdown_timeout',
+      });
+    }
+  }
+
+  /**
+   * `sessionScope` is the instance's CURRENT binding (null or '*' for all sessions). Only rows written under
+   * that binding are replayed or counted: dispatch refuses a delivery whose instance was bound to another
+   * session since, so a row of an earlier binding would be retired here and dead-lettered again by its job.
+   */
   redriveInstance(
     pluginId: string,
     instanceId: string,
-    sessionIdFilter: string | null,
+    sessionScope: string | null,
   ): Promise<{ redriven: number; remaining: number; batchSize: number }> {
-    return this.lock.run(`redrive:${pluginId}:${instanceId}`, () =>
-      this.redriveBatch(pluginId, instanceId, sessionIdFilter),
+    const run = this.lock.run(`redrive:${pluginId}:${instanceId}`, () =>
+      this.redriveBatch(pluginId, instanceId, sessionScope),
     );
+    this.inFlight.add(run);
+    const forget = () => void this.inFlight.delete(run);
+    run.then(forget, forget);
+    return run;
   }
 
   private async redriveBatch(
     pluginId: string,
     instanceId: string,
-    sessionIdFilter: string | null,
+    sessionScope: string | null,
   ): Promise<{ redriven: number; remaining: number; batchSize: number }> {
-    const where = {
-      pluginId,
-      instanceId,
-      direction: 'inbound' as const,
-      redriven: false,
-      ...(sessionIdFilter === null ? {} : { sessionId: sessionIdFilter }),
-    };
-    const rows = await this.repo.find({
-      where,
-      // Failed replays increment attempts and move behind never-retried rows, preventing one permanent
-      // failure from livelocking the bounded window while keeping it redrivable.
-      order: { attempts: 'ASC', createdAt: 'ASC' },
-      take: REDRIVE_BATCH_SIZE,
-    });
+    const base = { pluginId, instanceId, direction: 'inbound' as const, redriven: false };
+    // A job of the all-sessions scope carries no session or '*', whichever way it was stored.
+    const where = isAllSessionsScope(sessionScope)
+      ? [
+          { ...base, sessionId: IsNull() },
+          { ...base, sessionId: '*' },
+        ]
+      : { ...base, sessionId: sessionScope as string };
+    // Failed replays increment attempts and move behind never-retried rows, preventing one permanent
+    // failure from livelocking the bounded window while keeping it redrivable.
+    const order = { attempts: 'ASC', createdAt: 'ASC' } as const;
+    // Read one body as its replay starts, so the window holds only ids and malformed payloads stay isolated.
+    const rows = this.stop.signal.aborted
+      ? []
+      : await this.repo.find({ select: { id: true }, where, order, take: REDRIVE_BATCH_SIZE });
 
     let redriven = 0;
-    for (const row of rows) {
+    for (const { id } of rows) {
+      if (this.stop.signal.aborted) break;
+      let row: IntegrationDeliveryFailure | null;
+      try {
+        row = await this.repo.findOneBy(
+          Array.isArray(where) ? where.map(scope => ({ ...scope, id })) : { ...where, id },
+        );
+      } catch (rowError) {
+        this.logger.error(
+          'A dead letter could not be read and is skipped',
+          rowError instanceof Error ? rowError.message : String(rowError),
+          { id, action: 'ingress_redrive_row_unreadable' },
+        );
+        // Move an unreadable row behind the others so it cannot occupy every later window.
+        await this.repo.increment({ id }, 'attempts', 1).catch(() => undefined);
+        continue;
+      }
+      if (!row) continue;
+      if (this.stop.signal.aborted) break;
       const stored = (row.payload ?? {}) as StoredDlqPayload;
       // Re-mint a jobId so BullMQ accepts the replay even if the original jobId lingers.
       const jobId = `redrive:${row.id}`;
-      const { outcome, error } = await this.ingressEnqueue.enqueue(
-        {
-          pluginId,
-          instanceId,
-          route: stored.route ?? '',
-          method: stored.method ?? 'POST',
-          deliveryId: row.deliveryId ?? row.id,
-          sessionId: row.sessionId ?? undefined,
-          providerConversationId: stored.providerConversationId,
-          payload: stored.ingress as IngressJobData['payload'],
-        },
-        jobId,
-      );
+      // Given the stop signal, enqueue() throws instead of dispatching inline once it has aborted: the
+      // row is left open and unchanged, since the plugin may already be torn down.
+      const result = await this.ingressEnqueue
+        .enqueue(
+          {
+            pluginId,
+            instanceId,
+            route: stored.route ?? '',
+            method: stored.method ?? 'POST',
+            deliveryId: row.deliveryId ?? row.id,
+            sessionId: row.sessionId ?? undefined,
+            providerConversationId: stored.providerConversationId,
+            payload: stored.ingress as IngressJobData['payload'],
+          },
+          jobId,
+          this.stop.signal,
+        )
+        .catch(err => {
+          if (this.stop.signal.aborted) return undefined;
+          throw err;
+        });
+      if (!result) break;
+      const { outcome, error } = result;
       // Only retire the DLQ row once the replay was actually accepted (queued) or delivered. A swallowed
       // inline-dispatch failure ('failed') leaves the row redriven=false so it stays redrivable, instead
       // of silently marking it handled and permanently losing the event.

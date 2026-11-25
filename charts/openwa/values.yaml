@@ -77,9 +77,24 @@ resources:
     memory: 2Gi
     cpu: 1000m
 
-# Matches docker-compose stop_grace_period: graceful drain + per-engine Chromium
-# teardown can exceed the 30s k8s default.
-terminationGracePeriodSeconds: 45
+# Matches docker-compose stop_grace_period. Sized for the worst case (QUEUE_ENABLED, Redis, a plugin
+# enabled), where the bounded teardown stages add up to 63s: drain 3 + ingress reconciler 5 + engines
+# 10 (in parallel, whatever the session count) + auto-start wait 5 + webhook drain 5 + worker close 10
+# + producer queue close 2 for each of two queues + usage flush 5 + plugin phase 10 + three Redis quits
+# 2 each. The process force-exits 67s after the drain and 5s before this deadline. Raising
+# SHUTDOWN_DELAY_MS or WEBHOOK_SHUTDOWN_DRAIN_MS moves that exit later by the same amount, so raise
+# this by the same amount too.
+terminationGracePeriodSeconds: 75
+
+# Boot budget of the kubelet startupProbe on /api/health/live: the container is restarted after
+# periodSeconds x (failureThreshold - 1) = 5s x 59 = 295s without an answer. The first boot after an
+# upgrade builds indexes on a large messages table (about 3.8s per million rows) and converts legacy
+# message types in the same transaction (about 60s per million legacy rows on PostgreSQL) before the
+# port opens, so raise failureThreshold, or run the migrations first (docs/14, section 14.5). A higher
+# value only delays the restart of a boot that is genuinely stuck.
+startupProbe:
+  periodSeconds: 5
+  failureThreshold: 60
 
 # Pod-level securityContext, empty by default. The default image start is as
 # root: the entrypoint re-owns /app/data and the XDG dirs, then drops to the
@@ -133,6 +148,10 @@ containerSecurityContext:
 ingress:
   enabled: false
   className: ""
+  # ingress-nginx refuses a request body over 1m by default, below the 25mb the app accepts
+  # (BODY_SIZE_LIMIT), so a base64 media send fails with 413 before it reaches the pod. Raise it
+  # to at least BODY_SIZE_LIMIT, for example:
+  #   nginx.ingress.kubernetes.io/proxy-body-size: 25m
   annotations: {}
   host: openwa.example.com
   paths:
@@ -155,14 +174,26 @@ podDisruptionBudget:
   minAvailable: 1
 
 # Requires METRICS_TOKEN set on the app (via secretEnv); without it /api/metrics
-# returns 404.
+# returns 404. A production boot refuses the placeholder from .env.example and
+# other known weak values, so use a long random token. The Secret the pod loads its
+# environment from holds it under the key METRICS_TOKEN: the chart's own Secret
+# (named <release>-openwa, or the release name when that contains "openwa") or
+# existingSecret. For a release named openwa, scrape with:
+#
+#   serviceMonitor:
+#     enabled: true
+#     bearerTokenSecret:
+#       name: openwa
+#       key: METRICS_TOKEN
+#
 serviceMonitor:
   enabled: false
   interval: 30s
   # Extra labels for the ServiceMonitor — most Prometheus Operators select
   # ServiceMonitors by a release label (e.g. release: kube-prometheus-stack).
   additionalLabels: {}
-  # Secret holding the METRICS_TOKEN value for bearer auth.
+  # Secret and key holding the METRICS_TOKEN value for bearer auth. The default key
+  # `token` fits a Secret of your own; the chart's Secret holds it as METRICS_TOKEN.
   bearerTokenSecret:
     name: ""
     key: token

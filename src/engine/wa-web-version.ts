@@ -44,6 +44,10 @@ let cachedCurrentVersion: string | undefined;
 let cachedAt = 0;
 let inFlight: Promise<string | null> | null = null;
 let lastFailureAt = 0;
+// The builds the last successful registry read offered, in the order an auto pin tries them, less any
+// rejected since: the fallback an auto pin takes when the build it tried was the logged-out page, so
+// that fallback costs no second registry read (which can fail, and would leave the session unpinned).
+let cachedCandidates: string[] = [];
 
 let warnedRemoteTrust = false;
 
@@ -60,15 +64,28 @@ const PINNED_HTML_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 const pinnedHtml = new Map<string, string>();
 const pinnedHtmlInFlight = new Map<string, Promise<string>>();
 
+// WhatsApp's logged-out landing page, which the registry has stored as the HTML of a few builds. It passes the
+// length and <html checks, but it holds none of WhatsApp Web's modules, so a session started on it fails at once
+// (`window.require('WAWebSocketModel')` is null). Its root element's id names it.
+const LOGGED_OUT_PAGE = /<html\b[^>]*\bid\s*=\s*["']?whatsapp-web-logged-out["'\s>]/i;
+class LoggedOutPageError extends Error {}
+// Builds whose page was that one. The next auto-resolve skips them, so the pin moves to an older settled build
+// instead of holding the broken one for CACHE_TTL_MS.
+const rejectedBuilds = new Set<string>();
+// How many registry builds an auto pin tries before the session loads the live build instead.
+const MAX_AUTO_BUILDS = 3;
+
 /** Test-only: reset the resolved-version cache between cases. */
 export function __resetWebVersionCache(): void {
   cachedCurrentVersion = undefined;
   cachedAt = 0;
   inFlight = null;
   lastFailureAt = 0;
+  cachedCandidates = [];
   warnedRemoteTrust = false;
   pinnedHtml.clear();
   pinnedHtmlInFlight.clear();
+  rejectedBuilds.clear();
 }
 
 /**
@@ -138,28 +155,53 @@ function buildRemotePin(version: string): RemoteWebVersionPin {
 type WaVersionEntry = { version?: unknown; beta?: unknown; released?: unknown; expire?: unknown };
 
 /**
+ * Every build `pickSettledWebVersion` would accept, in the order an auto pin tries them: the settled
+ * builds newest first, then `currentVersion` as the last resort. The build after the first is what an
+ * auto pin falls back to when the first turns out to be the logged-out page, so the fallback costs no
+ * second registry read. Pure: pass `now` explicitly.
+ */
+function rankSettledWebVersions(
+  versions: unknown,
+  now: number,
+  currentVersion: string | null,
+  skip: ReadonlySet<string> = new Set(),
+): string[] {
+  const settled: { version: string; released: number }[] = [];
+  if (Array.isArray(versions)) {
+    const settledCutoff = now - WEB_VERSION_SETTLE_MS;
+    for (const raw of versions) {
+      if (!raw || typeof raw !== 'object') continue;
+      const e = raw as WaVersionEntry;
+      if (typeof e.version !== 'string' || !/^\d/.test(e.version) || skip.has(e.version)) continue;
+      if (e.beta === true) continue;
+      const released = typeof e.released === 'string' ? Date.parse(e.released) : NaN;
+      if (!Number.isFinite(released) || released > settledCutoff) continue; // too fresh
+      const expire = typeof e.expire === 'string' ? Date.parse(e.expire) : NaN;
+      if (Number.isFinite(expire) && expire <= now) continue; // already expired
+      settled.push({ version: e.version, released });
+    }
+  }
+  // Stable: of two builds released at the same instant, the one listed first ranks first.
+  const ranked = settled.sort((a, b) => b.released - a.released).map(e => e.version);
+  if (currentVersion && !skip.has(currentVersion) && !ranked.includes(currentVersion)) ranked.push(currentVersion);
+  return [...new Set(ranked)];
+}
+
+/**
  * Pick the WhatsApp Web build to auto-pin from the registry's `versions[]`: the newest non-beta,
  * unexpired build published at least `WEB_VERSION_SETTLE_MS` ago — i.e. one the ecosystem has had
  * time to validate — rather than the registry's `currentVersion`, which can be minutes old. Falls
  * back to `currentVersion` when no build qualifies (a freshly-reset registry, or every build still
- * too new), so this hardens pinning without ever defeating it. Pure: pass `now` explicitly.
+ * too new), so this hardens pinning without ever defeating it. Builds in `skip` (their page was not the app) are
+ * passed over, `currentVersion` included. Pure: pass `now` explicitly.
  */
-export function pickSettledWebVersion(versions: unknown, now: number, currentVersion: string | null): string | null {
-  if (!Array.isArray(versions)) return currentVersion;
-  const settledCutoff = now - WEB_VERSION_SETTLE_MS;
-  let best: { version: string; released: number } | null = null;
-  for (const raw of versions) {
-    if (!raw || typeof raw !== 'object') continue;
-    const e = raw as WaVersionEntry;
-    if (typeof e.version !== 'string' || !/^\d/.test(e.version)) continue;
-    if (e.beta === true) continue;
-    const released = typeof e.released === 'string' ? Date.parse(e.released) : NaN;
-    if (!Number.isFinite(released) || released > settledCutoff) continue; // too fresh
-    const expire = typeof e.expire === 'string' ? Date.parse(e.expire) : NaN;
-    if (Number.isFinite(expire) && expire <= now) continue; // already expired
-    if (!best || best.released < released) best = { version: e.version, released };
-  }
-  return best?.version ?? currentVersion;
+export function pickSettledWebVersion(
+  versions: unknown,
+  now: number,
+  currentVersion: string | null,
+  skip: ReadonlySet<string> = new Set(),
+): string | null {
+  return rankSettledWebVersions(versions, now, currentVersion, skip)[0] ?? null;
 }
 
 /**
@@ -168,7 +210,8 @@ export function pickSettledWebVersion(versions: unknown, now: number, currentVer
  * single transient outage must not permanently defeat the #488 fix). A failed refresh keeps the
  * previous build, and only a process that never resolved one gets null. Concurrent callers share one
  * in-flight fetch. Prefers a build that has settled (see `pickSettledWebVersion`) over the registry's
- * possibly-minute-old `currentVersion`.
+ * possibly-minute-old `currentVersion`, and keeps the whole ranked list it read, so a build rejected
+ * later falls back to the next one without a second read.
  */
 export async function resolveCurrentWebVersion(fetcher: typeof fetch = fetch): Promise<string | null> {
   const previous = cachedCurrentVersion ?? null;
@@ -187,11 +230,12 @@ export async function resolveCurrentWebVersion(fetcher: typeof fetch = fetch): P
         const json = (await res.json()) as { currentVersion?: unknown; versions?: unknown };
         const rawCurrent =
           typeof json.currentVersion === 'string' && /^\d/.test(json.currentVersion) ? json.currentVersion : null;
-        const picked = pickSettledWebVersion(json.versions, Date.now(), rawCurrent);
-        if (picked) {
-          cachedCurrentVersion = picked; // cache only on success
+        const ranked = rankSettledWebVersions(json.versions, Date.now(), rawCurrent, rejectedBuilds);
+        if (ranked.length) {
+          cachedCandidates = ranked;
+          cachedCurrentVersion = ranked[0]; // cache only on success
           cachedAt = Date.now();
-          return picked;
+          return ranked[0];
         }
         lastFailureAt = Date.now(); // nothing usable — back off, then retry
         warnResolveFailed('the registry carried no usable build', previous);
@@ -219,7 +263,9 @@ export async function resolveCurrentWebVersion(fetcher: typeof fetch = fetch): P
  *   build, or fall back to native auto-select when none was ever resolved.
  * `WWEBJS_WEB_VERSION_REMOTE_PATH` overrides the HTML URL template (`{version}` placeholder).
  * With `cacheDir`, the pinned HTML is downloaded there first and the pin becomes a strict local cache;
- * a download that fails (or takes over PINNED_HTML_TIMEOUT_MS) drops the pin with a named warning.
+ * a download that fails (or takes over PINNED_HTML_TIMEOUT_MS) drops the pin with a named warning. An auto-resolved
+ * build whose page is the logged-out landing page is skipped for the next older settled build (up to
+ * MAX_AUTO_BUILDS tried); an exact version the operator set is never swapped.
  * The auto-resolve replaces whatsapp-web.js's unreliable default that caused #488 (scan → stuck →
  * disconnect loop) on Docker setups where no version was pinned.
  */
@@ -234,17 +280,22 @@ export async function resolveWebVersionPin(
 ): Promise<WebVersionPin | undefined> {
   const raw = process.env.WWEBJS_WEB_VERSION?.trim();
   const lc = raw?.toLowerCase();
-  let pin: RemoteWebVersionPin;
   if (raw && lc !== 'off' && lc !== 'latest' && lc !== 'auto') {
-    pin = buildRemotePin(raw); // operator-pinned exact version
-  } else {
-    if (lc === 'off') return undefined; // explicit escape hatch → native auto-select
+    const pin = buildRemotePin(raw); // operator-pinned exact version: never swapped for another build
+    warnRemoteTrustOnce(pin);
+    return cacheDir ? localisePin(pin, cacheDir, fetcher, false) : pin;
+  }
+  if (lc === 'off') return undefined; // explicit escape hatch → native auto-select
+  for (let attempt = 1; ; attempt++) {
     const current = await resolveCurrentWebVersion(fetcher);
     if (!current) return undefined;
-    pin = buildRemotePin(current);
+    const pin = buildRemotePin(current);
+    warnRemoteTrustOnce(pin);
+    if (!cacheDir) return pin;
+    const local = await localisePin(pin, cacheDir, fetcher, attempt < MAX_AUTO_BUILDS);
+    // The next resolve answers the next build the registry read named, which the rejection moved the cache to.
+    if (local || !rejectedBuilds.has(current) || attempt >= MAX_AUTO_BUILDS) return local;
   }
-  warnRemoteTrustOnce(pin);
-  return cacheDir ? localisePin(pin, cacheDir, fetcher) : pin;
 }
 
 /**
@@ -256,6 +307,7 @@ async function localisePin(
   pin: RemoteWebVersionPin,
   cacheDir: string,
   fetcher: typeof fetch,
+  willRetry: boolean,
 ): Promise<WebVersionPin | undefined> {
   const { webVersion } = pin;
   const { remotePath } = pin.webVersionCache;
@@ -266,6 +318,35 @@ async function localisePin(
     writePinnedHtml(cacheDir, webVersion, html);
     return { webVersion, webVersionCache: { type: 'local', path: cacheDir, strict: true } };
   } catch (error) {
+    if (error instanceof LoggedOutPageError) {
+      const first = !rejectedBuilds.has(webVersion);
+      rejectedBuilds.add(webVersion);
+      // A rejected build is never offered again, whatever this call goes on to do.
+      cachedCandidates = cachedCandidates.filter(v => v !== webVersion);
+      if (willRetry) {
+        // Answer the next build the last registry read offered, so the retry needs no second read: that
+        // read can fail (offline, rate-limited, registry down) and would leave the session unpinned.
+        if (cachedCurrentVersion === webVersion) {
+          cachedCurrentVersion = cachedCandidates[0];
+          cachedAt = cachedCurrentVersion ? Date.now() : 0;
+        }
+        if (first) {
+          logger.warn(
+            'The registry build is the WhatsApp Web logged-out page, not the app; trying an older settled build',
+            {
+              action: 'web_version_html_rejected',
+              webVersion,
+              remotePath: splitCredentials(remotePath).href,
+            },
+          );
+        }
+        return undefined;
+      }
+      if (cachedCurrentVersion === webVersion) {
+        cachedCurrentVersion = undefined; // attempts used up: the next resolve reads the registry again
+        cachedAt = 0;
+      }
+    }
     logger.warn('Could not load the pinned WhatsApp Web build; continuing WITHOUT a pin', {
       action: 'web_version_html_unavailable',
       reason: error instanceof Error ? error.message : String(error),
@@ -303,6 +384,8 @@ async function downloadPinnedHtml(remotePath: string, fetcher: typeof fetch): Pr
     if (html.length < PINNED_HTML_MIN_LENGTH || !/<html/i.test(html)) {
       throw new Error('the response is not a WhatsApp Web page');
     }
+    if (LOGGED_OUT_PAGE.test(html))
+      throw new LoggedOutPageError('the response is the WhatsApp Web logged-out page, not the app');
     pinnedHtml.clear();
     pinnedHtml.set(remotePath, html);
     return html;
@@ -370,9 +453,11 @@ function writePinnedHtml(cacheDir: string, version: string, html: string): void 
 }
 
 /**
- * The WhatsApp Web build sessions request as their pin, for the dashboard to display (#488). This is
- * what was asked for, not a read-back: a page can still run another build, which each session logs at
- * READY (./adapters/wwebjs-running-build). It is distinct from the whatsapp-web.js library version.
+ * The WhatsApp Web build the gateway resolves for sessions to pin, for the dashboard to display (#488).
+ * This is what is resolved, not what any one start did and not a read-back: a session whose pinned HTML
+ * cannot be loaded starts without a pin and logs `web_version_html_unavailable` (see localisePin), and a
+ * page can still run another build, which each session logs at READY (./adapters/wwebjs-running-build).
+ * It is distinct from the whatsapp-web.js library version.
  * `source`: `pinned` = operator-set exact version; `auto` = resolved from the wa-version registry;
  * `native` = whatsapp-web.js auto-select.
  */

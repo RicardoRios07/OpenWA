@@ -97,7 +97,7 @@ describe('ConversationMappingService', () => {
     // lid 111 -> phone 628999. A 1:1 chat's neutral id flips from `111@lid` to `628999@c.us` once the
     // mapping is learned, so a takeover recorded under either form has to govern the other. The store is
     // real but its cache is empty, as for a mapping past the preload cap or evicted: only the table has it.
-    const table = [{ lid: '111', phone: '628999' }];
+    const table = [{ lid: '111', phone: '628999', isReported: true }];
     const lidStore = new LidMappingStoreService({
       find: ({ where }: { where: { lid?: FindOperator<string>; phone?: FindOperator<string> } }) =>
         Promise.resolve(table.filter(r => inList(r.lid, where.lid) && inList(r.phone, where.phone))),
@@ -133,6 +133,20 @@ describe('ConversationMappingService', () => {
     it('does not match another person', async () => {
       await human('111@lid');
       expect(await service.findHandoverForChat('sess-1', '628000@c.us')).toBeNull();
+    });
+
+    it('does not share takeover decisions through an unreported phone alias', async () => {
+      table[0].isReported = false;
+      try {
+        await human('111@lid');
+        expect(await service.findHandoverForChat('sess-1', '628999@c.us')).toBeNull();
+        await bot('628999@c.us', 'convC');
+        expect((await row('628999@c.us'))!.handoverState).toBe('bot');
+        await service.setHandover((await row('628999@c.us'))!.id, 'bot');
+        expect((await row('111@lid'))!.handoverState).toBe('human');
+      } finally {
+        table[0].isReported = true;
+      }
     });
 
     const row = (chatId: string) =>
@@ -174,7 +188,7 @@ describe('ConversationMappingService', () => {
     it('a hand-back reaches a row whose form was paired after the takeover', async () => {
       await human('111@lid');
       await bot('628999@c.us', 'convC'); // inherits the takeover
-      table.push({ lid: '333', phone: '628999' }); // another lid for the number is learned meanwhile
+      table.push({ lid: '333', phone: '628999', isReported: true }); // another lid for the number is learned meanwhile
       try {
         await service.setHandover((await row('628999@c.us'))!.id, 'bot');
         expect((await row('111@lid'))!.handoverState).toBe('bot');
@@ -185,7 +199,7 @@ describe('ConversationMappingService', () => {
     });
 
     it('a decision on one lid of a number reaches its sibling lid and the phone-form row', async () => {
-      table.push({ lid: '222', phone: '628999' });
+      table.push({ lid: '222', phone: '628999', isReported: true });
       try {
         await bot('111@lid', 'convB');
         await bot('222@lid', 'convD');
@@ -207,11 +221,11 @@ describe('ConversationMappingService', () => {
     it('a hand-back that lands while a row under the other form is being linked still reaches it', async () => {
       await human('111@lid');
       const repo = ds.getRepository(ConversationMapping);
-      const save = repo.save.bind(repo);
-      jest.spyOn(repo, 'save').mockImplementationOnce(async (entity: unknown) => {
+      const insert = repo.insert.bind(repo);
+      jest.spyOn(repo, 'insert').mockImplementationOnce(async (entity: Parameters<typeof insert>[0]) => {
         // The agent hands back on the lid conversation after the new row read the takeover.
         await service.setHandover((await row('111@lid'))!.id, 'bot');
-        return save(entity as ConversationMapping);
+        return insert(entity);
       });
       await bot('628999@c.us', 'convC');
       expect(await service.findHandoverForChat('sess-1', '628999@c.us')).toBeNull();
@@ -230,6 +244,47 @@ describe('ConversationMappingService', () => {
         handoverState: 'human',
       });
     });
+  });
+
+  it('releaseTakeovers hands a plugin back its chats and leaves the mappings and other plugins alone', async () => {
+    await service.upsert(key, 'conv-1', { handoverState: 'human' });
+    await service.upsert({ ...key, chatId: 'chat-2' }, 'conv-2', { handoverState: 'closed' });
+    await service.upsert({ ...key, pluginId: 'other', chatId: 'chat-3' }, 'conv-3', { handoverState: 'human' });
+    expect(await service.findHandoverForChat('sess-1', 'chat-1')).toMatchObject({ handoverState: 'human' });
+
+    await service.releaseTakeovers('chatwoot');
+
+    expect(await service.findHandoverForChat('sess-1', 'chat-1')).toBeNull();
+    expect(await service.findHandoverForChat('sess-1', 'chat-2')).toBeNull();
+    expect((await service.get(key))?.providerConversationId).toBe('conv-1');
+    expect(await service.findHandoverForChat('sess-1', 'chat-3')).toMatchObject({
+      pluginId: 'other',
+      handoverState: 'human',
+    });
+  });
+
+  // SQLite serves every repository from one connection, so a transaction the insert opens is shared with
+  // the writes made while it is open, and the rollback of the conflict it expects would undo them too.
+  it('does not undo a write made while an upsert is refused for a bound conversation', async () => {
+    await service.upsert(key, 'conv-1');
+    const repo = ds.getRepository(ConversationMapping);
+    const other = { ...key, instanceId: 'acct2', chatId: 'chat-9' };
+    let concurrent: Promise<unknown> | undefined;
+    ds.subscribers.push({
+      listenTo: () => ConversationMapping,
+      beforeInsert: event => {
+        if ((event.entity as ConversationMapping).chatId === 'chat-3') {
+          concurrent = repo.insert({ ...other, providerConversationId: 'conv-9' });
+        }
+      },
+    });
+
+    await expect(service.upsert({ ...key, chatId: 'chat-3' }, 'conv-1')).rejects.toBeInstanceOf(
+      ConversationMappingConflict,
+    );
+    await concurrent;
+
+    expect(await service.get(other)).not.toBeNull();
   });
 
   it('delete removes the row so a later reverse-key insert no longer conflicts', async () => {

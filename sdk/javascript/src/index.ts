@@ -15,7 +15,7 @@
  * // Sessions are addressed by the UUID that create() returns, not by name.
  * const session = await client.sessions.create({ name: 'my-session' });
  * await client.sessions.start(session.id);
- * // Link the account before sending: scan sessions.getQrCode or use sessions.requestPairingCode,
+ * // Link the account before sending: scan sessions.getQrCode (or use sessions.requestPairingCode for a number with no linked session),
  * // then wait for status 'ready'. An unlinked session answers the send with 409.
  * const result = await client.messages.sendText(session.id, {
  *   chatId: '628123456789@c.us',

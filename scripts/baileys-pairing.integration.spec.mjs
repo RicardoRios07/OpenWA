@@ -40,7 +40,7 @@ const refresh = child => ({
   attrs: { id: 'fixture-refresh', from: 's.whatsapp.net', type: 'companion_reg_refresh' },
   content: child ? [{ tag: child, attrs: {} }] : [],
 });
-async function boot(t) {
+async function boot(t, { qrTimeout = 10000 } = {}) {
   const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
   await once(server, 'listening');
   server.on('connection', client =>
@@ -73,7 +73,7 @@ async function boot(t) {
     logger,
     waWebSocketUrl: `ws://127.0.0.1:${server.address().port}`,
     connectTimeoutMs: 5000,
-    qrTimeout: 10000,
+    qrTimeout,
   });
   if (!sock.ws.isOpen) await once(sock.ws, 'open');
   const qrs = [],
@@ -183,3 +183,26 @@ test('malformed refresh and established identity leave credentials and QR intact
   assert.equal(creds.advSecretKey, secret);
   assert.equal(updates.length, 0);
 });
+test(
+  'a pairing code request stops the QR timer, so running out of refs does not end the socket',
+  { timeout: 10000 },
+  async t => {
+    // Upstream keeps the timer running: the second ref is rendered and the third wait ends the socket with
+    // 'QR refs attempts ended'. This patch adapts #2765 to stop at creds.me, which requestPairingCode writes
+    // before the code is entered.
+    const { sock, creds, qrs } = await boot(t, { qrTimeout: 150 });
+    const closed = [];
+    sock.ev.on('connection.update', update => {
+      if (update.connection === 'close') closed.push(update.lastDisconnect?.error?.message);
+    });
+    const qr = nextQr(sock);
+    deliver(sock.ws, pairDevice());
+    await qr;
+    creds.me = { id: 'fixture@s.whatsapp.net', name: '~' };
+    // Longer than the two refs last with a 150 ms timer.
+    await new Promise(resolve => setTimeout(resolve, 700));
+    assert.equal(qrs.length, 1, 'a QR was rendered after the pairing code was requested');
+    assert.deepEqual(closed, [], 'the socket ended when the QR refs ran out');
+    assert.ok(sock.ws.isOpen);
+  },
+);

@@ -13,10 +13,12 @@ export interface ConversationSendDeps {
   assertSessionActive: (sessionId: string) => void;
   // Resolve the WA chat id from conversation_mappings when the envelope omits chatId.
   resolveChatId: (env: ConversationSendEnvelope) => Promise<string>;
-  // Seed the hook in-flight set so an adapter's own outbound message:sending hook cannot echo-loop
-  // back into this same send. Only 'message:sending' is reachable this way — MessageService fires it
-  // synchronously inside sendText/reply. 'message:sent' is emitted later by SessionEngineLifecycle's
-  // engine callback (onMessageCreate), outside this call's async scope, so seeding it here would be a no-op.
+  // Run the send inside the hook context the caller is already in, when it is in one: a send from a hook
+  // handler then cannot re-fire that handler's own message:sending event. A send from an ingress handler
+  // is in no hook context and runs the full chain. Only 'message:sending' is reachable this way,
+  // because MessageService fires it synchronously inside sendText/reply. 'message:sent' is emitted later
+  // by SessionEngineLifecycle's engine callback (onMessageCreate), outside this call's async scope, so
+  // seeding it here would be a no-op.
   runGuarded: <T>(events: string[], run: () => Promise<T>) => Promise<T>;
   sendText: (sessionId: string, opts: { chatId: string; text: string; linkPreview?: boolean }) => Promise<unknown>;
   reply: (sessionId: string, opts: { chatId: string; quotedMessageId: string; text: string }) => Promise<unknown>;

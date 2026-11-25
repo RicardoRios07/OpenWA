@@ -89,3 +89,26 @@ test('a backtick in a push name cannot pair with one in the body and hand the na
     rtl.cleanup();
   }
 });
+
+test('a body past the link-scanning bound renders as plain text without being scanned', () => {
+  // Link detection grows with the square of an unbroken run of domain-like characters, so a long
+  // body is left unlinked instead of freezing the thread for seconds.
+  const body = `${'a.'.repeat(32_500)} https://example.com/x`;
+  const started = performance.now();
+  const { container } = rtl.render(createElement(MessageBody, { text: body }));
+  const elapsed = performance.now() - started;
+  assert.ok(elapsed < 1000, `rendering ${body.length} chars took ${Math.round(elapsed)} ms`);
+  assert.equal(container.querySelectorAll('a').length, 0);
+  assert.equal(container.textContent, body);
+});
+
+test('a body at the link-scanning bound is still linked', () => {
+  const url = 'https://example.com/x';
+  const body = `${url} ${'word '.repeat(1000)}`.slice(0, 4096);
+  assert.equal(body.length, 4096);
+  const { container } = rtl.render(createElement(MessageBody, { text: body }));
+  assert.equal(container.querySelector('a')?.getAttribute('href'), url);
+  rtl.cleanup();
+  const { container: past } = rtl.render(createElement(MessageBody, { text: `${body}x` }));
+  assert.equal(past.querySelectorAll('a').length, 0);
+});

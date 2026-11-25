@@ -1,10 +1,12 @@
 import { Injectable, Optional, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { MoreThan, Repository } from 'typeorm';
+import { IsNull, MoreThan, Repository } from 'typeorm';
+import type { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity';
 import { ConfigService } from '@nestjs/config';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { setTimeout } from 'node:timers/promises';
+import { randomUUID } from 'node:crypto';
 import { Webhook } from './entities/webhook.entity';
 import { WebhookOutboxService, type ReplayableDelivery } from './webhook-outbox.service';
 import { WebhookDeliveryFailure } from './entities/webhook-delivery-failure.entity';
@@ -16,16 +18,19 @@ import {
   recordTerminalFailure,
 } from './utils/deliver-once';
 import { createLogger } from '../../common/services/logger.service';
+import { DEFAULT_WEBHOOK_SHUTDOWN_DRAIN_MS } from '../../common/services/shutdown-budget';
 import { DEFAULT_WEBHOOK_MEDIA_INLINE_MAX_BYTES, shedInlineMedia } from '../../common/utils/inline-media';
 import { incrementWebhookDeliveryFailures } from '../../common/metrics/webhook-delivery-metrics';
 import { QUEUE_NAMES } from '../queue/queue-names';
+import { producerReady } from '../queue/redis-connection';
 import { generateIdempotencyKey, generateDeliveryId } from './utils/idempotency.util';
-import { evaluateFilters } from './filters/filter-evaluator';
+import { evaluateFilters, prepareFilterLidResolver } from './filters/filter-evaluator';
 import { LidMappingStoreService } from '../../engine/identity/lid-mapping-store.service';
 import { redactSsrfError } from '../../common/security/ssrf-guard';
 import { HookManager } from '../../core/hooks';
 import { ConcurrencyLimiter } from '../../common/utils/concurrency-limiter';
 import { isWebhookBeforeResult } from '../../core/hooks/hook-results';
+import { WILDCARD_EXCLUDED_EVENTS, subscriptionCoversEvent } from '../../common/utils/wildcard-events';
 
 export interface WebhookPayload {
   event: string;
@@ -66,15 +71,25 @@ const DEFAULT_WEBHOOK_MAX_PAYLOAD_BYTES = 1024 * 1024;
 
 /**
  * How long shutdown waits for in-flight direct deliveries (and their dead-letter bookkeeping) to
- * finish before abandoning them. Default 5s; override with WEBHOOK_SHUTDOWN_DRAIN_MS.
+ * finish before abandoning them, and for an outbox replay in flight. Default 5s; override with
+ * WEBHOOK_SHUTDOWN_DRAIN_MS. Defined in shutdown-budget.ts, which sizes the kill deadline from it.
  */
-const DEFAULT_WEBHOOK_SHUTDOWN_DRAIN_MS = 5000;
+export { DEFAULT_WEBHOOK_SHUTDOWN_DRAIN_MS };
+
+/**
+ * How long a session's answer to "which opt-in events does an active webhook name" is reused. Writes
+ * through WebhookService drop the answer at once on this node; a write on another instance (Redis
+ * deployment), or one that bypasses WebhookService, is picked up when it expires.
+ */
+const OPT_IN_SUBSCRIPTIONS_TTL_MS = 5000;
 
 /**
  * The result of one delivery attempt. Reported, not thrown: every delivery failure below is already
- * handled in place, so a try/catch cannot tell a delivered event from a dead-lettered one. The one
- * exception that escapes is 'ConcurrencyLimiter closed' from a retry backoff woken after shutdown;
- * only runLimited can see it, and it records the shutdown and keeps the outbox row pending.
+ * handled in place, so a try/catch cannot tell a delivered event from a dead-lettered one. Two
+ * exceptions escape, both from shutdown, and both keep the outbox row pending: 'ConcurrencyLimiter
+ * closed' from a retry backoff woken after it, which only runLimited sees and records, and the
+ * AbortError of a replay whose signal stopped its retries or its queue fallback, which reaches
+ * WebhookReconcilerService through redeliver.
  * 'cancelled' is terminal like 'delivered' and must never be replayed: either a plugin suppressed the
  * dispatch (nothing left the process), or a direct retry found the webhook removed, disabled or
  * unsubscribed (an earlier attempt may already have been POSTed).
@@ -93,6 +108,18 @@ interface DispatchEventContext {
    * which runs inside an HTTP request: the in-process backoff schedule would hold it for minutes.
    */
   singleAttempt?: boolean;
+  /**
+   * Like `singleAttempt` for the direct path (the queue off, or the fallback for a failed enqueue), but
+   * an enabled queue is still used. Set by the reconciler, which replays its backlog one row after
+   * another: a retry schedule per row would hold every row behind an unreachable receiver for
+   * minutes, and the next sweep is the retry.
+   */
+  oneDirectAttempt?: boolean;
+  /**
+   * Ends a replay's retry backoff early and gives no further attempt. A replay holds no dispatch
+   * slot, so the shutdown drain's limiter close cannot stop it; its owner aborts this instead.
+   */
+  signal?: AbortSignal;
 }
 
 /** Per-delivery options of the direct path (deliverWebhook), derived from the dispatch context. */
@@ -101,6 +128,7 @@ interface DirectDeliveryOptions {
   /** Kept on the terminal failure row for a redrive; set only while payload retention is on. */
   replayData?: Record<string, unknown>;
   singleAttempt?: boolean;
+  signal?: AbortSignal;
 }
 
 class UnrecordedWebhookFailure extends Error {}
@@ -108,6 +136,33 @@ class UnrecordedWebhookFailure extends Error {}
 /** The limiter refused or dropped the task because shutdown closed it. */
 const isLimiterClosed = (error: unknown): boolean =>
   error instanceof Error && error.message === 'ConcurrencyLimiter closed';
+
+/** The limiter refused the task because it already runs and queues as many as it admits. */
+const isLimiterFull = (error: unknown): boolean =>
+  error instanceof Error && error.message === 'ConcurrencyLimiter queue full';
+
+/**
+ * The stage one webhook's opt-in events pass (`webhookId` is null when the webhooks that name the event could
+ * not be listed, and one stage then serves the whole session); `dropped` counts the events it turned away.
+ */
+interface OptInStage {
+  stage: ConcurrencyLimiter;
+  dropped: number;
+  sessionId: string;
+  webhookId: string | null;
+}
+
+const describeOptInStage = ({ sessionId, webhookId }: OptInStage): string =>
+  webhookId === null ? `session ${sessionId}` : `webhook ${webhookId} of session ${sessionId}`;
+
+/**
+ * The replay's retries were stopped by its aborted signal, in a backoff or just before a retry POST.
+ * A POST that fails after the abort is not this: on the last attempt it is a terminal failure and is
+ * reported as one.
+ */
+export const isAbortedBackoff = (error: unknown, signal: AbortSignal | undefined): boolean =>
+  // Matched by name: the AbortError comes from node:timers, so instanceof Error is realm-dependent.
+  signal?.aborted === true && (error as Error | undefined)?.name === 'AbortError';
 
 const isPlainObject = (value: unknown): boolean => typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -154,6 +209,34 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
    * not replayed alongside itself.
    */
   private readonly locallyPending = new Map<string, number>();
+  /**
+   * Per session, the opt-in events (WILDCARD_EXCLUDED_EVENTS) that active webhooks name, with the ids of the
+   * webhooks that name each. The promise is cached, not its result, so a burst of receipts on a cold entry
+   * shares one lookup.
+   */
+  private readonly optInSubscriptions = new Map<
+    string,
+    { named: Promise<ReadonlyMap<string, readonly string[]>>; expiresAt: number }
+  >();
+  /**
+   * Per webhook, the stage its opt-in events (WILDCARD_EXCLUDED_EVENTS) pass before the shared dispatch
+   * pool. One flush of buffered receipts is thousands of dispatches in a tick: a quarter of the dispatch
+   * concurrency runs at once, shared by the session's webhooks that name the event, up to three quarters of
+   * WEBHOOK_DISPATCH_MAX_QUEUED events wait their turn (holding only the event), and the rest are dropped
+   * before they open an outbox row, a failure row or a hook call. A stage holds one webhook's deliveries and
+   * is sized once, when it is created, from the webhooks then naming the event. It keeps at least one place,
+   * so the session's webhooks together could take more than a quarter: the session gate in
+   * `optInSessionStages` caps what they run at once to that quarter however many webhooks name the event or
+   * change while earlier stages are active. The pool therefore never sees more than a quarter from one session,
+   * so a flood, or a receiver that never answers, cannot shed or hold back what another session sends until
+   * several sessions have such receivers at once. That cap is the guarantee. Isolation between the session's
+   * own webhooks holds only while their stages fit in the gate, one place each at least: with more webhooks
+   * naming the event than the gate has places, or one added while a larger stage is still live, a receiver
+   * that never answers can hold places its siblings would have used, up to the cap. An entry lives while its
+   * webhook has events in the stage; `dropped` counts those turned away since it was created.
+   */
+  private readonly optInStages = new Map<string, OptInStage>();
+  private readonly optInSessionStages = new Map<string, { gate: ConcurrencyLimiter; stages: number }>();
 
   constructor(
     @InjectRepository(Webhook, 'data')
@@ -183,15 +266,16 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
   }
 
   onModuleInit(): void {
-    // Warn on the default-derived misconfiguration that silently truncates in-flight deliveries at
-    // shutdown: WEBHOOK_SHUTDOWN_DRAIN_MS (default 5s) bounds how long onModuleDestroy waits for a
-    // delivery in flight, while WEBHOOK_TIMEOUT (default 10s) bounds the delivery itself. When the
-    // drain is shorter than the timeout, a delivery that takes nearly the full timeout is abandoned
-    // (logged, not dead-lettered — the receiver may already have it). The defaults already cross, so
-    // surface the cross so an operator who raised the timeout without raising the drain notices.
+    // WEBHOOK_SHUTDOWN_DRAIN_MS (default 5s) bounds how long onModuleDestroy waits for a delivery in
+    // flight, while WEBHOOK_TIMEOUT (default 10s) bounds the delivery itself. When the drain is shorter
+    // than the timeout, a delivery that takes nearly the full timeout is abandoned at shutdown (logged,
+    // not dead-lettered: the receiver may already have it). The defaults cross, the drain being sized to
+    // the shutdown budget, so only a changed value is warned about: an operator who raised the timeout
+    // without raising the drain notices, and a default install does not warn at every boot.
     const drainMs = this.configService.get<number>('webhook.shutdownDrainMs', DEFAULT_WEBHOOK_SHUTDOWN_DRAIN_MS);
     const deliveryTimeoutMs = this.configService.get<number>('webhook.timeout', 10_000);
-    if (Number.isFinite(drainMs) && Number.isFinite(deliveryTimeoutMs) && drainMs < deliveryTimeoutMs) {
+    const atDefaults = drainMs === DEFAULT_WEBHOOK_SHUTDOWN_DRAIN_MS && deliveryTimeoutMs === 10_000;
+    if (!atDefaults && Number.isFinite(drainMs) && Number.isFinite(deliveryTimeoutMs) && drainMs < deliveryTimeoutMs) {
       this.logger.warn(
         `WEBHOOK_SHUTDOWN_DRAIN_MS (${drainMs}ms) is shorter than WEBHOOK_TIMEOUT (${deliveryTimeoutMs}ms) — ` +
           `an in-flight delivery that takes nearly the full timeout will be abandoned at shutdown. ` +
@@ -214,9 +298,13 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
    * up to WEBHOOK_SHUTDOWN_DRAIN_MS to finish; anything still running after that is about to be
    * dropped by process exit, so it is logged per delivery — a dead-letter row would be wrong there,
    * since the receiver may already have gotten the event. Nest awaits this hook during app.close(),
-   * so the bound also keeps app.close() itself bounded.
+   * so the bound limits this hook only; the whole teardown is the sum in shutdown-budget.ts.
    */
   async onModuleDestroy(): Promise<void> {
+    // Opt-in events still waiting for their stage hold nothing durable (no outbox row yet) and are best effort,
+    // so they are let go in both modes; the ones already running finish with the rest.
+    for (const { stage } of this.optInStages.values()) stage.close();
+    for (const { gate } of this.optInSessionStages.values()) gate.close();
     if (!this.queueEnabled) {
       this.dispatchLimiter.close();
       for (const gate of this.degradedSessionGates.values()) gate.close();
@@ -245,14 +333,117 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
   }
 
   async dispatch(sessionId: string, event: string, data: Record<string, unknown>): Promise<void> {
-    const webhooks = await this.loadActiveWebhooks(sessionId, event);
-    const matchingWebhooks = this.filterMatchingWebhooks(webhooks, event, data);
+    if (!WILDCARD_EXCLUDED_EVENTS.includes(event)) return this.fanOut(sessionId, event, data, null);
+    // An opt-in event fires per recipient (about 2,000 per message to a 1,000-member group): skip it
+    // before the per-dispatch webhook read when no active webhook of the session names it.
+    const webhookIds = await this.webhooksNamingOptInEvent(sessionId, event);
+    // One event is a delivery to each of them; each delivery waits in the stage of its own webhook. A single
+    // webhook is the common case and passes straight through: what waits in a stage is held for a flush.
+    if (webhookIds.length === 1) return this.dispatchThroughOptInStage(sessionId, event, data, webhookIds[0], 1);
+    const settled = await Promise.allSettled(
+      webhookIds.map(webhookId => this.dispatchThroughOptInStage(sessionId, event, data, webhookId, webhookIds.length)),
+    );
+    const failed = settled.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failed) throw failed.reason;
+  }
 
-    // Base idempotency key for this event occurrence. occurredAt is captured once here and reused for
-    // every retry of this dispatch, so recurring lifecycle events get a distinct-per-occurrence key
-    // while retries of the same event stay stable. It is salted PER WEBHOOK below.
-    const occurredAt = new Date().toISOString();
-    const baseIdempotencyKey = generateIdempotencyKey(event, { ...data, sessionId }, occurredAt);
+  private async dispatchThroughOptInStage(
+    sessionId: string,
+    event: string,
+    data: Record<string, unknown>,
+    webhookId: string | null,
+    named: number,
+  ): Promise<void> {
+    const key = JSON.stringify([sessionId, webhookId]);
+    let sessionStage = this.optInSessionStages.get(sessionId);
+    if (!sessionStage) {
+      sessionStage = { gate: new ConcurrencyLimiter(Math.floor(this.dispatchLimiter.maxCount / 4)), stages: 0 };
+      this.optInSessionStages.set(sessionId, sessionStage);
+    }
+    let entry = this.optInStages.get(key);
+    if (!entry) {
+      // A quarter of the pool runs at once, divided among the webhooks that name the event (the limiter keeps at
+      // least one event running), and three quarters of the park bound wait, at least one place.
+      entry = {
+        stage: new ConcurrencyLimiter(
+          Math.floor(this.dispatchLimiter.maxCount / 4 / named),
+          Math.max(1, Math.floor((this.dispatchMaxQueued * 3) / 4)),
+        ),
+        dropped: 0,
+        sessionId,
+        webhookId,
+      };
+      this.optInStages.set(key, entry);
+      sessionStage.stages++;
+    }
+    const sessionGate = sessionStage.gate;
+    try {
+      await entry.stage.run(() => sessionGate.run(() => this.fanOut(sessionId, event, data, webhookId)));
+    } catch (error) {
+      // Over the stage's bound, or still waiting when shutdown closed it; anything else is not ours to hide.
+      if (isLimiterFull(error)) this.noteOptInDrop(event, entry);
+      else if (!isLimiterClosed(error)) throw error;
+    } finally {
+      this.releaseOptInStage(key, entry);
+    }
+  }
+
+  /**
+   * An opt-in event past its webhook's bound: counted with the other deliveries that were never sent, and
+   * announced once per burst, when the webhook starts dropping. It leaves no row to replay, by design.
+   */
+  private noteOptInDrop(event: string, entry: OptInStage): void {
+    incrementWebhookDeliveryFailures();
+    if (entry.dropped++ > 0) return;
+    const { sessionId, webhookId } = entry;
+    this.logger.warn(`Dropping ${event} events of ${describeOptInStage(entry)}: its queue of opt-in events is full`, {
+      sessionId,
+      webhookId: webhookId ?? undefined,
+      event,
+      action: 'webhook_opt_in_dropping',
+    });
+  }
+
+  /** Forget a webhook's stage once it is idle, reporting how many events it turned away. */
+  private releaseOptInStage(key: string, entry: OptInStage): void {
+    if (entry.stage.activeCount > 0 || entry.stage.queuedCount > 0 || this.optInStages.get(key) !== entry) return;
+    this.optInStages.delete(key);
+    const sessionStage = this.optInSessionStages.get(entry.sessionId);
+    if (sessionStage && --sessionStage.stages === 0) this.optInSessionStages.delete(entry.sessionId);
+    if (entry.dropped === 0) return;
+    const { sessionId, webhookId } = entry;
+    this.logger.warn(
+      `Dropped ${entry.dropped} opt-in events of ${describeOptInStage(entry)} while its queue was full`,
+      {
+        sessionId,
+        webhookId: webhookId ?? undefined,
+        dropped: entry.dropped,
+        action: 'webhook_opt_in_dropped',
+      },
+    );
+  }
+
+  /**
+   * Deliver an event to the session's matching webhooks, or only to the webhook `only` names. `only` has no
+   * default value: a parameter list with one keeps the caller's `data` reachable past the reassignment below.
+   */
+  private async fanOut(
+    sessionId: string,
+    event: string,
+    data: Record<string, unknown>,
+    only: string | null,
+  ): Promise<void> {
+    const webhooks = await this.loadActiveWebhooks(sessionId, event);
+    const matchingWebhooks = await this.filterMatchingWebhooks(
+      only === null ? webhooks : webhooks.filter(webhook => webhook.id === only),
+      event,
+      data,
+    );
+
+    // Base idempotency key for this event occurrence. The occurrence id is minted once here and reused for
+    // every retry of this dispatch, so recurring lifecycle events get a distinct-per-occurrence key (even two
+    // within one clock millisecond) while retries of the same event stay stable. It is salted PER WEBHOOK below.
+    const baseIdempotencyKey = generateIdempotencyKey(event, { ...data, sessionId }, randomUUID());
 
     // Fan-out amplification bound: shed an over-cap inline media blob ONCE here, before the
     // per-webhook structuredClone below, so N matching webhooks (and the queued jobs retained in
@@ -265,10 +456,63 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
             this.configService.get<number>('webhook.mediaInlineMaxBytes', DEFAULT_WEBHOOK_MEDIA_INLINE_MAX_BYTES),
           )
         : data;
+    // The await below holds this frame, parameters included, until every delivery settles: point
+    // `data` at the shed copy so parked deliveries pin only that, not the caller's full blob.
+    // eslint-disable-next-line no-useless-assignment
+    data = baseData;
 
     const ctx: DispatchEventContext = { sessionId, event, baseData };
     // allSettled preserves the per-webhook isolation: one failing delivery never rejects the others.
     await Promise.allSettled(matchingWebhooks.map(webhook => this.dispatchWithLimit(webhook, baseIdempotencyKey, ctx)));
+  }
+
+  /**
+   * Drop the session's cached opt-in subscriptions. WebhookService calls this after every webhook
+   * create, update and delete, so a change made on this node applies to the next event.
+   */
+  invalidateOptInSubscriptions(sessionId: string): void {
+    this.optInSubscriptions.delete(sessionId);
+  }
+
+  /**
+   * The ids of the session's active webhooks that name `event`, read at most once per
+   * OPT_IN_SUBSCRIPTIONS_TTL_MS. A failed lookup is not cached and answers `[null]`, one delivery to every
+   * webhook, which lets the event through so dispatch's own lookup reports the failure as before.
+   */
+  private async webhooksNamingOptInEvent(sessionId: string, event: string): Promise<Array<string | null>> {
+    const now = Date.now();
+    let entry = this.optInSubscriptions.get(sessionId);
+    if (!entry || entry.expiresAt <= now) {
+      const created = {
+        named: this.webhookRepository
+          .find({ select: { id: true, events: true }, where: { sessionId, active: true } })
+          .then(rows => {
+            const named = new Map<string, string[]>();
+            for (const row of rows) {
+              if (!Array.isArray(row.events)) continue;
+              for (const e of new Set(row.events)) {
+                if (!WILDCARD_EXCLUDED_EVENTS.includes(e)) continue;
+                const ids = named.get(e);
+                if (ids) ids.push(row.id);
+                else named.set(e, [row.id]);
+              }
+            }
+            return named;
+          }),
+        expiresAt: now + OPT_IN_SUBSCRIPTIONS_TTL_MS,
+      };
+      // Identity check: an invalidation (or a newer entry) since this lookup started must not be undone.
+      created.named.catch(() => {
+        if (this.optInSubscriptions.get(sessionId) === created) this.optInSubscriptions.delete(sessionId);
+      });
+      this.optInSubscriptions.set(sessionId, created);
+      entry = created;
+    }
+    try {
+      return [...((await entry.named).get(event) ?? [])];
+    } catch {
+      return [null];
+    }
   }
 
   /**
@@ -289,17 +533,22 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private filterMatchingWebhooks(webhooks: Webhook[], event: string, data: Record<string, unknown>): Webhook[] {
-    // Resolve a lid actor to its phone through the persistent table so a phone filter matches a
-    // lid-addressed sender (e.g. an unresolved @lid group participant). Absent store -> no resolution.
-    const resolveLid = (jid: string): string | null => this.lidMappingStore?.resolveLid(jid) ?? null;
+  private async filterMatchingWebhooks(
+    webhooks: Webhook[],
+    event: string,
+    data: Record<string, unknown>,
+  ): Promise<Webhook[]> {
     // A row is judged on its own: one whose stored events or filters are malformed (e.g. restored from
     // a hand-edited backup) is skipped, instead of throwing here and dropping the event for every
     // other webhook of the session. A `filters` that is not a plain object, or a non-array `conditions`,
     // is refused explicitly: evaluateFilters reads either as "no filter", which would deliver every
     // subscribed event unfiltered.
-    const subscribed = webhooks.filter(
-      w => Array.isArray(w.events) && (w.events.includes(event) || w.events.includes('*')),
+    const subscribed = webhooks.filter(w => Array.isArray(w.events) && subscriptionCoversEvent(w.events, event));
+    const resolveLid = await prepareFilterLidResolver(
+      subscribed.map(w => w.filters),
+      event,
+      data,
+      this.lidMappingStore ? lids => this.lidMappingStore!.phonesForLidsPersisted(lids) : undefined,
     );
     const matching = subscribed.filter(w => {
       try {
@@ -512,7 +761,9 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
    *
    * Every failure path here is already handled in place (a dead-letter row, a hook, a log), so none
    * of them reach the caller as an exception, except 'ConcurrencyLimiter closed' from a retry backoff
-   * woken after shutdown, which runLimited handles (redeliver passes no yieldSlot and never sees it).
+   * woken after shutdown, which runLimited handles (redeliver passes no yieldSlot and never sees it),
+   * and the AbortError of a replay whose signal stopped its retries or its queue fallback, which
+   * reaches its caller.
    * The reconciler has to tell a delivered event from a
    * dead-lettered one to know whether the outbox row may be retired, and a caught throw cannot tell
    * it: there is none. This mirrors the inbound twin, where `ingressEnqueue.enqueue` returns an
@@ -570,6 +821,7 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
         ...(this.keepsFailurePayload() ? { replayData: ctx.baseData } : {}),
       };
 
+      await producerReady(this.webhookQueue!);
       await this.webhookQueue!.add(`webhook-${webhook.id}`, jobData, {
         // jobId = deliveryId makes this add() idempotent within BullMQ (same precedent as the ingress
         // producer). It does not dedup a crash replay: if the process dies before the outbox row is
@@ -602,6 +854,10 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
         action: 'webhook_queued',
       });
     } catch (error) {
+      // A replay whose owner stopped while the add was out (it can wait for a first connect, or on a
+      // stalled Redis) must not POST or run hooks after the drain: the reconciler reads the abort as
+      // interrupted.
+      ctx.signal?.throwIfAborted();
       // Execute hook on queue error (not delivery error - that happens in processor)
       await this.hookManager.execute(
         'webhook:error',
@@ -614,7 +870,7 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
         action: 'webhook_queue_failed',
       });
 
-      // Fallback: deliver directly when the queue add failed (e.g. Redis unreachable with the
+      // Fallback: deliver directly when the queue add failed (Redis not connected yet, or down with the
       // producer's enableOfflineQueue:false). This is at-least-once — if add() actually reached
       // Redis before rejecting, the queued job AND this fallback may both POST. Both paths carry the
       // same X-OpenWA-Idempotency-Key / X-OpenWA-Delivery-Id, so a conformant receiver dedupes.
@@ -634,9 +890,9 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
           { sessionId, source: 'WebhookService' },
         );
       } catch (fallbackError) {
-        // Shutdown closed the limiter during a retry backoff: not a delivery failure. runLimited
-        // records it and keeps the outbox row pending for the next start.
-        if (isLimiterClosed(fallbackError)) throw fallbackError;
+        // Shutdown closed the limiter or aborted the replay during a retry backoff: not a delivery
+        // failure. runLimited or the replay's caller keeps the outbox row pending for the next start.
+        if (isLimiterClosed(fallbackError) || isAbortedBackoff(fallbackError, ctx.signal)) throw fallbackError;
         await this.hookManager.execute(
           'webhook:error',
           {
@@ -688,9 +944,9 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
         { sessionId, source: 'WebhookService' },
       );
     } catch (error) {
-      // Shutdown closed the limiter during a retry backoff: not a delivery failure. runLimited
-      // records it and keeps the outbox row pending for the next start.
-      if (isLimiterClosed(error)) throw error;
+      // Shutdown closed the limiter or aborted the replay during a retry backoff: not a delivery
+      // failure. runLimited or the replay's caller keeps the outbox row pending for the next start.
+      if (isLimiterClosed(error) || isAbortedBackoff(error, ctx.signal)) throw error;
       // Execute hook on error
       await this.hookManager.execute(
         'webhook:error',
@@ -918,21 +1174,28 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
     event: string,
     idempotencyKey: string,
     data: Record<string, unknown>,
-    options: { singleAttempt?: boolean } = {},
+    options: { singleAttempt?: boolean; oneDirectAttempt?: boolean; signal?: AbortSignal } = {},
   ): Promise<WebhookDeliveryOutcome> {
     const deliveryId = generateDeliveryId();
-    return this.deliverOne(webhook, deliveryId, idempotencyKey, {
+    const outcome = await this.deliverOne(webhook, deliveryId, idempotencyKey, {
       sessionId,
       event,
       baseData: data,
       singleAttempt: options.singleAttempt,
+      oneDirectAttempt: options.oneDirectAttempt,
+      signal: options.signal,
     });
+    // The receiver has the event. An operator redrive of a failure row can find the same delivery
+    // still pending in the outbox, which the next sweep would otherwise POST again.
+    if (outcome === 'delivered') await this.outbox.close(webhook.id, idempotencyKey, 'dispatched');
+    return outcome;
   }
 
   /** A live or unreadable job still owns its queued delivery; never replay alongside it. */
   async isQueueJobPending(deliveryId: string): Promise<boolean> {
     if (!this.webhookQueue) return false;
     try {
+      await producerReady(this.webhookQueue);
       const job = await this.webhookQueue.getJob(deliveryId);
       if (!job) return false;
       return !['completed', 'failed', 'unknown'].includes(await job.getState());
@@ -942,12 +1205,57 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /**
+   * A finished job: its worker settled the delivery, so an outbox row still queued for it is a leftover and
+   * not a stranded send. Anything unreadable answers false here; isQueueJobPending already holds the
+   * conservative answer for that case.
+   */
+  async hasQueueJobCompleted(deliveryId: string): Promise<boolean> {
+    if (!this.webhookQueue) return false;
+    try {
+      await producerReady(this.webhookQueue);
+      const job = await this.webhookQueue.getJob(deliveryId);
+      return job ? (await job.getState()) === 'completed' : false;
+    } catch (error) {
+      this.logger.warn('Could not inspect queued webhook delivery', { deliveryId, error: String(error) });
+      return false;
+    }
+  }
+
   /** Finish a spent outbox replay budget only after its failure record is durable. */
   async recordReplayExhaustion(row: ReplayableDelivery, url: string): Promise<boolean> {
     const existing = await this.failureRepository.count({
       where: { webhookId: row.webhookId, idempotencyKey: row.idempotencyKey, attempts: MoreThan(0) },
     });
-    if (existing > 0) return true;
+    if (existing > 0) {
+      if (this.keepsFailurePayload()) {
+        try {
+          await this.failureRepository.update(
+            {
+              webhookId: row.webhookId,
+              idempotencyKey: row.idempotencyKey,
+              attempts: MoreThan(0),
+              payload: IsNull(),
+              createdAt: MoreThan(new Date(Date.now() - this.payloadRetentionHours() * 60 * 60 * 1000)),
+            },
+            { payload: row.payload } as QueryDeepPartialEntity<WebhookDeliveryFailure>,
+          );
+        } catch (error) {
+          this.logger.error(
+            'Failed to retain webhook replay payload',
+            error instanceof Error ? error.message : String(error),
+          );
+          return false;
+        }
+      }
+      return true;
+    }
+    // A delivery that was shed or refused before sending was recorded with its reason as an attempts-0 row,
+    // which the terminal row below replaces; keep that reason on it.
+    const unsent = await this.failureRepository.findOne({
+      where: { webhookId: row.webhookId, idempotencyKey: row.idempotencyKey, attempts: 0 },
+      select: { id: true, lastError: true },
+    });
     const recorded = await recordWebhookDeliveryFailure(this.failureRepository, this.logger, {
       webhookId: row.webhookId,
       sessionId: row.sessionId,
@@ -955,8 +1263,12 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
       url,
       idempotencyKey: row.idempotencyKey,
       attempts: Math.max(1, row.attempts),
-      lastError: 'Webhook replay budget exhausted',
-      ...(this.keepsFailurePayload() ? { payload: row.payload } : {}),
+      lastError: unsent?.lastError
+        ? `Webhook replay budget exhausted; last error: ${unsent.lastError}`
+        : 'Webhook replay budget exhausted',
+      ...(this.keepsFailurePayload()
+        ? { payload: row.payload, payloadRetentionHours: this.payloadRetentionHours() }
+        : {}),
     });
     if (recorded === true) incrementWebhookDeliveryFailures();
     return recorded !== null;
@@ -967,7 +1279,11 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
    * built from, so an operator can redrive it. Off (0) by default, which stores nothing new.
    */
   private keepsFailurePayload(): boolean {
-    return this.configService.get<number>('webhook.failurePayloadRetentionHours', 0) > 0;
+    return this.payloadRetentionHours() > 0;
+  }
+
+  private payloadRetentionHours(): number {
+    return this.configService.get<number>('webhook.failurePayloadRetentionHours', 0);
   }
 
   /** What the direct path needs from the dispatch context: the slot, the replay copy, the attempt cap. */
@@ -975,7 +1291,8 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
     return {
       yieldSlot: ctx.yieldSlot,
       replayData: this.keepsFailurePayload() ? ctx.baseData : undefined,
-      singleAttempt: ctx.singleAttempt,
+      singleAttempt: ctx.singleAttempt || ctx.oneDirectAttempt,
+      signal: ctx.signal,
     };
   }
 
@@ -1023,6 +1340,8 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
           body,
           attempt - 1,
         );
+        // A retry gives way once its replay's owner has stopped, even when the backoff ended first.
+        if (attempt > 1) options.signal?.throwIfAborted();
         await postWebhookPayload(current.url, body, headers, this.configService.get<number>('webhook.timeout', 10000));
         this.failingWebhooks.delete(webhook.id);
 
@@ -1052,6 +1371,7 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
         });
         return true;
       } catch (error) {
+        if (isAbortedBackoff(error, options.signal)) throw error;
         this.failingWebhooks.add(webhook.id);
         this.logger.error(`Webhook delivery failed for ${webhook.id}`, String(error), {
           webhookId: webhook.id,
@@ -1064,7 +1384,8 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
           // Without the dispatch slot: a backoff sends nothing, and holding the slot through it let
           // a few failing receivers stall every other delivery. Taking it back throws once shutdown
           // closed the limiter, which skips the terminal record below: the event was not given up.
-          await yieldSlot(() => setTimeout(delay * 2 ** (attempt - 1)));
+          // An aborted replay signal ends the backoff the same way.
+          await yieldSlot(() => setTimeout(delay * 2 ** (attempt - 1), undefined, { signal: options.signal }));
           continue;
         }
         // All direct-path retries exhausted — persist a durable failure record before giving up, mirroring
@@ -1080,7 +1401,9 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
           deliveryId: payload.deliveryId,
           attempts: attempt,
           error,
-          ...(options.replayData ? { payload: options.replayData } : {}),
+          ...(options.replayData
+            ? { payload: options.replayData, payloadRetentionHours: this.payloadRetentionHours() }
+            : {}),
         });
         if (recorded !== false) incrementWebhookDeliveryFailures();
         if (recorded === null) throw new UnrecordedWebhookFailure(redactSsrfError(error));

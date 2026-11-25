@@ -184,6 +184,19 @@ describe('SessionOwnershipService', () => {
       await settle();
       expect((await sessions.findOneByOrFail({ id: session.id })).nodeId).toBe('node-b');
     });
+
+    it('makes ownership visible before invoking a detached adoption handler', async () => {
+      const node = service('node-b');
+      const observed: boolean[] = [];
+      node.onAdoption(id => {
+        observed.push(node.owns(id));
+        return Promise.resolve();
+      });
+      const session = await seed(lapsedBy('node-a'));
+      expect(await node.claim(session.id)).toBe(true);
+      await settle();
+      expect(observed).toEqual([true]);
+    });
   });
 
   describe('releasing', () => {
@@ -222,6 +235,20 @@ describe('SessionOwnershipService', () => {
       expect(nodeA.ownedIds()).toEqual([]);
       expect((await sessions.findOneByOrFail({ id: one.id })).nodeId).toBeNull();
       expect((await sessions.findOneByOrFail({ id: two.id })).nodeId).toBeNull();
+    });
+
+    // A start still in flight at shutdown may own a live browser; a peer must not claim under it.
+    it('keeps the claims it is told to keep, on the way down', async () => {
+      const [one, two] = [await seed(), await seed()];
+      const nodeA = service('node-a');
+      await nodeA.claim(one.id);
+      await nodeA.claim(two.id);
+
+      await nodeA.releaseAll([two.id]);
+
+      expect(nodeA.ownedIds()).toEqual([two.id]);
+      expect((await sessions.findOneByOrFail({ id: one.id })).nodeId).toBeNull();
+      expect((await sessions.findOneByOrFail({ id: two.id })).nodeId).toBe('node-a');
     });
 
     // Per-session bookkeeping must end with the claim, or create/delete churn grows it forever.

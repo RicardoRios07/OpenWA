@@ -28,9 +28,9 @@ public final class ClientConfig {
         if (key == null || key.isEmpty()) {
             throw new IllegalArgumentException("OpenWAClient: apiKey is required");
         }
-        if (hasControlChar(key)) {
+        if (hasIllegalChar(key)) {
             throw new IllegalArgumentException(
-                "OpenWAClient: apiKey contains illegal characters (whitespace or control) — check for a stray newline");
+                "OpenWAClient: apiKey contains illegal characters (control or non-ASCII) — check for a stray newline");
         }
         if (b.timeout != null && (b.timeout.isZero() || b.timeout.isNegative())) {
             throw new IllegalArgumentException("OpenWAClient: timeout must be positive");
@@ -47,13 +47,51 @@ public final class ClientConfig {
         } catch (NullPointerException e) {
             throw new IllegalArgumentException("OpenWAClient: defaultHeaders must not contain null keys or values");
         }
+        // A value the HTTP stack refuses (a trailing newline from a token file) is named here, without the
+        // value: the stack's own message would quote it, and a proxy credential carried in a header would
+        // reach the application's logs.
+        for (Map.Entry<String, String> header : this.defaultHeaders.entrySet()) {
+            if (!isToken(header.getKey())) {
+                throw new IllegalArgumentException(
+                    "OpenWAClient: defaultHeaders has a header name that is not a valid HTTP token");
+            }
+            if (hasIllegalHeaderValueChar(header.getValue())) {
+                throw new IllegalArgumentException(
+                    "OpenWAClient: defaultHeaders value for '" + header.getKey()
+                        + "' contains illegal characters (control or non-ASCII) - check for a stray newline");
+            }
+        }
         this.transport = b.transport;
     }
 
-    private static boolean hasControlChar(String s) {
+    private static boolean isToken(String name) {
+        if (name.isEmpty()) {
+            return false;
+        }
+        for (int i = 0; i < name.length(); i++) {
+            char c = name.charAt(i);
+            boolean alnum = (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+            if (!alnum && "!#$%&'*+-.^_`|~".indexOf(c) < 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean hasIllegalHeaderValueChar(String value) {
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c != '\t' && (c < 0x20 || c > 0x7e)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasIllegalChar(String s) {
         for (int i = 0; i < s.length(); i++) {
             char c = s.charAt(i);
-            if (c < 0x20 || c == 0x7f) {
+            if (c < 0x20 || c > 0x7e) {
                 return true;
             }
         }
@@ -107,7 +145,7 @@ public final class ClientConfig {
             return this;
         }
 
-        /** Per-request timeout (default 30s). */
+        /** Per-request timeout (default 30s), covering the whole exchange, response body included, with the default transport. */
         public Builder timeout(Duration v) {
             this.timeout = v;
             return this;

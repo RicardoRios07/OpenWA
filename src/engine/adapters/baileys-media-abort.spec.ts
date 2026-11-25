@@ -24,7 +24,10 @@ function imageMessage(id: string, fileLength: number): WAMessage {
   };
 }
 
-function build(dispatcher?: object): { events: BaileysEvents; warns: string[] } {
+function build(
+  dispatcher?: object,
+  overrides: Partial<BaileysEventsHost> = {},
+): { events: BaileysEvents; warns: string[] } {
   const warns: string[] = [];
   const events = new BaileysEvents({
     getSocket: () => ({ updateMediaMessage: jest.fn() }) as unknown as WASocket,
@@ -52,10 +55,12 @@ function build(dispatcher?: object): { events: BaileysEvents; warns: string[] } 
     getOnMessageEdited: () => undefined,
     getOnMessageReaction: () => undefined,
     getOnMessageAck: () => undefined,
+    getOnMessageReceipt: () => undefined,
     getOnGroupEvent: () => undefined,
     getOnCall: () => undefined,
     getOnPresenceUpdate: () => undefined,
     getOnCallOutcome: () => undefined,
+    ...overrides,
   } as unknown as BaileysEventsHost);
   return { events, warns };
 }
@@ -199,5 +204,23 @@ describe('BaileysEvents media download through a session proxy', () => {
     await events.mapMessage(imageMessage('DIRECT', 3), 'imageMessage');
 
     expect(downloadMediaMessage).toHaveBeenCalledWith(expect.anything(), 'stream', {}, expect.anything());
+  });
+
+  // A message still queued when the session is torn down gets its turn afterwards. Reading the
+  // dispatcher first would rebuild one that the teardown had just closed, for nothing to close again.
+  it('builds no proxy dispatcher for a download whose session is already torn down', async () => {
+    const getFetchDispatcher = jest.fn(() => undefined);
+    const { events } = build(undefined, {
+      getSocket: () => {
+        throw new Error('Engine is not ready');
+      },
+      getFetchDispatcher,
+    });
+
+    const incoming = await events.mapMessage(imageMessage('LATE', 3), 'imageMessage');
+
+    expect(incoming.media).toMatchObject({ omitted: true });
+    expect(downloadMediaMessage).not.toHaveBeenCalled();
+    expect(getFetchDispatcher).not.toHaveBeenCalled();
   });
 });

@@ -60,6 +60,38 @@ describe('history chat previews', () => {
   });
 });
 
+describe('history sender names', () => {
+  it('files the push name of a 1:1 message whose key names an empty participant under the chat', async () => {
+    const upsertContacts = jest.fn();
+    const host = {
+      loadLib: () =>
+        Promise.resolve({
+          normalizeMessageContent: (m: unknown) => m,
+          getContentType: (m: object) => Object.keys(m)[0],
+          proto: { Message: { ProtocolMessage: { Type: { REVOKE: 0 } } } },
+        }),
+      normalizedSelfJid: () => 'me@s.whatsapp.net',
+      toNeutralJid: (id: string) => id,
+      extractEphemeralDuration: () => undefined,
+      recordMessage: jest.fn(),
+      recordMessageEdit: jest.fn(),
+      upsertContacts,
+      getOnHistoryMessages: () => () => undefined,
+      applyHistoryRevoke: (key: WAMessage['key']) => Promise.resolve(key),
+      wasDeletedForEveryone: () => false,
+    } as unknown as BaileysHistoryHost;
+    await new BaileysHistory(host).captureHistoryMessages([
+      {
+        key: { id: 'M1', remoteJid: '100@s.whatsapp.net', fromMe: false, participant: '' },
+        pushName: 'Rina',
+        message: { conversation: 'hi' },
+        messageTimestamp: 100,
+      },
+    ] as WAMessage[]);
+    expect(upsertContacts).toHaveBeenCalledWith([{ id: '100@s.whatsapp.net', notify: 'Rina' }]);
+  });
+});
+
 /**
  * `groupFetchAllParticipating` yields `{}` for BOTH an unanswered query and an account with no groups —
  * the same ambiguity `getGroups` is bounded against in baileys-groups.ts. Nothing in the VALUE separates

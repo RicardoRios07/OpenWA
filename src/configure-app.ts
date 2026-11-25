@@ -1,4 +1,4 @@
-import { INestApplication } from '@nestjs/common';
+import { BadRequestException, INestApplication, Type } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import helmet from 'helmet';
 import { Request, Response, NextFunction, json, urlencoded } from 'express';
@@ -13,10 +13,19 @@ import {
 } from './config/inflight-body-budget';
 import { ActiveKeyIndex } from './modules/auth/active-key-index';
 import { requestContextMiddleware } from './common/middleware/request-context.middleware';
+import { requestMetricsBoundaryMiddleware } from './common/middleware/request-metrics.middleware';
 import { createLogger } from './common/services/logger.service';
+import { ShutdownService } from './common/services/shutdown.service';
 import { injectDashboardCspNonce } from './config/dashboard-csp';
 import { resolveCorsPolicy, isUpgradeInsecureRequestsEnabled, resolveBodyLimit } from './config/bootstrap-security';
 import { resolveRequestTimeoutMs } from './config/http-timeouts';
+import { parseTrustedProxies } from './common/utils/ip';
+import {
+  BODY_NESTING_MESSAGE,
+  exceedsBodyNesting,
+  exceedsJsonNesting,
+  isUtf8Charset,
+} from './common/validation/body-nesting';
 
 /** Where the bundled dashboard documents come from, and whether to serve them at all. */
 export interface DashboardSource {
@@ -41,9 +50,9 @@ export interface AppliedBodyCaps {
 }
 
 /**
- * Everything the production HTTP surface installs on the Express app: request context, the CSP
- * nonce, helmet, the SPA document handler, CORS, the encoded-NUL refusal, the in-flight body budget,
- * the body parsers and the trailing-slash DELETE refusal.
+ * Everything the production HTTP surface installs on the Express app: the request metrics boundary,
+ * request context, the CSP nonce, helmet, the SPA document handler, CORS, the encoded-NUL refusal, the
+ * in-flight body budget, the body parsers, the nesting-depth refusal and the trailing-slash DELETE refusal.
  *
  * It lives here rather than inside bootstrap() so the e2e lane can run the SAME stack. main.ts
  * boots on import, so a suite cannot import it; the whole stack was therefore executed by nothing,
@@ -60,6 +69,10 @@ export function configureApp(app: INestApplication, options: ConfigureAppOptions
     distDir: DASHBOARD_DIST,
     enabled: dashboardServingEnabled && dashboardBuildPresent,
   };
+
+  // First, so the HTTP RED series count every API response, the ones the middleware below answers itself
+  // included (the shutdown 503, the %00 refusal, the in-flight budget, parser and nesting errors).
+  app.use('/api', requestMetricsBoundaryMiddleware);
 
   // Assign a request id to every inbound request (X-Request-ID), echo it on the response, and run
   // the whole downstream chain inside its scope so every log line + audit row carries it.
@@ -211,6 +224,34 @@ export function configureApp(app: INestApplication, options: ConfigureAppOptions
     res.status(400).json({ statusCode: 400, message: 'URL must not contain an encoded NUL', error: 'Bad Request' });
   });
 
+  // Providers some test modules lack. Looked up through ModuleRef: a failed app.get() aborts the
+  // process instead of throwing.
+  const optional = <T>(token: Type<T>): T | undefined => {
+    try {
+      return app.get(ModuleRef).get(token, { strict: false });
+    } catch {
+      return undefined;
+    }
+  };
+
+  // Once the shutdown grace has elapsed, teardown runs every destroy hook before the listener
+  // closes, and a request admitted then would run against services being torn down. Refuse new
+  // requests from that point; admitted ones run until teardown ends and are then cut by the HTTP close
+  // (forceCloseConnections in main.ts). Socket.IO answers its handshake ahead of Express, so a new
+  // event-stream client is admitted until that close. The health probes stay answered so
+  // readiness keeps reporting its draining state. Ahead of the budget, so no body is read.
+  const shutdown = optional(ShutdownService);
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    if (!shutdown?.isTearingDown()) return next();
+    const path = req.path.toLowerCase();
+    if (path === '/api/health' || path.startsWith('/api/health/')) return next();
+    res.status(503).set('Connection', 'close').json({
+      statusCode: 503,
+      message: 'Server is shutting down',
+      error: 'Service Unavailable',
+    });
+  });
+
   // Aggregate in-flight body budget (DoS hardening): once too many body bytes are being buffered
   // across ALL connections, new requests get 503 + Retry-After without their body being read.
   // This is a deliberate PRE-GUARD: the throttler/auth guards run at the Nest routing layer —
@@ -227,19 +268,10 @@ export function configureApp(app: INestApplication, options: ConfigureAppOptions
   // Requests without a recognised API key share a pool of a quarter of the budget, never less than
   // two BODY_SIZE_LIMIT bodies (half the default budget). With no AuthModule in the app (some test
   // modules) every request is unrecognised, which is the stricter side.
-  // Looked up through ModuleRef: a failed app.get() aborts the process instead of throwing.
-  let keyIndex: ActiveKeyIndex | undefined;
-  try {
-    keyIndex = app.get(ModuleRef).get(ActiveKeyIndex, { strict: false });
-  } catch {
-    keyIndex = undefined;
-  }
+  const keyIndex = optional(ActiveKeyIndex);
   app.use(
     createInflightBodyBudget(inflightBudgetBytes, {
-      trustedProxies: (process.env.TRUSTED_PROXIES || '')
-        .split(',')
-        .map(p => p.trim())
-        .filter(Boolean),
+      trustedProxies: parseTrustedProxies(process.env.TRUSTED_PROXIES),
       classify: (req, clientIp) => keyIndex?.recognise(req.headers, clientIp),
       bodyLimitBytes: parseBodyLimitBytes(bodyLimit),
       requestTimeoutMs: resolveRequestTimeoutMs(process.env.REQUEST_TIMEOUT_MS),
@@ -254,12 +286,23 @@ export function configureApp(app: INestApplication, options: ConfigureAppOptions
   // charged to the budget at its compressed size and bounded by nothing. Every other parser in the
   // process must carry the same flag for that argument to hold; the MCP route-level fallback
   // (src/modules/mcp/mcp.server.ts) does.
+  //
+  // The same callback reads the nesting depth off the raw UTF-8 bytes, before JSON.parse: the recursive
+  // readers of a parsed body (class-transformer in the validation pipe, the send idempotency fingerprint, the
+  // cluster proxy's JSON.stringify) overflow the stack a couple of thousand levels down and answered 500 with a
+  // stack trace in the log. A body is refused here for the price of one pass over its bytes, ahead of the
+  // parse, authentication, and every guard, interceptor and pipe. body-parser reports an error thrown from
+  // `verify` as 403 unless it carries a status; this one carries 400, and Nest answers it in the usual shape.
   app.use(
     json({
       limit: bodyLimit,
       inflate: false,
-      verify: (req: Request & { rawBody?: Buffer }, _res, buf) => {
+      verify: (req: Request & { rawBody?: Buffer; nestingScanned?: boolean }, _res, buf, encoding) => {
         req.rawBody = buf;
+        if (isUtf8Charset(encoding)) {
+          if (exceedsJsonNesting(buf)) throw new BadRequestException(BODY_NESTING_MESSAGE);
+          req.nestingScanned = true;
+        }
       },
     }),
   );
@@ -275,6 +318,15 @@ export function configureApp(app: INestApplication, options: ConfigureAppOptions
       },
     }),
   );
+
+  // The raw scan above reads UTF-8 only. JSON in another UTF charset (UTF-16, even UTF-7) is decoded by the
+  // parser, so its depth is walked on the parsed body here, with the same bound and the same answer. A
+  // form-encoded body is walked too and costs nothing: the parser itself stops it at 32 levels and 1000 keys.
+  // Every route and /mcp share the one bound, ahead of the guards, interceptors and pipes.
+  app.use((req: Request & { nestingScanned?: boolean }, _res: Response, next: NextFunction) => {
+    if (req.nestingScanned || !exceedsBodyNesting(req.body)) return next();
+    next(new BadRequestException(BODY_NESTING_MESSAGE));
+  });
 
   // A DELETE path ending in '/' names no resource. Non-strict routing would still match it to the
   // route without the slash, so a client that normalises `<parent>/<child>/..` down to `<parent>/`

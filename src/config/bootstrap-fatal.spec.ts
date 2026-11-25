@@ -46,6 +46,33 @@ describe('runBootstrapOrExit', () => {
     expect(order).toEqual(['close', 'exit']);
   });
 
+  // A teardown parked on a promise that holds no handle leaves nothing to keep the event loop alive but
+  // this timer. If it were unref'd the process would exit 0, a clean exit of a boot that failed.
+  it('holds the event loop open with its bound on a teardown that never settles', async () => {
+    const { deps, exitCalls } = makeDeps();
+    const timers: NodeJS.Timeout[] = [];
+    const realSetTimeout = global.setTimeout;
+    const spy = jest.spyOn(global, 'setTimeout').mockImplementation((...args: Parameters<typeof setTimeout>) => {
+      const timer = realSetTimeout(...args);
+      timers.push(timer);
+      return timer;
+    });
+
+    try {
+      await runBootstrapOrExit(() => Promise.reject(new Error('listen EADDRINUSE')), {
+        ...deps,
+        closeApp: () => new Promise<void>(() => undefined),
+        closeTimeoutMs: 20,
+      });
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(exitCalls).toEqual([1]);
+    expect(timers.length).toBeGreaterThan(0);
+    expect(timers.every(timer => timer.hasRef())).toBe(true);
+  });
+
   it('never logs, tears down, or exits on a successful boot', async () => {
     const { deps, logs, exitCalls } = makeDeps();
     const closeApp = jest.fn().mockResolvedValue(undefined);

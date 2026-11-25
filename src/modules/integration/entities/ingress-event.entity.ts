@@ -8,8 +8,10 @@ import { DateTransformer } from '../../../common/transformers/date.transformer';
 //  - 'dispatched' — the event reached the dispatch tier (handed to BullMQ or delivered inline). A
 //                   failure INSIDE the tier (BullMQ attempts exhausted) dead-letters separately, so a
 //                   'dispatched' row is never the reconciler's concern.
-//  - 'failed'     — terminal: the reconciler exhausted its replay budget; recovery continues via the
-//                   integration_delivery_failures row + RedriveService.
+//  - 'failed'     — terminal: the reconciler exhausted its replay budget or found the queue job failed,
+//                   or the row aged past INGRESS_DEDUP_RETENTION_DAYS undispatched; recovery continues
+//                   via the integration_delivery_failures row + RedriveService (none is written when the
+//                   instance or session was deleted).
 // NULL marks rows that predate these columns on synchronize-bootstrapped DBs (no backfill ran there);
 // NULL reads as "not watched" — the reconciler never sweeps it, so an upgrade can never mass-replay
 // the historical dedup log.
@@ -52,13 +54,19 @@ export class IngressEvent {
   // and it stays pending until INGRESS_DEDUP_RETENTION_DAYS prunes it.
   // `method` is the request's HTTP method, so a replay reaches the handler as the live attempt did. Rows
   // written before it was persisted lack it, and dispatch falls back to 'POST' for them.
+  // `admission.verified` is what the host decided when it accepted the request (false on a route that
+  // authenticates nothing, and for a query no signature covered); a replay or retry hands the handler that
+  // verdict, not the route's current scheme. Rows written before it was persisted lack it, and dispatch reads
+  // the route as it stands.
   @Column({ type: jsonColumnType(), nullable: true })
   payload!: {
     headers: Record<string, string>;
     query: Record<string, string>;
     body: string;
     rawBody: string;
+    providerDeliveryId?: string;
     method?: string;
+    admission?: { verified: boolean };
   } | null;
 
   // sha256 hex of the rawBody, written at recordOrSkip. Survives payload retirement so operators can

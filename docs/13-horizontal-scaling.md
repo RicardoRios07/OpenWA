@@ -9,8 +9,9 @@
 > (`leaseExpiresAt`). A process claims a session before starting its engine and refuses
 > when another node holds a live claim, so two replicas can no longer both launch the same
 > session — which is what corrupted the shared LocalAuth directory. A booting process also
-> resets only the sessions it may claim, instead of reporting a live peer's sessions as
-> disconnected. Claims are released on a clean shutdown and expire otherwise, so failover
+> resets only the sessions it may claim (its own, unowned ones, and those whose holder's lease
+> has lapsed), instead of reporting a peer's sessions as disconnected while its lease is live.
+> Claims are released on a clean shutdown and expire otherwise, so failover
 > does not depend on one. `NODE_ID` names the process; it defaults to the hostname and must
 > be stable across restarts and unique per running process: two processes sharing a hostname
 > (host networking, pm2 cluster mode) must each set it, and a node that sees another process
@@ -48,13 +49,42 @@
 > `qr_ready` row is marked too while it has no phone, since the sweep never adopts a row without one;
 > a `qr_ready` row with a phone keeps its status, so the correction never makes it adoptable.
 > Nothing else revisits such a row, since the boot reset skips a foreign claim that is still live.
-> A session an operator stopped (`POST /stop` or `/force-kill`) is never adopted, even when its
-> claim did lapse, until an explicit `POST /start`.
+> An adoption whose launch fails before its engine exists releases the claim and marks the row disconnected,
+> so the session is not offered to the sweep again: it waits for an explicit `POST /start` or the next boot's
+> auto-start. One whose engine fails to initialize is left failed, for an operator, like any failed start;
+> one whose initialization times out is left disconnected, so the next boot auto-starts it.
+> A session an operator stopped (`POST /stop` or `/force-kill`), or whose `DELETE` failed part-way or
+> died with its node, is never adopted, even when its claim did lapse, until an explicit `POST /start`.
+> While versions are mixed during an upgrade, a node still on 0.25.0 does not read a `DELETE`'s record:
+> it can adopt such a session, and a `POST /start` it serves leaves the record in place.
+> A stop during a delete preserves its claim, including repeated stops after its lease expires or
+> becomes NULL. If another node takes over an expired claim, each later removal transaction checks
+> the new owner and refuses the old delete. No transaction remains open across a hook.
+> Successful adoption cleanup commits with its claim or expired-claim release, so delayed cleanup cannot fail
+> a later owner's new batches. Older nodes do not preserve these delete holds, fence each removal
+> transaction, or serialize adoption cleanup with ownership changes. Upgrade every
+> node before relying on them; older backup importers also treat the combined delete/stop record
+> as unknown. Older nodes also lack the final ownership check on a stop write, so they can still report a stop
+> as successful while a peer starts the session. Upgrade every node before relying on that fence.
 >
 > Known limitation: a holder that is alive but cannot reach the database for more than three lease
 > TTLs minus one heartbeat (160s at defaults) is marked disconnected by a peer too, and does not write its status back when it reconnects. Its
 > renewal still finds its own claim, so it detects no loss, and a steadily connected engine emits no
 > new status. The row reads `disconnected` until that engine's status next changes.
+>
+> Known limitation: the boot reset takes a lease that lapsed by any amount, where the sweep's status
+> correction above waits for more than two TTLs. A healthy peer's lease can lapse for a second, so a node
+> that boots in that moment marks the peer's `ready` session `disconnected`. With `AUTO_START_SESSIONS` on,
+> that node then claims the session, when the row has a phone, carries no operator stop or delete marker and the
+> node passes the normal capacity and lease checks, and the peer gives up its engine at its next heartbeat, as in an
+> adoption. When it does not (auto-start off, the node at its session cap, or the peer renewing first),
+> nothing writes the status back while the peer keeps renewing: the row reads `disconnected` until that
+> engine's status next changes. A peer's `qr_ready` session that has a phone is reset the same way, and
+> with auto-start on boot launches it under the same conditions, a start the sweep avoids by leaving such a row as it is. The reset
+> stays this broad because a single node recreated under a new hostname (`NODE_ID` unset) finds its
+> previous identity's rows foreign: narrower, a `qr_ready` row with a phone would keep its status with no
+> engine behind it, and `ready` rows would read active until the sweep corrects them minutes later. More
+> than one node is not a supported topology (see above), and the shipped chart keeps `replicaCount: 1`.
 >
 > **Request routing now exists, opt-in via `NODE_URL`.** When every node sets its own
 > reachable URL (e.g. `NODE_URL=http://10.0.0.5:2785`), a session-scoped request landing on
@@ -109,6 +139,22 @@
 > may already have carried it out, so a non-idempotent call such as a message send must not
 > be repeated blindly on either.
 >
+> **The owner lookup can fail first.** A node with `NODE_URL` reads a session's owner before it routes any
+> request for the session. When the database cannot serve that read for the moment (a dropped, refused or timed-out
+> connection, a connection limit, a locked SQLite file, a database starting up or shutting down), the node answers
+> `503` and nothing was done, so the request is safe to retry; a statement the database rejects stays `500`.
+>
+> **A large answer is relayed as it arrives.** The forwarding node holds an answer of up to
+> 4 MiB whole: a read that fails answers `502` or `504`, and nothing of the owner's status
+> or headers is passed on. A larger answer, such as a media download, is passed on as it
+> arrives instead, so that concurrent downloads through a node that does not own the session
+> do not each hold a copy in its memory. It carries the owner's `Content-Length` when the
+> owner sent one and the body was not encoded. `SESSION_PROXY_TIMEOUT_MS` then covers the owner's reply up to those first
+> 4 MiB and no more, so a slow client is not cut by it, and an owner that stops sending is
+> ended by the HTTP client's own limit of 5 minutes without data. A failure once the relay has
+> begun can no longer answer `502`: the connection to the client is cut, so a short body
+> cannot pass for the whole one, and the client should repeat the download.
+>
 > **The lease compares timestamps written by different nodes, so their clocks must agree.** Each
 > node writes `leaseExpiresAt` from its own clock and reads every other node's the same way. Just
 > before each renewal the holder's lease is only one TTL minus one heartbeat ahead, so a node whose
@@ -145,7 +191,44 @@
 > connected to node A receives an event raised on node B. Scope honestly: this distributes event
 > **fan-out only**. The per-key WS rate-limit buckets (counted per replica) and the engine registry
 > are still process-local. Without `REDIS_ENABLED` the adapter is inert and delivery is single-node,
-> exactly as before.
+> exactly as before. With it, an event of a one-to-one chat also costs the emitting node one or two
+> `lid_mappings` lookups (one for a `@lid` chat, none for a group), even when no chat-restricted key
+> exists: it cannot know whether another replica holds a restricted socket, so it names the chat in
+> every form for the rooms to match. Events about one chat of one session that are raised together
+> share a lookup, and an answer that named the chat's other identity is reused for 5 seconds (for up to
+> 1,000 chats). That reuse applies whenever the gateway expands a chat for chat-restricted delivery: with
+> Redis fan-out on, or while a chat-restricted socket is connected to the node. A mapping that arrives can
+> be seen up to 5 seconds late, and after a mapping is removed or moved, events of that chat can keep
+> reaching sockets restricted to the old identity for up to 5 seconds. A chat the table has no other
+> identity for is read again by every event.
+>
+> **The fan-out to other replicas is best effort and keeps no replay queue.** A Redis that pauses for less
+> than 10 s (a snapshot fork, a slow fsync) answers afterwards, and every event raised meanwhile reaches the
+> other replicas late, at up to about 1,200 events a second; above that the cap described below applies
+> first and drops the frames beyond it. A longer silence, a restart, a failover or an outage drops the
+> connection a node publishes on, and what was written to it may be lost with it, or may still reach the
+> other replicas late and after newer events, which their clients then apply out of order. The events that
+> node raises while it is disconnected, plus its reconnect backoff of up to 5 s once Redis is back, are
+> dropped for the clients connected to the other replicas: they are not delivered late and not twice.
+> Clients connected to the node that raised an event are served directly, and webhooks do not use this path,
+> so neither is affected. Memory is bounded in two ways. A Redis that sends nothing for 10 s has the
+> connection destroyed, and the node holds nothing more for it; what it had already held, at most 10 s of
+> events, is freed once the node has reconnected. A Redis that keeps answering, but slower than events are
+> raised, is never silent for 10 s, so a cap bounds it instead: once the node holds 12,000 unanswered events
+> (10 s at 1,000 events a second, with a fifth to spare) and the backlog has outlived 2 s, meaning the count
+> has not been below 6,000 for that long, it drops further frames for the other replicas until the count is
+> back below 6,000, with a warning when dropping starts and another, with the count, when it ends. The node
+> can hold the traffic of those 2 s on top of the 12,000. A burst raised in a single tick is not cut as long
+> as raising it past its 6,000th frame takes under 2 s: a healthy Redis answers it right after, and the node
+> holds it until then. A synchronous burst that takes longer than that to raise past 6,000 frames is cut at
+> 12,000 even against a healthy Redis, and the warning names the unanswered count. A replica whose own Redis
+> connection is reconnecting also misses what the others publish meanwhile. The connection a replica receives
+> on only listens, so it is pinged every 15 s and replaced when an answer takes over 30 s: one that stops
+> answering without being closed (a proxy in the path that keeps its side open, a NAT or a firewall that drops
+> the flow) costs that replica at most about 45 s of the others' events before it subscribes again. A Redis
+> that pauses for up to 30 s keeps that connection, so the replica still receives late what the others had
+> written before their own 10 s deadline; a longer silence while a ping waits replaces it, and what the others
+> had published into that silence is then lost for that replica.
 >
 > **Mid-connection key eviction converges on a timer, not a broadcast, and only on one node.** The
 > node that processes a revoke, delete, or narrowing tears down that key's sockets synchronously, in
@@ -170,7 +253,9 @@
 > liveness watchdog and reconnect timers still act on whatever is in the local
 > registry. `BulkMessageService` keeps its live batch state in process, so a takeover cannot resume
 > a batch — only fail it. MCP/agent tool invocations execute on the node that received them rather
-> than being forwarded.
+> than being forwarded. A key restricted to selected chats matches a chat's `@lid` and phone forms
+> through the shared `lid_mappings` table; while a node cannot read that table, it matches with the
+> pairings it holds in memory, which another node may have changed since.
 >
 > Everything below (node affinity, `replicas: 3`) remains a **design sketch** until those
 > land.
@@ -261,6 +346,9 @@ version: '3.8'
 services:
   openwa:
     image: ghcr.io/rmyndharis/openwa:latest
+    # Teardown takes up to 63 s with every datastore on; raise this by the amount SHUTDOWN_DELAY_MS or
+    # WEBHOOK_SHUTDOWN_DRAIN_MS exceeds its default, or the 10 s default kills the task mid-teardown.
+    stop_grace_period: 75s
     deploy:
       replicas: 1 # MUST stay 1 until multi-replica is supported — multiple replicas on one session volume corrupt WhatsApp auth
       update_config:
@@ -423,6 +511,9 @@ spec:
       labels:
         app: openwa
     spec:
+      # The teardown can take up to 63 s on a clustered replica (src/common/services/shutdown-budget.ts), so
+      # Kubernetes' default grace of 30 s would SIGKILL a slow stop half way. Match the shipped chart.
+      terminationGracePeriodSeconds: 75
       # OS-level containment is defence in depth for the plugin sandbox (see docs/30-plugin-sandboxing.md):
       # it limits the privileges the API process holds, not what a plugin inside that process can reach.
       # Without it the API process, and every plugin loaded into it, keeps whatever the container runtime
@@ -467,8 +558,8 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ['ALL']
-              # Only for the root entrypoint's chown and the gosu privilege drop.
-              add: ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETGID', 'SETUID']
+              # The root entrypoint's chown, the gosu privilege drop, and init forwarding signals after it.
+              add: ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'KILL', 'SETGID', 'SETUID']
           resources:
             requests:
               memory: '512Mi'
@@ -562,6 +653,9 @@ metadata:
     nginx.ingress.kubernetes.io/affinity: 'cookie'
     nginx.ingress.kubernetes.io/session-cookie-name: 'openwa-session'
     nginx.ingress.kubernetes.io/session-cookie-max-age: '172800'
+    # ingress-nginx refuses a request body over 1m by default, which base64 media sends exceed.
+    # Keep this at or above BODY_SIZE_LIMIT (25mb by default).
+    nginx.ingress.kubernetes.io/proxy-body-size: '25m'
 spec:
   ingressClassName: nginx
   rules:
@@ -588,6 +682,9 @@ already encodes the `replicaCount: 1` constraint below; prefer it over hand-appl
 raw manifests here stay for operators who do not use Helm.
 
 ```bash
+# Apply the namespace first: a directory is applied in file-name order, and the other files name it
+kubectl apply -f k8s/namespace.yaml
+
 # Apply all manifests
 kubectl apply -f k8s/
 
@@ -656,6 +753,10 @@ server {
     listen 80;
     server_name openwa.example.com;
 
+    # nginx refuses a request body over 1m by default, below the 25mb OpenWA itself accepts
+    # (BODY_SIZE_LIMIT), so base64 media sends would answer 413 before reaching a node.
+    client_max_body_size 25m;
+
     location / {
         proxy_pass http://openwa;
         proxy_http_version 1.1;
@@ -694,6 +795,23 @@ The replica count stays at **1** (see 13.3 and 13.4), so the only levers availab
 **vertical** — adjust the `resources` limits/reservations in the manifests above — or run a second
 single-instance deployment with its own session volume and split sessions between them. Horizontal
 `scale up` / `scale down` becomes an option only once the gaps listed at the top of this guide are closed.
+
+On one Docker daemon, the built-in datastores Dashboard > Infrastructure starts are shared, not per
+instance: their container names (`openwa-postgres`, `openwa-redis`, `openwa-minio`), their volumes and
+the `openwa-network` network are fixed, so a second instance that turns on Use Built-in attaches to the
+first instance's container and data. Let at most one instance on a daemon use them, and point the
+others at datastores of their own with their Use Built-in toggles off.
+
+Each instance finds a bundled container by its `com.openwa.service` label anywhere on the daemon. Its
+status reads a running one as the datastore it uses whenever its own host for that datastore is spelled
+like the bundled one: `postgres`, `redis`, `minio` or the container name, in any letter case, with or
+without a trailing dot. A dashboard restart that then switches that datastore off or to another host
+stops the first container on the daemon with that label, which can be the other instance's. So give the
+other instances' datastores host names of their own and no `com.openwa.*` labels; a second copy of the
+shipped compose file needs its own project name and container names, and its app must reach its
+datastores under names other than `postgres`, `redis` and `minio`. An instance set up that way whose
+`*_BUILTIN` flags are not `true` leaves the other instance's containers running: its dashboard counts
+a container OpenWA created as its own only beside its own flag, and asks to stop none of them.
 
 | Metric                            | Threshold  | Action                                                                                                     |
 | --------------------------------- | ---------- | ---------------------------------------------------------------------------------------------------------- |

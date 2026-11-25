@@ -16,7 +16,7 @@
  * // Sessions are addressed by the UUID that create() returns, not by name.
  * const session = await client.sessions.create({ name: 'my-session' });
  * await client.sessions.start(session.id);
- * // Link the account before sending: scan sessions.getQrCode or use sessions.requestPairingCode,
+ * // Link the account before sending: scan sessions.getQrCode (or use sessions.requestPairingCode for a number with no linked session),
  * // then wait for status 'ready'. An unlinked session answers the send with 409.
  * await client.messages.sendText(session.id, {
  *   chatId: '628123456789@c.us',
@@ -27,7 +27,7 @@
  * @packageDocumentation
  */
 
-import { request, requestBytes, encodeSegment, toTimeoutMs, warnIfInsecureHttpUrl, type BinaryResponse, type ClientConfig, type FetchLike, type RequestOptions } from './http.js';
+import { request, requestBytes, encodeSegment, hasUnsendableChar, toTimeoutMs, warnIfInsecureHttpUrl, type BinaryResponse, type ClientConfig, type FetchLike, type RequestOptions } from './http.js';
 import { CallsResource } from './resources/calls.js';
 import { MediaResource } from './resources/media.js';
 import { CatalogResource } from './resources/catalog.js';
@@ -60,21 +60,40 @@ export interface OpenWAClientOptions {
 }
 
 export class OpenWAClient {
-  private readonly config: Required<Omit<ClientConfig, 'fetch'>> & { fetch: FetchLike };
+  // Defined non-enumerable in the constructor, so the API key does not appear when a client is logged,
+  // inspected or serialized (`declare` keeps the class field from creating an enumerable one).
+  private declare readonly config: Required<Omit<ClientConfig, 'fetch'>> & { fetch: FetchLike };
 
   constructor(options: OpenWAClientOptions) {
     if (!options.baseUrl) throw new Error('OpenWAClient: baseUrl is required');
-    if (!options.apiKey) throw new Error('OpenWAClient: apiKey is required');
+    // A key read from a secret file usually ends in a newline: trimmed, as the other clients do. A control or
+    // non-Latin-1 character left inside is refused here, because fetch's own error quotes the whole value.
+    const apiKey = typeof options.apiKey === 'string' ? options.apiKey.trim() : options.apiKey;
+    if (!apiKey) throw new Error('OpenWAClient: apiKey is required');
+    if (typeof apiKey !== 'string' || hasUnsendableChar(apiKey)) {
+      throw new Error('OpenWAClient: apiKey contains a control or non-Latin-1 character; check for a stray newline');
+    }
+    for (const [name, value] of Object.entries(options.defaultHeaders ?? {})) {
+      // fetch trims spaces, tabs and line breaks at both ends of a value, so only what is left can be refused.
+      if (hasUnsendableChar(String(value).replace(/^[\t\n\r ]+|[\t\n\r ]+$/g, ''))) {
+        throw new Error(
+          `OpenWAClient: defaultHeaders value for "${name}" contains a control or non-Latin-1 character; check for a stray newline`,
+        );
+      }
+    }
 
-    this.config = {
-      baseUrl: options.baseUrl,
-      apiKey: options.apiKey,
-      timeoutMs: toTimeoutMs(options.timeoutMs ?? 30000),
-      defaultHeaders: options.defaultHeaders ?? {},
-      // Looked up on each call rather than captured here, so a fetch installed on globalThis after
-      // the client is built (a polyfill or a test stub) is the one used.
-      fetch: options.fetch ?? ((input, init) => globalThis.fetch(input, init)),
-    };
+    Object.defineProperty(this, 'config', {
+      enumerable: false,
+      value: {
+        baseUrl: options.baseUrl,
+        apiKey,
+        timeoutMs: toTimeoutMs(options.timeoutMs ?? 30000),
+        defaultHeaders: options.defaultHeaders ?? {},
+        // Looked up on each call rather than captured here, so a fetch installed on globalThis after
+        // the client is built (a polyfill or a test stub) is the one used.
+        fetch: options.fetch ?? ((input, init) => globalThis.fetch(input, init)),
+      },
+    });
 
     warnIfInsecureHttpUrl(options.baseUrl);
   }
@@ -109,7 +128,7 @@ export class OpenWAClient {
 
   /** Issue a raw request against the API. (Public for advanced use.) */
   request<T>(options: RequestOptions, idempotencyKey?: string): Promise<T> {
-    if (idempotencyKey !== undefined) {
+    if (idempotencyKey !== undefined && idempotencyKey !== null) {
       if (
         typeof idempotencyKey !== 'string' ||
         idempotencyKey.length < 1 ||
@@ -140,7 +159,7 @@ export class OpenWAClient {
   sendMedia(sessionId: string, segment: string, body: SendMediaRequest, idempotencyKey?: string): Promise<MessageResponse> {
     return this.request<MessageResponse>({
       method: 'POST',
-      path: `/api/sessions/${encodeSegment(sessionId)}/messages/${segment}`,
+      path: `/api/sessions/${encodeSegment(sessionId)}/messages/${encodeSegment(segment)}`,
       body,
     }, idempotencyKey);
   }

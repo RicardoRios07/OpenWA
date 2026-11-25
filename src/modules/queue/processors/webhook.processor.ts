@@ -6,6 +6,7 @@ import { Repository } from 'typeorm';
 import { createLogger } from '../../../common/services/logger.service';
 import { QUEUE_NAMES } from '../queue-names';
 import { workerConnectionOptions, webhookWorkerConcurrency } from '../redis-connection';
+import { closeWorkerIfStarted } from './close-worker';
 import { WebhookJobData, WebhookPayload } from '../../webhook/webhook.service';
 import { Webhook } from '../../webhook/entities/webhook.entity';
 import { WebhookOutboxService } from '../../webhook/webhook-outbox.service';
@@ -79,6 +80,14 @@ export class WebhookProcessor extends WorkerHost {
     this.degradedSessionConcurrency =
       this.configService.get<number | undefined>('webhook.degradedSessionConcurrency') ??
       Math.max(1, Math.floor(webhookWorkerConcurrency() / 4));
+  }
+
+  // Stop taking jobs before the plugins are torn down, so a final attempt's webhook:error hook still
+  // reaches them; see IngressProcessor.onModuleDestroy. The wait is min(WEBHOOK_TIMEOUT + 5 s, 10 s), so it
+  // covers one POST plus its bookkeeping only while WEBHOOK_TIMEOUT is 5 s or less; a job still active at the
+  // cap is re-run after the next start.
+  async onModuleDestroy(): Promise<void> {
+    await closeWorkerIfStarted(this, this.configService.get<number>('webhook.timeout', 10000) + 5000);
   }
 
   async process(job: Job<WebhookJobData>, token?: string): Promise<WebhookJobResult> {
@@ -327,13 +336,20 @@ export class WebhookProcessor extends WorkerHost {
         lastStatusCode: statusCodeFromError(errorMessage),
         lastError: clientError,
         // The producer attaches the pre-hook event data only while payload retention is on.
-        ...(this.configService.get<number>('webhook.failurePayloadRetentionHours', 0) > 0 && job.data.replayData
-          ? { payload: job.data.replayData }
-          : {}),
+        ...this.failurePayload(job.data.replayData),
       });
       if (recorded !== false) incrementWebhookDeliveryFailures();
       if (recorded !== null) await this.outbox.close(webhookId, payload.idempotencyKey, 'dispatched');
     }
+  }
+
+  /** The event data a terminal failure row keeps for a redrive, with the window it is kept for. */
+  private failurePayload(replayData: WebhookJobData['replayData']): {
+    payload?: Record<string, unknown>;
+    payloadRetentionHours?: number;
+  } {
+    const hours = this.configService.get<number>('webhook.failurePayloadRetentionHours', 0);
+    return hours > 0 && replayData ? { payload: replayData, payloadRetentionHours: hours } : {};
   }
 
   /**
@@ -348,7 +364,9 @@ export class WebhookProcessor extends WorkerHost {
    */
   @OnWorkerEvent('failed')
   async onWorkerFailed(job: Job<WebhookJobData> | undefined, error: Error): Promise<void> {
-    if (!job || error.message !== STALL_EXHAUSTION_MESSAGE) {
+    // The sentinel text alone is not proof: a failed attempt whose error reads the same is retried and is not
+    // this. BullMQ marks a job it fails for stalling by storing the reason as its deferred failure.
+    if (!job || job.deferredFailure !== STALL_EXHAUSTION_MESSAGE || error.message !== STALL_EXHAUSTION_MESSAGE) {
       return;
     }
 
@@ -404,9 +422,7 @@ export class WebhookProcessor extends WorkerHost {
       attempts: Math.max(1, job.attemptsMade),
       lastStatusCode: null, // no HTTP exchange completed on the stalled attempts
       lastError: error.message,
-      ...(this.configService.get<number>('webhook.failurePayloadRetentionHours', 0) > 0 && job.data.replayData
-        ? { payload: job.data.replayData }
-        : {}),
+      ...this.failurePayload(job.data.replayData),
     });
     if (recorded !== false) incrementWebhookDeliveryFailures();
     if (recorded !== null) await this.outbox.close(webhookId, payload.idempotencyKey, 'dispatched');

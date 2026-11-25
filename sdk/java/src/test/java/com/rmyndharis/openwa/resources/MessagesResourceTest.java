@@ -119,7 +119,7 @@ class MessagesResourceTest {
         var body = SendTextRequest.builder().chatId("c@c.us").text("hi").build();
         client.messages.sendText("s", body, "valid-key");
         var previous = tx.lastRequest();
-        for (String key : List.of("", "has space", " key", "key ", "key\n", "key\t", "caf\u00e9", "x".repeat(256))) {
+        for (String key : List.of("", "has space", " key", "key ", "key\n", "key\t", "caf\u00e9", "a\u007fb", "x".repeat(256))) {
             assertThrows(IllegalArgumentException.class, () -> client.messages.sendText("s", body, key));
             assertSame(previous, tx.lastRequest());
         }
@@ -129,7 +129,7 @@ class MessagesResourceTest {
     void visibleAsciiKeysAtBothLengthLimitsAreAccepted() {
         tx.respond(201, MSG);
         var body = SendTextRequest.builder().chatId("c@c.us").text("hi").build();
-        for (String key : List.of("!", "x".repeat(255))) {
+        for (String key : List.of("!", "~", "x", "x".repeat(255))) {
             client.messages.sendText("s", body, key);
             assertEquals(key, tx.lastRequest().headers().get("Idempotency-Key"));
         }
@@ -251,6 +251,20 @@ class MessagesResourceTest {
         assertEquals("http://h/api/sessions/s/messages/send-location", tx.lastRequest().url());
         assertEquals(HttpMethod.POST, tx.lastRequest().method());
         assertTrue(tx.lastRequest().body().contains("12.5"));
+    }
+
+    @Test
+    void locationBuilderRefusesAnUnsetCoordinateButKeepsZero() {
+        // 0.0 is a real place, so a coordinate left unset must not become a pin there.
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> SendLocationRequest.builder().chatId("628@c.us").longitude(98.7).build());
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> SendLocationRequest.builder().chatId("628@c.us").latitude(12.5).build());
+        SendLocationRequest origin = SendLocationRequest.builder().chatId("628@c.us").latitude(0).longitude(0).build();
+        assertEquals(0.0, origin.latitude());
+        assertEquals(0.0, origin.longitude());
     }
 
     @Test
@@ -438,6 +452,14 @@ class MessagesResourceTest {
         tx.respond(200, "[]");
         client.messages.reactions("s", "chat1", "msg1");
         assertEquals("http://h/api/sessions/s/messages/chat1/msg1/reactions", tx.lastRequest().url());
+        assertEquals(HttpMethod.GET, tx.lastRequest().method());
+    }
+
+    @Test
+    void receiptsHitsReceiptsPath() {
+        tx.respond(200, "{\"delivery\":[],\"read\":[],\"played\":[]}");
+        client.messages.receipts("s", "chat1", "msg1");
+        assertEquals("http://h/api/sessions/s/messages/chat1/msg1/receipts", tx.lastRequest().url());
         assertEquals(HttpMethod.GET, tx.lastRequest().method());
     }
 

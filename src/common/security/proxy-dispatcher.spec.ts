@@ -1,5 +1,6 @@
 import * as http from 'http';
 import * as net from 'net';
+import { networkInterfaces } from 'os';
 import type { AddressInfo } from 'net';
 import { Dispatcher1Wrapper, fetch as undiciFetch } from 'undici';
 import { createProxyDispatcher, hasUnauthenticatableSocks4Credentials, urlFetchProxy } from './proxy-dispatcher';
@@ -167,6 +168,17 @@ describe('createProxyDispatcher over real SOCKS proxies', () => {
       await originAnswers(proxy.url, 'http://cdn.example/file', '2606:2800:220:1:248:1893:25c8:1946', '127.0.0.1'),
     ).toBe('origin saw /file');
     expect(proxy.destinations).toEqual(['2606:2800:220:1:248:1893:25c8:1946:80', '127.0.0.1:80']);
+  });
+
+  // `URL` keeps an IPv6 literal bracketed, and the brackets would go to the proxy's address lookup as part of a
+  // name. The IPv4-mapped form reaches the IPv4 loopback listener of the helper on a host with IPv6.
+  const ipv6Available = Object.values(networkInterfaces()).some(list => list?.some(a => a.family === 'IPv6'));
+  (ipv6Available ? it : it.skip)('reaches a proxy given as a bracketed IPv6 literal', async () => {
+    proxy = await startSocks5Proxy({ relayTo: portOf(origin) });
+    const bracketed = proxy.url.replace('127.0.0.1', '[::ffff:127.0.0.1]');
+
+    expect(await originAnswers(bracketed, 'http://203.0.113.7/file')).toBe('origin saw /file');
+    expect(proxy.destinations).toHaveLength(1);
   });
 
   it('authenticates a socks5 proxy with the decoded credentials', async () => {

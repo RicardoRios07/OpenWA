@@ -36,6 +36,10 @@ describe('isBlockedAddress', () => {
     ['192.168.1.1', 'RFC1918 192.168/16'],
     ['169.254.169.254', 'link-local / cloud metadata'],
     ['100.64.0.1', 'CGNAT 100.64/10'],
+    ['192.0.0.8', 'IETF protocol assignments 192.0.0.0/24'],
+    ['198.19.255.255', 'benchmarking 198.18.0.0/15, upper end'],
+    ['224.0.0.1', 'IPv4 multicast 224.0.0.0/4'],
+    ['255.255.255.255', 'reserved 240.0.0.0/4, broadcast'],
     ['0.0.0.0', 'unspecified'],
     ['::1', 'IPv6 loopback'],
     ['fc00::1', 'IPv6 ULA fc00::/7'],
@@ -471,7 +475,7 @@ describe('withSafeFetch (guarded + pinned fetch)', () => {
     const init = {
       method: 'POST',
       body: 'payload',
-      headers: { authorization: 'Bearer secret', 'x-custom': 'keep' },
+      headers: { authorization: 'Bearer secret', cookie: 'sid=abc', 'x-custom': 'keep' },
     };
 
     await withSafeFetch('https://api.example.com/upload', init, use, { followRedirects: true });
@@ -483,6 +487,7 @@ describe('withSafeFetch (guarded + pinned fetch)', () => {
     expect(hop2.method).toBe('GET');
     expect(hop2.body).toBeUndefined();
     expect(hop2.headers?.get('authorization')).toBeNull();
+    expect(hop2.headers?.get('cookie')).toBeNull();
     expect(hop2.headers?.get('x-custom')).toBe('keep');
   });
 

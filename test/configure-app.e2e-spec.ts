@@ -10,20 +10,27 @@ import {
   Param,
   All,
   Req,
+  Injectable,
+  OnModuleDestroy,
+  ValidationPipe,
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { NestFactory } from '@nestjs/core';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
-import { request as httpRequest } from 'http';
+import { request as httpRequest, type Server } from 'http';
+import type { AddressInfo } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { configureApp } from '../src/configure-app';
 import { applyGlobalValidation } from '../src/config/app-validation';
 import { DASHBOARD_CSP_NONCE_PLACEHOLDER } from '../src/config/dashboard-csp';
 import { ActiveKeyIndex } from '../src/modules/auth/active-key-index';
+import { ShutdownService } from '../src/common/services/shutdown.service';
 import { documentErrorResponses, ERROR_RESPONSE_SCHEMA } from '../src/config/swagger.config';
+import * as bodyNesting from '../src/common/validation/body-nesting';
+import { SendTextMessageDto } from '../src/modules/message/dto/send-message.dto';
 
 /**
  * The production HTTP surface, run for real. Every other e2e builds a bare Nest app, so the stack
@@ -37,6 +44,15 @@ class EchoController {
   @Post()
   echo(@Body() body: unknown) {
     return { received: typeof body };
+  }
+}
+
+/** A route with a real request DTO, so the global ValidationPipe runs class-transformer over the body. */
+@Controller('validated')
+class ValidatedController {
+  @Post('text')
+  text(@Body() dto: SendTextMessageDto) {
+    return { chatId: dto.chatId };
   }
 }
 
@@ -68,7 +84,7 @@ class IngressStubController {
   }
 }
 
-@Module({ controllers: [EchoController, SessionStubController, IngressStubController] })
+@Module({ controllers: [EchoController, ValidatedController, SessionStubController, IngressStubController] })
 class HttpSurfaceModule {}
 
 // A stand-in for the bundled document: the real dashboard/index.html carries the placeholder in a
@@ -154,6 +170,31 @@ describe('production HTTP surface (configureApp)', () => {
     expect(res.headers['access-control-allow-origin']).toBe('https://allowed.example');
   });
 
+  // Neither send-idempotency header is CORS-safelisted: a browser sends Idempotency-Key only if the preflight
+  // lists it, and reads Idempotent-Replayed only if the response exposes it.
+  const listed = (header: string | undefined): string[] => (header ?? '').split(',').map(name => name.trim());
+
+  it('lists Idempotency-Key in the preflight answer for an allowed Origin', async () => {
+    const res = await request(app.getHttpServer())
+      .options('/api/echo')
+      .set('Origin', 'https://allowed.example')
+      .set('Access-Control-Request-Method', 'POST')
+      .set('Access-Control-Request-Headers', 'idempotency-key');
+
+    expect(res.headers['access-control-allow-origin']).toBe('https://allowed.example');
+    expect(listed(res.headers['access-control-allow-headers'])).toContain('Idempotency-Key');
+  });
+
+  it('exposes Idempotent-Replayed to an allowed Origin', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/api/echo')
+      .set('Content-Type', 'application/json')
+      .set('Origin', 'https://allowed.example')
+      .send({});
+
+    expect(listed(res.headers['access-control-expose-headers'])).toContain('Idempotent-Replayed');
+  });
+
   it('denies a disallowed Origin by omitting the CORS headers, not by failing the request', async () => {
     // Deliberately an /api route: the document handler answers `/` before the CORS layer is
     // reached, so asserting the denial there passes whatever CORS does.
@@ -175,6 +216,200 @@ describe('production HTTP surface (configureApp)', () => {
       .send({ blob: 'x'.repeat(900 * 1024) });
 
     expect(res.status).toBe(201);
+  });
+
+  // The recursive readers of a parsed body (class-transformer in the validation pipe, the send
+  // idempotency fingerprint, the cluster proxy's JSON.stringify) overflow the stack a couple of thousand
+  // levels down and answered 500 with a stack trace in the log. A chain of `levels` nested objects:
+  // '{"a":{}}' is two.
+  const nestedObjects = (levels: number): string => '{"a":'.repeat(levels - 1) + '{}' + '}'.repeat(levels - 1);
+
+  // The documented limit is 100 levels, written as a literal here so that moving the cap fails a test.
+  it('admits a body nested 100 levels and refuses 101 with 400', async () => {
+    const post = (body: string) => request(app.getHttpServer()).post('/api/echo').type('json').send(body);
+
+    expect((await post(nestedObjects(100))).status).toBe(201);
+
+    const res = await request(app.getHttpServer())
+      .post('/api/echo')
+      .type('json')
+      .set('Origin', 'https://allowed.example')
+      .send(nestedObjects(101))
+      .expect(400);
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({
+      statusCode: 400,
+      error: 'Bad Request',
+      message: 'Request body must not nest objects or arrays more than 100 levels deep',
+    });
+    expect(res.headers['x-request-id']).toBeDefined();
+    // A browser can read the refusal only if it carries the CORS headers.
+    expect(res.headers['access-control-allow-origin']).toBe('https://allowed.example');
+  });
+
+  // The depth is read from the raw bytes, so the refusal does not wait for the parse: a body that is deeper than
+  // the cap and never closes is refused for its depth, not for being invalid JSON.
+  it('refuses a body for its depth before it is parsed', async () => {
+    const res = await request(app.getHttpServer()).post('/api/echo').type('json').send('['.repeat(101));
+
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({
+      message: 'Request body must not nest objects or arrays more than 100 levels deep',
+    });
+  });
+
+  it('does not count brackets inside a string as nesting', async () => {
+    const text = `${'['.repeat(5000)}\\"${'{'.repeat(5000)}`;
+    const res = await request(app.getHttpServer()).post('/api/echo').type('json').send(`{"text":"${text}"}`);
+
+    expect(res.status).toBe(201);
+  });
+
+  // Posts raw bytes with node's http client: supertest would turn a Buffer into JSON.
+  const postBytes = async (contentType: string, bytes: Buffer): Promise<{ status: number; body: string }> => {
+    const { port } = (app.getHttpServer() as Server).address() as AddressInfo;
+    return new Promise((resolve, reject) => {
+      const req = httpRequest(
+        {
+          host: '127.0.0.1',
+          port,
+          path: '/api/echo',
+          method: 'POST',
+          headers: { 'Content-Type': contentType, 'Content-Length': String(bytes.length) },
+        },
+        res => {
+          const chunks: Buffer[] = [];
+          res.on('data', (chunk: Buffer) => chunks.push(chunk));
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }));
+        },
+      );
+      req.on('error', reject);
+      req.end(bytes);
+    });
+  };
+  const NESTING_MESSAGE = 'Request body must not nest objects or arrays more than 100 levels deep';
+
+  // body-parser hands the charset to iconv-lite, which reads every one of these as UTF-8: it lower-cases the
+  // name and drops every character that is not a letter or digit, and a trailing ':NNNN' year. A client must
+  // not be able to pick the slow path by spelling UTF-8 differently, so each is refused for its depth before
+  // the parse, like the plain spelling.
+  it.each(['utf-8', 'UTF-8', 'utf-8.', 'utf-_8', 'utf--8', 'utf-8:1993', 'utf-8!'])(
+    'scans a body declared as charset "%s" before it is parsed',
+    async charset => {
+      const res = await postBytes(`application/json; charset="${charset}"`, Buffer.from('['.repeat(101)));
+
+      expect(res.status).toBe(400);
+      expect(JSON.parse(res.body)).toMatchObject({ message: NESTING_MESSAGE });
+    },
+  );
+
+  // The raw scan reads UTF-8. A body in another UTF charset is decoded by the parser first, so it is walked
+  // after the parse instead and meets the same limit.
+  it.each([
+    [100, 201],
+    [101, 400],
+  ])('holds a UTF-16 body nested %i levels to the same limit (%i)', async (levels, status) => {
+    const res = await postBytes('application/json; charset=utf-16le', Buffer.from(nestedObjects(levels), 'utf16le'));
+
+    expect(res.status).toBe(status);
+  });
+
+  // In UTF-16 a backslash escapes only the first byte of the next character, so scanning its bytes as if they
+  // were UTF-8 would read the quote after an escaped one as the end of the string and count the brackets that
+  // follow as structure. The body below nests one level.
+  it('does not scan the bytes of a UTF-16 body: an escaped quote and brackets inside its string are not nesting', async () => {
+    const json = `{"t":"say \\"${'['.repeat(150)}"}`;
+    const res = await postBytes('application/json; charset=utf-16le', Buffer.from(json, 'utf16le'));
+
+    expect(res.status).toBe(201);
+  });
+
+  // A body the raw scan has read must not be walked again after the parse: that second pass is the cost the
+  // scan exists to remove. A body in another charset has not been read and is walked once it is parsed.
+  describe('the walk after the parse', () => {
+    const walk = jest.spyOn(bodyNesting, 'exceedsBodyNesting');
+    beforeEach(() => walk.mockClear());
+    afterAll(() => walk.mockRestore());
+
+    it('is skipped for a UTF-8 body that was scanned', async () => {
+      await request(app.getHttpServer())
+        .post('/api/echo')
+        .type('json')
+        .send({ small: [1, 2, 3] })
+        .expect(201);
+
+      expect(walk).not.toHaveBeenCalled();
+    });
+
+    it('runs on the parsed value of a UTF-16 body', async () => {
+      const res = await postBytes('application/json; charset=utf-16le', Buffer.from('{"small":[1,2,3]}', 'utf16le'));
+
+      expect(res.status).toBe(201);
+      expect(walk).toHaveBeenCalled();
+      expect(walk.mock.calls[0][0]).toEqual({ small: [1, 2, 3] });
+    });
+  });
+
+  it('answers a DTO route 400, not 500, for a body nested thousands of levels deep', async () => {
+    const mentions = '['.repeat(5000) + ']'.repeat(5000);
+    const res = await request(app.getHttpServer())
+      .post('/api/validated/text')
+      .type('json')
+      .send(`{"chatId":"628123456789@c.us","text":"hi","mentions":${mentions}}`);
+
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ statusCode: 400, error: 'Bad Request' });
+  });
+
+  // class-transformer copies every array element and every object key of a body before a validator can refuse
+  // it (and scans an object's keys once per key), so the width is bounded ahead of the validation pipe.
+  describe('a DTO body past a width limit', () => {
+    const validText = { chatId: '628123456789@c.us', text: 'hi' };
+    const list = (length: number): number[] => Array.from({ length }, () => 1);
+
+    it.each([
+      [
+        'an array of more than 10000 items',
+        { mentions: list(10_001) },
+        'Request body must not hold an array of more than 10000 items',
+      ],
+      [
+        'an object of more than 1000 keys',
+        { extra: Object.fromEntries(list(1_001).map((_, index) => [`k${index}`, 1])) },
+        'Request body must not hold an object of more than 1000 keys',
+      ],
+      [
+        'more than 250000 items and keys in all',
+        { junk: Array.from({ length: 26 }, () => list(9_999)) },
+        'Request body must not hold more than 250000 array items and object keys in all',
+      ],
+    ])(
+      'is refused with 400 naming the limit when it holds %s, before it is transformed',
+      async (_label, padded, message) => {
+        const transform = jest.spyOn(ValidationPipe.prototype, 'transform');
+        try {
+          const res = await request(app.getHttpServer())
+            .post('/api/validated/text')
+            .type('json')
+            .send({ ...validText, ...padded });
+
+          expect(res.status).toBe(400);
+          expect(res.body).toMatchObject({ statusCode: 400, error: 'Bad Request', message });
+          expect(transform).not.toHaveBeenCalled();
+        } finally {
+          transform.mockRestore();
+        }
+      },
+    );
+
+    it('is left alone when no DTO defines the body, however wide', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/api/echo')
+        .type('json')
+        .send({ list: list(20_000), many: Array.from({ length: 30 }, () => list(9_999)) });
+
+      expect(res.status).toBe(201);
+    });
   });
 
   it('refuses a body over the per-request cap with 413', async () => {
@@ -378,6 +613,105 @@ describe('in-flight body budget tiers (configureApp)', () => {
       expect(keyed.status).toBe(201);
     } finally {
       held.destroy();
+    }
+  });
+});
+
+describe('requests during shutdown teardown (configureApp)', () => {
+  // Nest keeps the listener open until every destroy hook has finished, so the hook below can still
+  // reach the server: it records what a client arriving mid-teardown gets back.
+  let base = '';
+  const handled: string[] = [];
+  const duringTeardown: Record<string, request.Response> = {};
+  let slowEntered!: () => void;
+  const slowAdmitted = new Promise<void>(resolve => (slowEntered = resolve));
+  let releaseSlow!: () => void;
+  const slowReleased = new Promise<void>(resolve => (releaseSlow = resolve));
+
+  @Controller()
+  class TeardownProbeController {
+    @Get('work')
+    work() {
+      handled.push('work');
+      return { ok: true };
+    }
+
+    @Get('slow')
+    async slow() {
+      handled.push('slow');
+      slowEntered();
+      await slowReleased;
+      return { ok: true };
+    }
+
+    @Get('health/live')
+    live() {
+      return { status: 'ok' };
+    }
+  }
+
+  @Injectable()
+  class TeardownProbe implements OnModuleDestroy {
+    async onModuleDestroy() {
+      for (const path of ['/api/work', '/api/health/live']) {
+        duringTeardown[path] = await request(base).get(path).set('Connection', 'keep-alive');
+      }
+      releaseSlow();
+    }
+  }
+
+  @Module({ controllers: [TeardownProbeController], providers: [ShutdownService, TeardownProbe] })
+  class TeardownSurfaceModule {}
+
+  it('refuses new requests once teardown begins, while admitted requests and the health probes complete', async () => {
+    const app = await NestFactory.create<INestApplication<App>>(TeardownSurfaceModule, {
+      bodyParser: false,
+      logger: false,
+    });
+    configureApp(app);
+    applyGlobalValidation(app);
+    await app.listen(0, '127.0.0.1');
+    base = await app.getUrl();
+
+    let exited!: () => void;
+    const exitCalled = new Promise<void>(resolve => (exited = resolve));
+    const exitSpy = jest.spyOn(process, 'exit').mockImplementation((() => exited()) as never);
+    let teardownStarted = false;
+    try {
+      const shutdown = app.get(ShutdownService);
+      shutdown.setShutdownCallback(() => app.close());
+
+      // The drain: readiness reports 503 so the balancer stops routing, but traffic is still served.
+      shutdown.markShuttingDown();
+      expect((await request(base).get('/api/work')).status).toBe(200);
+
+      const slow = request(base)
+        .get('/api/slow')
+        .then(res => res);
+      await slowAdmitted;
+      teardownStarted = true;
+      shutdown.shutdown(0);
+      await exitCalled;
+
+      const refused = duringTeardown['/api/work'];
+      expect(refused.status).toBe(503);
+      expect(refused.headers.connection).toBe('close');
+      expect(refused.body).toEqual({
+        statusCode: 503,
+        message: 'Server is shutting down',
+        error: 'Service Unavailable',
+      });
+      // The handler never ran for the refused request: only the drain-time call and the slow one did.
+      expect(handled).toEqual(['work', 'slow']);
+      expect(duringTeardown['/api/health/live'].status).toBe(200);
+      expect((await slow).status).toBe(200);
+    } finally {
+      exitSpy.mockRestore();
+      // A failure before teardown would otherwise leave the listener and the slow handler open.
+      if (!teardownStarted) {
+        releaseSlow();
+        await app.close();
+      }
     }
   });
 });

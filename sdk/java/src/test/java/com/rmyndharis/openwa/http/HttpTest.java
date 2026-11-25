@@ -6,6 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.google.gson.Gson;
+import java.net.URI;
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -74,6 +76,30 @@ class HttpTest {
     }
 
     @Test
+    void buildUrlAppendsQueryBeforeFragment() {
+        String[][] cases = {
+            {"/m#part", "limit=50", "part"},
+            {"/m?a=1#part", "a=1&limit=50", "part"},
+            {"/m#part?x=2", "limit=50", "part?x=2"}
+        };
+        for (String[] row : cases) {
+            URI uri = URI.create(Http.buildUrl("https://h/v1", row[0], new Query(null, 50, null), gson));
+            assertEquals("h", uri.getRawAuthority(), row[0]);
+            assertEquals("/v1/m", uri.getRawPath(), row[0]);
+            assertEquals(row[1], uri.getRawQuery(), row[0]);
+            assertEquals(row[2], uri.getRawFragment(), row[0]);
+        }
+    }
+
+    @Test
+    void buildUrlLeavesFragmentAloneWhenNoQueryValuesAreAdded() {
+        String original = "https://h/v1/m?a=1#part?x=2";
+        assertEquals(original, Http.buildUrl("https://h/v1", "/m?a=1#part?x=2", null, gson));
+        assertEquals(original, Http.buildUrl("https://h/v1", "/m?a=1#part?x=2", Map.of(), gson));
+        assertEquals(original, Http.buildUrl("https://h/v1", "/m?a=1#part?x=2", new Query(null, null, null), gson));
+    }
+
+    @Test
     void mergeHeadersAuthAndJsonWin() {
         Map<String, String> defaults = new LinkedHashMap<>();
         defaults.put("Content-Type", "text/plain");
@@ -95,4 +121,15 @@ class HttpTest {
     }
 
     private record Query(String chatId, Integer limit, String cursor) {}
+
+    @Test
+    void requestToStringShowsNeitherTheApiKeyNorTheBody() {
+        // A logging transport prints the request it is handed.
+        HttpRequestData req = new HttpRequestData(HttpMethod.POST, "https://h/api/x",
+            Map.of("X-API-Key", "owa_k1_secret"), "{\"text\":\"private words\"}", Duration.ofSeconds(5));
+        String text = req.toString();
+        assertFalse(text.contains("owa_k1_secret"), text);
+        assertFalse(text.contains("private words"), text);
+        assertTrue(text.contains("POST https://h/api/x") || text.contains("https://h/api/x"), text);
+    }
 }

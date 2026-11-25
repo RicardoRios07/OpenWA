@@ -7,8 +7,14 @@ import type { AnyToolDescriptor } from './tool-descriptor';
 
 /**
  * Run one tool call with REST-equivalent guarantees, reusing core's own auth:
- * auth (role + allowedSessions + IP fail-closed) → validate input → handler.
- * Mirrors the REST guard-then-pipe order (auth before validation).
+ * auth (role + allowedSessions + IP fail-closed) → chat gate (a chat-restricted key may run only a
+ * tool that carries a `chatScope` mark) → validate input → NUL check → chat arguments and
+ * `quotedMessageId` → handler.
+ * Mirrors the REST guard-then-pipe order (auth before validation) for a call that reaches it. Over MCP
+ * the SDK validates the same input schema before invoking this, so arguments the schema refuses come
+ * back as the SDK's -32602 tool error without reaching auth; every handler still runs only after the
+ * role, session and chat checks here. The chat arguments are checked
+ * on the parsed values, so schema normalization cannot change the authorized target.
  * `clientIp` is undefined over MCP — a key with allowedIps therefore fails closed
  * inside validateApiKey (documented limitation).
  *
@@ -18,8 +24,11 @@ import type { AnyToolDescriptor } from './tool-descriptor';
  * string, preventing pre-auth bucket allocation by anonymous callers.
  * @param onAuthFailure Optional callback invoked with the error when the AUTH
  * phase rejects (missing/invalid/revoked/expired key, wrong role, IP/session not
- * allowed). Chat argument checks run after parsing so normalized values remain
- * authorized. Handler errors do not reach this callback. Re-thrown after it.
+ * allowed, a tool the chat-restricted key may not run, or a chat argument outside
+ * its allowlist). Schema validation errors and handler errors do not reach this
+ * callback. Re-thrown after it.
+ * @param signal Optional cancellation signal (the MCP client went away or cancelled the request), handed
+ * to the handler so a long call can stop.
  */
 export async function invokeTool(
   tool: AnyToolDescriptor,
@@ -29,6 +38,7 @@ export async function invokeTool(
   onAuthenticated?: (apiKeyId: string) => void,
   onAuthFailure?: (error: unknown) => void,
   chatScope?: ChatScopeService,
+  signal?: AbortSignal,
 ): Promise<unknown> {
   // AUTH PHASE — every rejection here is an authentication/authorization failure (the MCP analog of the
   // REST ApiKeyGuard's authorize()). Wrapped so onAuthFailure can record the audit trail at the boundary.
@@ -87,12 +97,14 @@ export async function invokeTool(
       if (typeof tool.chatScope !== 'string') {
         const fields = tool.chatScope ?? [];
         if (fields.length === 0) throw new ForbiddenException('API key is restricted to selected chats');
+        // The allowlist is the same for every field, so it is compiled once.
+        const scope = chatScope.scopeFor(apiKey);
         for (const field of fields) {
           const chatId = values[field];
           if (typeof chatId !== 'string' || !chatId.trim()) {
             throw new ForbiddenException(`${field} is required for a key restricted to selected chats`);
           }
-          if (!(await chatScope.allows(apiKey, chatId))) {
+          if (!(await chatScope.allows(apiKey, chatId, scope))) {
             throw new ForbiddenException('API key not authorized for this chat');
           }
         }
@@ -108,5 +120,5 @@ export async function invokeTool(
   }
   // The single cast the erasure needs, placed next to the parse that justifies it: `input` is
   // whatever this tool's own `inputSchema` just accepted, which is exactly what its handler declares.
-  return tool.handler(input as never, apiKey, chatScope);
+  return tool.handler(input as never, apiKey, chatScope, signal);
 }

@@ -1,3 +1,4 @@
+import { Response } from 'undici';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { generateSafeLinkPreview } from './safe-link-preview';
@@ -153,6 +154,46 @@ describe('generateSafeLinkPreview', () => {
     });
   });
 
+  describe('the HTML byte prefix', () => {
+    const bytes = (...chunks: string[]) => chunks.map(chunk => Buffer.from(chunk));
+    it.each([
+      ['an oversized first chunk', bytes(' '.repeat(64) + '<title>Beyond</title>'), undefined],
+      ['an oversized final chunk', bytes(' '.repeat(48), ' '.repeat(16) + '<title>Beyond</title>'), undefined],
+      ['Open Graph beyond the cap', bytes(' '.repeat(64) + '<meta property="og:title" content="Beyond">'), undefined],
+      ['valid prefix metadata', bytes('<title>Within</title>' + ' '.repeat(44) + '<title>Beyond</title>'), 'Within'],
+      ['metadata ending at the cap', bytes(' '.repeat(44) + '<title>Exact</title>'), 'Exact'],
+      [
+        'a split multibyte character',
+        [
+          Buffer.concat([Buffer.from(' '.repeat(62)), Buffer.from([0xc3])]),
+          Buffer.concat([Buffer.from([0xa9]), Buffer.from('<title>Beyond</title>')]),
+        ],
+        undefined,
+      ],
+    ] as const)('reads only the allowed bytes for %s', async (_name, chunks, title) => {
+      let index = 0;
+      const cancel = jest.fn();
+      const body = new ReadableStream<Uint8Array>(
+        {
+          pull(controller) {
+            if (index < chunks.length) controller.enqueue(chunks[index++]);
+            else controller.close();
+          },
+          cancel,
+        },
+        { highWaterMark: 0 },
+      );
+      const response = new Response(body, { headers: { 'content-type': 'text/html' } });
+      jest.spyOn(ssrfGuard, 'withSafeFetch').mockImplementation((_url, _init, use) => Promise.resolve(use(response)));
+
+      const preview = await generateSafeLinkPreview('https://example.com', { maxBytes: 64 });
+
+      expect(preview?.title).toBe(title);
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(index).toBe(chunks.length);
+    });
+  });
+
   describe('what it extracts', () => {
     it('prefers Open Graph metadata', async () => {
       respondWith(
@@ -203,6 +244,39 @@ describe('generateSafeLinkPreview', () => {
 
       await expect(generateSafeLinkPreview('https://example.com')).resolves.toMatchObject({
         title: 'Tom & Jerry\'s "show"',
+      });
+    });
+
+    // WordPress and most CMSs write curly quotes, dashes and ellipses as numeric references, and older
+    // pages write accents by name: left as written they reach the recipient as literal text.
+    it('decodes numeric references, decimal and hexadecimal, and the common named ones', async () => {
+      respondWith(
+        '<meta property="og:title" content="Don&#8217;t panic &#8211; a guide &amp; more">' +
+          '<meta property="og:description" content="Caf&eacute; &#x2014; 5 min read &hellip; &copy; 2026">',
+      );
+      // Code points rather than the characters, so the expectation reads the same in any editor.
+      const text = (...parts: Array<string | number>): string =>
+        parts.map(part => (typeof part === 'number' ? String.fromCodePoint(part) : part)).join('');
+
+      await expect(generateSafeLinkPreview('https://example.com')).resolves.toMatchObject({
+        title: text('Don', 0x2019, 't panic ', 0x2013, ' a guide & more'),
+        description: text('Caf', 0xe9, ' ', 0x2014, ' 5 min read ', 0x2026, ' ', 0xa9, ' 2026'),
+      });
+    });
+
+    it('leaves a reference that names no character, or one it does not know, as written', async () => {
+      respondWith('<meta property="og:title" content="&#0; &#xD800; &#1114112; &#9; &#150; &notanentity; &#x;">');
+
+      await expect(generateSafeLinkPreview('https://example.com')).resolves.toMatchObject({
+        title: '&#0; &#xD800; &#1114112; &#9; &#150; &notanentity; &#x;',
+      });
+    });
+
+    it('does not decode a numeric reference twice', async () => {
+      respondWith('<meta property="og:title" content="&amp;#39; &amp;#x41;">');
+
+      await expect(generateSafeLinkPreview('https://example.com')).resolves.toMatchObject({
+        title: '&#39; &#x41;',
       });
     });
 

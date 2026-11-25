@@ -72,6 +72,35 @@ describe('webhook failure persistence', () => {
     expect(row.payload).toBeNull();
   });
 
+  // Recorded while payload retention was off, the row holds no event data; a later failure of the same delivery
+  // carries it once retention is on, and the pending outbox copy is closed after that record.
+  it('hands a later failure its event data to a terminal row recorded without it', async () => {
+    await recordWebhookDeliveryFailure(repo, logger, input);
+    await recordWebhookDeliveryFailure(repo, logger, {
+      ...input,
+      attempts: 1,
+      payload: { body: 'kept' },
+      payloadRetentionHours: 24,
+    });
+    const row = await repo.findOneOrFail({
+      where: { idempotencyKey: 'key' },
+      select: { id: true, attempts: true, payload: true },
+    });
+    expect(row).toMatchObject({ attempts: 4, payload: { body: 'kept' } });
+  });
+
+  it('hands no event data to a terminal row past the retention window', async () => {
+    await recordWebhookDeliveryFailure(repo, logger, input);
+    await repo.update({ idempotencyKey: 'key' }, { createdAt: new Date(Date.now() - 25 * 3600000) });
+    await recordWebhookDeliveryFailure(repo, logger, {
+      ...input,
+      payload: { body: 'private' },
+      payloadRetentionHours: 24,
+    });
+    const row = await repo.findOneOrFail({ where: { idempotencyKey: 'key' }, select: { id: true, payload: true } });
+    expect(row.payload).toBeNull();
+  });
+
   it('converges simultaneous recorders from two connections on one terminal identity', async () => {
     const results = await Promise.all([
       recordWebhookDeliveryFailure(repo, logger, input),
@@ -98,6 +127,33 @@ describe('webhook failure persistence', () => {
     await recordWebhookDeliveryFailure(repo, logger, input);
     jest.spyOn(repo, 'update').mockRejectedValueOnce(new Error('disk unavailable'));
     await expect(recordWebhookDeliveryFailure(repo, logger, input)).resolves.toBeNull();
+  });
+  it('removes an unattempted row that an earlier terminal record left behind', async () => {
+    // A crash, or a failed delete, right after the terminal insert leaves both rows. Nothing else
+    // reconciles the unattempted one, so every repeat of the terminal record finishes the clean-up.
+    await recordWebhookDeliveryFailure(repo, logger, input);
+    await repo.insert({ ...input, attempts: 0, lastStatusCode: null, lastError: 'ConcurrencyLimiter closed' });
+
+    await expect(recordWebhookDeliveryFailure(repo, logger, { ...input, attempts: 1 })).resolves.toBe(false);
+
+    expect(await repo.count({ where: { attempts: 0 } })).toBe(0);
+    expect((await repo.findOneByOrFail({ idempotencyKey: 'key' })).attempts).toBe(4);
+  });
+  it('still reports an unattempted duplicate as not recorded when refreshing its reason fails', async () => {
+    // A true here would count a loss that is already counted.
+    await recordWebhookDeliveryFailure(repo, logger, { ...input, attempts: 0 });
+    jest.spyOn(repo, 'update').mockRejectedValueOnce(new Error('disk unavailable'));
+
+    await expect(
+      recordWebhookDeliveryFailure(repo, logger, { ...input, attempts: 0, lastError: 'too large' }),
+    ).resolves.toBe(false);
+
+    expect(logger.error).toHaveBeenCalledWith(
+      'Failed to refresh the reason of an unsent webhook delivery',
+      'disk unavailable',
+      expect.objectContaining({ action: 'webhook_failure_record_error' }),
+    );
+    expect((await repo.findOneByOrFail({ idempotencyKey: 'key' })).lastError).toBe('HTTP 503: down');
   });
   it('records unkeyed losses separately and stores no replay payload by default', async () => {
     await recordWebhookDeliveryFailure(repo, logger, { ...input, idempotencyKey: undefined });

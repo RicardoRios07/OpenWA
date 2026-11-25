@@ -78,6 +78,7 @@ Start workflows when WhatsApp events occur.
 | `message.received`                                | New incoming message                          | Auto-reply, lead capture                     |
 | `message.sent`                                    | Message sent successfully                     | Delivery confirmation                        |
 | `message.ack`                                     | Delivery/read status advanced                 | Read receipts                                |
+| `message.receipt`                                 | Per-recipient group/status receipt (Baileys)  | Per-member read tracking (not in node 1.2.0) |
 | `message.failed`                                  | Outgoing message failed                       | Failure alerting                             |
 | `message.revoked`                                 | Message deleted for everyone                  | Deletion tracking                            |
 | `message.reaction`                                | Reaction added / changed / removed            | Reaction tracking                            |
@@ -90,6 +91,8 @@ Start workflows when WhatsApp events occur.
 | `session.reconnect_loop`                          | Every 5th consecutive reconnect attempt       | Stuck-session alerting                       |
 | `session.restriction`                             | WhatsApp restricted the account, or lifted it | Pausing outreach while an account is limited |
 | `presence.update`                                 | A watched chat's online/typing state changed  | Live agent hand-off, presence-aware routing  |
+| `event.response`                                  | A guest answered a WhatsApp event (Baileys)   | RSVP and attendance tracking                 |
+| `poll.vote`                                       | A voter changed their poll answer (wwebjs)    | Surveys, check-ins and approvals             |
 | `call.accepted` / `call.rejected` / `call.missed` | A ringing call ended — **Baileys only**       | Missed-call follow-up, call logging          |
 | `group.join`                                      | Participant(s) joined a group                 | Welcome messages                             |
 | `group.leave`                                     | Participant(s) left a group                   | Churn tracking                               |
@@ -119,8 +122,8 @@ Start workflows when WhatsApp events occur.
 {
   "event": "message.received",
   "timestamp": "2024-01-15T10:30:00Z",
-  "sessionId": "default",
-  "idempotencyKey": "msg_default_3EB0F5A2B4C..._f1e2d3c4-b5a6-7890-1234-567890abcdef",
+  "sessionId": "8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a",
+  "idempotencyKey": "msg_8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a_3EB0F5A2B4C..._f1e2d3c4-b5a6-7890-1234-567890abcdef",
   "deliveryId": "dlv_0f8c1a2b-3c4d-5e6f-7a8b-9c0d1e2f3a4b",
   "data": {
     "id": "3EB0F5A2B4C...",
@@ -290,9 +293,12 @@ Always use the correct format for chat IDs:
    `attempts: 0` was never sent (shed under load, dropped at shutdown, over the payload size cap, or
    failed before sending; a shed or shutdown row is replayed later), except one that shutdown
    stopped between retries with the queue disabled, whose earlier attempts were sent; with
-   attempts, n8n timed out or was unreachable. An empty list means nothing has failed permanently
-   yet: retries still in flight show only in the server logs, and an event that never matched the
-   webhook leaves no row
+   attempts, n8n may have timed out, been unreachable, redirected, or resolved to a blocked address.
+   With `WEBHOOK_SSRF_PROTECT` enabled, a redirect or blocked destination is recorded as
+   `Destination address is not allowed`; with protection disabled and `WEBHOOK_SSRF_REDIRECTS`
+   unset, a redirect can read `fetch failed`. Register the final https URL instead of one that
+   redirects. An empty list means nothing has failed permanently yet: retries still in flight show
+   only in the server logs, and an event that never matched the webhook leaves no row
 
 ### Message Not Sending
 
